@@ -1,33 +1,48 @@
+use wasi_cap_std_sync::WasiCtxBuilder;
 use anyhow::{anyhow, Result};
 use wasmi::*;
+use std::fs::File;
+use std::io::{Read, BufReader};
+use wasmi_wasi::{add_to_linker, WasiCtx};
 
 fn main() -> Result <()>{
     let engine = Engine::default();
-    let wat = r#"
-    (module
-        (import "host" "hello" (func $host_hello (param i32)))
-        (func (export "hello")
-            (call $host_hello (i32.const 3))
-        )
-    )
-    "#;
 
-    let wasm = wat::parse_str(&wat)?;
-    let module = Module::new(&engine, &mut &wasm[..])?;
+    let mut bytecode = Vec::new();
+    let mut file = File::open("/home/chikuwait/migration-sample/hello.wasm")?;
+    let mut reader = BufReader::new(file);
 
-    type HostState = u32;
-    let mut store = Store::new(&engine ,42);
-    let host_hello = Func::wrap(&mut store, |caller: Caller<'_, HostState>, param: i32| {
-        println!("Got {param} from WebAssembly");
-        println!("My host state is: {}", caller.data());
-    });
+    let mut buf =[0; 20];
+    reader.read(&mut buf);
+    bytecode.extend(buf);
+    let _ = reader.read_to_end(&mut bytecode)?;
 
-    let mut linker = <Linker<HostState>>::new(&engine);
-    linker.define("host", "hello", host_hello)?;
+    let module = Module::new_streaming(&engine, &bytecode[..]).unwrap();
+    let mut linker = <wasmi::Linker<wasmi_wasi::WasiCtx>>::new(&engine);
+
+    let wasi = WasiCtxBuilder::new()
+        .inherit_stdio()
+        .inherit_args()
+        .unwrap()
+        .build();
+    let mut store = Store::new(&engine, wasi);
+
+    wasmi_wasi::add_to_linker(&mut linker, |ctx| ctx).map_err(|error| anyhow!("failed to add WASI definitions to the linker: {error}"))?;    ;
     let instance = linker
         .instantiate(&mut store, &module)?
         .start(&mut store)?;
-    let hello = instance.get_typed_func::<(), ()>(&store, "hello")?;
-    hello.call(&mut store, ())?;
+        
+    loop{
+        let mut buf1 =[0; 4];
+        match reader.read(&mut buf1)?{
+            0 => break,
+            n =>{
+                bytecode.extend(buf1);
+            }
+        }
+    }
+
+    let add = instance.get_typed_func::<(), ()>(&store, "_start")?;
+    let result = add.call(&mut store, ())?;
     Ok(())
 }
