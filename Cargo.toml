@@ -5,5 +5,8 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.86"
-wasmi = "0.31.2"
+wasi-common = "2.0"
+wasi-cap-std-sync = "2.0"
+wasmi = "0.32.0"
+wasmi_wasi = "0.32.0"
 wat = "1.208.1"
