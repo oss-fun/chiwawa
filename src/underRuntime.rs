@@ -3,7 +3,7 @@ use wasmi::*;
 pub trait UnderRuntime {
     fn new(bytecode: Vec<u8>) -> Self;
     fn extend_bytecode(&mut self, b: Vec<u8>);
-    fn call_function(&mut self, func_name: &str);
+    fn call_function(&mut self, func_name: &str) -> Result<(), wasmi::Error>;
 }
 
 pub struct Wasmi {
@@ -37,8 +37,8 @@ impl UnderRuntime for Wasmi {
         self.bytecode.extend(b);
     }
 
-    fn call_function(&mut self, func_name: &str) {
+    fn call_function(&mut self, func_name: &str) -> Result<(), wasmi::Error>{
         let add = self.instance.get_typed_func::<(), ()>(&self.store, func_name).unwrap();
-        let result = add.call(&mut self.store, ());
+        add.call(&mut self.store, ())
     }
 }
