@@ -34,6 +34,10 @@ fn main() -> Result <()>{
             }
         }
     }
-    runtime.call_function("_start");
+    match runtime.call_function("_start"){
+        Ok(_) => println!("Run Successful"),
+        Err(_) => println!("Run Faild!"),
+    }
+
     Ok(())
 }
