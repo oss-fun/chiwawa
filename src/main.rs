@@ -9,31 +9,32 @@ use anyhow::{Result};
 
 fn main() -> Result <()>{
     let args: Vec<String> = env::args().collect();
-    let path = &args[1];
+    let target = &args[1].as_str();
+    let path = &args[2];
 
-    let mut bytecode = Vec::new();
-    
+    let mut bytecode = Vec::new();    
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
 
-    //let mut buf =[0; 8];
-    //let _= reader.read(&mut buf);
-    //bytecode.extend(buf);
+    let mut buf =[0; 8];
+    let _= reader.read(&mut buf);
+    bytecode.extend(buf);
     //let lf: [u8; 1] = [0x0a];
     //bytecode.extend(lf.to_vec());
-    let _ = reader.read_to_end(&mut bytecode)?;
+    //let _ = reader.read_to_end(&mut bytecode)?;
 
-    let mut runtime = underRuntime::Wasmi::new(bytecode);
+    let mut runtime = underRuntime::CreateInstance(target, bytecode);
 
+/*
     loop{
         let mut buf1 =[0; 4];
         match reader.read(&mut buf1)?{
             0 => break,
             _ =>{
-                runtime.extend_bytecode(buf1.to_vec());
+               runtime.extend_bytecode(buf1.to_vec());
             }
         }
-    }
+    }*/
     match runtime.call_function("_start"){
         Ok(_) => println!("Run Successful"),
         Err(_) => println!("Run Faild!"),
