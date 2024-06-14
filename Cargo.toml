@@ -15,3 +15,4 @@ wasmer-wasix = "0.21.0"
 wasmer-wasi = "3.1.1"
 tokio = "1.38.0"
 thiserror = "1.0.61"
+clap = { version = "4.5.7", features = ["derive"] }
