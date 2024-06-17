@@ -1,4 +1,4 @@
-use wasmparser::{Parser, Chunk, Payload::*};
+use wasmparser::{Parser, Payload::*};
 use std::fs::File;
 use std::io::Read;
 
@@ -27,7 +27,7 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
             DataSection(_) => { /* ... */ }
 
             CodeSectionStart { .. } => { /* ... */ }
-            CodeSectionEntry(body) => {
+            CodeSectionEntry(_body) => {
             }
 
             ModuleSection { .. } => { /* ... */ }
@@ -44,7 +44,7 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
             CustomSection(_) => { /* ... */ }
 
-            UnknownSection { id, .. } => { /* ... */ }
+            UnknownSection { .. } => { /* ... */ }
 
 
             End(_) => {}
