@@ -25,7 +25,20 @@ pub struct FuncType{
     results: Vec<ValueType>,
 }
 
+pub struct Func {
+    type_: TypeIdx,
+    locals: Vec<ValueType>,
+    body: Expr,
+} 
+pub struct TypeIdx(u32); 
+
+pub struct Expr(Vec<Instr>);
+pub enum Instr{
+
+}
+
 pub struct Module{
     name: String,
     types: Vec<FuncType>,
+    funcs: Vec<Func>,
 }
