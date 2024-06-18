@@ -33,3 +33,5 @@ pub struct Limits {
     min: u32,
     max: Option<u32>,
 }
+
+pub struct MemType (Limits);
