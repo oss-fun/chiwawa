@@ -15,10 +15,16 @@ pub struct Mem {
     type_: MemType,
 }
 
+pub struct Global {
+    type_: GlobalType,
+    init: Expr,
+}
+
 pub struct Module {
     name: String,
     types: Vec<FuncType>,
     funcs: Vec<Func>,
     tables: Vec<Table>,
     mems: Vec<Mem>,
+    globals: Vec<Global>,
 }
