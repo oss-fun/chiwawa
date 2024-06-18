@@ -35,3 +35,10 @@ pub struct Limits {
 }
 
 pub struct MemType (Limits);
+
+pub struct GlobalType (Mut , ValueType);
+
+pub enum Mut {
+    Const,
+    Var,
+}
