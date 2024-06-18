@@ -11,9 +11,14 @@ pub struct Table {
     type_: TableType,
 }
 
+pub struct Mem {
+    type_: MemType,
+}
+
 pub struct Module {
     name: String,
     types: Vec<FuncType>,
     funcs: Vec<Func>,
     tables: Vec<Table>,
+    mems: Vec<Mem>,
 }
