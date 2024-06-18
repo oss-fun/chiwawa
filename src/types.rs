@@ -24,4 +24,12 @@ pub struct FuncType{
     param: Vec<ValueType>,
     results: Vec<ValueType>,
 }
+
 pub struct TypeIdx(u32); 
+
+pub struct TableType (Limits, RefType);
+
+pub struct Limits {
+    min: u32,
+    max: Option<u32>,
+}
