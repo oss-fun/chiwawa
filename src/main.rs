@@ -1,6 +1,7 @@
 use anyhow::{Result};
 use clap::Parser;
 mod parser;
+mod module;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
