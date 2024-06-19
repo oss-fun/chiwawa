@@ -84,7 +84,7 @@ fn decode_export_section(body: SectionLimited<'_, wasmparser::Export<'_>>, expor
         let index = export.index;
         let desc = match export.kind {
             ExternalKind::Func => {
-                ExportDesc::Func(TypeIdx(index))
+                ExportDesc::Func(FuncIdx(index))
             },
             ExternalKind::Table => {
                 ExportDesc::Table(TableIdx(index))

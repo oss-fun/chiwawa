@@ -66,7 +66,7 @@ pub struct Export {
 }
 
 pub enum ExportDesc {
-    Func(TypeIdx),
+    Func(FuncIdx),
     Table(TableIdx),
     Mem(MemIdx),
     Global(GlobalIdx),
