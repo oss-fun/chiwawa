@@ -1,7 +1,7 @@
 pub enum ValueType {
-    NumType,
-    VecType,
-    RefType,
+    NumType(NumType),
+    VecType(VecType),
+    RefType(RefType),
 }
 
 pub enum NumType {
@@ -25,7 +25,7 @@ pub struct FuncType{
     results: Vec<ValueType>,
 }
 
-pub struct TypeIdx(u32); 
+pub struct TypeIdx(pub u32); 
 pub struct TableIdx(u32); 
 pub struct MemIdx(u32); 
 pub struct FuncIdx(u32); 
@@ -33,18 +33,18 @@ pub struct GlobalIdx(u32);
 
 
 pub struct Byte(u8);
-pub struct Name(String);
+pub struct Name(pub String);
 
-pub struct TableType (Limits, RefType);
+pub struct TableType (pub Limits, pub RefType);
 
 pub struct Limits {
-    min: u32,
-    max: Option<u32>,
+    pub min: u32,
+    pub max: Option<u32>,
 }
 
-pub struct MemType (Limits);
+pub struct MemType (pub Limits);
 
-pub struct GlobalType (Mut , ValueType);
+pub struct GlobalType (pub Mut , pub ValueType);
 
 pub enum Mut {
     Const,
