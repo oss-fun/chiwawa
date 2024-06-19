@@ -26,6 +26,8 @@ pub struct FuncType{
 }
 
 pub struct TypeIdx(u32); 
+pub struct TableIdx(u32); 
+
 
 pub struct TableType (Limits, RefType);
 
