@@ -29,9 +29,11 @@ pub struct TypeIdx(u32);
 pub struct TableIdx(u32); 
 pub struct MemIdx(u32); 
 pub struct FuncIdx(u32); 
+pub struct GlobalIdx(u32); 
 
 
 pub struct Byte(u8);
+pub struct Name(String);
 
 pub struct TableType (Limits, RefType);
 

@@ -48,6 +48,30 @@ pub struct Start {
     func: FuncIdx
 }
 
+pub struct Import {
+    module: Name,
+    name: Name,
+    desc: ImportDesc,
+}
+pub enum ImportDesc {
+    Func(TypeIdx),
+    Table(TableType),
+    Mem(MemType),
+    Global(GlobalType),
+}
+
+pub struct Export {
+    name: Name,
+    desc: ExportDesc,
+}
+
+pub enum ExportDesc {
+    Func(TypeIdx),
+    Table(TableIdx),
+    Mem(MemIdx),
+    Global(GlobalIdx),
+}
+
 pub struct Module {
     name: String,
     types: Vec<FuncType>,
@@ -58,4 +82,6 @@ pub struct Module {
     elems: Vec<Elem>,
     datas: Vec<Data>,
     start: Option<Start>,
+    imports: Vec<Import>,
+    exports: Vec<Export>,
 }
