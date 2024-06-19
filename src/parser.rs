@@ -1,4 +1,4 @@
-use wasmparser::{Parser, Payload::*, TypeRef, ValType,SectionLimited};
+use wasmparser::{Parser, Payload::*, TypeRef, ValType, SectionLimited, ExternalKind};
 use std::fs::File;
 use std::io::Read;
 use thiserror::Error;
@@ -78,6 +78,36 @@ fn decode_import_section(body: SectionLimited<'_, wasmparser::Import<'_>>, impor
     Ok(())
 }
 
+fn decode_export_section(body: SectionLimited<'_, wasmparser::Export<'_>>, exports: &mut Vec<Export>) -> Result<(), Box<dyn std::error::Error>>{
+    for export in body {
+        let export = export?;
+        let index = export.index;
+        let desc = match export.kind {
+            ExternalKind::Func => {
+                ExportDesc::Func(TypeIdx(index))
+            },
+            ExternalKind::Table => {
+                ExportDesc::Table(TableIdx(index))
+            },
+            ExternalKind::Memory => {
+                ExportDesc::Mem(MemIdx(index))
+            },
+            ExternalKind::Global => {
+                ExportDesc::Global(GlobalIdx(index))
+            },
+            ExternalKind::Tag => todo!()
+        };
+        exports.push(
+            Export{
+                name: Name(export.name.to_string()),
+                desc,
+            }
+        );
+    };
+    Ok(())
+}
+
+
 pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = Vec::new();
     let parser = Parser::new(0);
@@ -86,6 +116,8 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     file.read_to_end(&mut buf)?;
 
     let mut imports = Vec::new();
+    let mut exports = Vec::new();
+
 
     for payload in parser.parse_all(&buf) {
         match payload? {
@@ -99,15 +131,19 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             ImportSection(body) => {
-                let _ = decode_import_section(body,&mut imports);
+                let _ = decode_import_section(body, &mut imports);
             }
+            ExportSection(body) => {
+                let _ = decode_export_section(body, &mut exports);
+
+            }
+
 
             FunctionSection(_) => { /* ... */ }
             TableSection(_) => { /* ... */ }
             MemorySection(_) => { /* ... */ }
             TagSection(_) => { /* ... */ }
             GlobalSection(_) => { /* ... */ }
-            ExportSection(_) => { /* ... */ }
             StartSection { .. } => { /* ... */ }
             ElementSection(_) => { /* ... */ }
             DataCountSection { .. } => { /* ... */ }

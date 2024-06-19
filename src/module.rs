@@ -61,8 +61,8 @@ pub enum ImportDesc {
 }
 
 pub struct Export {
-    name: Name,
-    desc: ExportDesc,
+    pub name: Name,
+    pub desc: ExportDesc,
 }
 
 pub enum ExportDesc {
