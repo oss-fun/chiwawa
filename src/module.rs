@@ -44,6 +44,9 @@ pub enum DataMode{
     Passive,
     Active,
 }
+pub struct Start {
+    func: FuncIdx
+}
 
 pub struct Module {
     name: String,
@@ -54,4 +57,5 @@ pub struct Module {
     globals: Vec<Global>,
     elems: Vec<Elem>,
     datas: Vec<Data>,
+    start: Option<Start>,
 }
