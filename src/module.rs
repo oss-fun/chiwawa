@@ -20,6 +20,19 @@ pub struct Global {
     init: Expr,
 }
 
+pub struct Elem {
+    type_: RefType,
+    init: Vec<Expr>,
+    mode: ElemMode,
+    tableIdx: Option<TableIdx>,
+    offset: Option<Expr>,
+}
+pub enum ElemMode {
+    Passive,
+    Active,
+    Declarative,
+}
+
 pub struct Module {
     name: String,
     types: Vec<FuncType>,
@@ -27,4 +40,5 @@ pub struct Module {
     tables: Vec<Table>,
     mems: Vec<Mem>,
     globals: Vec<Global>,
+    elems: Vec<Elem>,
 }
