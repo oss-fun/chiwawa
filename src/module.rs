@@ -49,9 +49,9 @@ pub struct Start {
 }
 
 pub struct Import {
-    module: Name,
-    name: Name,
-    desc: ImportDesc,
+    pub module: Name,
+    pub name: Name,
+    pub desc: ImportDesc,
 }
 pub enum ImportDesc {
     Func(TypeIdx),
