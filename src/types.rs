@@ -26,10 +26,10 @@ pub struct FuncType{
 }
 
 pub struct TypeIdx(pub u32); 
-pub struct TableIdx(u32); 
-pub struct MemIdx(u32); 
+pub struct TableIdx(pub u32); 
+pub struct MemIdx(pub u32); 
 pub struct FuncIdx(u32); 
-pub struct GlobalIdx(u32); 
+pub struct GlobalIdx(pub u32); 
 
 
 pub struct Byte(u8);
