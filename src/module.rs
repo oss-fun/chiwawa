@@ -33,6 +33,18 @@ pub enum ElemMode {
     Declarative,
 }
 
+pub struct Data {
+    init: Vec<Byte>,
+    mode: DataMode,
+    memory: Option<MemIdx>,
+    offset: Option<Expr>,
+}
+
+pub enum DataMode{
+    Passive,
+    Active,
+}
+
 pub struct Module {
     name: String,
     types: Vec<FuncType>,
@@ -41,4 +53,5 @@ pub struct Module {
     mems: Vec<Mem>,
     globals: Vec<Global>,
     elems: Vec<Elem>,
+    datas: Vec<Data>,
 }
