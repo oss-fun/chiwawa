@@ -155,6 +155,29 @@ fn decode_export_section(body: SectionLimited<'_, wasmparser::Export<'_>>, expor
     Ok(())
 }
 
+fn decode_table_section(body: SectionLimited<'_, wasmparser::Table<'_>>, tables: &mut Vec<Table>) -> Result<(), Box<dyn std::error::Error>>{
+    for table in body{
+        let table = table?;
+        let table_type = table.ty;
+
+        let max = match table_type.maximum{
+            Some(m) =>  Some(TryFrom::try_from(m).unwrap()),
+            None => None
+
+        };
+        let limits = Limits{min: TryFrom::try_from(table_type.initial).unwrap(), max};
+
+        let reftype = if table_type.element_type.is_func_ref() {
+            RefType::FuncRef
+        } else {
+            RefType::ExternalRef
+        };
+        tables.push(Table{
+            type_: TableType(limits,reftype)
+        });
+    }
+    Ok(())
+}
 
 pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = Vec::new();
@@ -167,7 +190,7 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut func_typeidx = Vec::new();
     let mut imports = Vec::new();
     let mut exports = Vec::new();
-
+    let mut tables = Vec::new();
 
     for payload in parser.parse_all(&buf) {
         match payload? {
@@ -193,8 +216,10 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
             }
 
+            TableSection(body) => {
+                let _ = decode_table_section(body, &mut tables);
+            }
 
-            TableSection(_) => { /* ... */ }
             MemorySection(_) => { /* ... */ }
             TagSection(_) => { /* ... */ }
             GlobalSection(_) => { /* ... */ }

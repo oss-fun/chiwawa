@@ -8,7 +8,7 @@ pub struct Func {
 }
 
 pub struct Table {
-    type_: TableType,
+    pub type_: TableType,
 }
 
 pub struct Mem {
