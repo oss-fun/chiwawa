@@ -47,6 +47,15 @@ fn decode_type_section(body: SectionLimited<'_, wasmparser::RecGroup>, functypes
                 results
         });
     };
+    Ok(())
+}
+
+fn decode_func_section(body: SectionLimited<'_, u32>, types: &mut Vec<TypeIdx>) -> Result<(), Box<dyn std::error::Error>>{
+    for func in body{
+        let index = func?;
+        let typeidx = TypeIdx(index);
+        types.push(typeidx);
+    }
 
     Ok(())
 }
@@ -155,6 +164,7 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     file.read_to_end(&mut buf)?;
 
     let mut types = Vec::new();
+    let mut func_typeidx = Vec::new();
     let mut imports = Vec::new();
     let mut exports = Vec::new();
 
@@ -171,6 +181,10 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 let _= decode_type_section(body, &mut types);
             }
 
+            FunctionSection(body) => {
+                let _ = decode_func_section(body,&mut func_typeidx);
+            }
+
             ImportSection(body) => {
                 let _ = decode_import_section(body, &mut imports);
             }
@@ -180,7 +194,6 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
             }
 
 
-            FunctionSection(_) => { /* ... */ }
             TableSection(_) => { /* ... */ }
             MemorySection(_) => { /* ... */ }
             TagSection(_) => { /* ... */ }
