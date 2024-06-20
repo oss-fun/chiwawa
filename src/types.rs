@@ -21,8 +21,8 @@ pub enum RefType{
 }
 
 pub struct FuncType{
-    param: Vec<ValueType>,
-    results: Vec<ValueType>,
+    pub params: Vec<ValueType>,
+    pub results: Vec<ValueType>,
 }
 
 pub struct TypeIdx(pub u32); 
