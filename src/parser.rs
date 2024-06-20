@@ -12,6 +12,45 @@ enum ParserError {
     VersionError,
 }
 
+fn types_to_vec(types: &[ValType], vec: &mut Vec<ValueType>){
+    for t in types.iter(){
+        let type_ = match t {
+            ValType::I32 => ValueType::NumType(NumType::I32),
+            ValType::I64 => ValueType::NumType(NumType::I64),
+            ValType::F32 => ValueType::NumType(NumType::F32),
+            ValType::F64 => ValueType::NumType(NumType::F64),
+            ValType::V128 => ValueType::VecType(VecType::V128),
+            ValType::Ref(ref_type) => {
+                if ref_type.is_func_ref() {
+                    ValueType::RefType(RefType::FuncRef)
+                } else {
+                    ValueType::RefType(RefType::ExternalRef)
+                }
+            }
+        };
+        vec.push(type_);
+    }
+}
+
+fn decode_type_section(body: SectionLimited<'_, wasmparser::RecGroup>, functypes: &mut Vec<FuncType>) -> Result<(), Box<dyn std::error::Error>>{
+    for functype in body.into_iter_err_on_gc_types() {
+        let functype = functype?;
+
+        let mut params = Vec::new();
+        let mut results = Vec::new();
+        types_to_vec(functype.params(), &mut params);
+        types_to_vec(functype.results(), &mut results);
+
+        let r = functype.results();
+        functypes.push(FuncType{
+                params,
+                results
+        });
+    };
+
+    Ok(())
+}
+
 fn decode_import_section(body: SectionLimited<'_, wasmparser::Import<'_>>, imports: &mut Vec<Import>) -> Result<(), Box<dyn std::error::Error>>{
     for import in body {
         let import = import?;
@@ -115,6 +154,7 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut file = File::open(path)?;
     file.read_to_end(&mut buf)?;
 
+    let mut types = Vec::new();
     let mut imports = Vec::new();
     let mut exports = Vec::new();
 
@@ -127,7 +167,8 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            TypeSection(_) => {
+            TypeSection(body) => {
+                let _= decode_type_section(body, &mut types);
             }
 
             ImportSection(body) => {
