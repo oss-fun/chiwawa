@@ -2,9 +2,9 @@ use crate::types::*;
 use crate::instructions::*;
 
 pub struct Func {
-    type_: TypeIdx,
-    locals: Vec<ValueType>,
-    body: Expr,
+    pub type_: TypeIdx,
+    pub locals: Vec<ValueType>,
+    pub body: Expr,
 }
 
 pub struct Table {
