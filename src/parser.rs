@@ -155,6 +155,22 @@ fn decode_export_section(body: SectionLimited<'_, wasmparser::Export<'_>>, expor
     Ok(())
 }
 
+fn decode_mem_section(body: SectionLimited<'_, wasmparser::MemoryType>, mems: &mut Vec<Mem>) -> Result<(), Box<dyn std::error::Error>>{
+
+    for memory in body {
+        let memory = memory?;
+        let max = match memory.maximum {
+            Some(m) => Some(TryFrom::try_from(m).unwrap()),
+            None => None
+        };
+        let limits = Limits{min: TryFrom::try_from(memory.initial).unwrap(), max};
+        mems.push(Mem{
+            type_: MemType(limits)
+        });
+    }
+    Ok(())
+}
+
 fn decode_table_section(body: SectionLimited<'_, wasmparser::Table<'_>>, tables: &mut Vec<Table>) -> Result<(), Box<dyn std::error::Error>>{
     for table in body{
         let table = table?;
@@ -191,6 +207,7 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut imports = Vec::new();
     let mut exports = Vec::new();
     let mut tables = Vec::new();
+    let mut mems = Vec::new();
 
     for payload in parser.parse_all(&buf) {
         match payload? {
@@ -220,7 +237,10 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 let _ = decode_table_section(body, &mut tables);
             }
 
-            MemorySection(_) => { /* ... */ }
+            MemorySection(body) => {
+                let _ = decode_mem_section(body, &mut mems);
+            }
+
             TagSection(_) => { /* ... */ }
             GlobalSection(_) => { /* ... */ }
             StartSection { .. } => { /* ... */ }

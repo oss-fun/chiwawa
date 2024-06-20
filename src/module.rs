@@ -12,7 +12,7 @@ pub struct Table {
 }
 
 pub struct Mem {
-    type_: MemType,
+    pub type_: MemType,
 }
 
 pub struct Global {
