@@ -30,7 +30,12 @@ pub struct TableIdx(pub u32);
 pub struct MemIdx(pub u32); 
 pub struct FuncIdx(pub u32); 
 pub struct GlobalIdx(pub u32); 
+pub struct LocalIdx(pub u32); 
+pub struct LaneIdx(pub u8); 
+pub struct DataIdx(pub u32); 
+pub struct LabelIdx(pub u32); 
 
+pub struct BlockType(pub TypeIdx, pub Option<ValueType>);
 
 pub struct Byte(u8);
 pub struct Name(pub String);
