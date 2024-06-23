@@ -1,12 +1,12 @@
 use crate::types::*;
 
-pub struct Expr(Vec<Instr>);
+pub struct Expr(pub Vec<Instr>);
 pub enum Instr {
     /* Numeric Instructions */
     I32Const(i32),
     I64Const(i64),
-    F32Const(f32),
-    F64Const(f64),
+    F32Const(u32), // Bits of IEEE Binary 32 Floating Point Value
+    F64Const(u64), // Bits of IEEE Binary 64 Floating Point Value
     I32Clz,
     I32Ctz,
     I32Popcnt,
