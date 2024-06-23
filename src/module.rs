@@ -16,8 +16,8 @@ pub struct Mem {
 }
 
 pub struct Global {
-    type_: GlobalType,
-    init: Expr,
+    pub type_: GlobalType,
+    pub init: Expr,
 }
 
 pub struct Elem {
