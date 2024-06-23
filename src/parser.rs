@@ -5,6 +5,7 @@ use thiserror::Error;
 
 use crate::module::*;
 use crate::types::*;
+use crate::instructions::*;
 
 #[derive(Debug, Error)]
 enum ParserError {
@@ -195,6 +196,55 @@ fn decode_table_section(body: SectionLimited<'_, wasmparser::Table<'_>>, tables:
     Ok(())
 }
 
+fn decode_global_section(body: SectionLimited<'_, wasmparser::Global<'_>>, globals: &mut Vec<Global>) -> Result<(), Box<dyn std::error::Error>>{
+    for global in body {
+        let global = global?;
+        let mut_ = if global.ty.mutable{
+            Mut::Var
+        } else {
+            Mut::Const
+        };
+        let value_type = match global.ty.content_type {
+            ValType::I32 => ValueType::NumType(NumType::I32),
+            ValType::I64 => ValueType::NumType(NumType::I64),
+            ValType::F32 => ValueType::NumType(NumType::F32),
+            ValType::F64 => ValueType::NumType(NumType::F64),
+            ValType::V128 => ValueType::VecType(VecType::V128),
+            ValType::Ref(ref_type) => {
+                if ref_type.is_func_ref() {
+                    ValueType::RefType(RefType::FuncRef)
+                } else {
+                    ValueType::RefType(RefType::ExternalRef)
+                }
+            }
+        };
+        let type_  = GlobalType(mut_,value_type);
+        let init = parse_initexpr(global.init_expr)?;
+        globals.push(
+            Global{type_, init}
+        );
+
+    }
+    Ok(())
+}
+
+fn parse_initexpr(expr: wasmparser::ConstExpr<'_>) -> Result<Expr, Box<dyn std::error::Error>>{
+    let mut instrs = Vec::new();
+    let mut ops = expr.get_operators_reader().into_iter_with_offsets();
+    while let Some(res) = ops.next() {
+        let (op, offset) = res?;
+        match op {
+            wasmparser::Operator::I32Const {value} => instrs.push(Instr::I32Const(value)),
+            wasmparser::Operator::I64Const {value} => instrs.push(Instr::I64Const(value)),
+            wasmparser::Operator::F32Const {value} => instrs.push(Instr::F32Const(value.bits())),
+            wasmparser::Operator::F64Const {value} => instrs.push(Instr::F64Const(value.bits())),
+            _ => todo!(),
+        }
+    }
+    Ok(Expr(instrs))
+}
+
+
 pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = Vec::new();
     let parser = Parser::new(0);
@@ -208,6 +258,7 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut exports = Vec::new();
     let mut tables = Vec::new();
     let mut mems = Vec::new();
+    let mut globals = Vec::new();
 
     for payload in parser.parse_all(&buf) {
         match payload? {
@@ -242,7 +293,12 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             TagSection(_) => { /* ... */ }
-            GlobalSection(_) => { /* ... */ }
+
+            GlobalSection(body) => {
+                let _ = decode_global_section(body, &mut globals);
+
+            }
+
             StartSection { .. } => { /* ... */ }
             ElementSection(_) => { /* ... */ }
             DataCountSection { .. } => { /* ... */ }
