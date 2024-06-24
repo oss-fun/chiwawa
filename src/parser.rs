@@ -232,9 +232,14 @@ fn decode_global_section(body: SectionLimited<'_, wasmparser::Global<'_>>, globa
 
 fn parse_initexpr(expr: wasmparser::ConstExpr<'_>) -> Result<Expr, Box<dyn std::error::Error>>{
     let mut instrs = Vec::new();
-    let mut ops = expr.get_operators_reader().into_iter_with_offsets();
+    let mut ops = expr.get_operators_reader().into_iter_with_offsets().peekable();
     while let Some(res) = ops.next() {
         let (op, offset) = res?;
+
+        if (matches!(op,wasmparser::Operator::End) && ops.peek().is_none()) {
+            break;
+        }
+
         match op {
             wasmparser::Operator::I32Const {value} => instrs.push(Instr::I32Const(value)),
             wasmparser::Operator::I64Const {value} => instrs.push(Instr::I64Const(value)),
