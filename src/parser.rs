@@ -270,6 +270,7 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut tables = Vec::new();
     let mut mems = Vec::new();
     let mut globals = Vec::new();
+    let mut start: Option<Start>;
 
     for payload in parser.parse_all(&buf) {
         match payload? {
@@ -310,7 +311,12 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
             }
 
-            StartSection { .. } => { /* ... */ }
+            StartSection { func, .. } => {
+                start = Some(Start{
+                    func: FuncIdx(func),
+                });
+            }
+
             ElementSection(_) => { /* ... */ }
             DataCountSection { .. } => { /* ... */ }
             DataSection(_) => { /* ... */ }
