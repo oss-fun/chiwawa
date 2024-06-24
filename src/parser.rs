@@ -11,6 +11,8 @@ use crate::instructions::*;
 enum ParserError {
     #[error("Invalid Version")]
     VersionError,
+    #[error("Unsupported OP Code in Global Section Init Expr at Offset: {offset}")]
+    InitExprUnsupportedOPCodeError{offset: usize},
 }
 
 fn types_to_vec(types: &[ValType], vec: &mut Vec<ValueType>){
@@ -242,7 +244,7 @@ fn parse_initexpr(expr: wasmparser::ConstExpr<'_>) -> Result<Expr, Box<dyn std::
             wasmparser::Operator::RefFunc {function_index} => instrs.push(Instr::RefFunc(FuncIdx(function_index))),
             wasmparser::Operator::GlobalGet {global_index} => instrs.push(Instr::GlobalGet(GlobalIdx(global_index))),
 
-            _ => todo!(),
+            _ => return Err(Box::new(ParserError::InitExprUnsupportedOPCodeError{offset})),
         }
     }
     Ok(Expr(instrs))
