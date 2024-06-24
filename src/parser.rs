@@ -238,6 +238,10 @@ fn parse_initexpr(expr: wasmparser::ConstExpr<'_>) -> Result<Expr, Box<dyn std::
             wasmparser::Operator::I64Const {value} => instrs.push(Instr::I64Const(value)),
             wasmparser::Operator::F32Const {value} => instrs.push(Instr::F32Const(value.bits())),
             wasmparser::Operator::F64Const {value} => instrs.push(Instr::F64Const(value.bits())),
+            wasmparser::Operator::RefNull {..} => instrs.push(Instr::RefNull(RefType::ExternalRef)),
+            wasmparser::Operator::RefFunc {function_index} => instrs.push(Instr::RefFunc(FuncIdx(function_index))),
+            wasmparser::Operator::GlobalGet {global_index} => instrs.push(Instr::GlobalGet(GlobalIdx(global_index))),
+
             _ => todo!(),
         }
     }
