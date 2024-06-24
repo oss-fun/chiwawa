@@ -45,7 +45,7 @@ pub enum DataMode{
     Active,
 }
 pub struct Start {
-    func: FuncIdx
+    pub func: FuncIdx
 }
 
 pub struct Import {
