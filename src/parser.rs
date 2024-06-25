@@ -1,4 +1,4 @@
-use wasmparser::{Parser, Payload::*, TypeRef, ValType, SectionLimited, ExternalKind};
+use wasmparser::{Parser, Payload::*, TypeRef, ValType, SectionLimited, ExternalKind, ElementKind, ElementItems};
 use std::fs::File;
 use std::io::Read;
 use thiserror::Error;
@@ -255,6 +255,57 @@ fn parse_initexpr(expr: wasmparser::ConstExpr<'_>) -> Result<Expr, Box<dyn std::
     Ok(Expr(instrs))
 }
 
+fn decode_elem_section(body: SectionLimited<'_, wasmparser::Element<'_>>, elems: &mut Vec<Elem>) -> Result<(), Box<dyn std::error::Error>> {
+    for (index, entry) in body.into_iter().enumerate() {
+        let entry = entry?;
+
+        let (type_, init) = match entry.items {
+            wasmparser::ElementItems::Functions(funcs) => {
+                let mut exprs = Vec::new();
+                for func in funcs {
+                    let mut inst = Vec::new();
+                    inst.push(Instr::RefFunc(FuncIdx(func?)));
+                    exprs.push(Expr(inst));
+                }
+                (RefType::FuncRef, exprs)
+            },
+            wasmparser::ElementItems::Expressions(type_, items) => {
+                let mut exprs = Vec::new();
+                for expr in items {
+                    let expr = parse_initexpr(expr?)?;
+                    exprs.push(expr);
+                }
+
+                if type_.is_func_ref() {
+                    (RefType::FuncRef, exprs)
+                } else {
+                    (RefType::ExternalRef, exprs)
+                }
+            }
+        };
+        let (mode, tableIdx, offset) = match entry.kind {
+            wasmparser::ElementKind::Active{table_index, offset_expr} => {
+                let expr = parse_initexpr(offset_expr)?;
+                (ElemMode::Active, Some(TableIdx(table_index.unwrap_or(0))), Some(expr))
+            },
+            wasmparser::ElementKind::Passive => {
+                (ElemMode::Passive, None, None)
+
+            },
+            wasmparser::ElementKind::Declared => {
+                (ElemMode::Declarative, None, None)
+            }
+        };
+        elems.push(Elem{
+            type_,
+            init,
+            mode,
+            tableIdx,
+            offset,
+        });
+    }
+    Ok(())
+}
 
 pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = Vec::new();
@@ -271,6 +322,8 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut mems = Vec::new();
     let mut globals = Vec::new();
     let mut start: Option<Start>;
+    let mut elems = Vec::new();
+
 
     for payload in parser.parse_all(&buf) {
         match payload? {
@@ -317,7 +370,10 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
 
-            ElementSection(_) => { /* ... */ }
+            ElementSection(body) => {
+                let _ = decode_elem_section(body, &mut elems);
+            }
+
             DataCountSection { .. } => { /* ... */ }
             DataSection(_) => { /* ... */ }
 
