@@ -21,11 +21,11 @@ pub struct Global {
 }
 
 pub struct Elem {
-    type_: RefType,
-    init: Vec<Expr>,
-    mode: ElemMode,
-    tableIdx: Option<TableIdx>,
-    offset: Option<Expr>,
+    pub type_: RefType,
+    pub init: Vec<Expr>,
+    pub mode: ElemMode,
+    pub tableIdx: Option<TableIdx>,
+    pub offset: Option<Expr>,
 }
 pub enum ElemMode {
     Passive,
