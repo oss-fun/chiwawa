@@ -34,10 +34,10 @@ pub enum ElemMode {
 }
 
 pub struct Data {
-    init: Vec<Byte>,
-    mode: DataMode,
-    memory: Option<MemIdx>,
-    offset: Option<Expr>,
+    pub init: Vec<Byte>,
+    pub mode: DataMode,
+    pub memory: Option<MemIdx>,
+    pub offset: Option<Expr>,
 }
 
 pub enum DataMode{

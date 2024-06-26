@@ -37,7 +37,7 @@ pub struct LabelIdx(pub u32);
 
 pub struct BlockType(pub TypeIdx, pub Option<ValueType>);
 
-pub struct Byte(u8);
+pub struct Byte(pub u8);
 pub struct Name(pub String);
 
 pub struct TableType (pub Limits, pub RefType);

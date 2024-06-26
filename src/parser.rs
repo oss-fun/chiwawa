@@ -1,4 +1,4 @@
-use wasmparser::{Parser, Payload::*, TypeRef, ValType, SectionLimited, ExternalKind, ElementKind, ElementItems};
+use wasmparser::{Parser, Payload::*, TypeRef, ValType, SectionLimited, ExternalKind, ElementKind, ElementItems, DataKind};
 use std::fs::File;
 use std::io::Read;
 use thiserror::Error;
@@ -306,7 +306,29 @@ fn decode_elem_section(body: SectionLimited<'_, wasmparser::Element<'_>>, elems:
     }
     Ok(())
 }
+fn decode_data_section(body: SectionLimited<'_, wasmparser::Data<'_>>, datas: &mut Vec<Data>) -> Result<(), Box<dyn std::error::Error>> {
+    for (index, entry) in body.into_iter().enumerate() {
+        let entry = entry?;
+        let init = entry.data.iter().map(|x| Byte(*x)).collect::<Vec<Byte>>();
+        let (mode, memory, offset) = match entry.kind {
+            wasmparser::DataKind::Passive => {
+                (DataMode::Passive, None, None)
+            },
+            wasmparser::DataKind::Active{memory_index, offset_expr} => {
+                let expr = parse_initexpr(offset_expr)?;
+                (DataMode::Active, Some(MemIdx(memory_index)), Some(expr))
+            },
+        };
 
+        datas.push(Data{
+            init,
+            mode,
+            memory,
+            offset,
+        })
+    }
+    Ok(())
+}
 pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = Vec::new();
     let parser = Parser::new(0);
@@ -323,6 +345,7 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut globals = Vec::new();
     let mut start: Option<Start>;
     let mut elems = Vec::new();
+    let mut datas = Vec::new();
 
 
     for payload in parser.parse_all(&buf) {
@@ -375,7 +398,10 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             DataCountSection { .. } => { /* ... */ }
-            DataSection(_) => { /* ... */ }
+    
+            DataSection(body) => {
+                let _= decode_data_section(body, &mut datas);
+            }
 
             CodeSectionStart { .. } => { /* ... */ }
             CodeSectionEntry(_body) => {
