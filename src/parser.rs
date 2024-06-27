@@ -15,23 +15,25 @@ enum ParserError {
     InitExprUnsupportedOPCodeError{offset: usize},
 }
 
-fn types_to_vec(types: &[ValType], vec: &mut Vec<ValueType>){
-    for t in types.iter(){
-        let type_ = match t {
-            ValType::I32 => ValueType::NumType(NumType::I32),
-            ValType::I64 => ValueType::NumType(NumType::I64),
-            ValType::F32 => ValueType::NumType(NumType::F32),
-            ValType::F64 => ValueType::NumType(NumType::F64),
-            ValType::V128 => ValueType::VecType(VecType::V128),
-            ValType::Ref(ref_type) => {
-                if ref_type.is_func_ref() {
-                    ValueType::RefType(RefType::FuncRef)
-                } else {
-                    ValueType::RefType(RefType::ExternalRef)
-                }
+fn match_value_type(t: ValType) -> ValueType {
+    match t {
+        ValType::I32 => ValueType::NumType(NumType::I32),
+        ValType::I64 => ValueType::NumType(NumType::I64),
+        ValType::F32 => ValueType::NumType(NumType::F32),
+        ValType::F64 => ValueType::NumType(NumType::F64),
+        ValType::V128 => ValueType::VecType(VecType::V128),
+        ValType::Ref(ref_type) => {
+            if ref_type.is_func_ref() {
+                ValueType::RefType(RefType::FuncRef)
+            } else {
+                ValueType::RefType(RefType::ExternalRef)
             }
-        };
-        vec.push(type_);
+    }}
+}
+
+fn types_to_vec(types: &[ValType], vec: &mut Vec<ValueType>) {
+    for t in types.iter(){
+        vec.push(match_value_type(*t));
     }
 }
 
@@ -100,20 +102,7 @@ fn decode_import_section(body: SectionLimited<'_, wasmparser::Import<'_>>, impor
                 } else {
                     Mut::Const
                 };
-                let value_type = match global.content_type {
-                    ValType::I32 => ValueType::NumType(NumType::I32),
-                    ValType::I64 => ValueType::NumType(NumType::I64),
-                    ValType::F32 => ValueType::NumType(NumType::F32),
-                    ValType::F64 => ValueType::NumType(NumType::F64),
-                    ValType::V128 => ValueType::VecType(VecType::V128),
-                    ValType::Ref(ref_type) => {
-                        if ref_type.is_func_ref() {
-                            ValueType::RefType(RefType::FuncRef)
-                        } else {
-                            ValueType::RefType(RefType::ExternalRef)
-                        }
-                    }
-                };
+                let value_type = match_value_type(global.content_type);
                 ImportDesc::Global(GlobalType(mut_,value_type))
             },
             TypeRef::Tag(_) => todo!()
@@ -159,7 +148,6 @@ fn decode_export_section(body: SectionLimited<'_, wasmparser::Export<'_>>, expor
 }
 
 fn decode_mem_section(body: SectionLimited<'_, wasmparser::MemoryType>, mems: &mut Vec<Mem>) -> Result<(), Box<dyn std::error::Error>>{
-
     for memory in body {
         let memory = memory?;
         let max = match memory.maximum {
@@ -206,20 +194,7 @@ fn decode_global_section(body: SectionLimited<'_, wasmparser::Global<'_>>, globa
         } else {
             Mut::Const
         };
-        let value_type = match global.ty.content_type {
-            ValType::I32 => ValueType::NumType(NumType::I32),
-            ValType::I64 => ValueType::NumType(NumType::I64),
-            ValType::F32 => ValueType::NumType(NumType::F32),
-            ValType::F64 => ValueType::NumType(NumType::F64),
-            ValType::V128 => ValueType::VecType(VecType::V128),
-            ValType::Ref(ref_type) => {
-                if ref_type.is_func_ref() {
-                    ValueType::RefType(RefType::FuncRef)
-                } else {
-                    ValueType::RefType(RefType::ExternalRef)
-                }
-            }
-        };
+        let value_type = match_value_type(global.ty.content_type);
         let type_  = GlobalType(mut_,value_type);
         let init = parse_initexpr(global.init_expr)?;
         globals.push(
