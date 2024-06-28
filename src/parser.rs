@@ -55,11 +55,15 @@ fn decode_type_section(body: SectionLimited<'_, wasmparser::RecGroup>, functypes
     Ok(())
 }
 
-fn decode_func_section(body: SectionLimited<'_, u32>, types: &mut Vec<TypeIdx>) -> Result<(), Box<dyn std::error::Error>>{
+fn decode_func_section(body: SectionLimited<'_, u32>, funcs: &mut Vec<Func>) -> Result<(), Box<dyn std::error::Error>>{
     for func in body{
         let index = func?;
         let typeidx = TypeIdx(index);
-        types.push(typeidx);
+        funcs.push(Func{
+            type_: typeidx,
+            locals: Vec::new(),
+            body: Expr(Vec::new()),
+        });
     }
 
     Ok(())
@@ -311,17 +315,7 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut file = File::open(path)?;
     file.read_to_end(&mut buf)?;
 
-    let mut types = Vec::new();
-    let mut func_typeidx = Vec::new();
-    let mut imports = Vec::new();
-    let mut exports = Vec::new();
-    let mut tables = Vec::new();
-    let mut mems = Vec::new();
-    let mut globals = Vec::new();
-    let mut start: Option<Start>;
-    let mut elems = Vec::new();
-    let mut datas = Vec::new();
-
+    let mut module = Module::new("test");
 
     for payload in parser.parse_all(&buf) {
         match payload? {
@@ -332,50 +326,50 @@ pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             TypeSection(body) => {
-                let _= decode_type_section(body, &mut types);
+                let _= decode_type_section(body, &mut module.types);
             }
 
             FunctionSection(body) => {
-                let _ = decode_func_section(body,&mut func_typeidx);
+                let _ = decode_func_section(body,&mut module.funcs);
             }
 
             ImportSection(body) => {
-                let _ = decode_import_section(body, &mut imports);
+                let _ = decode_import_section(body, &mut module.imports);
             }
             ExportSection(body) => {
-                let _ = decode_export_section(body, &mut exports);
+                let _ = decode_export_section(body, &mut module.exports);
 
             }
 
             TableSection(body) => {
-                let _ = decode_table_section(body, &mut tables);
+                let _ = decode_table_section(body, &mut module.tables);
             }
 
             MemorySection(body) => {
-                let _ = decode_mem_section(body, &mut mems);
+                let _ = decode_mem_section(body, &mut module.mems);
             }
 
             TagSection(_) => { /* ... */ }
 
             GlobalSection(body) => {
-                let _ = decode_global_section(body, &mut globals);
+                let _ = decode_global_section(body, &mut module.globals);
 
             }
 
             StartSection { func, .. } => {
-                start = Some(Start{
+                module.start = Some(Start{
                     func: FuncIdx(func),
                 });
             }
 
             ElementSection(body) => {
-                let _ = decode_elem_section(body, &mut elems);
+                let _ = decode_elem_section(body, &mut module.elems);
             }
 
             DataCountSection { .. } => { /* ... */ }
     
             DataSection(body) => {
-                let _= decode_data_section(body, &mut datas);
+                let _= decode_data_section(body, &mut module.datas);
             }
 
             CodeSectionStart { .. } => { /* ... */ }

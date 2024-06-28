@@ -74,14 +74,32 @@ pub enum ExportDesc {
 
 pub struct Module {
     name: String,
-    types: Vec<FuncType>,
-    funcs: Vec<Func>,
-    tables: Vec<Table>,
-    mems: Vec<Mem>,
-    globals: Vec<Global>,
-    elems: Vec<Elem>,
-    datas: Vec<Data>,
-    start: Option<Start>,
-    imports: Vec<Import>,
-    exports: Vec<Export>,
+    pub types: Vec<FuncType>,
+    pub funcs: Vec<Func>,
+    pub tables: Vec<Table>,
+    pub mems: Vec<Mem>,
+    pub globals: Vec<Global>,
+    pub elems: Vec<Elem>,
+    pub datas: Vec<Data>,
+    pub start: Option<Start>,
+    pub imports: Vec<Import>,
+    pub exports: Vec<Export>,
+}
+
+impl Module {
+    pub fn new(name: &str) -> Self{
+        Module{
+            name: name.to_string(),
+            types: Vec::new(),
+            funcs: Vec::new(),
+            tables: Vec::new(),
+            mems: Vec::new(),
+            globals: Vec::new(),
+            elems: Vec::new(),
+            datas: Vec::new(),
+            start: None,
+            imports: Vec::new(),
+            exports: Vec::new(),
+        }
+    }
 }
