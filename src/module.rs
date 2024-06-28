@@ -24,7 +24,7 @@ pub struct Elem {
     pub type_: RefType,
     pub init: Vec<Expr>,
     pub mode: ElemMode,
-    pub tableIdx: Option<TableIdx>,
+    pub table_idx: Option<TableIdx>,
     pub offset: Option<Expr>,
 }
 pub enum ElemMode {

@@ -46,7 +46,6 @@ fn decode_type_section(body: SectionLimited<'_, wasmparser::RecGroup>, functypes
         types_to_vec(functype.params(), &mut params);
         types_to_vec(functype.results(), &mut results);
 
-        let r = functype.results();
         functypes.push(FuncType{
                 params,
                 results
@@ -235,7 +234,7 @@ fn parse_initexpr(expr: wasmparser::ConstExpr<'_>) -> Result<Expr, Box<dyn std::
 }
 
 fn decode_elem_section(body: SectionLimited<'_, wasmparser::Element<'_>>, elems: &mut Vec<Elem>) -> Result<(), Box<dyn std::error::Error>> {
-    for (index, entry) in body.into_iter().enumerate() {
+    for (_index, entry) in body.into_iter().enumerate() {
         let entry = entry?;
 
         let (type_, init) = match entry.items {
@@ -262,7 +261,7 @@ fn decode_elem_section(body: SectionLimited<'_, wasmparser::Element<'_>>, elems:
                 }
             }
         };
-        let (mode, tableIdx, offset) = match entry.kind {
+        let (mode, table_idx, offset) = match entry.kind {
             wasmparser::ElementKind::Active{table_index, offset_expr} => {
                 let expr = parse_initexpr(offset_expr)?;
                 (ElemMode::Active, Some(TableIdx(table_index.unwrap_or(0))), Some(expr))
@@ -279,14 +278,14 @@ fn decode_elem_section(body: SectionLimited<'_, wasmparser::Element<'_>>, elems:
             type_,
             init,
             mode,
-            tableIdx,
+            table_idx,
             offset,
         });
     }
     Ok(())
 }
 fn decode_data_section(body: SectionLimited<'_, wasmparser::Data<'_>>, datas: &mut Vec<Data>) -> Result<(), Box<dyn std::error::Error>> {
-    for (index, entry) in body.into_iter().enumerate() {
+    for (_index, entry) in body.into_iter().enumerate() {
         let entry = entry?;
         let init = entry.data.iter().map(|x| Byte(*x)).collect::<Vec<Byte>>();
         let (mode, memory, offset) = match entry.kind {
@@ -318,7 +317,7 @@ pub fn parse_bytecode(mut module: Module, path: &str) -> Result<(), Box<dyn std:
 
     for payload in parser.parse_all(&buf) {
         match payload? {
-            Version { num, encoding ,range } => {
+            Version { num, encoding:_ ,range:_ } => {
                 if num != 0x01{
                     return Err(Box::new(ParserError::VersionError));
                 }
