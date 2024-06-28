@@ -1,4 +1,4 @@
-use wasmparser::{Parser, Payload::*, TypeRef, ValType, SectionLimited, ExternalKind, ElementKind, ElementItems, DataKind};
+use wasmparser::{Parser, Payload::*, TypeRef, ValType, SectionLimited, ExternalKind};
 use std::fs::File;
 use std::io::Read;
 use thiserror::Error;
