@@ -308,14 +308,13 @@ fn decode_data_section(body: SectionLimited<'_, wasmparser::Data<'_>>, datas: &m
     }
     Ok(())
 }
-pub fn parse_bytecode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+
+pub fn parse_bytecode(mut module: Module, path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = Vec::new();
     let parser = Parser::new(0);
 
     let mut file = File::open(path)?;
     file.read_to_end(&mut buf)?;
-
-    let mut module = Module::new("test");
 
     for payload in parser.parse_all(&buf) {
         match payload? {
