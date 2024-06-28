@@ -325,34 +325,33 @@ pub fn parse_bytecode(mut module: Module, path: &str) -> Result<(), Box<dyn std:
             }
 
             TypeSection(body) => {
-                let _= decode_type_section(body, &mut module.types);
+                decode_type_section(body, &mut module.types)?;
             }
 
             FunctionSection(body) => {
-                let _ = decode_func_section(body,&mut module.funcs);
+                decode_func_section(body,&mut module.funcs)?;
             }
 
             ImportSection(body) => {
-                let _ = decode_import_section(body, &mut module.imports);
+                decode_import_section(body, &mut module.imports)?;
             }
             ExportSection(body) => {
-                let _ = decode_export_section(body, &mut module.exports);
+                decode_export_section(body, &mut module.exports)?;
 
             }
 
             TableSection(body) => {
-                let _ = decode_table_section(body, &mut module.tables);
+                decode_table_section(body, &mut module.tables)?;
             }
 
             MemorySection(body) => {
-                let _ = decode_mem_section(body, &mut module.mems);
+                decode_mem_section(body, &mut module.mems)?;
             }
 
             TagSection(_) => { /* ... */ }
 
             GlobalSection(body) => {
-                let _ = decode_global_section(body, &mut module.globals);
-
+                decode_global_section(body, &mut module.globals)?;
             }
 
             StartSection { func, .. } => {
@@ -362,13 +361,13 @@ pub fn parse_bytecode(mut module: Module, path: &str) -> Result<(), Box<dyn std:
             }
 
             ElementSection(body) => {
-                let _ = decode_elem_section(body, &mut module.elems);
+                decode_elem_section(body, &mut module.elems)?;
             }
 
             DataCountSection { .. } => { /* ... */ }
     
             DataSection(body) => {
-                let _= decode_data_section(body, &mut module.datas);
+                decode_data_section(body, &mut module.datas)?;
             }
 
             CodeSectionStart { .. } => { /* ... */ }
