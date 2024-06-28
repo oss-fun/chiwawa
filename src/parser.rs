@@ -1,4 +1,4 @@
-use wasmparser::{Parser, Payload::*, TypeRef, ValType, SectionLimited, ExternalKind};
+use wasmparser::{Parser, Payload::*, TypeRef, ValType, SectionLimited, ExternalKind, FunctionBody};
 use std::fs::File;
 use std::io::Read;
 use thiserror::Error;
@@ -37,7 +37,7 @@ fn types_to_vec(types: &[ValType], vec: &mut Vec<ValueType>) {
     }
 }
 
-fn decode_type_section(body: SectionLimited<'_, wasmparser::RecGroup>, functypes: &mut Vec<FuncType>) -> Result<(), Box<dyn std::error::Error>>{
+fn decode_type_section(body: SectionLimited<'_, wasmparser::RecGroup>, module: &mut Module) -> Result<(), Box<dyn std::error::Error>>{
     for functype in body.into_iter_err_on_gc_types() {
         let functype = functype?;
 
@@ -46,7 +46,7 @@ fn decode_type_section(body: SectionLimited<'_, wasmparser::RecGroup>, functypes
         types_to_vec(functype.params(), &mut params);
         types_to_vec(functype.results(), &mut results);
 
-        functypes.push(FuncType{
+        module.types.push(FuncType{
                 params,
                 results
         });
@@ -54,11 +54,11 @@ fn decode_type_section(body: SectionLimited<'_, wasmparser::RecGroup>, functypes
     Ok(())
 }
 
-fn decode_func_section(body: SectionLimited<'_, u32>, funcs: &mut Vec<Func>) -> Result<(), Box<dyn std::error::Error>>{
+fn decode_func_section(body: SectionLimited<'_, u32>, module: &mut Module) -> Result<(), Box<dyn std::error::Error>>{
     for func in body{
         let index = func?;
         let typeidx = TypeIdx(index);
-        funcs.push(Func{
+        module.funcs.push(Func{
             type_: typeidx,
             locals: Vec::new(),
             body: Expr(Vec::new()),
@@ -68,7 +68,7 @@ fn decode_func_section(body: SectionLimited<'_, u32>, funcs: &mut Vec<Func>) -> 
     Ok(())
 }
 
-fn decode_import_section(body: SectionLimited<'_, wasmparser::Import<'_>>, imports: &mut Vec<Import>) -> Result<(), Box<dyn std::error::Error>>{
+fn decode_import_section(body: SectionLimited<'_, wasmparser::Import<'_>>, module: &mut Module) -> Result<(), Box<dyn std::error::Error>>{
     for import in body {
         let import = import?;
         let desc = match import.ty {
@@ -110,7 +110,7 @@ fn decode_import_section(body: SectionLimited<'_, wasmparser::Import<'_>>, impor
             },
             TypeRef::Tag(_) => todo!()
         };
-        imports.push(
+        module.imports.push(
             Import{
                 module: Name(import.module.to_string()),
                 name: Name(import.name.to_string()),
@@ -121,7 +121,7 @@ fn decode_import_section(body: SectionLimited<'_, wasmparser::Import<'_>>, impor
     Ok(())
 }
 
-fn decode_export_section(body: SectionLimited<'_, wasmparser::Export<'_>>, exports: &mut Vec<Export>) -> Result<(), Box<dyn std::error::Error>>{
+fn decode_export_section(body: SectionLimited<'_, wasmparser::Export<'_>>, module: &mut Module) -> Result<(), Box<dyn std::error::Error>>{
     for export in body {
         let export = export?;
         let index = export.index;
@@ -140,7 +140,7 @@ fn decode_export_section(body: SectionLimited<'_, wasmparser::Export<'_>>, expor
             },
             ExternalKind::Tag => todo!()
         };
-        exports.push(
+        module.exports.push(
             Export{
                 name: Name(export.name.to_string()),
                 desc,
@@ -150,7 +150,7 @@ fn decode_export_section(body: SectionLimited<'_, wasmparser::Export<'_>>, expor
     Ok(())
 }
 
-fn decode_mem_section(body: SectionLimited<'_, wasmparser::MemoryType>, mems: &mut Vec<Mem>) -> Result<(), Box<dyn std::error::Error>>{
+fn decode_mem_section(body: SectionLimited<'_, wasmparser::MemoryType>, module: &mut Module) -> Result<(), Box<dyn std::error::Error>>{
     for memory in body {
         let memory = memory?;
         let max = match memory.maximum {
@@ -158,14 +158,14 @@ fn decode_mem_section(body: SectionLimited<'_, wasmparser::MemoryType>, mems: &m
             None => None
         };
         let limits = Limits{min: TryFrom::try_from(memory.initial).unwrap(), max};
-        mems.push(Mem{
+        module.mems.push(Mem{
             type_: MemType(limits)
         });
     }
     Ok(())
 }
 
-fn decode_table_section(body: SectionLimited<'_, wasmparser::Table<'_>>, tables: &mut Vec<Table>) -> Result<(), Box<dyn std::error::Error>>{
+fn decode_table_section(body: SectionLimited<'_, wasmparser::Table<'_>>, module: &mut Module) -> Result<(), Box<dyn std::error::Error>>{
     for table in body{
         let table = table?;
         let table_type = table.ty;
@@ -182,14 +182,14 @@ fn decode_table_section(body: SectionLimited<'_, wasmparser::Table<'_>>, tables:
         } else {
             RefType::ExternalRef
         };
-        tables.push(Table{
+        module.tables.push(Table{
             type_: TableType(limits,reftype)
         });
     }
     Ok(())
 }
 
-fn decode_global_section(body: SectionLimited<'_, wasmparser::Global<'_>>, globals: &mut Vec<Global>) -> Result<(), Box<dyn std::error::Error>>{
+fn decode_global_section(body: SectionLimited<'_, wasmparser::Global<'_>>, module: &mut Module) -> Result<(), Box<dyn std::error::Error>>{
     for global in body {
         let global = global?;
         let mut_ = if global.ty.mutable{
@@ -200,7 +200,7 @@ fn decode_global_section(body: SectionLimited<'_, wasmparser::Global<'_>>, globa
         let value_type = match_value_type(global.ty.content_type);
         let type_  = GlobalType(mut_,value_type);
         let init = parse_initexpr(global.init_expr)?;
-        globals.push(
+        module.globals.push(
             Global{type_, init}
         );
 
@@ -233,7 +233,7 @@ fn parse_initexpr(expr: wasmparser::ConstExpr<'_>) -> Result<Expr, Box<dyn std::
     Ok(Expr(instrs))
 }
 
-fn decode_elem_section(body: SectionLimited<'_, wasmparser::Element<'_>>, elems: &mut Vec<Elem>) -> Result<(), Box<dyn std::error::Error>> {
+fn decode_elem_section(body: SectionLimited<'_, wasmparser::Element<'_>>, module: &mut Module) -> Result<(), Box<dyn std::error::Error>> {
     for (_index, entry) in body.into_iter().enumerate() {
         let entry = entry?;
 
@@ -274,7 +274,7 @@ fn decode_elem_section(body: SectionLimited<'_, wasmparser::Element<'_>>, elems:
                 (ElemMode::Declarative, None, None)
             }
         };
-        elems.push(Elem{
+        module.elems.push(Elem{
             type_,
             init,
             mode,
@@ -284,7 +284,7 @@ fn decode_elem_section(body: SectionLimited<'_, wasmparser::Element<'_>>, elems:
     }
     Ok(())
 }
-fn decode_data_section(body: SectionLimited<'_, wasmparser::Data<'_>>, datas: &mut Vec<Data>) -> Result<(), Box<dyn std::error::Error>> {
+fn decode_data_section(body: SectionLimited<'_, wasmparser::Data<'_>>, module: &mut Module) -> Result<(), Box<dyn std::error::Error>> {
     for (_index, entry) in body.into_iter().enumerate() {
         let entry = entry?;
         let init = entry.data.iter().map(|x| Byte(*x)).collect::<Vec<Byte>>();
@@ -298,7 +298,7 @@ fn decode_data_section(body: SectionLimited<'_, wasmparser::Data<'_>>, datas: &m
             },
         };
 
-        datas.push(Data{
+        module.datas.push(Data{
             init,
             mode,
             memory,
@@ -324,33 +324,33 @@ pub fn parse_bytecode(mut module: Module, path: &str) -> Result<(), Box<dyn std:
             }
 
             TypeSection(body) => {
-                decode_type_section(body, &mut module.types)?;
+                decode_type_section(body, &mut module)?;
             }
 
             FunctionSection(body) => {
-                decode_func_section(body,&mut module.funcs)?;
+                decode_func_section(body, &mut module)?;
             }
 
             ImportSection(body) => {
-                decode_import_section(body, &mut module.imports)?;
+                decode_import_section(body, &mut module)?;
             }
             ExportSection(body) => {
-                decode_export_section(body, &mut module.exports)?;
+                decode_export_section(body, &mut module)?;
 
             }
 
             TableSection(body) => {
-                decode_table_section(body, &mut module.tables)?;
+                decode_table_section(body, &mut module)?;
             }
 
             MemorySection(body) => {
-                decode_mem_section(body, &mut module.mems)?;
+                decode_mem_section(body, &mut module)?;
             }
 
             TagSection(_) => { /* ... */ }
 
             GlobalSection(body) => {
-                decode_global_section(body, &mut module.globals)?;
+                decode_global_section(body, &mut module)?;
             }
 
             StartSection { func, .. } => {
@@ -360,13 +360,13 @@ pub fn parse_bytecode(mut module: Module, path: &str) -> Result<(), Box<dyn std:
             }
 
             ElementSection(body) => {
-                decode_elem_section(body, &mut module.elems)?;
+                decode_elem_section(body, &mut module)?;
             }
 
             DataCountSection { .. } => { /* ... */ }
     
             DataSection(body) => {
-                decode_data_section(body, &mut module.datas)?;
+                decode_data_section(body, &mut module)?;
             }
 
             CodeSectionStart { .. } => { /* ... */ }
