@@ -3,7 +3,7 @@ use crate::instructions::*;
 
 pub struct Func {
     pub type_: TypeIdx,
-    pub locals: Vec<ValueType>,
+    pub locals: Vec<(u32,ValueType)>,
     pub body: Expr,
 }
 
@@ -83,6 +83,8 @@ pub struct Module {
     pub datas: Vec<Data>,
     pub start: Option<Start>,
     pub imports: Vec<Import>,
+    pub num_imported_funcs: usize,
+    pub code_index: usize,
     pub exports: Vec<Export>,
 }
 
@@ -99,6 +101,8 @@ impl Module {
             datas: Vec::new(),
             start: None,
             imports: Vec::new(),
+            num_imported_funcs: 0,
+            code_index: 0,
             exports: Vec::new(),
         }
     }

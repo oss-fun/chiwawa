@@ -73,6 +73,7 @@ fn decode_import_section(body: SectionLimited<'_, wasmparser::Import<'_>>, modul
         let import = import?;
         let desc = match import.ty {
             TypeRef::Func(type_index) => {
+                module.num_imported_funcs += 1;
                 ImportDesc::Func(TypeIdx(type_index))
             },
             TypeRef::Table(table_type) => {
@@ -307,6 +308,178 @@ fn decode_data_section(body: SectionLimited<'_, wasmparser::Data<'_>>, module: &
     }
     Ok(())
 }
+fn decode_code_section(body: FunctionBody<'_>, module: &mut Module) -> Result<(), Box<dyn std::error::Error>> {
+    for pair in body.get_locals_reader()? {
+        let (cnt, ty) = pair?;
+        let ty = match_value_type(ty);
+        module.funcs[module.code_index].locals.push((cnt,ty));
+    }
+
+    let mut ops = body.get_operators_reader()?.into_iter_with_offsets().peekable();
+    let mut instrs = Vec::new();
+    while let Some(res) = ops.next(){
+        let (op, _offset) = res?;
+        if ops.peek().is_none() {
+            break;
+        }
+        instrs.push(match_instr(op));
+    }
+    module.funcs[module.code_index].body = Expr(instrs);
+    module.code_index += 1;
+    Ok(())
+}
+
+fn match_instr(op: wasmparser::Operator) -> Instr {
+    match op {
+        /* Numeric Instructions */
+        wasmparser::Operator::I32Const {value} => Instr::I32Const(value),
+        wasmparser::Operator::I64Const {value} => Instr::I64Const(value),
+        wasmparser::Operator::F32Const {value} => Instr::F32Const(value.bits()),
+        wasmparser::Operator::F64Const {value} => Instr::F64Const(value.bits()),
+        wasmparser::Operator::I32Clz => Instr::I32Clz,
+        wasmparser::Operator::I32Ctz => Instr::I32Ctz,
+        wasmparser::Operator::I32Popcnt => Instr::I32Popcnt,
+        wasmparser::Operator::I64Clz => Instr::I64Clz,
+        wasmparser::Operator::I64Ctz => Instr::I64Ctz,
+        wasmparser::Operator::I64Popcnt => Instr::I64Popcnt,
+        wasmparser::Operator::F32Abs => Instr::F32Abs,
+        wasmparser::Operator::F32Neg => Instr::F32Neg,
+        wasmparser::Operator::F32Sqrt => Instr::F32Sqrt,
+        wasmparser::Operator::F32Ceil => Instr::F32Ceil,
+        wasmparser::Operator::F32Floor => Instr::F32Floor,
+        wasmparser::Operator::F32Trunc => Instr::F32Trunc,
+        wasmparser::Operator::F32Nearest => Instr::F32Nearest,
+        wasmparser::Operator::F64Abs => Instr::F64Abs,
+        wasmparser::Operator::F64Neg => Instr::F64Neg,
+        wasmparser::Operator::F64Sqrt => Instr::F64Sqrt,
+        wasmparser::Operator::F64Ceil => Instr::F64Ceil,
+        wasmparser::Operator::F64Floor => Instr::F64Floor,
+        wasmparser::Operator::F64Trunc => Instr::F64Trunc,
+        wasmparser::Operator::F64Nearest => Instr::F64Nearest,
+        wasmparser::Operator::I32Add => Instr::I32Add,
+        wasmparser::Operator::I32Sub => Instr::I32Sub,
+        wasmparser::Operator::I32Mul => Instr::I32Mul,
+        wasmparser::Operator::I32DivS => Instr::I32DivS,
+        wasmparser::Operator::I32DivU => Instr::I32DivU,
+        wasmparser::Operator::I32RemS => Instr::I32RemS,
+        wasmparser::Operator::I32RemU => Instr::I32RemU,
+        wasmparser::Operator::I32And => Instr::I32And,
+        wasmparser::Operator::I32Or => Instr::I32Or,
+        wasmparser::Operator::I32Xor => Instr::I32Xor,
+        wasmparser::Operator::I32Shl => Instr::I32Shl,
+        wasmparser::Operator::I32ShrS => Instr::I32ShrS,
+        wasmparser::Operator::I32ShrU => Instr::I32ShrU,
+        wasmparser::Operator::I32Rotl => Instr::I32Rotl,
+        wasmparser::Operator::I32Rotr => Instr::I32Rotr,
+        wasmparser::Operator::I64Add => Instr::I64Add,
+        wasmparser::Operator::I64Sub => Instr::I64Sub,
+        wasmparser::Operator::I64Mul => Instr::I64Mul,
+        wasmparser::Operator::I64DivS => Instr::I64DivS,
+        wasmparser::Operator::I64DivU => Instr::I64DivU,
+        wasmparser::Operator::I64RemS => Instr::I64RemS,
+        wasmparser::Operator::I64RemU => Instr::I64RemU,
+        wasmparser::Operator::I64And => Instr::I64And,
+        wasmparser::Operator::I64Or => Instr::I64Or,
+        wasmparser::Operator::I64Xor => Instr::I64Xor,
+        wasmparser::Operator::I64Shl => Instr::I64Shl,
+        wasmparser::Operator::I64ShrS => Instr::I64ShrS,
+        wasmparser::Operator::I64ShrU => Instr::I64ShrU,
+        wasmparser::Operator::I64Rotl => Instr::I64Rotl,
+        wasmparser::Operator::I64Rotr => Instr::I64Rotr,
+        wasmparser::Operator::F32Add => Instr::F32Add,
+        wasmparser::Operator::F32Sub => Instr::F32Sub,
+        wasmparser::Operator::F32Mul => Instr::F32Mul,
+        wasmparser::Operator::F32Div => Instr::F32Div,
+        wasmparser::Operator::F32Min => Instr::F32Min,
+        wasmparser::Operator::F32Max => Instr::F32Max,
+        wasmparser::Operator::F32Copysign => Instr::F32Copysign,
+        wasmparser::Operator::F64Add => Instr::F64Add,
+        wasmparser::Operator::F64Sub => Instr::F64Sub,
+        wasmparser::Operator::F64Mul => Instr::F64Mul,
+        wasmparser::Operator::F64Div => Instr::F64Div,
+        wasmparser::Operator::F64Min => Instr::F64Min,
+        wasmparser::Operator::F64Max => Instr::F64Max,
+        wasmparser::Operator::F64Copysign => Instr::F64Copysign,
+        wasmparser::Operator::I32Eqz => Instr::I32Eqz,
+        wasmparser::Operator::I64Eqz => Instr::I64Eqz,
+        wasmparser::Operator::I32Eq => Instr::I32Eq,
+        wasmparser::Operator::I32Ne => Instr::I32Ne,
+        wasmparser::Operator::I32LtS => Instr::I32LtS,
+        wasmparser::Operator::I32LtU => Instr::I32LtU,
+        wasmparser::Operator::I32GtS => Instr::I32GtS,
+        wasmparser::Operator::I32GtU => Instr::I32GtU,
+        wasmparser::Operator::I32LeS => Instr::I32LeS,
+        wasmparser::Operator::I32LeU => Instr::I32LeU,
+        wasmparser::Operator::I32GeS => Instr::I32GeS,
+        wasmparser::Operator::I32GeU => Instr::I32GeU,
+        wasmparser::Operator::I64Eq => Instr::I64Eq,
+        wasmparser::Operator::I64Ne => Instr::I64Ne,
+        wasmparser::Operator::I64LtS => Instr::I64LtS,
+        wasmparser::Operator::I64LtU => Instr::I64LtU,
+        wasmparser::Operator::I64GtS => Instr::I64GtS,
+        wasmparser::Operator::I64GtU => Instr::I64GtU,
+        wasmparser::Operator::I64LeS => Instr::I64LeS,
+        wasmparser::Operator::I64LeU => Instr::I64LeU,
+        wasmparser::Operator::I64GeS => Instr::I64GeS,
+        wasmparser::Operator::I64GeU => Instr::I64GeU,
+        wasmparser::Operator::F32Eq => Instr::F32Eq,
+        wasmparser::Operator::F32Ne => Instr::F32Ne,
+        wasmparser::Operator::F32Lt => Instr::F32Lt,
+        wasmparser::Operator::F32Gt => Instr::F32Gt,
+        wasmparser::Operator::F32Le => Instr::F32Le,
+        wasmparser::Operator::F32Ge => Instr::F32Ge,
+        wasmparser::Operator::F64Eq => Instr::F64Eq,
+        wasmparser::Operator::F64Ne => Instr::F64Ne,
+        wasmparser::Operator::F64Lt => Instr::F64Lt,
+        wasmparser::Operator::F64Gt => Instr::F64Gt,
+        wasmparser::Operator::F64Le => Instr::F64Le,
+        wasmparser::Operator::F64Ge => Instr::F64Ge,
+        wasmparser::Operator::I32Extend8S => Instr::I32Extend8S,
+        wasmparser::Operator::I64Extend8S => Instr::I64Extend8S,
+        wasmparser::Operator::I32Extend16S => Instr::I32Extend16S,
+        wasmparser::Operator::I64Extend16S => Instr::I64Extend16S,
+        wasmparser::Operator::I64Extend32S => Instr::I64Extend32S,
+        wasmparser::Operator::I32WrapI64 => Instr::I32WrapI64,
+        wasmparser::Operator::I64ExtendI32U => Instr::I64ExtendI32U,
+        wasmparser::Operator::I64ExtendI32S => Instr::I64ExtendI32S,
+        wasmparser::Operator::I32TruncF32S => Instr::I32TruncF32S,
+        wasmparser::Operator::I32TruncF32U => Instr::I32TruncF32U,
+        wasmparser::Operator::I32TruncF64S => Instr::I32TruncF64S,
+        wasmparser::Operator::I32TruncF64U => Instr::I32TruncF64U,
+        wasmparser::Operator::I64TruncF32S => Instr::I64TruncF32S,
+        wasmparser::Operator::I64TruncF32U => Instr::I64TruncF32U,
+        wasmparser::Operator::I64TruncF64S => Instr::I64TruncF64S,
+        wasmparser::Operator::I64TruncF64U => Instr::I64TruncF64U,
+        wasmparser::Operator::I32TruncSatF32S => Instr::I32TruncSatF32S,
+        wasmparser::Operator::I32TruncSatF32U => Instr::I32TruncSatF32U,
+        wasmparser::Operator::I32TruncSatF64S => Instr::I32TruncSatF64S,
+        wasmparser::Operator::I32TruncSatF64U => Instr::I32TruncSatF64U,
+        wasmparser::Operator::I64TruncSatF32S => Instr::I64TruncSatF32S,
+        wasmparser::Operator::I64TruncSatF32U => Instr::I64TruncSatF32U,
+        wasmparser::Operator::I64TruncSatF64S => Instr::I64TruncSatF64S,
+        wasmparser::Operator::I64TruncSatF64U => Instr::I64TruncSatF64U,
+        wasmparser::Operator::F32DemoteF64 => Instr::F32DemoteF64,
+        wasmparser::Operator::F64PromoteF32 => Instr::F64PromoteF32,
+        wasmparser::Operator::F32ConvertI32S => Instr::F32ConvertI32S,
+        wasmparser::Operator::F32ConvertI32U => Instr::F32ConvertI32U,
+        wasmparser::Operator::F32ConvertI64S => Instr::F32ConvertI64S,
+        wasmparser::Operator::F32ConvertI64U => Instr::F32ConvertI64U,
+        wasmparser::Operator::F64ConvertI32S => Instr::F64ConvertI32S,
+        wasmparser::Operator::F64ConvertI32U => Instr::F64ConvertI32U,
+        wasmparser::Operator::F64ConvertI64S => Instr::F64ConvertI64S,
+        wasmparser::Operator::F64ConvertI64U => Instr::F64ConvertI64U,
+        wasmparser::Operator::I32ReinterpretF32 => Instr::I32ReinterpretF32,
+        wasmparser::Operator::I64ReinterpretF64 => Instr::I64ReinterpretF64,
+        wasmparser::Operator::F32ReinterpretI32 => Instr::F32ReinterpretI32,
+        wasmparser::Operator::F64ReinterpretI64 => Instr::F64ReinterpretI64,
+        /* Reference Instructions */
+        wasmparser::Operator::RefNull {..} => Instr::RefNull(RefType::ExternalRef),
+        wasmparser::Operator::RefFunc {function_index} => Instr::RefFunc(FuncIdx(function_index)),
+        /* Variable Instructions */
+        wasmparser::Operator::GlobalGet {global_index} => Instr::GlobalGet(GlobalIdx(global_index)),
+        _ => todo!(),
+    }
+}
 
 pub fn parse_bytecode(mut module: Module, path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = Vec::new();
@@ -370,7 +543,8 @@ pub fn parse_bytecode(mut module: Module, path: &str) -> Result<(), Box<dyn std:
             }
 
             CodeSectionStart { .. } => { /* ... */ }
-            CodeSectionEntry(_body) => {
+            CodeSectionEntry(body) => {
+                decode_code_section(body, &mut module)?;
             }
 
             ModuleSection { .. } => { /* ... */ }
