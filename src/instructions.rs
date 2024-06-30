@@ -348,7 +348,7 @@ pub enum Instr {
     F64x2PromoteLowF32x4,
     /* Reference Instructions */
     RefNull(RefType),
-    RefIsNull(RefType),
+    RefIsNull,
     RefFunc(FuncIdx),
     /* Parametric Instructions */
     Drop,
