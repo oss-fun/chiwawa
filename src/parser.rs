@@ -474,6 +474,7 @@ fn match_instr(op: wasmparser::Operator) -> Instr {
         wasmparser::Operator::F64ReinterpretI64 => Instr::F64ReinterpretI64,
         /* Reference Instructions */
         wasmparser::Operator::RefNull {..} => Instr::RefNull(RefType::ExternalRef),
+        wasmparser::Operator::RefIsNull => Instr::RefIsNull,
         wasmparser::Operator::RefFunc {function_index} => Instr::RefFunc(FuncIdx(function_index)),
         /* Variable Instructions */
         wasmparser::Operator::GlobalGet {global_index} => Instr::GlobalGet(GlobalIdx(global_index)),
