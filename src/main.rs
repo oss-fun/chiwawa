@@ -1,6 +1,6 @@
 use anyhow::{Result};
 use clap::Parser;
-use PPWasm::parser;
+use PPWasm::{parser, module::*};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -12,6 +12,7 @@ struct Args {
 
 fn main() -> Result <()>{
     let args = Args::parse();
-    let _ = parser::parse_bytecode(&args.path);
+    let module = Module::new("test");
+    let _ = parser::parse_bytecode(module, &args.path);
     Ok(())
 }
