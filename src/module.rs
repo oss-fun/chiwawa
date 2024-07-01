@@ -2,30 +2,30 @@ use crate::types::*;
 use crate::instructions::*;
 
 pub struct Func {
-    type_: TypeIdx,
-    locals: Vec<ValueType>,
-    body: Expr,
+    pub type_: TypeIdx,
+    pub locals: Vec<(u32,ValueType)>,
+    pub body: Expr,
 }
 
 pub struct Table {
-    type_: TableType,
+    pub type_: TableType,
 }
 
 pub struct Mem {
-    type_: MemType,
+    pub type_: MemType,
 }
 
 pub struct Global {
-    type_: GlobalType,
-    init: Expr,
+    pub type_: GlobalType,
+    pub init: Expr,
 }
 
 pub struct Elem {
-    type_: RefType,
-    init: Vec<Expr>,
-    mode: ElemMode,
-    tableIdx: Option<TableIdx>,
-    offset: Option<Expr>,
+    pub type_: RefType,
+    pub init: Vec<Expr>,
+    pub mode: ElemMode,
+    pub table_idx: Option<TableIdx>,
+    pub offset: Option<Expr>,
 }
 pub enum ElemMode {
     Passive,
@@ -34,10 +34,10 @@ pub enum ElemMode {
 }
 
 pub struct Data {
-    init: Vec<Byte>,
-    mode: DataMode,
-    memory: Option<MemIdx>,
-    offset: Option<Expr>,
+    pub init: Vec<Byte>,
+    pub mode: DataMode,
+    pub memory: Option<MemIdx>,
+    pub offset: Option<Expr>,
 }
 
 pub enum DataMode{
@@ -45,13 +45,13 @@ pub enum DataMode{
     Active,
 }
 pub struct Start {
-    func: FuncIdx
+    pub func: FuncIdx
 }
 
 pub struct Import {
-    module: Name,
-    name: Name,
-    desc: ImportDesc,
+    pub module: Name,
+    pub name: Name,
+    pub desc: ImportDesc,
 }
 pub enum ImportDesc {
     Func(TypeIdx),
@@ -61,12 +61,12 @@ pub enum ImportDesc {
 }
 
 pub struct Export {
-    name: Name,
-    desc: ExportDesc,
+    pub name: Name,
+    pub desc: ExportDesc,
 }
 
 pub enum ExportDesc {
-    Func(TypeIdx),
+    Func(FuncIdx),
     Table(TableIdx),
     Mem(MemIdx),
     Global(GlobalIdx),
@@ -74,14 +74,36 @@ pub enum ExportDesc {
 
 pub struct Module {
     name: String,
-    types: Vec<FuncType>,
-    funcs: Vec<Func>,
-    tables: Vec<Table>,
-    mems: Vec<Mem>,
-    globals: Vec<Global>,
-    elems: Vec<Elem>,
-    datas: Vec<Data>,
-    start: Option<Start>,
-    imports: Vec<Import>,
-    exports: Vec<Export>,
+    pub types: Vec<FuncType>,
+    pub funcs: Vec<Func>,
+    pub tables: Vec<Table>,
+    pub mems: Vec<Mem>,
+    pub globals: Vec<Global>,
+    pub elems: Vec<Elem>,
+    pub datas: Vec<Data>,
+    pub start: Option<Start>,
+    pub imports: Vec<Import>,
+    pub num_imported_funcs: usize,
+    pub code_index: usize,
+    pub exports: Vec<Export>,
+}
+
+impl Module {
+    pub fn new(name: &str) -> Self{
+        Module{
+            name: name.to_string(),
+            types: Vec::new(),
+            funcs: Vec::new(),
+            tables: Vec::new(),
+            mems: Vec::new(),
+            globals: Vec::new(),
+            elems: Vec::new(),
+            datas: Vec::new(),
+            start: None,
+            imports: Vec::new(),
+            num_imported_funcs: 0,
+            code_index: 0,
+            exports: Vec::new(),
+        }
+    }
 }
