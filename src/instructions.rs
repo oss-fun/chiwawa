@@ -367,7 +367,7 @@ pub enum Instr {
     TableFill(TableIdx),
     TableCopy(TableIdx, TableIdx),
     TableInit(TableIdx, TableIdx),
-    ElemDrop(TableIdx, TableIdx),
+    ElemDrop(ElemIdx),
     /* Memory Instructions */
     I32Load(Memarg),
     I64Load(Memarg),
@@ -415,7 +415,7 @@ pub enum Instr {
     V128Store32lane(Memarg, LaneIdx),
     V128Store64lane(Memarg, LaneIdx),
     MemorySize,
-    MmoeryGrow,
+    MemoryGrow,
     MemoryFill,
     MemoryCopy,
     MemoryInit(DataIdx),
