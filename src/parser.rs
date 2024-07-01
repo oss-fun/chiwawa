@@ -1,7 +1,8 @@
-use wasmparser::{Parser, Payload::*, TypeRef, ValType, SectionLimited, ExternalKind, FunctionBody};
+use wasmparser::{Parser, Payload::*, TypeRef, ValType, SectionLimited, ExternalKind, FunctionBody, OperatorsIteratorWithOffsets};
 use std::fs::File;
 use std::io::Read;
 use thiserror::Error;
+use std::iter::Peekable;
 
 use crate::module::*;
 use crate::types::*;
@@ -322,15 +323,15 @@ fn decode_code_section(body: FunctionBody<'_>, module: &mut Module) -> Result<()
         if ops.peek().is_none() {
             break;
         }
-        instrs.push(match_instr(op));
+        instrs.push(match_instr(&mut ops, op)?);
     }
     module.funcs[module.code_index].body = Expr(instrs);
     module.code_index += 1;
     Ok(())
 }
 
-fn match_instr(op: wasmparser::Operator) -> Instr {
-    match op {
+fn match_instr(ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>, op: wasmparser::Operator) -> Result<Instr, Box<dyn std::error::Error>> {
+    let instr = match op {
         /* Numeric Instructions */
         wasmparser::Operator::I32Const {value} => Instr::I32Const(value),
         wasmparser::Operator::I64Const {value} => Instr::I64Const(value),
@@ -476,10 +477,253 @@ fn match_instr(op: wasmparser::Operator) -> Instr {
         wasmparser::Operator::RefNull {..} => Instr::RefNull(RefType::ExternalRef),
         wasmparser::Operator::RefIsNull => Instr::RefIsNull,
         wasmparser::Operator::RefFunc {function_index} => Instr::RefFunc(FuncIdx(function_index)),
+        /* Parametric Instructions */
+        wasmparser::Operator::Drop =>Instr::Drop,
+        wasmparser::Operator::Select =>Instr::Select(None),
+        wasmparser::Operator::TypedSelect {ty} => Instr::Select(Some(match_value_type(ty))),
         /* Variable Instructions */
+        wasmparser::Operator::LocalGet {local_index} => Instr::LocalGet(LocalIdx(local_index)),
+        wasmparser::Operator::LocalSet {local_index} => Instr::LocalSet(LocalIdx(local_index)),
+        wasmparser::Operator::LocalTee {local_index} => Instr::LocalTee(LocalIdx(local_index)),
         wasmparser::Operator::GlobalGet {global_index} => Instr::GlobalGet(GlobalIdx(global_index)),
+        wasmparser::Operator::GlobalSet {global_index} => Instr::GlobalSet(GlobalIdx(global_index)),
+        /* Table Instructions */
+        wasmparser::Operator::TableGet {table} => Instr::TableGet(TableIdx(table)),
+        wasmparser::Operator::TableSet {table} => Instr::TableSet(TableIdx(table)),
+        wasmparser::Operator::TableSize {table} => Instr::TableSize(TableIdx(table)),
+        wasmparser::Operator::TableGrow {table} => Instr::TableGrow(TableIdx(table)),
+        wasmparser::Operator::TableFill {table} => Instr::TableFill(TableIdx(table)),
+        wasmparser::Operator::TableCopy {dst_table, src_table} => Instr::TableCopy(TableIdx(dst_table), TableIdx(src_table)),
+        wasmparser::Operator::TableInit {elem_index, table} => Instr::TableInit(TableIdx(elem_index), TableIdx(table)),
+        wasmparser::Operator::ElemDrop {elem_index} => Instr::ElemDrop(ElemIdx(elem_index)),
+        /* Memory Instructions */
+        wasmparser::Operator::I32Load {memarg} => {
+            Instr::I32Load(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::I64Load {memarg} => {
+            Instr::I64Load(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::F32Load {memarg} => {
+            Instr::F32Load(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::F64Load {memarg} => {
+            Instr::F64Load(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::I32Store {memarg} => {
+            Instr::I32Store(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::I64Store {memarg} => {
+            Instr::I64Store(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::F32Store {memarg} => {
+            Instr::F32Store(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::F64Store {memarg} => {
+            Instr::F64Store(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::I32Load8S {memarg} => {
+            Instr::I32Load8S(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::I32Load8U {memarg} => {
+            Instr::I32Load8U(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::I64Load8S {memarg} => {
+            Instr::I64Load8S(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::I64Load8U {memarg} => {
+            Instr::I64Load8U(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::I32Load16S {memarg} => {
+            Instr::I32Load16S(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::I32Load16U {memarg} => {
+            Instr::I32Load16U(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::I64Load16S {memarg} => {
+            Instr::I64Load16S(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::I64Load16U {memarg} => {
+            Instr::I64Load16U(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::I64Load32S {memarg} => {
+            Instr::I64Load32S(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::I64Load32U {memarg} => {
+            Instr::I64Load32U(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::I32Store8 {memarg} => {
+            Instr::I32Store8(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::I64Store8 {memarg} => {
+            Instr::I64Store8(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::I32Store16 {memarg} => {
+            Instr::I32Store16(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::I64Store16 {memarg} => {
+            Instr::I64Store16(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::I64Store32 {memarg} => {
+            Instr::I64Store32(Memarg{
+                offset: memarg.offset as u32,
+                align: memarg.align as u32,
+            })
+        },
+        wasmparser::Operator::MemorySize{..} => Instr::MemorySize,
+        wasmparser::Operator::MemoryGrow{..} => Instr::MemoryGrow,
+        wasmparser::Operator::MemoryFill{..} => Instr::MemoryFill,
+        wasmparser::Operator::MemoryCopy{..} => Instr::MemoryCopy,
+        wasmparser::Operator::MemoryInit{data_index, ..} => Instr::MemoryInit(DataIdx(data_index)),
+        wasmparser::Operator::DataDrop{data_index, ..} => Instr::DataDrop(DataIdx(data_index)),
+        /*Control Instructions*/
+        wasmparser::Operator::Nop => Instr::Nop,
+        wasmparser::Operator::Unreachable => Instr::Unreachable,
+        wasmparser::Operator::Block{blockty} => {
+            let mut instrs = Vec::new();
+            while let Some(res) = ops.next(){
+                let (op, _offset) = res?;
+                if matches!(op, wasmparser::Operator::End) {
+                    break;
+                }
+                instrs.push(match_instr(ops, op)?);
+            };
+            let ty = match blockty {
+                wasmparser::BlockType::Empty => BlockType(None,None),
+                wasmparser::BlockType::Type(v) => BlockType(None, Some(match_value_type(v))),
+                wasmparser::BlockType::FuncType(idx) =>BlockType(Some(TypeIdx(idx)), None),
+            };
+            Instr::Block(
+                ty,
+                instrs
+            )
+        },
+        wasmparser::Operator::Loop{blockty} => {
+            let mut instrs = Vec::new();
+            while let Some(res) = ops.next(){
+                let (op, _offset) = res?;
+                if matches!(op, wasmparser::Operator::End) {
+                    break;
+                }
+                instrs.push(match_instr(ops, op)?);
+            };
+            let ty = match blockty {
+                wasmparser::BlockType::Empty => BlockType(None,None),
+                wasmparser::BlockType::Type(v) => BlockType(None, Some(match_value_type(v))),
+                wasmparser::BlockType::FuncType(idx) =>BlockType(Some(TypeIdx(idx)), None),
+            };
+            Instr::Loop(
+                ty,
+                instrs
+            )
+        },
+        wasmparser::Operator::If{blockty} => {
+            let mut instrs = Vec::new();
+            let mut else_instrs = Vec::new();
+
+            while let Some(res) = ops.next(){
+                let (op, _offset) = res?;
+                if matches!(op, wasmparser::Operator::Else) {
+                    break;
+                }
+                instrs.push(match_instr(ops, op)?);
+            };
+            while let Some(res) = ops.next(){
+                let (op, _offset) = res?;
+                if matches!(op, wasmparser::Operator::End) {
+                    break;
+                }
+                else_instrs.push(match_instr(ops, op)?);
+            };
+            let ty = match blockty {
+                wasmparser::BlockType::Empty => BlockType(None,None),
+                wasmparser::BlockType::Type(v) => BlockType(None, Some(match_value_type(v))),
+                wasmparser::BlockType::FuncType(idx) =>BlockType(Some(TypeIdx(idx)), None),
+            };
+            Instr::If(
+                ty,
+                instrs,
+                else_instrs,
+            )
+        },
+        wasmparser::Operator::Br{relative_depth} => Instr::Br(LabelIdx(relative_depth)),
+        wasmparser::Operator::BrIf{relative_depth} => Instr::BrIf(LabelIdx(relative_depth)),
+        wasmparser::Operator::BrTable{targets} => {
+            Instr::BrTable(
+                targets.targets().map(|x| LabelIdx(x.unwrap())).collect::<Vec<LabelIdx>>(),
+                LabelIdx(targets.default()))
+        },
+        wasmparser::Operator::Return => Instr::Return,
+        wasmparser::Operator::Call{function_index} => Instr::Call(FuncIdx(function_index)),
+        wasmparser::Operator::CallIndirect{table_index, type_index} => Instr::CallIndirect(TableIdx(table_index), TypeIdx(type_index)),
         _ => todo!(),
-    }
+    };
+    Ok(instr)
 }
 
 pub fn parse_bytecode(mut module: Module, path: &str) -> Result<(), Box<dyn std::error::Error>> {
