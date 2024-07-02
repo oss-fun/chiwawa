@@ -801,3 +801,44 @@ pub fn parse_bytecode(mut module: Module, path: &str) -> Result<(), Box<dyn std:
 
     Ok(())
 }
+
+
+#[cfg(test)]
+mod tests {
+    use crate::module::Module;
+    use wasmparser::Payload::*;
+    use crate::parser;
+
+    #[test]
+    fn decode_type_section() {
+        let wat = r#"
+        (module
+            (func (param i32 i32 i64))
+            (func (result i32 i32))
+            (func (param i32 i32) (result i32))
+        )"#;
+        
+        let binary = wat::parse_str(wat).unwrap();
+        let parser = wasmparser::Parser::new(0);
+        let mut module = Module::new("test");
+
+        for payload in parser.parse_all(&binary){
+            match payload.unwrap() {
+                TypeSection(body) => {
+                    parser::decode_type_section(body, &mut module).unwrap();
+                },
+                _ => {},
+            }
+        };
+        let len = module.types.len();
+        let exptect_param = [3, 0, 2];
+        let exptect_result = [0, 2, 1];
+        for i in 0..len{
+            let params =  &module.types[i].params;
+            let results = &module.types[i].results;
+            assert_eq!(params.len(), exptect_param[i]);
+            assert_eq!(results.len(), exptect_result[i]);
+        }
+        assert_eq!(len, 3);
+    }
+}
