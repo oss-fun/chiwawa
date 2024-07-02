@@ -841,4 +841,46 @@ mod tests {
         }
         assert_eq!(len, 3);
     }
+
+    #[test]
+    fn decode_func_section(){
+        let wat = r#"
+        (module
+            (import "test" "test" (func (param i32))) 
+            (import "test" "test" (func (param i32 i32) (result i32))) 
+            (func (param i32 i32 i64))
+            (func (result i32 i32)) 
+            (func (param i32 i32) (result i32))
+        )"#; 
+        /*
+        Type Idx
+        0: (param i32)
+        1: (param i32 i32) (result i32)
+        2: (param i32 i32 i64)
+        3: (result i32 i32)
+        */
+
+        let binary = wat::parse_str(wat).unwrap();
+        let parser = wasmparser::Parser::new(0);
+        let mut module = Module::new("test");
+
+        for payload in parser.parse_all(&binary){
+            match payload.unwrap() {
+                FunctionSection(body) => {
+                    parser::decode_func_section(body, &mut module).unwrap();
+                },
+                _ => {},
+            }
+        };
+        let funcs_num = module.funcs.len();
+        assert_eq!(funcs_num, 3);
+
+        let exptect_idx = [2, 3, 1];
+        for i in 0..funcs_num{
+            let idx = &module.funcs[i].type_;
+            assert_eq!(idx.0, exptect_idx[i]);
+        }
+
+
+    }
 }
