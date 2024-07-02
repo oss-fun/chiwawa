@@ -317,17 +317,26 @@ fn decode_code_section(body: FunctionBody<'_>, module: &mut Module) -> Result<()
     }
 
     let mut ops = body.get_operators_reader()?.into_iter_with_offsets().peekable();
-    let mut instrs = Vec::new();
-    while let Some(res) = ops.next(){
-        let (op, _offset) = res?;
-        if ops.peek().is_none() {
-            break;
-        }
-        instrs.push(match_instr(&mut ops, op)?);
-    }
+    let (instrs, _) = decode_instrs(&mut ops)?;
     module.funcs[module.code_index].body = Expr(instrs);
     module.code_index += 1;
     Ok(())
+}
+
+fn decode_instrs(ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>) -> Result<(Vec<Instr>,bool), Box<dyn std::error::Error>>{
+    let mut instrs = Vec::new();
+    let mut next = false;
+    while let Some(res) = ops.next(){
+        let (op, _offset) = res?;
+        if matches!(op, wasmparser::Operator::Else) {
+            next = true
+        }
+        if (matches!(op, wasmparser::Operator::End) || matches!(op, wasmparser::Operator::Else) || ops.peek().is_none()) {
+            break;
+        }
+        instrs.push(match_instr(ops, op)?);
+    }
+    Ok((instrs, next))
 }
 
 fn match_instr(ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>, op: wasmparser::Operator) -> Result<Instr, Box<dyn std::error::Error>> {
@@ -645,14 +654,7 @@ fn match_instr(ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>, op: wasmpar
         wasmparser::Operator::Nop => Instr::Nop,
         wasmparser::Operator::Unreachable => Instr::Unreachable,
         wasmparser::Operator::Block{blockty} => {
-            let mut instrs = Vec::new();
-            while let Some(res) = ops.next(){
-                let (op, _offset) = res?;
-                if matches!(op, wasmparser::Operator::End) {
-                    break;
-                }
-                instrs.push(match_instr(ops, op)?);
-            };
+            let (instrs, _) = decode_instrs(ops)?;
             let ty = match blockty {
                 wasmparser::BlockType::Empty => BlockType(None,None),
                 wasmparser::BlockType::Type(v) => BlockType(None, Some(match_value_type(v))),
@@ -664,14 +666,7 @@ fn match_instr(ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>, op: wasmpar
             )
         },
         wasmparser::Operator::Loop{blockty} => {
-            let mut instrs = Vec::new();
-            while let Some(res) = ops.next(){
-                let (op, _offset) = res?;
-                if matches!(op, wasmparser::Operator::End) {
-                    break;
-                }
-                instrs.push(match_instr(ops, op)?);
-            };
+            let (instrs, _) = decode_instrs(ops)?;
             let ty = match blockty {
                 wasmparser::BlockType::Empty => BlockType(None,None),
                 wasmparser::BlockType::Type(v) => BlockType(None, Some(match_value_type(v))),
@@ -683,23 +678,14 @@ fn match_instr(ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>, op: wasmpar
             )
         },
         wasmparser::Operator::If{blockty} => {
-            let mut instrs = Vec::new();
             let mut else_instrs = Vec::new();
+        
+            let (instrs, next) = decode_instrs(ops)?;
+            
+            if next {
+                (else_instrs, _) = decode_instrs(ops)?
+            }
 
-            while let Some(res) = ops.next(){
-                let (op, _offset) = res?;
-                if matches!(op, wasmparser::Operator::Else) {
-                    break;
-                }
-                instrs.push(match_instr(ops, op)?);
-            };
-            while let Some(res) = ops.next(){
-                let (op, _offset) = res?;
-                if matches!(op, wasmparser::Operator::End) {
-                    break;
-                }
-                else_instrs.push(match_instr(ops, op)?);
-            };
             let ty = match blockty {
                 wasmparser::BlockType::Empty => BlockType(None,None),
                 wasmparser::BlockType::Type(v) => BlockType(None, Some(match_value_type(v))),
