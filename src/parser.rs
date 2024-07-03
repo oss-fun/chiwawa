@@ -963,4 +963,43 @@ mod tests {
             assert!(matches!(desc, expect));
         }
     }
+
+    #[test]
+    fn decode_mem_section() {
+        let wat = r#"
+        (module
+            (memory (export "memory") 2 3)
+            (memory (export "mem") 1)
+
+        )"#; 
+
+        let binary = wat::parse_str(wat).unwrap();
+        let parser = wasmparser::Parser::new(0);
+        let mut module = Module::new("test");
+
+        for payload in parser.parse_all(&binary){
+            match payload.unwrap() {
+                MemorySection(body) => {
+                    parser::decode_mem_section(body, &mut module).unwrap();
+                },
+                _ => {},
+            }
+        };
+        let memory_num = module.mems.len();
+        assert_eq!(memory_num, 2);
+
+        let expects_min = [2, 1];
+        for i in 0..memory_num {
+            let limits = &module.mems[i].type_.0;
+            let min = limits.min;
+            let max = limits.max;
+            assert_eq!(min, expects_min[i]);
+            if i ==0 {
+                assert_eq!(max, Some(3));
+            }else{
+                assert_eq!(max, None);
+
+            }
+        }
+    }
 }
