@@ -53,6 +53,8 @@ pub struct Import {
     pub name: Name,
     pub desc: ImportDesc,
 }
+
+#[derive(PartialEq)]
 pub enum ImportDesc {
     Func(TypeIdx),
     Table(TableType),

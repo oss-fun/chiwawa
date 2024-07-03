@@ -805,7 +805,8 @@ pub fn parse_bytecode(mut module: Module, path: &str) -> Result<(), Box<dyn std:
 
 #[cfg(test)]
 mod tests {
-    use crate::module::Module;
+    use crate::module::*;
+    use crate::types::*;
     use wasmparser::Payload::*;
     use crate::parser;
 
@@ -881,6 +882,43 @@ mod tests {
             assert_eq!(idx.0, exptect_idx[i]);
         }
 
+
+    }
+
+    #[test]
+    fn decode_import_section() {
+        let wat = r#"
+        (module
+            (import "module1" "func1" (func (param i32))) 
+            (import "module2" "func1" (func (param i32 i32) (result i32)))
+            (import "module2" "func2" (func (param i32 i64) (result f32))) 
+        )"#; 
+
+        let binary = wat::parse_str(wat).unwrap();
+        let parser = wasmparser::Parser::new(0);
+        let mut module = Module::new("test");
+
+        for payload in parser.parse_all(&binary){
+            match payload.unwrap() {
+                ImportSection(body) => {
+                    parser::decode_import_section(body, &mut module).unwrap();
+                },
+                _ => {},
+            }
+        };
+        let imports_num = module.imports.len();
+        assert_eq!(imports_num, 3);
+        
+        let module_names = ["module1", "module2", "module2"];
+        let names = ["func1" ,"func1", "func2"];
+        for i in 0..imports_num{
+            let module_name = &module.imports[i].module.0;
+            let name = &module.imports[i].name.0;
+            let desc = &module.imports[i].desc;
+            assert_eq!(module_name, module_names[i]);
+            assert_eq!(name, names[i]);
+            assert!(matches!(desc, ImportDesc::Func(TypeIdx(i))));
+        }
 
     }
 }
