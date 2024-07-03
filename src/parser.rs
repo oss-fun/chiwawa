@@ -807,6 +807,7 @@ pub fn parse_bytecode(mut module: Module, path: &str) -> Result<(), Box<dyn std:
 mod tests {
     use crate::module::*;
     use crate::types::*;
+    use crate::instructions::*;
     use wasmparser::Payload::*;
     use crate::parser;
 
@@ -1043,5 +1044,43 @@ mod tests {
         assert_eq!(max, None);
         assert!(matches!(reftype, RefType::FuncRef));
 
+    }
+
+    #[test]
+    fn decode_global_section() {
+        let wat = r#"
+        (module
+            (global $f32 f32)
+            (global $f64 (mut i64)(i64.const 2024))
+        )"#; 
+
+        let binary = wat::parse_str(wat).unwrap();
+        let parser = wasmparser::Parser::new(0);
+        let mut module = Module::new("test");
+
+        for payload in parser.parse_all(&binary){
+            match payload.unwrap() {
+                GlobalSection(body) => {
+                    parser::decode_global_section(body, &mut module).unwrap();
+                },
+                _ => {},
+            }
+        };
+        let global_num = module.globals.len();
+        assert_eq!(global_num, 2);
+
+        let mut type_ = &module.globals[0].type_;
+        let mut init = &module.globals[0].init;
+        assert!(matches!(type_.0, Mut::Const));
+        assert!(matches!(type_.1, ValueType::NumType(NumType::F32)));
+        assert_eq!(init.0.len(), 0);
+
+
+        type_ = &module.globals[1].type_;
+        init = &module.globals[1].init;
+        assert!(matches!(type_.0, Mut::Var));
+        assert!(matches!(type_.1, ValueType::NumType(NumType::I64)));
+        assert_eq!(init.0.len(), 1);
+        assert!(matches!(init.0[0], Instr::I64Const(2024)));
     }
 }
