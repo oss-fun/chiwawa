@@ -1002,4 +1002,46 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn decode_table_section() {
+        let wat = r#"
+        (module
+            (table 2 externref)
+            (table 3 funcref)
+
+        )"#; 
+
+        let binary = wat::parse_str(wat).unwrap();
+        let parser = wasmparser::Parser::new(0);
+        let mut module = Module::new("test");
+
+        for payload in parser.parse_all(&binary){
+            match payload.unwrap() {
+                TableSection(body) => {
+                    parser::decode_table_section(body, &mut module).unwrap();
+                },
+                _ => {},
+            }
+        };
+        let table_num = module.tables.len();
+        assert_eq!(table_num, 2);
+
+        let mut limits = &module.tables[0].type_.0;
+        let mut reftype = &module.tables[0].type_.1;
+        let mut min = limits.min;
+        let mut max = limits.max;
+        assert_eq!(min, 2);
+        assert_eq!(max, None);
+        assert!(matches!(reftype, RefType::ExternalRef));
+
+        limits = &module.tables[1].type_.0;
+        reftype = &module.tables[1].type_.1;
+        min = limits.min;
+        max = limits.max;
+        assert_eq!(min, 3);
+        assert_eq!(max, None);
+        assert!(matches!(reftype, RefType::FuncRef));
+
+    }
 }
