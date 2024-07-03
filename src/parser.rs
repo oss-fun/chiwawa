@@ -921,4 +921,46 @@ mod tests {
         }
 
     }
+
+    #[test]
+    fn decode_export_section() {
+        let wat = r#"
+        (module
+            (memory (export "memory") 2 3)
+            (func $add (export "add") (param $a i32) (param $b i32) (result i32)
+                (i32.add (local.get $a) (local.get $b))
+            )
+            (func $sub (export "sub") (param $a i32) (param $b i32) (result i32)
+                (i32.sub (local.get $a) (local.get $b))
+            )
+        )"#; 
+
+        let binary = wat::parse_str(wat).unwrap();
+        let parser = wasmparser::Parser::new(0);
+        let mut module = Module::new("test");
+
+        for payload in parser.parse_all(&binary){
+            match payload.unwrap() {
+                ExportSection(body) => {
+                    parser::decode_export_section(body, &mut module).unwrap();
+                },
+                _ => {},
+            }
+        };
+        let exports_num = module.exports.len();
+        assert_eq!(exports_num, 3);
+
+        let names = ["memory", "add", "sub"];
+        for i in 0..exports_num {
+            let name = &module.exports[i].name.0;
+            let desc = &module.exports[i].desc;
+            assert_eq!(name, names[i]);
+            let expect = if i == 0 {
+                ExportDesc::Mem(MemIdx(i as u32))
+            }else{
+                ExportDesc::Func(FuncIdx((i-1) as u32))
+            };
+            assert!(matches!(desc, expect));
+        }
+    }
 }
