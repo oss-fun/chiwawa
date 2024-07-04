@@ -31,7 +31,7 @@ pub struct FuncType{
 
 #[derive(PartialEq, Debug)]
 pub struct TypeIdx(pub u32); 
-#[derive(Debug)]
+#[derive(PartialEq, Debug)]
 pub struct TableIdx(pub u32); 
 pub struct MemIdx(pub u32); 
 #[derive(Debug)]

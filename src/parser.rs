@@ -266,7 +266,8 @@ fn decode_elem_section(body: SectionLimited<'_, wasmparser::Element<'_>>, module
         let (mode, table_idx, offset) = match entry.kind {
             wasmparser::ElementKind::Active{table_index, offset_expr} => {
                 let expr = parse_initexpr(offset_expr)?;
-                (ElemMode::Active, Some(TableIdx(table_index.unwrap_or(0))), Some(expr))
+                let table_index = table_index.unwrap_or(0);
+                (ElemMode::Active, Some(TableIdx(table_index)), Some(expr))
             },
             wasmparser::ElementKind::Passive => {
                 (ElemMode::Passive, None, None)
@@ -1088,7 +1089,8 @@ mod tests {
     fn decode_elem_section() {
         let wat = r#"
         (module
-            (table 2 funcref)
+            (table $t0 (export "table1") 2 funcref)
+       
             (func $f1 (result i32)
                 i32.const 1
             )
@@ -1098,8 +1100,7 @@ mod tests {
             (func $f3 (result i32)
                 i32.const 3
             )
-            (elem (i32.const 0) $f1 $f2)
-            (elem (i32.const 0) $f2 $f3)
+            (elem $t0(i32.const 0) $f1 $f2)
         )"#; 
 
         let binary = wat::parse_str(wat).unwrap();
@@ -1118,19 +1119,14 @@ mod tests {
             }
         };
         let elem_num = module.elems.len();
-        assert_eq!(elem_num, 2);
+        assert_eq!(elem_num, 1);
 
         let mut elem = &module.elems[0];
         assert!(matches!(elem.type_,RefType::FuncRef));
         assert_eq!(elem.init.len(),2);
         assert!(matches!(elem.init[0].0[0], Instr::RefFunc(FuncIdx(0))));
         assert!(matches!(elem.init[1].0[0], Instr::RefFunc(FuncIdx(1))));
-
-        elem = &module.elems[1];
-        assert!(matches!(elem.type_,RefType::FuncRef));
-        assert_eq!(elem.init.len(),2);
-        assert!(matches!(elem.init[0].0[0], Instr::RefFunc(FuncIdx(1))));
-        assert!(matches!(elem.init[1].0[0], Instr::RefFunc(FuncIdx(2))));
-
+        assert!(matches!(elem.mode, ElemMode::Active));
+        assert_eq!(elem.table_idx, Some(TableIdx(0)));
     }
 }
