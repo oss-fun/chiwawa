@@ -27,6 +27,8 @@ pub struct Elem {
     pub table_idx: Option<TableIdx>,
     pub offset: Option<Expr>,
 }
+
+#[derive(Debug)]
 pub enum ElemMode {
     Passive,
     Active,
