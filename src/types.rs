@@ -1,11 +1,11 @@
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum ValueType {
     NumType(NumType),
     VecType(VecType),
     RefType(RefType),
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum NumType {
     I32,
     I64,
@@ -13,34 +13,43 @@ pub enum NumType {
     F64,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum VecType {
     V128,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum RefType{
     FuncRef,
     ExternalRef,
 }
-
+#[derive(Debug)]
 pub struct FuncType{
     pub params: Vec<ValueType>,
     pub results: Vec<ValueType>,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub struct TypeIdx(pub u32); 
+#[derive(Debug)]
 pub struct TableIdx(pub u32); 
 pub struct MemIdx(pub u32); 
+#[derive(Debug)]
 pub struct FuncIdx(pub u32); 
+#[derive(Debug)]
 pub struct GlobalIdx(pub u32); 
+#[derive(Debug)]
 pub struct LocalIdx(pub u32); 
+#[derive(Debug)]
 pub struct LaneIdx(pub u8); 
+#[derive(Debug)]
 pub struct DataIdx(pub u32); 
+#[derive(Debug)]
 pub struct LabelIdx(pub u32); 
+#[derive(Debug)]
 pub struct ElemIdx(pub u32);
 
+#[derive(Debug)]
 pub struct BlockType(pub Option<TypeIdx>, pub Option<ValueType>);
 
 pub struct Byte(pub u8);

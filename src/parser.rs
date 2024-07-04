@@ -1083,4 +1083,54 @@ mod tests {
         assert_eq!(init.0.len(), 1);
         assert!(matches!(init.0[0], Instr::I64Const(2024)));
     }
+
+    #[test]
+    fn decode_elem_section() {
+        let wat = r#"
+        (module
+            (table 2 funcref)
+            (func $f1 (result i32)
+                i32.const 1
+            )
+            (func $f2 (result i32)
+                i32.const 2
+            )
+            (func $f3 (result i32)
+                i32.const 3
+            )
+            (elem (i32.const 0) $f1 $f2)
+            (elem (i32.const 0) $f2 $f3)
+        )"#; 
+
+        let binary = wat::parse_str(wat).unwrap();
+        let parser = wasmparser::Parser::new(0);
+        let mut module = Module::new("test");
+
+        for payload in parser.parse_all(&binary){
+            match payload.unwrap() {
+                TableSection(body) =>{
+                    parser::decode_table_section(body, &mut module).unwrap();
+                }
+                ElementSection(body) => {
+                    parser::decode_elem_section(body, &mut module).unwrap();
+                },
+                _ => {},
+            }
+        };
+        let elem_num = module.elems.len();
+        assert_eq!(elem_num, 2);
+
+        let mut elem = &module.elems[0];
+        assert!(matches!(elem.type_,RefType::FuncRef));
+        assert_eq!(elem.init.len(),2);
+        assert!(matches!(elem.init[0].0[0], Instr::RefFunc(FuncIdx(0))));
+        assert!(matches!(elem.init[1].0[0], Instr::RefFunc(FuncIdx(1))));
+
+        elem = &module.elems[1];
+        assert!(matches!(elem.type_,RefType::FuncRef));
+        assert_eq!(elem.init.len(),2);
+        assert!(matches!(elem.init[0].0[0], Instr::RefFunc(FuncIdx(1))));
+        assert!(matches!(elem.init[1].0[0], Instr::RefFunc(FuncIdx(2))));
+
+    }
 }
