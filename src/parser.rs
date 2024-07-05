@@ -1129,4 +1129,62 @@ mod tests {
         assert!(matches!(elem.mode, ElemMode::Active));
         assert_eq!(elem.table_idx, Some(TableIdx(0)));
     }
+
+    #[test]
+    fn decode_data_section() {
+        //Test Code: https://github.com/eliben/wasm-wat-samples
+        let wat = r#"
+        (module
+            (memory (export "memory") 1 100)
+                (data (i32.const 0x0000)
+                    "\67\68\69\70\AA\FF\DF\CB"
+                    "\12\A1\32\B3\A5\1F\01\02"
+                )
+                (data (i32.const 0x020)
+                    "\01\03\05\07\09\0B\0D\0F"
+                )
+        )"#; 
+
+        let binary = wat::parse_str(wat).unwrap();
+        let parser = wasmparser::Parser::new(0);
+        let mut module = Module::new("test");
+    
+        for payload in parser.parse_all(&binary){
+            match payload.unwrap() {
+                MemorySection(body) => {
+                    parser::decode_mem_section(body, &mut module).unwrap();
+                },
+                DataSection(body) => {
+                    parser::decode_data_section(body, &mut module).unwrap();
+                },
+                _ => {},
+            }
+        };
+        let data_num = module.datas.len();
+        assert_eq!(data_num, 2);
+
+        let mut init = &module.datas[0].init;
+        let mut mode = &module.datas[0].mode;
+        let mut memory = &module.datas[0].memory;
+        let mut offset = &module.datas[0].offset;
+        assert_eq!(init[0].0, 0x67);
+        assert_eq!(init[7].0, 0xCB);
+        assert!(matches!(mode, DataMode::Active));
+        assert!(matches!(memory, Some(MemIdx(0))));
+        let expected = Expr(vec![Instr::I32Const(0)]);
+        assert!(matches!(offset, expected));
+        println!("{:?}",offset);
+
+        init = &module.datas[1].init;
+        mode = &module.datas[1].mode;
+        memory = &module.datas[1].memory;
+        offset = &module.datas[1].offset;
+        assert_eq!(init[0].0, 0x01);
+        assert_eq!(init[7].0, 0x0F);
+        assert!(matches!(mode, DataMode::Active));
+        assert!(matches!(memory, Some(MemIdx(0))));
+        let expected = Expr(vec![Instr::I32Const(0x020)]);
+        assert!(matches!(offset, expected));
+
+    }
 }
