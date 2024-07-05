@@ -1,5 +1,6 @@
 use crate::types::*;
 
+#[derive(Debug)]
 pub struct Expr(pub Vec<Instr>);
 
 #[derive(Debug)]
