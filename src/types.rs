@@ -34,22 +34,22 @@ pub struct TypeIdx(pub u32);
 #[derive(PartialEq, Debug)]
 pub struct TableIdx(pub u32); 
 pub struct MemIdx(pub u32); 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct FuncIdx(pub u32); 
-#[derive(Debug)]
+#[derive(Debug,PartialEq)]
 pub struct GlobalIdx(pub u32); 
-#[derive(Debug)]
+#[derive(Debug,PartialEq)]
 pub struct LocalIdx(pub u32); 
-#[derive(Debug)]
+#[derive(Debug,PartialEq)]
 pub struct LaneIdx(pub u8); 
-#[derive(Debug)]
+#[derive(Debug,PartialEq)]
 pub struct DataIdx(pub u32); 
-#[derive(Debug)]
+#[derive(Debug,PartialEq)]
 pub struct LabelIdx(pub u32); 
-#[derive(Debug)]
+#[derive(Debug,PartialEq)]
 pub struct ElemIdx(pub u32);
 
-#[derive(Debug)]
+#[derive(Debug,PartialEq)]
 pub struct BlockType(pub Option<TypeIdx>, pub Option<ValueType>);
 
 pub struct Byte(pub u8);

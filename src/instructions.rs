@@ -1,9 +1,9 @@
 use crate::types::*;
 
-#[derive(Debug)]
+#[derive(Debug,PartialEq)]
 pub struct Expr(pub Vec<Instr>);
 
-#[derive(Debug)]
+#[derive(Debug,PartialEq)]
 pub enum Instr {
     /* Numeric Instructions */
     I32Const(i32),
@@ -437,7 +437,7 @@ pub enum Instr {
     CallIndirect(TableIdx, TypeIdx),
 }
 
-#[derive(Debug)]
+#[derive(Debug,PartialEq)]
 pub struct Memarg {
     pub offset: u32,
     pub align: u32,

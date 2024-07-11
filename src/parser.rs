@@ -1187,4 +1187,47 @@ mod tests {
         assert!(matches!(offset, expected));
 
     }
+    #[test]
+    fn decode_code_section(){
+        //Test Code: https://developer.mozilla.org/en-US/docs/WebAssembly/Reference/Control_flow/if...else
+        let wat = r#"
+        (module
+            (func $ifexpr (result i32)
+                i32.const 0
+                (if (result i32)
+                (then
+                    ;; do something
+                    (i32.const 1)
+                )
+                (else
+                    ;; do something else
+                    (i32.const 2)
+                )
+                )
+            )
+        )"#; 
+
+        let binary = wat::parse_str(wat).unwrap();
+        let parser = wasmparser::Parser::new(0);
+        let mut module = Module::new("test");
+    
+        for payload in parser.parse_all(&binary){
+            match payload.unwrap() {
+                FunctionSection(body) => {
+                    parser::decode_func_section(body, &mut module).unwrap();
+                },
+                CodeSectionEntry(body) => {
+                    parser::decode_code_section(body, &mut module).unwrap();
+                },
+                _ => {},
+            }
+        };
+        let func_num = module.funcs.len();
+        assert_eq!(func_num, 1);
+        
+        let func_body = &module.funcs[0].body;
+        println!("{:?}",func_body);
+        let expected = Expr(vec![Instr::I32Const(0),Instr::If(BlockType(None, Some(ValueType::NumType(NumType::I32))),vec![Instr::I32Const(1)],vec![Instr::I32Const(2)])]);
+        assert_eq!(expected, *func_body);
+   }
 }
