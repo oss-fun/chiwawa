@@ -1172,8 +1172,7 @@ mod tests {
         assert!(matches!(mode, DataMode::Active));
         assert!(matches!(memory, Some(MemIdx(0))));
         let expected = Expr(vec![Instr::I32Const(0)]);
-        assert!(matches!(offset, expected));
-        println!("{:?}",offset);
+        assert_eq!(*offset, Some(expected));
 
         init = &module.datas[1].init;
         mode = &module.datas[1].mode;
@@ -1184,9 +1183,10 @@ mod tests {
         assert!(matches!(mode, DataMode::Active));
         assert!(matches!(memory, Some(MemIdx(0))));
         let expected = Expr(vec![Instr::I32Const(0x020)]);
-        assert!(matches!(offset, expected));
+        assert_eq!(*offset, Some(expected));
 
     }
+
     #[test]
     fn decode_code_section(){
         //Test Code: https://developer.mozilla.org/en-US/docs/WebAssembly/Reference/Control_flow/if...else
