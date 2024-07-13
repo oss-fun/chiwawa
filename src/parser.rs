@@ -1188,7 +1188,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_code_section(){
+    fn decode_code_section_if_else(){
         //Test Code: https://developer.mozilla.org/en-US/docs/WebAssembly/Reference/Control_flow/if...else
         let wat = r#"
         (module
