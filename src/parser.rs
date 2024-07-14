@@ -1230,4 +1230,49 @@ mod tests {
         let expected = Expr(vec![Instr::I32Const(0),Instr::If(BlockType(None, Some(ValueType::NumType(NumType::I32))),vec![Instr::I32Const(1)],vec![Instr::I32Const(2)])]);
         assert_eq!(expected, *func_body);
    }
+
+   #[test]
+   fn decode_code_section_loop(){
+       //Test Code: https://developer.mozilla.org/en-US/docs/WebAssembly/Reference/Control_flow/loop
+       let wat = r#"
+       (module
+            (func
+                (local $i i32)
+                (loop $my_loop
+                    ;; add one to $i
+                    local.get $i
+                    i32.const 1
+                    i32.add
+                    local.set $i
+                    ;; if $i is less than 10 branch to loop
+                    local.get $i
+                    i32.const 10
+                    i32.lt_s
+                    br_if $my_loop
+                )
+            )
+       )"#; 
+
+       let binary = wat::parse_str(wat).unwrap();
+       let parser = wasmparser::Parser::new(0);
+       let mut module = Module::new("test");
+   
+       for payload in parser.parse_all(&binary){
+           match payload.unwrap() {
+               FunctionSection(body) => {
+                   parser::decode_func_section(body, &mut module).unwrap();
+               },
+               CodeSectionEntry(body) => {
+                   parser::decode_code_section(body, &mut module).unwrap();
+               },
+               _ => {},
+           }
+       };
+       let func_num = module.funcs.len();
+       assert_eq!(func_num, 1);
+       
+       let func_body = &module.funcs[0].body;
+       let expected = Expr(vec![Instr::Loop(BlockType(None, None), vec![Instr::LocalGet(LocalIdx(0)), Instr::I32Const(1), Instr::I32Add, Instr::LocalSet(LocalIdx(0)), Instr::LocalGet(LocalIdx(0)), Instr::I32Const(10), Instr::I32LtS, Instr::BrIf(LabelIdx(0))])]);
+       assert_eq!(expected, *func_body);
+  }
 }
