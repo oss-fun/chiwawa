@@ -1,6 +1,6 @@
 use anyhow::{Result};
 use clap::Parser;
-use PPWasm::{parser,structure::module::Module};
+use PPWasm::{parser,structure::module::Module,execution};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
