@@ -1,6 +1,6 @@
 use crate::structure::types::ValueType;
 
-enum Val {
+pub enum Val {
     Num(Num),
     Vec(Vec),
     Ref(Ref),
