@@ -1,5 +1,5 @@
-use crate::types::*;
-use crate::instructions::*;
+use crate::structure::types::*;
+use crate::structure::instructions::*;
 
 pub struct Func {
     pub type_: TypeIdx,
