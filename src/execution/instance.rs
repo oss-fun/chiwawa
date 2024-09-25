@@ -6,6 +6,7 @@ struct ModuleInst {
     pub types: Vec<FuncType>,
     pub mem_addrs: Vec<MemAddr>,
     pub global_addrs: Vec<GlobalAddr>,
+    pub data_addrs: Vec<DataAddr>,
 }
 
 struct MemAddr(Rc<RefCell<MemInst>>);
@@ -18,4 +19,9 @@ struct GlobalAddr(Rc<RefCell<GlobalInst>>);
 struct GlobalInst {
     pub type_: GlobalType,
     pub value: Val,
+}
+
+struct DataAddr(Rc<RefCell<DataInst>>);
+struct DataInst {
+    pub data: Vec<u8>,    
 }
