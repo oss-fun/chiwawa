@@ -1,6 +1,6 @@
 use crate::structure::types::ValueType;
 
-enum Value {
+enum Val {
     Num(Num),
     Vec(Vec),
     Ref(Ref),
@@ -18,5 +18,5 @@ enum Vec {
 }
 
 enum Ref {
-    
+
 }
