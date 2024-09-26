@@ -1,4 +1,5 @@
 use crate::structure::types::ValueType;
+use super::instance::{MemAddr, GlobalAddr};
 
 pub enum Val {
     Num(Num),
@@ -19,4 +20,9 @@ enum Vec {
 
 enum Ref {
 
+}
+
+pub enum Externval {
+    Func(MemAddr),
+    Global(GlobalAddr),
 }
