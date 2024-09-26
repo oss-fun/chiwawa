@@ -9,6 +9,8 @@ enum RuntimeError {
     ExecutionFailed,
 }
 
+pub struct Results(Option<Vec<Val>>);
+
 struct Store {
     pub funcs: Vec<FuncInst>,
     pub tables: Vec<TableInst>,
