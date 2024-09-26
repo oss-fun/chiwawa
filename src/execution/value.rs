@@ -19,7 +19,7 @@ enum Vec {
     V128(i128),   
 }
 
-enum Ref {
+pub enum Ref {
     RefNull,
     RefExtern(ExternAddr),
 }
