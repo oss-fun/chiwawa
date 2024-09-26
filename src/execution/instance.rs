@@ -1,16 +1,36 @@
-use crate::structure::types::*;
-use std::{rc::Rc, cell::RefCell};
+use crate::structure::{types::*, module::*};
+use thiserror::Error;
+use std::{rc::Rc, cell::RefCell, rc::Weak};
 use super::value::{Val,Externval,Ref};
 
+#[derive(Debug, Error)]
+enum RuntimeError {
+    #[error("Execution Failed")]
+    ExecutionFailed,
+}
 
 struct ModuleInst {
     pub types: Vec<FuncType>,
+    pub func_addrs: Vec<FuncAddr>,
     pub table_addrs: Vec<TableAddr>,
     pub mem_addrs: Vec<MemAddr>,
     pub global_addrs: Vec<GlobalAddr>,
     pub elem_addrs: Vec<ElemAddr>,
     pub data_addrs: Vec<DataAddr>,
     pub exports: Vec<ExportInst>,
+}
+
+pub struct FuncAddr(Rc<RefCell<FuncInst>>);
+pub enum FuncInst {
+    RuntimeFunc{
+        ptype_: FuncType,
+        module: Weak<ModuleInst>,
+        code: Func,
+    },
+    HostFunc{
+        type_: FuncType,
+        host_code: Rc<dyn Fn(Vec<Val>) -> Result<Option<Val>, RuntimeError>>,
+    },
 }
 
 pub struct TableAddr(Rc<RefCell<TableInst>>);
