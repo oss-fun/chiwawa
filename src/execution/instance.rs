@@ -1,14 +1,21 @@
 use crate::structure::types::*;
 use std::{rc::Rc, cell::RefCell};
-use super::value::{Val,Externval};
+use super::value::{Val,Externval,Ref};
 
 
 struct ModuleInst {
     pub types: Vec<FuncType>,
+    pub table_addrs: Vec<TableAddr>,
     pub mem_addrs: Vec<MemAddr>,
     pub global_addrs: Vec<GlobalAddr>,
     pub data_addrs: Vec<DataAddr>,
     pub exports: Vec<ExportInst>,
+}
+
+pub struct TableAddr(Rc<RefCell<TableInst>>);
+struct TableInst {
+    pub type_: TableType,
+    pub elem: Vec<Ref>,
 }
 
 pub struct MemAddr(Rc<RefCell<MemInst>>);
