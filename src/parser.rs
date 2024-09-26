@@ -4,9 +4,9 @@ use std::io::Read;
 use thiserror::Error;
 use std::iter::Peekable;
 
-use crate::module::*;
-use crate::types::*;
-use crate::instructions::*;
+use crate::structure::module::*;
+use crate::structure::types::*;
+use crate::structure::instructions::*;
 
 #[derive(Debug, Error)]
 enum ParserError {
