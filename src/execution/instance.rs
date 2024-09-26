@@ -9,6 +9,15 @@ enum RuntimeError {
     ExecutionFailed,
 }
 
+struct Store {
+    pub funcs: Vec<FuncInst>,
+    pub tables: Vec<TableInst>,
+    pub mems: Vec<MemInst>,
+    pub globals: Vec<GlobalInst>,
+    pub elems: Vec<ElemInst>,
+    pub datas: Vec<DataInst>,
+}
+
 struct ModuleInst {
     pub types: Vec<FuncType>,
     pub func_addrs: Vec<FuncAddr>,
