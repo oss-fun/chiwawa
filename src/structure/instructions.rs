@@ -1,4 +1,4 @@
-use crate::types::*;
+use crate::structure::types::*;
 
 #[derive(Debug,PartialEq)]
 pub struct Expr(pub Vec<Instr>);
