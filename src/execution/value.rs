@@ -1,4 +1,5 @@
 use crate::structure::types::ValueType;
+use std::{rc::Rc, cell::RefCell};
 use super::instance::{MemAddr, GlobalAddr};
 
 pub enum Val {
@@ -19,9 +20,11 @@ enum Vec {
 }
 
 enum Ref {
-
+    RefNull,
+    RefExtern(ExternAddr),
 }
 
+pub struct ExternAddr(Rc<RefCell<Externval>>);
 pub enum Externval {
     Func(MemAddr),
     Global(GlobalAddr),
