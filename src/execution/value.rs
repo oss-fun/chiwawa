@@ -1,6 +1,6 @@
 use crate::structure::types::ValueType;
 use std::{rc::Rc, cell::RefCell};
-use super::instance::{MemAddr, GlobalAddr};
+use super::{mem::MemAddr, global::GlobalAddr};
 
 pub enum Val {
     Num(Num),

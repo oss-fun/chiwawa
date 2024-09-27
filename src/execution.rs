@@ -1,2 +1,10 @@
 mod value;
-mod instance;
+mod module;
+mod store;
+mod func;
+mod table;
+mod mem;
+mod global;
+mod elem;
+mod data;
+mod export;
