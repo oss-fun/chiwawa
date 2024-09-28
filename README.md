@@ -1,5 +1,6 @@
 # PPWasm
-Para Path-through Wasm Runtime
+Self-hosted Wasm Runtime
+
 ## Build and Run
 ### For native
 
