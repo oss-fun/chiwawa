@@ -1,20 +1,12 @@
 use wasmparser::{Parser, Payload::*, TypeRef, ValType, SectionLimited, ExternalKind, FunctionBody, OperatorsIteratorWithOffsets};
 use std::fs::File;
 use std::io::Read;
-use thiserror::Error;
 use std::iter::Peekable;
 
 use crate::structure::module::*;
 use crate::structure::types::*;
 use crate::structure::instructions::*;
-
-#[derive(Debug, Error)]
-enum ParserError {
-    #[error("Invalid Version")]
-    VersionError,
-    #[error("Unsupported OP Code in Global Section Init Expr at Offset: {offset}")]
-    InitExprUnsupportedOPCodeError{offset: usize},
-}
+use crate::error::ParserError;
 
 fn match_value_type(t: ValType) -> ValueType {
     match t {
