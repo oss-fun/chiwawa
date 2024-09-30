@@ -1,7 +1,7 @@
 use std::rc::Rc;
-use crate::structure::{types::*, module::*};
+use crate::structure::{types::*, module::*, instructions::*};
 use crate::error::RuntimeError;
-use super::value::Val;
+use super::value::*;
 use super::{func::FuncAddr, table::TableAddr, mem::MemAddr, global::GlobalAddr, elem::ElemAddr, data::DataAddr, export::ExportInst};
 
 pub struct Results(Option<Vec<Val>>);
@@ -28,7 +28,22 @@ impl ModuleInst {
             elem_addrs:Vec::new(),
             data_addrs:Vec::new(),
             exports:Vec::new(),
-        };    
+        };
+
+        for global in &module.globals {
+            module_inst.global_addrs.push(GlobalAddr::new(global.type_.clone(), ModuleInst::expr_to_const(&global.init)));
+        }
+
         Ok(Rc::new(module_inst))
+    }
+    fn expr_to_const(expr: &Expr) -> Val{
+        match &expr.0[..] {
+            &[Instr::I32Const(i)] => Val::Num(Num::I32(i)),
+            &[Instr::I64Const(i)] => Val::Num(Num::I64(i)),
+            &[Instr::F32Const(i)] => Val::Num(Num::F32(i)),
+            &[Instr::F64Const(i)] => Val::Num(Num::F64(i)),
+            &[Instr::V128Const(i)] => Val::Vec_(Vec_::V128(i)),
+            _ => todo!(),
+        }
     }
 }

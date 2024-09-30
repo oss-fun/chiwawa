@@ -67,10 +67,10 @@ pub struct Limits {
 #[derive(PartialEq)]
 pub struct MemType (pub Limits);
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub struct GlobalType (pub Mut , pub ValueType);
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub enum Mut {
     Const,
     Var,
