@@ -1,13 +1,7 @@
-use thiserror::Error;
 use std::{rc::Rc, cell::RefCell, rc::Weak};
 use crate::structure::{types::*,module::*};
 use super::{value::Val, module::ModuleInst};
-
-#[derive(Debug, Error)]
-enum RuntimeError {
-    #[error("Execution Failed")]
-    ExecutionFailed,
-}
+use crate::error::RuntimeError;
 
 pub struct FuncAddr(Rc<RefCell<FuncInst>>);
 pub enum FuncInst {
