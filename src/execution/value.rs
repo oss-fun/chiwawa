@@ -4,18 +4,18 @@ use super::{mem::MemAddr, global::GlobalAddr};
 
 pub enum Val {
     Num(Num),
-    Vec(Vec),
+    Vec_(Vec_),
     Ref(Ref),
 }
 
-enum Num {
+pub enum Num {
     I32(i32),
     I64(i64),
-    F32(f32),
-    F64(f64),
+    F32(u32),
+    F64(u64),
 }
 
-enum Vec {
+pub enum Vec_ {
     V128(i128),   
 }
 
