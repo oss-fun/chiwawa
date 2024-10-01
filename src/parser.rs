@@ -705,7 +705,7 @@ fn match_instr(ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>, op: wasmpar
     Ok(instr)
 }
 
-pub fn parse_bytecode(mut module: Module, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn parse_bytecode(mut module: &mut Module, path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = Vec::new();
     let parser = Parser::new(0);
 
