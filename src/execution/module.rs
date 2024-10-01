@@ -45,6 +45,10 @@ impl ModuleInst {
             exports:Vec::new(),
         };
 
+        for table in &module.tables {
+            module_inst.table_addrs.push(TableAddr::new(&table.type_))
+        }
+
         for global in &module.globals {
             module_inst.global_addrs.push(GlobalAddr::new(global.type_.clone(), ModuleInst::expr_to_const(&global.init)));
         }
