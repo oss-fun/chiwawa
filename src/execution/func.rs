@@ -3,6 +3,7 @@ use crate::structure::{types::*,module::*};
 use super::{value::Val, module::ModuleInst};
 use crate::error::RuntimeError;
 
+#[derive(Clone)]
 pub struct FuncAddr(Rc<RefCell<FuncInst>>);
 pub enum FuncInst {
     RuntimeFunc{

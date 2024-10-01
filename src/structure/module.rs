@@ -1,20 +1,24 @@
 use crate::structure::types::*;
 use crate::structure::instructions::*;
 
+#[derive(Clone)]
 pub struct Func {
     pub type_: TypeIdx,
     pub locals: Vec<(u32,ValueType)>,
     pub body: Expr,
 }
 
+#[derive(Clone)]
 pub struct Table {
     pub type_: TableType,
 }
 
+#[derive(Clone)]
 pub struct Mem {
     pub type_: MemType,
 }
 
+#[derive(Clone)]
 pub struct Global {
     pub type_: GlobalType,
     pub init: Expr,
@@ -69,6 +73,7 @@ pub struct Export {
     pub desc: ExportDesc,
 }
 
+#[derive(Clone)]
 pub enum ExportDesc {
     Func(FuncIdx),
     Table(TableIdx),
