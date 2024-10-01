@@ -17,6 +17,21 @@ pub struct ModuleInst {
     pub exports: Vec<ExportInst>,
 }
 
+pub trait GetInstanceByIdx<Idx>
+where
+Idx: GetIdx,
+Self: std::ops::Index<usize>,
+{
+    fn get_by_idx(&self, idx: Idx) -> &Self::Output{
+        &self[idx.to_usize()]
+    }
+}
+
+impl GetInstanceByIdx<FuncIdx> for Vec<FuncAddr>{}
+impl GetInstanceByIdx<TableIdx> for Vec<TableAddr>{}
+impl GetInstanceByIdx<MemIdx> for Vec<MemAddr>{}
+impl GetInstanceByIdx<GlobalIdx> for Vec<GlobalAddr>{}
+
 impl ModuleInst {
     pub fn new(module: Module) -> Result<Rc<ModuleInst>, RuntimeError>{
         let mut module_inst = ModuleInst {
@@ -32,6 +47,20 @@ impl ModuleInst {
 
         for global in &module.globals {
             module_inst.global_addrs.push(GlobalAddr::new(global.type_.clone(), ModuleInst::expr_to_const(&global.init)));
+        }
+
+        for export in &module.exports {
+            module_inst.exports.push(
+                ExportInst{
+                    name: export.name.0.clone(),
+                    value: match &export.desc {
+                        ExportDesc::Func(idx) => Externval::Func(module_inst.func_addrs.get_by_idx(idx.clone()).clone()),
+                        ExportDesc::Table(idx) => Externval::Table(module_inst.table_addrs.get_by_idx(idx.clone()).clone()),
+                        ExportDesc::Mem(idx) => Externval::Mem(module_inst.mem_addrs.get_by_idx(idx.clone()).clone()),
+                        ExportDesc::Global(idx) => Externval::Global(module_inst.global_addrs.get_by_idx(idx.clone()).clone()),
+                    },
+                }
+            )
         }
 
         Ok(Rc::new(module_inst))

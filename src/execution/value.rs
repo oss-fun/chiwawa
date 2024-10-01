@@ -25,6 +25,8 @@ pub enum Ref {
 }
 
 pub struct ExternAddr(Rc<RefCell<Externval>>);
+
+#[derive(Clone)]
 pub enum Externval {
     Func(FuncAddr),
     Table(TableAddr),
