@@ -33,7 +33,7 @@ impl GetInstanceByIdx<MemIdx> for Vec<MemAddr>{}
 impl GetInstanceByIdx<GlobalIdx> for Vec<GlobalAddr>{}
 
 impl ModuleInst {
-    pub fn new(module: Module) -> Result<Rc<ModuleInst>, RuntimeError>{
+    pub fn new(module: &Module) -> Result<Rc<ModuleInst>, RuntimeError>{
         let mut module_inst = ModuleInst {
             types: module.types.clone(),
             func_addrs: Vec::new(),
