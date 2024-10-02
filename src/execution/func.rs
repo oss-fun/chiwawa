@@ -7,7 +7,7 @@ use crate::error::RuntimeError;
 pub struct FuncAddr(Rc<RefCell<FuncInst>>);
 pub enum FuncInst {
     RuntimeFunc{
-        ptype_: FuncType,
+        type_: FuncType,
         module: Weak<ModuleInst>,
         code: Func,
     },
