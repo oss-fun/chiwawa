@@ -45,6 +45,10 @@ impl ModuleInst {
             exports:Vec::new(),
         };
 
+        for func in &module.funcs{
+            module_inst.func_addrs.push(FuncAddr::alloc_empty())
+        }
+
         for table in &module.tables {
             module_inst.table_addrs.push(TableAddr::new(&table.type_))
         }
