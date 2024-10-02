@@ -53,6 +53,10 @@ impl ModuleInst {
             module_inst.table_addrs.push(TableAddr::new(&table.type_))
         }
 
+        for mem in &module.mems {
+            module_inst.mem_addrs.push(MemAddr::new(&mem.type_))
+        }
+
         for global in &module.globals {
             module_inst.global_addrs.push(GlobalAddr::new(&global.type_, ModuleInst::expr_to_const(&global.init)));
         }
