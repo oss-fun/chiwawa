@@ -8,6 +8,16 @@ pub enum Val {
     Ref(Ref),
 }
 
+impl Val {
+    pub fn to_i32(&self) ->i32{
+        if let Val::Num(Num::I32(num)) = self {
+            *num
+        } else {
+            panic!();
+        }
+    }
+}
+
 pub enum Num {
     I32(i32),
     I64(i64),

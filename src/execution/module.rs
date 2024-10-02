@@ -61,6 +61,22 @@ impl ModuleInst {
             module_inst.global_addrs.push(GlobalAddr::new(&global.type_, ModuleInst::expr_to_const(&global.init)));
         }
 
+        for data in &module.datas{
+            let init: Vec<u8> = data.init.iter().map(|x|x.0).collect();
+            module_inst.data_addrs.push(DataAddr::new(&init));
+            let offset = match &data.offset {
+                Some(x) => ModuleInst::expr_to_const(x).to_i32(),
+                None => 0,
+            };
+
+            let idx = match &data.memory{
+                Some(i) => i.0,
+                None => 0,
+            };
+
+            module_inst.mem_addrs[idx as usize].init(offset as usize, &init);
+        }
+
         for export in &module.exports {
             module_inst.exports.push(
                 ExportInst{
