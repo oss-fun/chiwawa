@@ -10,9 +10,12 @@ pub struct GlobalInst {
 }
 
 impl GlobalAddr {
-    pub fn new(type_: GlobalType, value: Val) -> GlobalAddr{
+    pub fn new(type_: &GlobalType, value: Val) -> GlobalAddr{
         GlobalAddr(Rc::new(RefCell::new(
-            GlobalInst{type_, value}
+            GlobalInst{
+                type_: type_.clone(),
+                value: value
+            }
         )))
     }
 }

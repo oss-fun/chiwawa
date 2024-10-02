@@ -50,7 +50,7 @@ impl ModuleInst {
         }
 
         for global in &module.globals {
-            module_inst.global_addrs.push(GlobalAddr::new(global.type_.clone(), ModuleInst::expr_to_const(&global.init)));
+            module_inst.global_addrs.push(GlobalAddr::new(&global.type_, ModuleInst::expr_to_const(&global.init)));
         }
 
         for export in &module.exports {
