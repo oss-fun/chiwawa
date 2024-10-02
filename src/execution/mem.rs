@@ -17,4 +17,12 @@ impl MemAddr {
             }
         )))
     }
+
+    pub fn init(&self, offset: usize, init: &Vec<u8>){
+        let addr_self = &mut self.0.borrow_mut();
+        for(index, data) in init.iter().enumerate(){
+            addr_self.data[index + offset] = *data;
+        }
+    }
+
 }
