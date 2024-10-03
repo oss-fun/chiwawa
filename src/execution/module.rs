@@ -62,6 +62,9 @@ impl ModuleInst {
         }
 
         for elem in &module.elems{
+            if elem.type_ == RefType::ExternalRef{
+                panic!();
+            }
             let init = ModuleInst::expr_to_const(&elem.init[0]).to_i32();
             module_inst.elem_addrs.push(ElemAddr::new(&elem.type_, &module_inst.func_addrs, init));
         }
