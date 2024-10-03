@@ -61,6 +61,11 @@ impl ModuleInst {
             module_inst.global_addrs.push(GlobalAddr::new(&global.type_, ModuleInst::expr_to_const(&global.init)));
         }
 
+        for elem in &module.elems{
+            let init = ModuleInst::expr_to_const(&elem.init[0]).to_i32();
+            module_inst.elem_addrs.push(ElemAddr::new(&elem.type_, &module_inst.func_addrs, init));
+        }
+
         for data in &module.datas{
             let init: Vec<u8> = data.init.iter().map(|x|x.0).collect();
             module_inst.data_addrs.push(DataAddr::new(&init));

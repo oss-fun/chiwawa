@@ -31,6 +31,7 @@ pub enum Vec_ {
 
 pub enum Ref {
     RefNull,
+    FuncAddr(FuncAddr),
     RefExtern(ExternAddr),
 }
 
