@@ -65,9 +65,9 @@ impl ModuleInst {
             if elem.type_ == RefType::ExternalRef{
                 panic!();
             }
+            let init: Vec<i32> = elem.init.clone().into_iter().map(|expr| ModuleInst::expr_to_const(&expr).to_i32()).collect();
 
-            let init = ModuleInst::expr_to_const(&elem.init[0]).to_i32();
-            module_inst.elem_addrs.push(ElemAddr::new(&elem.type_, &module_inst.func_addrs, init));
+            module_inst.elem_addrs.push(ElemAddr::new(&elem.type_, &module_inst.func_addrs, &init));
 
             if elem.mode == ElemMode::Active{
                 let offset = match &elem.offset {
@@ -79,7 +79,7 @@ impl ModuleInst {
                     Some(i) => i.0,
                     None => 0,
                 };
-                module_inst.table_addrs[table_idx as usize].init(offset as usize, &module_inst.func_addrs, init);
+                module_inst.table_addrs[table_idx as usize].init(offset as usize, &module_inst.func_addrs, &init);
             }
         }
 
