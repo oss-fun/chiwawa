@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use std::collections::HashMap;
 use crate::structure::{types::*, module::*, instructions::*};
 use crate::error::RuntimeError;
 use super::value::*;
@@ -32,8 +33,10 @@ impl GetInstanceByIdx<TableIdx> for Vec<TableAddr>{}
 impl GetInstanceByIdx<MemIdx> for Vec<MemAddr>{}
 impl GetInstanceByIdx<GlobalIdx> for Vec<GlobalAddr>{}
 
+pub type ImportObjects = HashMap<String, HashMap<String, Externval>>;
+
 impl ModuleInst {
-    pub fn new(module: &Module) -> Result<Rc<ModuleInst>, RuntimeError>{
+    pub fn new(module: &Module, imports: ImportObjects) -> Result<Rc<ModuleInst>, RuntimeError>{
         let mut module_inst = ModuleInst {
             types: module.types.clone(),
             func_addrs: Vec::new(),
@@ -44,6 +47,11 @@ impl ModuleInst {
             data_addrs:Vec::new(),
             exports:Vec::new(),
         };
+
+        /*Import is not supported*/
+        if module.imports.len() != 0{
+            todo!();
+        }
 
         for func in &module.funcs{
             module_inst.func_addrs.push(FuncAddr::alloc_empty())
