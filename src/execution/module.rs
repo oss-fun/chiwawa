@@ -65,8 +65,22 @@ impl ModuleInst {
             if elem.type_ == RefType::ExternalRef{
                 panic!();
             }
+
             let init = ModuleInst::expr_to_const(&elem.init[0]).to_i32();
             module_inst.elem_addrs.push(ElemAddr::new(&elem.type_, &module_inst.func_addrs, init));
+
+            if elem.mode == ElemMode::Active{
+                let offset = match &elem.offset {
+                    Some(x) => ModuleInst::expr_to_const(x).to_i32(),
+                    None => 0,
+                };
+    
+                let table_idx = match &elem.table_idx{
+                    Some(i) => i.0,
+                    None => 0,
+                };
+                module_inst.table_addrs[table_idx as usize].init(offset as usize, &module_inst.func_addrs, init);
+            }
         }
 
         for data in &module.datas{

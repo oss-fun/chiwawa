@@ -1,6 +1,6 @@
 use std::{rc::Rc, cell::RefCell};
 use crate::structure::types::*;
-use super::value::Ref;
+use super::{value::Ref, func::FuncAddr, module::*};
 
 #[derive(Clone)]
 pub struct TableAddr(Rc<RefCell<TableInst>>);
@@ -17,5 +17,9 @@ impl TableAddr{
                 elem: Vec::with_capacity(type_.0.min as usize)
             }
         )))
+    }
+    pub fn init(&self, offset: usize, funcs: &Vec<FuncAddr>, init: i32){
+        let addr_self = &mut self.0.borrow_mut();
+        addr_self.elem[offset] = Ref::FuncAddr(funcs.get_by_idx(FuncIdx(init as u32)).clone());
     }
 }
