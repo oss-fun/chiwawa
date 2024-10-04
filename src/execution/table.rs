@@ -18,8 +18,10 @@ impl TableAddr{
             }
         )))
     }
-    pub fn init(&self, offset: usize, funcs: &Vec<FuncAddr>, init: i32){
+    pub fn init(&self, offset: usize, funcs: &Vec<FuncAddr>, init: &Vec<i32>){
         let addr_self = &mut self.0.borrow_mut();
-        addr_self.elem[offset] = Ref::FuncAddr(funcs.get_by_idx(FuncIdx(init as u32)).clone());
+        for (index, f) in init.iter().enumerate() {
+            addr_self.elem[index + offset] = Ref::FuncAddr(funcs.get_by_idx(FuncIdx(*f as u32)).clone());
+        }
     }
 }
