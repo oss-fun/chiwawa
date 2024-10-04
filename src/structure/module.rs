@@ -32,7 +32,7 @@ pub struct Elem {
     pub offset: Option<Expr>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum ElemMode {
     Passive,
     Active,
