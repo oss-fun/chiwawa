@@ -121,7 +121,20 @@ impl ModuleInst {
             )
         }
 
-        Ok(Rc::new(module_inst))
+        let rc_module_inst = Rc::new(module_inst);
+
+        for (base, func) in module.funcs.iter().enumerate(){
+            let index = base + module.imports.iter().map(|i|{
+                if let ImportDesc::Func(_) = i.desc{
+                    1
+                } else{
+                    0
+                }
+            }).sum::<usize>();
+            rc_module_inst.func_addrs[index].replace(func.clone(), Rc::downgrade(&rc_module_inst));
+        }
+
+        Ok(rc_module_inst)
     }
     fn expr_to_const(expr: &Expr) -> Val{
         match &expr.0[..] {
