@@ -36,4 +36,8 @@ impl FuncAddr {
             ))
         )
     }
+
+    pub fn replace(&self, func: Func, module: Weak<ModuleInst>){
+        todo!();
+    }
 }
