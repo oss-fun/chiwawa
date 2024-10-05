@@ -40,6 +40,12 @@ Self: Into<u32>,
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct TypeIdx(pub u32); 
+impl Into<u32> for TypeIdx{
+    fn into(self) -> u32{
+        self.0
+    }
+}
+impl GetIdx for TypeIdx{}
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct TableIdx(pub u32);

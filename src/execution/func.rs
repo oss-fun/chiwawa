@@ -1,6 +1,6 @@
 use std::{rc::Rc, cell::RefCell, rc::Weak};
 use crate::structure::{types::*,module::*, instructions::Expr};
-use super::{value::Val, module::ModuleInst};
+use super::{value::Val, module::*};
 use crate::error::RuntimeError;
 
 #[derive(Clone)]
@@ -38,6 +38,16 @@ impl FuncAddr {
     }
 
     pub fn replace(&self, func: Func, module: Weak<ModuleInst>){
-        todo!();
+        *self.0.borrow_mut() = FuncInst::new(func, module);
+    }
+}
+
+impl FuncInst{
+    pub fn new(func: Func, module: Weak<ModuleInst>) -> FuncInst{
+        FuncInst::RuntimeFunc{
+            type_: module.upgrade().unwrap().types.get_by_idx(func.type_.clone()).clone(),
+            module: module,
+            code: func,
+        }
     }
 }
