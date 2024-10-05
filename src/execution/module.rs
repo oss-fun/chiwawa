@@ -28,6 +28,7 @@ Self: std::ops::Index<usize>,
     }
 }
 
+impl GetInstanceByIdx<TypeIdx> for Vec<FuncType>{}
 impl GetInstanceByIdx<FuncIdx> for Vec<FuncAddr>{}
 impl GetInstanceByIdx<TableIdx> for Vec<TableAddr>{}
 impl GetInstanceByIdx<MemIdx> for Vec<MemAddr>{}
