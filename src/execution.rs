@@ -1,5 +1,5 @@
 mod value;
-mod module;
+pub mod module;
 mod store;
 mod func;
 mod table;

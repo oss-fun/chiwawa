@@ -1,12 +1,13 @@
 use std::{rc::Rc, cell::RefCell, rc::Weak};
-use crate::structure::{types::*,module::*};
-use super::{value::Val, module::ModuleInst};
+use crate::structure::{types::*,module::*, instructions::Expr};
+use super::{value::Val, module::*};
 use crate::error::RuntimeError;
 
+#[derive(Clone)]
 pub struct FuncAddr(Rc<RefCell<FuncInst>>);
 pub enum FuncInst {
     RuntimeFunc{
-        ptype_: FuncType,
+        type_: FuncType,
         module: Weak<ModuleInst>,
         code: Func,
     },
@@ -14,4 +15,39 @@ pub enum FuncInst {
         type_: FuncType,
         host_code: Rc<dyn Fn(Vec<Val>) -> Result<Option<Val>, RuntimeError>>,
     },
+}
+
+impl FuncAddr {
+    pub fn alloc_empty() -> FuncAddr{
+        FuncAddr(
+            Rc::new(RefCell::new(
+                FuncInst::RuntimeFunc{
+                    type_: FuncType{
+                        params: Vec::new(),
+                        results: Vec::new()
+                    },
+                    module: Weak::new(),
+                    code: Func{
+                        type_: TypeIdx(0),
+                        locals: Vec::new(),
+                        body: Expr(Vec::new())
+                    }
+                }
+            ))
+        )
+    }
+
+    pub fn replace(&self, func: Func, module: Weak<ModuleInst>){
+        *self.0.borrow_mut() = FuncInst::new(func, module);
+    }
+}
+
+impl FuncInst{
+    pub fn new(func: Func, module: Weak<ModuleInst>) -> FuncInst{
+        FuncInst::RuntimeFunc{
+            type_: module.upgrade().unwrap().types.get_by_idx(func.type_.clone()).clone(),
+            module: module,
+            code: func,
+        }
+    }
 }
