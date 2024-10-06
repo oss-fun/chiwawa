@@ -134,7 +134,10 @@ impl ModuleInst {
             }).sum::<usize>();
             rc_module_inst.func_addrs[index].replace(func.clone(), Rc::downgrade(&rc_module_inst));
         }
-
+        if let Some(start) = &module.start {
+            //Todo: Invoke _start function
+            rc_module_inst.func_addrs.get_by_idx(start.func.clone());
+        }
         Ok(rc_module_inst)
     }
     fn expr_to_const(expr: &Expr) -> Val{
