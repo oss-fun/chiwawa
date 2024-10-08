@@ -3,6 +3,7 @@ use crate::structure::instructions::Instr;
 use std::rc::Weak;
 
 pub struct Stacks {
+    valueStack: Vec<Val>,
     labelsStack: Vec<Label>,
     activationFrameStack: Vec<Frame>,
 }
@@ -10,6 +11,7 @@ pub struct Stacks {
 impl Stacks {
     pub fn new() -> Stacks{
         Stacks{
+            valueStack: Vec::new(),
             labelsStack: Vec::new(),
             activationFrameStack: Vec::new(),
         }
