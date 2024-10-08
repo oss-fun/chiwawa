@@ -3,15 +3,24 @@ use crate::structure::instructions::Instr;
 use std::rc::Weak;
 
 pub struct Stacks {
-    labels: Vec<LabelStack>,
-    activationFrames: Vec<FrameStack>,
+    labelsStack: Vec<Label>,
+    activationFrameStack: Vec<Frame>,
 }
 
-struct FrameStack {
-    pub locals:Vec<Val>,
+impl Stacks {
+    pub fn new() -> Stacks{
+        Stacks{
+            labelsStack: Vec::new(),
+            activationFrameStack: Vec::new(),
+        }
+    }
+}
+
+struct Frame {
+    pub locals: Vec<Val>,
     pub module: Weak<ModuleInst>,
 }
 
-struct LabelStack {
+struct Label {
     pub instrs: Vec<Instr>
 }
