@@ -1,15 +1,17 @@
-use super::{value::*};
+use super::{value::*, module::*};
+use crate::structure::instructions::Instr;
+use std::rc::Weak;
 
-pub struct Stacks{
-    values: Vec<Val>,
-    labels: Vec<Label>,
-    activationFrames: Vec<Frame>,
+pub struct Stacks {
+    labels: Vec<LabelStack>,
+    activationFrames: Vec<FrameStack>,
 }
 
-struct Frame{
-    /*Todo Implement Frame Stack*/
+struct FrameStack {
+    pub locals:Vec<Val>,
+    pub module: Weak<ModuleInst>,
 }
 
-struct Label{
-    /*Todo Implement Label Stack*/
+struct LabelStack {
+    pub instrs: Vec<Instr>
 }
