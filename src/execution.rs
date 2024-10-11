@@ -8,3 +8,4 @@ mod global;
 mod elem;
 mod data;
 mod export;
+mod stack;
