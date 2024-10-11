@@ -1,5 +1,7 @@
-# PPWasm
-Self-hosted Wasm Runtime
+# chiwawa(CHeckpoint/restore and Instrumentation-specific WAsm runtime on WAsm runtime)
+
+Chiwawa (Pronunciation of chihuahua) is a self-hosted Wasm runtime that enables live migration and instrumentation that is neutral to the execution methods (e.g., interpreter, JIT, and AOT) and architectures, and runtimes.
+
 
 ## Build and Run
 ### For native
