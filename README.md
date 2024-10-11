@@ -20,7 +20,7 @@ somethingWasmRuntime target/wasm32-wasi/debug/PPWasm.wasm --path something.wasm
 
 
 ## References
-I referred to these repositories. Thank you for our ancestor's wisdom!
+I referred to these repositories. I appreciate our ancestor's wisdom!
 
 - Wasm-rs
   - [GitHub Repo](https://github.com/kgtkr/wasm-rs)
