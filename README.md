@@ -8,14 +8,14 @@ Chiwawa (Pronunciation of chihuahua) is a self-hosted Wasm runtime that enables 
 
 ```
 cargo build
- ./target/debug/PPWasm --path something.wasm
+ ./target/debug/chiwawa --path something.wasm
 ```
 
 ### For self-hosted
 
 ```
 cargo build --target wasm32-wasi
-somethingWasmRuntime target/wasm32-wasi/debug/PPWasm.wasm --path something.wasm
+somethingWasmRuntime target/wasm32-wasi/debug/chiwawa.wasm --path something.wasm
 ```
 
 
