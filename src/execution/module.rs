@@ -140,6 +140,11 @@ impl ModuleInst {
         }
         Ok(rc_module_inst)
     }
+
+    pub fn get_export(&self, name: &str) -> Externval{
+        self.exports.iter().find(|export| export.name == name).map(|export| export.value.clone()).unwrap()
+    }
+
     fn expr_to_const(expr: &Expr) -> Val{
         match &expr.0[..] {
             &[Instr::I32Const(i)] => Val::Num(Num::I32(i)),
