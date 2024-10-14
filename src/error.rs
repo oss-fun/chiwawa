@@ -6,6 +6,8 @@ pub enum RuntimeError {
     ExecutionFailed,
     #[error("Instantiate Failed")]
     InstantiateFailed,
+    #[error("Export Function is not Found")]
+    ExportFuncNotFound,
 }
 
 #[derive(Debug, Error)]
