@@ -16,6 +16,6 @@ fn main() -> Result <()>{
     let mut module = Module::new("test");
     let _ = parser::parse_bytecode(&mut module, &args.path);
     let inst = ModuleInst::new(&module, hashmap!{}).unwrap();
-    inst.get_export("main");
+    inst.get_export_func("main");
     Ok(())
 }

@@ -141,8 +141,14 @@ impl ModuleInst {
         Ok(rc_module_inst)
     }
 
-    pub fn get_export(&self, name: &str) -> Externval{
-        self.exports.iter().find(|export| export.name == name).map(|export| export.value.clone()).unwrap()
+    pub fn get_export_func(&self, name: &str) -> Result<FuncAddr, RuntimeError>{
+        let externval = self.exports.iter().find(|export| export.name == name).map(|export| export.value.clone()).unwrap();
+        if let Externval::Func(x) = externval{
+            Ok(x)
+        } else {
+            Err(RuntimeError::ExecutionFailed)
+        }
+
     }
 
     fn expr_to_const(expr: &Expr) -> Val{
