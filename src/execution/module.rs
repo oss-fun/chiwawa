@@ -146,7 +146,7 @@ impl ModuleInst {
         if let Externval::Func(x) = externval{
             Ok(x)
         } else {
-            Err(RuntimeError::ExecutionFailed)
+            Err(RuntimeError::ExportFuncNotFound)
         }
 
     }
