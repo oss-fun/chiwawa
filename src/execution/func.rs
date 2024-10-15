@@ -1,6 +1,6 @@
 use std::{rc::Rc, cell::RefCell, rc::Weak};
 use crate::structure::{types::*,module::*, instructions::Expr};
-use super::{value::Val, module::*};
+use super::{value::Val, module::*, stack::*};
 use crate::error::RuntimeError;
 
 #[derive(Clone)]
@@ -18,6 +18,10 @@ pub enum FuncInst {
 }
 
 impl FuncAddr {
+    pub fn call(&self){
+        let stack = Stacks::new();
+    }
+
     pub fn alloc_empty() -> FuncAddr{
         FuncAddr(
             Rc::new(RefCell::new(
