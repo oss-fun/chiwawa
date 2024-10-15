@@ -13,7 +13,12 @@ impl Stacks {
         Stacks{
             valueStack: Vec::new(),
             labelsStack: Vec::new(),
-            activationFrameStack: Vec::new(),
+            activationFrameStack: vec![
+                Frame{
+                    locals: Vec::new(),
+                    module: Weak::new()
+                }
+            ],
         }
     }
 }
