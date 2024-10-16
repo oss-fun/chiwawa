@@ -2,6 +2,7 @@ use crate::structure::types::ValueType;
 use std::{rc::Rc, cell::RefCell};
 use super::{mem::MemAddr, global::GlobalAddr, func::FuncAddr, table::TableAddr};
 
+#[derive(Clone)]
 pub enum Val {
     Num(Num),
     Vec_(Vec_),
@@ -18,6 +19,7 @@ impl Val {
     }
 }
 
+#[derive(Clone)]
 pub enum Num {
     I32(i32),
     I64(i64),
@@ -25,16 +27,19 @@ pub enum Num {
     F64(u64),
 }
 
+#[derive(Clone)]
 pub enum Vec_ {
     V128(i128),   
 }
 
+#[derive(Clone)]
 pub enum Ref {
     RefNull,
     FuncAddr(FuncAddr),
     RefExtern(ExternAddr),
 }
 
+#[derive(Clone)]
 pub struct ExternAddr(Rc<RefCell<Externval>>);
 
 #[derive(Clone)]

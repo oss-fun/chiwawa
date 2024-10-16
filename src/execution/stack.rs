@@ -9,9 +9,9 @@ pub struct Stacks {
 }
 
 impl Stacks {
-    pub fn new() -> Stacks{
+    pub fn new(params: Vec<Val>) -> Stacks{
         Stacks{
-            valueStack: Vec::new(),
+            valueStack: params.clone(),
             labelsStack: Vec::new(),
             activationFrameStack: vec![
                 Frame{

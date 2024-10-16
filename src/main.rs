@@ -1,7 +1,7 @@
 use anyhow::{Result};
 use clap::Parser;
 use maplit::hashmap;
-use chiwawa::{parser,structure::module::Module,execution::module::*};
+use chiwawa::{parser,structure::module::Module,execution::module::*, execution::value::*};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -16,6 +16,7 @@ fn main() -> Result <()>{
     let mut module = Module::new("test");
     let _ = parser::parse_bytecode(&mut module, &args.path);
     let inst = ModuleInst::new(&module, hashmap!{}).unwrap();
-    inst.get_export_func("main")?.call();
+    let params: Vec<Val> = Vec::new();
+    inst.get_export_func("main")?.call(params);
     Ok(())
 }
