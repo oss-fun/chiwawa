@@ -1,4 +1,4 @@
-use super::{value::*, module::*};
+use super::{value::*, module::*, func::*};
 use crate::structure::instructions::Instr;
 use std::rc::Weak;
 
@@ -9,12 +9,14 @@ pub struct Stacks {
 }
 
 impl Stacks {
-    pub fn new(params: Vec<Val>) -> Stacks{
+    pub fn new(funcaddr: &FuncAddr, params: Vec<Val>) -> Stacks{
         Stacks{
             valueStack: params.clone(),
             labelsStack: vec![
                 Label{
-                    instrs: Vec::new(),
+                    instrs: vec![
+                        AdminInstr::Invoke(funcaddr.clone())
+                    ],
                 }
             ],
             activationFrameStack: vec![
@@ -33,5 +35,14 @@ struct Frame {
 }
 
 struct Label {
-    pub instrs: Vec<Instr>
+    pub instrs: Vec<AdminInstr>
+}
+
+pub enum AdminInstr {
+    Trap,
+    Ref(FuncAddr),
+    RefExtern(ExternAddr),
+    Invoke(FuncAddr),
+    Label(Label, Vec<Instr>),
+    Frame(Frame, Vec<Instr>),
 }
