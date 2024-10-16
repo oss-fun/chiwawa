@@ -12,7 +12,11 @@ impl Stacks {
     pub fn new(params: Vec<Val>) -> Stacks{
         Stacks{
             valueStack: params.clone(),
-            labelsStack: Vec::new(),
+            labelsStack: vec![
+                Label{
+                    instrs: Vec::new(),
+                }
+            ],
             activationFrameStack: vec![
                 Frame{
                     locals: Vec::new(),
