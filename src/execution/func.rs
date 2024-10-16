@@ -19,7 +19,7 @@ pub enum FuncInst {
 
 impl FuncAddr {
     pub fn call(&self, params: Vec<Val>){
-        let stack = Stacks::new(params);
+        let stack = Stacks::new(&self, params);
     }
 
     pub fn alloc_empty() -> FuncAddr{
