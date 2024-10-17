@@ -1,7 +1,7 @@
 use anyhow::{Result};
 use clap::Parser;
 use maplit::hashmap;
-use PPWasm::{parser,structure::module::Module,execution::module::*};
+use chiwawa::{parser,structure::module::Module,execution::module::*};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
