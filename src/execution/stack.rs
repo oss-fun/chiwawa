@@ -3,9 +3,9 @@ use crate::structure::instructions::Instr;
 use std::rc::Weak;
 
 pub struct Stacks {
-    valueStack: Vec<Val>,
-    labelsStack: Vec<Label>,
-    activationFrameStack: Vec<Frame>,
+    pub valueStack: Vec<Val>,
+    pub labelsStack: Vec<Label>,
+    pub activationFrameStack: Vec<Frame>,
 }
 
 impl Stacks {
@@ -27,14 +27,18 @@ impl Stacks {
             ],
         }
     }
+    pub fn exec_instr(&mut self){
+        let mut cur_frame = &self.activationFrameStack.last_mut().unwrap();
+        let mut cur_label = &self.labelsStack.last_mut().unwrap();
+    }
 }
 
-struct Frame {
+pub struct Frame {
     pub locals: Vec<Val>,
     pub module: Weak<ModuleInst>,
 }
 
-struct Label {
+pub struct Label {
     pub instrs: Vec<AdminInstr>
 }
 

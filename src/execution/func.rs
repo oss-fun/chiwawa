@@ -19,7 +19,17 @@ pub enum FuncInst {
 
 impl FuncAddr {
     pub fn call(&self, params: Vec<Val>){
-        let stack = Stacks::new(&self, params);
+        let mut stack = Stacks::new(&self, params);
+
+        loop{
+            stack.exec_instr();
+            /*Reached Dummy Stack Frame*/
+            if stack.activationFrameStack.len() == 1
+            && stack.labelsStack.len() == 1
+            && stack.labelsStack.first().unwrap().instrs.is_empty(){
+                break;
+            }
+        } 
     }
 
     pub fn alloc_empty() -> FuncAddr{
