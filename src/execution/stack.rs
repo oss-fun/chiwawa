@@ -4,7 +4,6 @@ use std::rc::Weak;
 
 pub struct Stacks {
     pub valueStack: Vec<Val>,
-    pub labelsStack: Vec<Label>,
     pub activationFrameStack: Vec<Frame>,
 }
 
@@ -12,30 +11,31 @@ impl Stacks {
     pub fn new(funcaddr: &FuncAddr, params: Vec<Val>) -> Stacks{
         Stacks{
             valueStack: params.clone(),
-            labelsStack: vec![
-                Label{
-                    instrs: vec![
-                        AdminInstr::Invoke(funcaddr.clone())
-                    ],
-                }
-            ],
             activationFrameStack: vec![
                 Frame{
                     locals: Vec::new(),
-                    module: Weak::new()
+                    module: Weak::new(),
+                    labelStack: vec![
+                        Label{
+                            instrs: vec![
+                                AdminInstr::Invoke(funcaddr.clone())
+                            ],
+                        }
+                    ],
                 }
             ],
         }
     }
     pub fn exec_instr(&mut self){
-        let mut cur_frame = &self.activationFrameStack.last_mut().unwrap();
-        let mut cur_label = &self.labelsStack.last_mut().unwrap();
+        let mut cur_frame = self.activationFrameStack.last_mut().unwrap();
+        let mut cur_label = cur_frame.labelStack.last_mut().unwrap();
     }
 }
 
 pub struct Frame {
     pub locals: Vec<Val>,
     pub module: Weak<ModuleInst>,
+    pub labelStack: Vec<Label>,
 }
 
 pub struct Label {

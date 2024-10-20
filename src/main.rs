@@ -17,6 +17,6 @@ fn main() -> Result <()>{
     let _ = parser::parse_bytecode(&mut module, &args.path);
     let inst = ModuleInst::new(&module, hashmap!{}).unwrap();
     let params: Vec<Val> = Vec::new();
-    inst.get_export_func("main")?.call(params);
+    inst.get_export_func("add")?.call(params);
     Ok(())
 }
