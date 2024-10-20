@@ -25,8 +25,8 @@ impl FuncAddr {
             stack.exec_instr();
             /*Reached Dummy Stack Frame*/
             if stack.activationFrameStack.len() == 1
-            && stack.labelsStack.len() == 1
-            && stack.labelsStack.first().unwrap().instrs.is_empty(){
+            && stack.activationFrameStack.first().unwrap().labelStack.len() == 1
+            && stack.activationFrameStack.first().unwrap().labelStack.first().unwrap().instrs.is_empty(){
                 break;
             }
         } 
