@@ -1,7 +1,8 @@
 use super::{value::*, module::*, func::*};
-use crate::structure::instructions::Instr;
+use crate::structure::{instructions::Instr, types::*};
 use crate::error::RuntimeError;
 use std::rc::Weak;
+use std::borrow::Borrow;
 
 pub struct Stacks {
     pub activationFrameStack: Vec<Frame>,
@@ -14,13 +15,13 @@ impl Stacks {
                 Frame{
                     locals: Vec::new(),
                     module: Weak::new(),
-                    valueStack: params.clone(),
                     labelStack: vec![
                         Label{
                             instrs: vec![
                                 AdminInstr::FrameAdminInstr(FrameAdminInstr::Invoke(funcaddr.clone()))
                             ],
-                        }
+                            valueStack: params.clone(),
+                        },
                     ],
                     void: true,
                 }
@@ -37,14 +38,49 @@ impl Stacks {
         if let Some(instr) = cur_frame.exec_instr_frame_level()? {
             let mut cur_label = cur_frame.labelStack.last_mut().unwrap();
             match instr {
-                FrameAdminInstr::Invoke(func_addr) => {   
-                    todo!()
+                FrameAdminInstr::Invoke(func_addr) => {
+                    match &*func_addr.borrow(){
+                        FuncInst::RuntimeFunc{type_,module,code} => {
+                            let frame = Frame{
+                                locals: {
+                                    let mut locals = Vec::new();
+                                    locals.append(
+                                        &mut cur_label.valueStack.split_off(cur_label.valueStack.len() - type_.params.len())
+                                    );
+                                    locals.append(
+                                        &mut code.locals.iter().map(|v| match v.1{
+                                            ValueType::NumType(NumType::I32) => Val::Num(Num::I32(v.0 as i32)),
+                                            ValueType::NumType(NumType::I64) => Val::Num(Num::I64(v.0 as i64)),
+                                            ValueType::NumType(NumType::F32) => Val::Num(Num::F32(v.0)),
+                                            ValueType::NumType(NumType::F64) => Val::Num(Num::F64(v.0 as u64)),
+                                            ValueType::VecType(_) | ValueType::RefType(_) => todo!(),
+                                        }).collect()
+                                    );
+                                    locals
+                                },
+                                module: module.clone(),
+                                labelStack: vec![
+                                    Label{
+                                        instrs: code.body.0.clone().into_iter().map(AdminInstr::Instr).collect(),
+                                        valueStack: vec![],
+                                    }
+                                ],
+                                void:type_.results.iter().count() ==0 ,                           
+                            };
+                            self.activationFrameStack.push(frame);
+
+                        },
+                        FuncInst::HostFunc{..} => {
+                            todo!()
+                        },
+                    }
+
                 },
                 FrameAdminInstr::Return =>{
-                    let ret = cur_frame.valueStack.pop();
+                    let ret = cur_label.valueStack.pop();
                     if !self.activationFrameStack.pop().unwrap().void{
                         let mut next = self.activationFrameStack.last_mut().unwrap();
-                        next.valueStack.push(ret.unwrap());
+                        next.labelStack.last_mut().unwrap().valueStack.push(ret.unwrap());
                     }
                 }
             }
@@ -57,7 +93,6 @@ pub struct Frame {
     pub locals: Vec<Val>,
     pub module: Weak<ModuleInst>,
     pub labelStack: Vec<Label>,
-    pub valueStack: Vec<Val>,
     pub void: bool,
 }
 
@@ -68,7 +103,8 @@ impl Frame{
     }
 }
 pub struct Label {
-    pub instrs: Vec<AdminInstr>
+    pub instrs: Vec<AdminInstr>,
+    pub valueStack: Vec<Val>,
 }
 
 pub enum FrameAdminInstr{
@@ -78,6 +114,7 @@ pub enum FrameAdminInstr{
 
 pub enum AdminInstr {
     Trap,
+    Instr(Instr),
     Ref(FuncAddr),
     FrameAdminInstr(FrameAdminInstr),
     RefExtern(ExternAddr),

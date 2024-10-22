@@ -1,4 +1,4 @@
-use std::{rc::Rc, cell::RefCell, rc::Weak};
+use std::{rc::Rc, cell::*, rc::Weak};
 use crate::structure::{types::*,module::*, instructions::Expr};
 use super::{value::Val, module::*, stack::*};
 use crate::error::RuntimeError;
@@ -30,6 +30,10 @@ impl FuncAddr {
                 break;
             }
         } 
+    }
+
+    pub fn borrow(&self) -> Ref<FuncInst> {
+        self.0.borrow()
     }
 
     pub fn alloc_empty() -> FuncAddr{
