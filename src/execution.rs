@@ -1,4 +1,4 @@
-mod value;
+pub mod value;
 pub mod module;
 mod store;
 mod func;
