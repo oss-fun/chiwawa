@@ -1,6 +1,6 @@
-use std::{rc::Rc, cell::RefCell, rc::Weak};
+use std::{rc::Rc, cell::*, rc::Weak};
 use crate::structure::{types::*,module::*, instructions::Expr};
-use super::{value::Val, module::*};
+use super::{value::Val, module::*, stack::*};
 use crate::error::RuntimeError;
 
 #[derive(Clone)]
@@ -18,6 +18,24 @@ pub enum FuncInst {
 }
 
 impl FuncAddr {
+    pub fn call(&self, params: Vec<Val>){
+        let mut stack = Stacks::new(&self, params);
+
+        loop{
+            stack.exec_instr();
+            /*Reached Dummy Stack Frame*/
+            if stack.activationFrameStack.len() == 1
+            && stack.activationFrameStack.first().unwrap().labelStack.len() == 1
+            && stack.activationFrameStack.first().unwrap().labelStack.first().unwrap().instrs.is_empty(){
+                break;
+            }
+        } 
+    }
+
+    pub fn borrow(&self) -> Ref<FuncInst> {
+        self.0.borrow()
+    }
+
     pub fn alloc_empty() -> FuncAddr{
         FuncAddr(
             Rc::new(RefCell::new(
