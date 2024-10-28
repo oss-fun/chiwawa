@@ -16,7 +16,10 @@ impl Stacks {
                     locals: Vec::new(),
                     module: Weak::new(),
                     labelStack: vec![
-                        Label{
+                        LabelStack{
+                            label: Label{
+                                instrs: vec![],
+                            },
                             instrs: vec![
                                 AdminInstr::ModuleInstr(ModuleInstr::Invoke(funcaddr.clone()))
                             ],
@@ -61,7 +64,10 @@ impl Stacks {
                                 },
                                 module: module.clone(),
                                 labelStack: vec![
-                                    Label{
+                                    LabelStack{
+                                        label: Label{
+                                            instrs: vec![],
+                                        },
                                         instrs: code.body.0.clone().into_iter().map(AdminInstr::Instr).collect(),
                                         valueStack: vec![],
                                     }
@@ -93,7 +99,7 @@ impl Stacks {
 pub struct Frame {
     pub locals: Vec<Val>,
     pub module: Weak<ModuleInst>,
-    pub labelStack: Vec<Label>,
+    pub labelStack: Vec<LabelStack>,
     pub void: bool,
 }
 
@@ -110,7 +116,27 @@ impl Frame{
 
                     }
                 },
-                FrameInstr::Br(_) | FrameInstr::Label(_,_) => todo!()
+                FrameInstr::Br(_) => todo!(),
+                FrameInstr::Label(label, instrs) => {
+                    self.labelStack.push(
+                        LabelStack{
+                            label,
+                            instrs: instrs.into_iter().map(AdminInstr::Instr).collect(),
+                            valueStack: vec![],
+                        }
+                    );
+                    Ok(None)
+                },
+                FrameInstr::EndLabel => {
+                    let mut cur_label = self.labelStack.pop().unwrap();
+                    if let Some(last) = self.labelStack.last_mut() {
+                        last.valueStack.append(&mut cur_label.valueStack);
+                        Ok(None)
+                    } else {
+                        self.labelStack.push(cur_label);
+                        Ok(Some(ModuleInstr::Return)) 
+                    }
+                },
             }
         } else {
             Ok(None)
@@ -118,11 +144,16 @@ impl Frame{
     }
 }
 pub struct Label {
+    pub instrs: Vec<Instr>
+}
+
+pub struct LabelStack {
+    pub label: Label,
     pub instrs: Vec<AdminInstr>,
     pub valueStack: Vec<Val>,
 }
 
-impl Label{
+impl LabelStack{
     pub fn exec_primitive_instr(&self) -> Result<Option<FrameInstr>, RuntimeError>{
         Ok(None)
     }
@@ -136,6 +167,7 @@ pub enum ModuleInstr{
 pub enum FrameInstr{
     Br(LabelIdx),
     Label(Label, Vec<Instr>),
+    EndLabel,
     ModuleInstr(ModuleInstr)
 }
 
