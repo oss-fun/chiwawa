@@ -116,7 +116,33 @@ impl Frame{
 
                     }
                 },
-                FrameInstr::Br(_) => todo!(),
+                FrameInstr::Br(idx) => {
+                    let idx = idx.to_usize();
+                    let mut cur_label_value = self.labelStack.last().unwrap().valueStack.clone();
+                    for _ in 0..idx{
+                        self.labelStack.pop();
+                    };
+                    
+                    let continue_ = self.labelStack.pop().unwrap().label;
+                    let mut instrs = continue_.instrs.into_iter().map(AdminInstr::Instr).collect();
+
+                    if let Some(dst_label) = self.labelStack.last_mut(){
+                        dst_label.valueStack.append(&mut cur_label_value);
+                        dst_label.instrs.append(&mut instrs);
+                        Ok(None)
+                    }else{
+                        self.labelStack.push(
+                            LabelStack{
+                                label: Label{
+                                    instrs: vec![],
+                                },
+                                instrs: vec![],
+                                valueStack: cur_label_value,
+                            }
+                        );
+                        Ok(Some(ModuleInstr::Return))
+                    }
+                },
                 FrameInstr::Label(label, instrs) => {
                     self.labelStack.push(
                         LabelStack{
@@ -143,6 +169,8 @@ impl Frame{
         }
     }
 }
+
+#[derive(Clone)]
 pub struct Label {
     pub instrs: Vec<Instr>
 }
@@ -159,11 +187,12 @@ impl LabelStack{
     }
 }
 
+#[derive(Clone)]
 pub enum ModuleInstr{
     Invoke(FuncAddr),
     Return,
 }
-
+#[derive(Clone)]
 pub enum FrameInstr{
     Br(LabelIdx),
     Label(Label, Vec<Instr>),
@@ -171,6 +200,7 @@ pub enum FrameInstr{
     ModuleInstr(ModuleInstr)
 }
 
+#[derive(Clone)]
 pub enum AdminInstr {
     Trap,
     Instr(Instr),
@@ -178,5 +208,4 @@ pub enum AdminInstr {
     ModuleInstr(ModuleInstr),
     FrameInstr(FrameInstr),
     RefExtern(ExternAddr),
-    Frame(Frame, Vec<Instr>),
 }
