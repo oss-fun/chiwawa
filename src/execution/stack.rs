@@ -18,7 +18,7 @@ impl Stacks {
                     labelStack: vec![
                         LabelStack{
                             label: Label{
-                                instrs: vec![],
+                                continue_: vec![],
                             },
                             instrs: vec![
                                 AdminInstr::ModuleInstr(ModuleInstr::Invoke(funcaddr.clone()))
@@ -66,7 +66,7 @@ impl Stacks {
                                 labelStack: vec![
                                     LabelStack{
                                         label: Label{
-                                            instrs: vec![],
+                                            continue_: vec![],
                                         },
                                         instrs: code.body.0.clone().into_iter().map(AdminInstr::Instr).collect(),
                                         valueStack: vec![],
@@ -123,8 +123,8 @@ impl Frame{
                         self.labelStack.pop();
                     };
                     
-                    let continue_ = self.labelStack.pop().unwrap().label;
-                    let mut instrs = continue_.instrs.into_iter().map(AdminInstr::Instr).collect();
+                    let continue_label = self.labelStack.pop().unwrap().label;
+                    let mut instrs = continue_label.continue_.into_iter().map(AdminInstr::Instr).collect();
 
                     if let Some(dst_label) = self.labelStack.last_mut(){
                         dst_label.valueStack.append(&mut cur_label_value);
@@ -134,7 +134,7 @@ impl Frame{
                         self.labelStack.push(
                             LabelStack{
                                 label: Label{
-                                    instrs: vec![],
+                                    continue_: vec![],
                                 },
                                 instrs: vec![],
                                 valueStack: cur_label_value,
@@ -172,7 +172,7 @@ impl Frame{
 
 #[derive(Clone)]
 pub struct Label {
-    pub instrs: Vec<Instr>
+    pub continue_: Vec<Instr>
 }
 
 pub struct LabelStack {
