@@ -16,9 +16,13 @@ impl Stacks {
                     locals: Vec::new(),
                     module: Weak::new(),
                     labelStack: vec![
-                        Label{
+                        LabelStack{
+                            label: Label{
+                                continue_: vec![],
+                                locals_num: 0,
+                            },
                             instrs: vec![
-                                AdminInstr::FrameAdminInstr(FrameAdminInstr::Invoke(funcaddr.clone()))
+                                AdminInstr::ModuleInstr(ModuleInstr::Invoke(funcaddr.clone()))
                             ],
                             valueStack: params.clone(),
                         },
@@ -38,7 +42,7 @@ impl Stacks {
         if let Some(instr) = cur_frame.exec_instr_frame_level()? {
             let mut cur_label = cur_frame.labelStack.last_mut().unwrap();
             match instr {
-                FrameAdminInstr::Invoke(func_addr) => {
+                ModuleInstr::Invoke(func_addr) => {
                     match &*func_addr.borrow(){
                         FuncInst::RuntimeFunc{type_,module,code} => {
                             let frame = Frame{
@@ -61,7 +65,11 @@ impl Stacks {
                                 },
                                 module: module.clone(),
                                 labelStack: vec![
-                                    Label{
+                                    LabelStack{
+                                        label: Label{
+                                            continue_: vec![],
+                                            locals_num: 0,
+                                        },
                                         instrs: code.body.0.clone().into_iter().map(AdminInstr::Instr).collect(),
                                         valueStack: vec![],
                                     }
@@ -77,7 +85,7 @@ impl Stacks {
                     }
 
                 },
-                FrameAdminInstr::Return =>{
+                ModuleInstr::Return =>{
                     let ret = cur_label.valueStack.pop();
                     if !self.activationFrameStack.pop().unwrap().void{
                         let mut next = self.activationFrameStack.last_mut().unwrap();
@@ -93,32 +101,115 @@ impl Stacks {
 pub struct Frame {
     pub locals: Vec<Val>,
     pub module: Weak<ModuleInst>,
-    pub labelStack: Vec<Label>,
+    pub labelStack: Vec<LabelStack>,
     pub void: bool,
 }
 
 impl Frame{
-    pub fn exec_instr_frame_level(&mut self) -> Result<Option<FrameAdminInstr>, RuntimeError>{
+    pub fn exec_instr_frame_level(&mut self) -> Result<Option<ModuleInstr>, RuntimeError>{
         let mut cur_label = self.labelStack.last_mut().unwrap();
-        Ok(None)
+        if let Some(instr) = cur_label.exec_primitive_instr()?{
+            match instr {
+                /*Redirect to Exec_instr(Handing Instruction Spanning Frame)*/
+                FrameInstr::ModuleInstr(module_instr) => {
+                    match module_instr{
+                        ModuleInstr::Return => Ok(Some(ModuleInstr::Return)),
+                        ModuleInstr::Invoke(fa) => Ok(Some(ModuleInstr::Invoke(fa))),
+
+                    }
+                },
+                FrameInstr::Br(idx) => {
+                    let idx = idx.to_usize();
+                    let mut cur_label_value = self.labelStack.last().unwrap().valueStack.clone();
+                    for _ in 0..idx{
+                        self.labelStack.pop();
+                    };
+                    
+                    let continue_label = self.labelStack.pop().unwrap().label;
+                    let mut instrs = continue_label.continue_.into_iter().map(AdminInstr::Instr).collect();
+
+                    if let Some(dst_label) = self.labelStack.last_mut(){
+                        dst_label.valueStack.append(&mut cur_label_value);
+                        dst_label.instrs.append(&mut instrs);
+                        Ok(None)
+                    }else{
+                        self.labelStack.push(
+                            LabelStack{
+                                label: Label{
+                                    continue_: vec![],
+                                    locals_num: 0,
+                                },
+                                instrs: vec![],
+                                valueStack: cur_label_value,
+                            }
+                        );
+                        Ok(Some(ModuleInstr::Return))
+                    }
+                },
+                FrameInstr::Label(label, instrs) => {
+                    self.labelStack.push(
+                        LabelStack{
+                            label,
+                            instrs: instrs.into_iter().map(AdminInstr::Instr).collect(),
+                            valueStack: vec![],
+                        }
+                    );
+                    Ok(None)
+                },
+                FrameInstr::EndLabel => {
+                    let mut cur_label = self.labelStack.pop().unwrap();
+                    if let Some(last) = self.labelStack.last_mut() {
+                        last.valueStack.append(&mut cur_label.valueStack);
+                        Ok(None)
+                    } else {
+                        self.labelStack.push(cur_label);
+                        Ok(Some(ModuleInstr::Return)) 
+                    }
+                },
+            }
+        } else {
+            Ok(None)
+        }
     }
 }
+
+#[derive(Clone)]
 pub struct Label {
+    pub continue_: Vec<Instr>,
+    pub locals_num: usize,
+}
+
+pub struct LabelStack {
+    pub label: Label,
     pub instrs: Vec<AdminInstr>,
     pub valueStack: Vec<Val>,
 }
 
-pub enum FrameAdminInstr{
+impl LabelStack{
+    pub fn exec_primitive_instr(&self) -> Result<Option<FrameInstr>, RuntimeError>{
+        Ok(None)
+    }
+}
+
+#[derive(Clone)]
+pub enum ModuleInstr{
     Invoke(FuncAddr),
     Return,
 }
+#[derive(Clone)]
+pub enum FrameInstr{
+    Br(LabelIdx),
+    Label(Label, Vec<Instr>),
+    EndLabel,
+    ModuleInstr(ModuleInstr)
+}
 
+#[derive(Clone)]
 pub enum AdminInstr {
     Trap,
     Instr(Instr),
     Ref(FuncAddr),
-    FrameAdminInstr(FrameAdminInstr),
+    ModuleInstr(ModuleInstr),
+    FrameInstr(FrameInstr),
     RefExtern(ExternAddr),
-    Label(Label, Vec<Instr>),
-    Frame(Frame, Vec<Instr>),
 }

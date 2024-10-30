@@ -91,6 +91,13 @@ pub struct LaneIdx(pub u8);
 pub struct DataIdx(pub u32); 
 #[derive(PartialEq, Debug, Clone)]
 pub struct LabelIdx(pub u32); 
+impl Into<u32> for LabelIdx{
+    fn into(self) -> u32{
+        self.0
+    }
+}
+impl GetIdx for LabelIdx{}
+
 #[derive(PartialEq, Debug, Clone)]
 pub struct ElemIdx(pub u32);
 
