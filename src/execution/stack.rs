@@ -5,16 +5,18 @@ use std::rc::Weak;
 use std::borrow::Borrow;
 
 pub struct Stacks {
-    pub activationFrameStack: Vec<Frame>,
+    pub activationFrameStack: Vec<FrameStack>,
 }
 
 impl Stacks {
     pub fn new(funcaddr: &FuncAddr, params: Vec<Val>) -> Stacks{
         Stacks{
             activationFrameStack: vec![
-                Frame{
-                    locals: Vec::new(),
-                    module: Weak::new(),
+                FrameStack{
+                    frame: Frame{
+                        locals: Vec::new(),
+                        module: Weak::new(),
+                    },
                     labelStack: vec![
                         LabelStack{
                             label: Label{
@@ -45,25 +47,27 @@ impl Stacks {
                 ModuleInstr::Invoke(func_addr) => {
                     match &*func_addr.borrow(){
                         FuncInst::RuntimeFunc{type_,module,code} => {
-                            let frame = Frame{
-                                locals: {
-                                    let mut locals = Vec::new();
-                                    locals.append(
-                                        &mut cur_label.valueStack.split_off(cur_label.valueStack.len() - type_.params.len())
-                                    );
-                                    locals.append(
-                                        &mut code.locals.iter().map(|v| match v.1{
-                                            ValueType::NumType(NumType::I32) => Val::Num(Num::I32(v.0 as i32)),
-                                            ValueType::NumType(NumType::I64) => Val::Num(Num::I64(v.0 as i64)),
-                                            ValueType::NumType(NumType::F32) => Val::Num(Num::F32(v.0)),
-                                            ValueType::NumType(NumType::F64) => Val::Num(Num::F64(v.0 as u64)),
-                                            ValueType::VecType(VecType::V128) => Val::Vec_(Vec_::V128(v.0 as i128)),
-                                            ValueType::RefType(_) => todo!(),
-                                        }).collect()
-                                    );
-                                    locals
+                            let frame = FrameStack{
+                                frame: Frame{
+                                    locals: {
+                                        let mut locals = Vec::new();
+                                        locals.append(
+                                            &mut cur_label.valueStack.split_off(cur_label.valueStack.len() - type_.params.len())
+                                        );
+                                        locals.append(
+                                            &mut code.locals.iter().map(|v| match v.1{
+                                                ValueType::NumType(NumType::I32) => Val::Num(Num::I32(v.0 as i32)),
+                                                ValueType::NumType(NumType::I64) => Val::Num(Num::I64(v.0 as i64)),
+                                                ValueType::NumType(NumType::F32) => Val::Num(Num::F32(v.0)),
+                                                ValueType::NumType(NumType::F64) => Val::Num(Num::F64(v.0 as u64)),
+                                                ValueType::VecType(VecType::V128) => Val::Vec_(Vec_::V128(v.0 as i128)),
+                                                ValueType::RefType(_) => todo!(),
+                                            }).collect()
+                                        );
+                                        locals
+                                    },
+                                    module: module.clone(),
                                 },
-                                module: module.clone(),
                                 labelStack: vec![
                                     LabelStack{
                                         label: Label{
@@ -98,14 +102,18 @@ impl Stacks {
     }
 }
 
-pub struct Frame {
+pub struct Frame{
     pub locals: Vec<Val>,
     pub module: Weak<ModuleInst>,
+}
+
+pub struct FrameStack {
+    pub frame: Frame,
     pub labelStack: Vec<LabelStack>,
     pub void: bool,
 }
 
-impl Frame{
+impl FrameStack{
     pub fn exec_instr_frame_level(&mut self) -> Result<Option<ModuleInstr>, RuntimeError>{
         let mut cur_label = self.labelStack.last_mut().unwrap();
         if let Some(instr) = cur_label.exec_primitive_instr()?{
