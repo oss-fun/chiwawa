@@ -19,6 +19,7 @@ impl Stacks {
                         LabelStack{
                             label: Label{
                                 continue_: vec![],
+                                locals_num: 0,
                             },
                             instrs: vec![
                                 AdminInstr::ModuleInstr(ModuleInstr::Invoke(funcaddr.clone()))
@@ -67,6 +68,7 @@ impl Stacks {
                                     LabelStack{
                                         label: Label{
                                             continue_: vec![],
+                                            locals_num: 0,
                                         },
                                         instrs: code.body.0.clone().into_iter().map(AdminInstr::Instr).collect(),
                                         valueStack: vec![],
@@ -135,6 +137,7 @@ impl Frame{
                             LabelStack{
                                 label: Label{
                                     continue_: vec![],
+                                    locals_num: 0,
                                 },
                                 instrs: vec![],
                                 valueStack: cur_label_value,
@@ -172,7 +175,8 @@ impl Frame{
 
 #[derive(Clone)]
 pub struct Label {
-    pub continue_: Vec<Instr>
+    pub continue_: Vec<Instr>,
+    pub locals_num: usize,
 }
 
 pub struct LabelStack {
