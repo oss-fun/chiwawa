@@ -52,7 +52,7 @@ impl Stacks {
                                     locals: {
                                         let mut locals = Vec::new();
                                         locals.append(
-                                            &mut cur_label.valueStack.split_off(cur_label.valueStack.len() - type_.params.len())
+                                            &mut cur_label.valueStack
                                         );
                                         locals.append(
                                             &mut code.locals.iter().map(|v| match v.1{
