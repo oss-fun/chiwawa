@@ -74,7 +74,7 @@ impl Stacks {
                                             continue_: vec![],
                                             locals_num: 0,
                                         },
-                                        instrs: code.body.0.clone().into_iter().map(AdminInstr::Instr).collect(),
+                                        instrs: code.body.0.clone().into_iter().map(AdminInstr::Instr).rev().collect(),
                                         valueStack: vec![],
                                     }
                                 ],
@@ -134,7 +134,7 @@ impl FrameStack{
                     };
                     
                     let continue_label = self.labelStack.pop().unwrap().label;
-                    let mut instrs = continue_label.continue_.into_iter().map(AdminInstr::Instr).collect();
+                    let mut instrs = continue_label.continue_.into_iter().map(AdminInstr::Instr).rev().collect();
 
                     if let Some(dst_label) = self.labelStack.last_mut(){
                         dst_label.valueStack.append(&mut cur_label_value);
@@ -158,7 +158,7 @@ impl FrameStack{
                     self.labelStack.push(
                         LabelStack{
                             label,
-                            instrs: instrs.into_iter().map(AdminInstr::Instr).collect(),
+                            instrs: instrs.into_iter().map(AdminInstr::Instr).rev().collect(),
                             valueStack: vec![],
                         }
                     );
