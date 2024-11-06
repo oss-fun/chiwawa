@@ -58,8 +58,8 @@ impl Stacks {
                                             &mut code.locals.iter().map(|v| match v.1{
                                                 ValueType::NumType(NumType::I32) => Val::Num(Num::I32(v.0 as i32)),
                                                 ValueType::NumType(NumType::I64) => Val::Num(Num::I64(v.0 as i64)),
-                                                ValueType::NumType(NumType::F32) => Val::Num(Num::F32(v.0)),
-                                                ValueType::NumType(NumType::F64) => Val::Num(Num::F64(v.0 as u64)),
+                                                ValueType::NumType(NumType::F32) => Val::Num(Num::F32(v.0 as f32)),
+                                                ValueType::NumType(NumType::F64) => Val::Num(Num::F64(v.0 as f64)),
                                                 ValueType::VecType(VecType::V128) => Val::Vec_(Vec_::V128(v.0 as i128)),
                                                 ValueType::RefType(_) => todo!(),
                                             }).collect()
@@ -199,6 +199,7 @@ impl LabelStack{
             match instr {
                 AdminInstr::Instr(instr) => {
                     match instr {
+                        /*Numeric Instructions*/
                         Instr::I32Const(x) => {
                             self.valueStack.push(Val::Num(Num::I32(x)));
                             None
@@ -208,11 +209,11 @@ impl LabelStack{
                             None
                         },
                         Instr::F32Const(x) => {
-                            self.valueStack.push(Val::Num(Num::F32(x)));
+                            self.valueStack.push(Val::Num(Num::F32(x as f32)));
                             None
                         },
                         Instr::F64Const(x) => {
-                            self.valueStack.push(Val::Num(Num::F64(x)));
+                            self.valueStack.push(Val::Num(Num::F64(x as f64)));
                             None
                         },
                         Instr::LocalGet(idx) => {
