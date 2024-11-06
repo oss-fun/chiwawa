@@ -52,7 +52,7 @@ impl Stacks {
                                     locals: {
                                         let mut locals = Vec::new();
                                         locals.append(
-                                            &mut cur_label.valueStack.split_off(cur_label.valueStack.len() - type_.params.len())
+                                            &mut cur_label.valueStack
                                         );
                                         locals.append(
                                             &mut code.locals.iter().map(|v| match v.1{
@@ -74,7 +74,7 @@ impl Stacks {
                                             continue_: vec![],
                                             locals_num: 0,
                                         },
-                                        instrs: code.body.0.clone().into_iter().map(AdminInstr::Instr).collect(),
+                                        instrs: code.body.0.clone().into_iter().map(AdminInstr::Instr).rev().collect(),
                                         valueStack: vec![],
                                     }
                                 ],
@@ -116,7 +116,7 @@ pub struct FrameStack {
 impl FrameStack{
     pub fn exec_instr_frame_level(&mut self) -> Result<Option<ModuleInstr>, RuntimeError>{
         let mut cur_label = self.labelStack.last_mut().unwrap();
-        if let Some(instr) = cur_label.exec_primitive_instr()?{
+        if let Some(instr) = cur_label.exec_primitive_instr(&mut self.frame)?{
             match instr {
                 /*Redirect to Exec_instr(Handing Instruction Spanning Frame)*/
                 FrameInstr::ModuleInstr(module_instr) => {
@@ -134,7 +134,7 @@ impl FrameStack{
                     };
                     
                     let continue_label = self.labelStack.pop().unwrap().label;
-                    let mut instrs = continue_label.continue_.into_iter().map(AdminInstr::Instr).collect();
+                    let mut instrs = continue_label.continue_.into_iter().map(AdminInstr::Instr).rev().collect();
 
                     if let Some(dst_label) = self.labelStack.last_mut(){
                         dst_label.valueStack.append(&mut cur_label_value);
@@ -158,7 +158,7 @@ impl FrameStack{
                     self.labelStack.push(
                         LabelStack{
                             label,
-                            instrs: instrs.into_iter().map(AdminInstr::Instr).collect(),
+                            instrs: instrs.into_iter().map(AdminInstr::Instr).rev().collect(),
                             valueStack: vec![],
                         }
                     );
@@ -194,8 +194,65 @@ pub struct LabelStack {
 }
 
 impl LabelStack{
-    pub fn exec_primitive_instr(&self) -> Result<Option<FrameInstr>, RuntimeError>{
-        Ok(None)
+    pub fn exec_primitive_instr(&mut self, frame: &mut Frame) -> Result<Option<FrameInstr>, RuntimeError>{
+        Ok(if let Some(instr) = self.instrs.pop(){
+            match instr {
+                AdminInstr::Instr(instr) => {
+                    match instr {
+                        Instr::I32Const(x) => {
+                            self.valueStack.push(Val::Num(Num::I32(x)));
+                            None
+                        },
+                        Instr::I64Const(x) => {
+                            self.valueStack.push(Val::Num(Num::I64(x)));
+                            None
+                        },
+                        Instr::F32Const(x) => {
+                            self.valueStack.push(Val::Num(Num::F32(x)));
+                            None
+                        },
+                        Instr::F64Const(x) => {
+                            self.valueStack.push(Val::Num(Num::F64(x)));
+                            None
+                        },
+                        Instr::LocalGet(idx) => {
+                            self.valueStack.push(frame.locals[idx.0 as usize].clone());
+                            None
+                        },
+                        Instr::LocalSet(idx) => {
+                            frame.locals[idx.0 as usize] = self.valueStack.pop().unwrap();
+                            None
+                        },
+                        Instr::I32Add => {
+                            let a = self.valueStack.pop().unwrap().to_i32();
+                            let b = self.valueStack.pop().unwrap().to_i32();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(a + b))
+                            );
+                            None
+                        },
+                        _ => todo!(),
+                    }
+                },
+                AdminInstr::FrameInstr(frame) => {
+                    match frame{
+                        FrameInstr::Br(idx) => Some(FrameInstr::Br(idx)),
+                        FrameInstr::Label(label, instrs) => Some(FrameInstr::Label(label, instrs)),
+                        FrameInstr::EndLabel => Some(FrameInstr::EndLabel),
+                        FrameInstr::ModuleInstr(m) => Some(FrameInstr::ModuleInstr(m)),
+                    }
+                },
+                AdminInstr::ModuleInstr(module) => {
+                    match module{
+                        ModuleInstr::Invoke(funcaddr) => Some(FrameInstr::ModuleInstr(ModuleInstr::Invoke(funcaddr))),
+                        ModuleInstr::Return => Some(FrameInstr::ModuleInstr(ModuleInstr::Return)),
+                    }
+                }
+                _ => todo!(),
+            }
+        } else{
+            Some(FrameInstr::EndLabel)
+        })
     }
 }
 

@@ -18,7 +18,7 @@ pub enum FuncInst {
 }
 
 impl FuncAddr {
-    pub fn call(&self, params: Vec<Val>){
+    pub fn call(&self, params: Vec<Val>) -> Vec<Val>{
         let mut stack = Stacks::new(&self, params);
 
         loop{
@@ -29,7 +29,8 @@ impl FuncAddr {
             && stack.activationFrameStack.first().unwrap().labelStack.first().unwrap().instrs.is_empty(){
                 break;
             }
-        } 
+        }
+        stack.activationFrameStack.pop().unwrap().labelStack.pop().unwrap().valueStack
     }
 
     pub fn borrow(&self) -> Ref<FuncInst> {
