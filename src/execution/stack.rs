@@ -348,6 +348,368 @@ impl LabelStack{
                             );
                             None
                         },
+                        Instr::I32Sub => {
+                            let a = self.valueStack.pop().unwrap().to_i32();
+                            let b = self.valueStack.pop().unwrap().to_i32();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(a - b))
+                            );
+                            None
+                        },
+                        Instr::I32Mul => {
+                            let a = self.valueStack.pop().unwrap().to_i32();
+                            let b = self.valueStack.pop().unwrap().to_i32();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(a * b))
+                            );
+                            None
+                        },
+                        Instr::I32DivS => {
+                            let a = self.valueStack.pop().unwrap().to_i32();
+                            let b = self.valueStack.pop().unwrap().to_i32();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(a.checked_div(b).ok_or_else(|| RuntimeError::ZeroDivideError)?))
+                            );
+                            None
+                        },
+                        Instr::I32DivU => {
+                            let a = self.valueStack.pop().unwrap().to_i32() as u32;
+                            let b = self.valueStack.pop().unwrap().to_i32() as u32;
+                            self.valueStack.push(
+                                Val::Num(Num::I32(a.checked_div(b).ok_or_else(|| RuntimeError::ZeroDivideError)? as i32))
+                            );
+                            None
+                        },
+                        Instr::I32RemS => {
+                            let a = self.valueStack.pop().unwrap().to_i32();
+                            let b = self.valueStack.pop().unwrap().to_i32();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(a.overflowing_rem(b).0))
+                            );
+                            None
+                        },
+                        Instr::I32RemU => {
+                            let a = self.valueStack.pop().unwrap().to_i32() as u32;
+                            let b = self.valueStack.pop().unwrap().to_i32() as u32;
+                            self.valueStack.push(
+                                Val::Num(Num::I32(a.overflowing_rem(b).0 as i32))
+                            );
+                            None
+                        },
+                        Instr::I32And => {
+                            let a = self.valueStack.pop().unwrap().to_i32();
+                            let b = self.valueStack.pop().unwrap().to_i32();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(a & b))
+                            );
+                            None
+                        },
+                        Instr::I32Or => {
+                            let a = self.valueStack.pop().unwrap().to_i32();
+                            let b = self.valueStack.pop().unwrap().to_i32();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(a | b))
+                            );
+                            None
+                        },
+                        Instr::I32Xor => {
+                            let a = self.valueStack.pop().unwrap().to_i32();
+                            let b = self.valueStack.pop().unwrap().to_i32();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(a ^ b))
+                            );
+                            None
+                        },
+                        Instr::I32Shl => {
+                            let a = self.valueStack.pop().unwrap().to_i32();
+                            let b = self.valueStack.pop().unwrap().to_i32();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(a << b))
+                            );
+                            None
+                        },
+                        Instr::I32Shl => {
+                            let a = self.valueStack.pop().unwrap().to_i32();
+                            let b = self.valueStack.pop().unwrap().to_i32();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(a << b))
+                            );
+                            None
+                        },
+                        Instr::I32ShrS => {
+                            let a = self.valueStack.pop().unwrap().to_i32();
+                            let b = self.valueStack.pop().unwrap().to_i32();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(a >> b))
+                            );
+                            None
+                        },
+                        Instr::I32ShrU => {
+                            let a = self.valueStack.pop().unwrap().to_i32() as u32;
+                            let b = self.valueStack.pop().unwrap().to_i32() as u32;
+                            self.valueStack.push(
+                                Val::Num(Num::I32((a >> b) as i32))
+                            );
+                            None
+                        },
+                        Instr::I32Rotl => {
+                            let a = self.valueStack.pop().unwrap().to_i32();
+                            let b = self.valueStack.pop().unwrap().to_i32();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(a.rotate_left(b as u32)))
+                            );
+                            None
+                        },
+                        Instr::I32Rotr => {
+                            let a = self.valueStack.pop().unwrap().to_i32();
+                            let b = self.valueStack.pop().unwrap().to_i32();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(a.rotate_right(b as u32)))
+                            );
+                            None
+                        },
+                        Instr::I64Add => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let b = self.valueStack.pop().unwrap().to_i64();
+                            self.valueStack.push(
+                                Val::Num(Num::I64(a + b))
+                            );
+                            None
+                        },
+                        Instr::I64Sub => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let b = self.valueStack.pop().unwrap().to_i64();
+                            self.valueStack.push(
+                                Val::Num(Num::I64(a - b))
+                            );
+                            None
+                        },
+                        Instr::I64Mul => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let b = self.valueStack.pop().unwrap().to_i64();
+                            self.valueStack.push(
+                                Val::Num(Num::I64(a * b))
+                            );
+                            None
+                        },
+                        Instr::I64DivS => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let b = self.valueStack.pop().unwrap().to_i64();
+                            self.valueStack.push(
+                                Val::Num(Num::I64(a.checked_div(b).ok_or_else(|| RuntimeError::ZeroDivideError)?))
+                            );
+                            None
+                        },
+                        Instr::I64DivU => {
+                            let a = self.valueStack.pop().unwrap().to_i32() as u64;
+                            let b = self.valueStack.pop().unwrap().to_i32() as u64;
+                            self.valueStack.push(
+                                Val::Num(Num::I64(a.checked_div(b).ok_or_else(|| RuntimeError::ZeroDivideError)? as i64))
+                            );
+                            None
+                        },
+                        Instr::I64RemS => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let b = self.valueStack.pop().unwrap().to_i64();
+                            self.valueStack.push(
+                                Val::Num(Num::I64(a.overflowing_rem(b).0))
+                            );
+                            None
+                        },
+                        Instr::I64RemU => {
+                            let a = self.valueStack.pop().unwrap().to_i32() as u64;
+                            let b = self.valueStack.pop().unwrap().to_i32() as u64;
+                            self.valueStack.push(
+                                Val::Num(Num::I64(a.overflowing_rem(b).0 as i64))
+                            );
+                            None
+                        },
+                        Instr::I64And => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let b = self.valueStack.pop().unwrap().to_i64();
+                            self.valueStack.push(
+                                Val::Num(Num::I64(a & b))
+                            );
+                            None
+                        },
+                        Instr::I64Or => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let b = self.valueStack.pop().unwrap().to_i64();
+                            self.valueStack.push(
+                                Val::Num(Num::I64(a | b))
+                            );
+                            None
+                        },
+                        Instr::I64Xor => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let b = self.valueStack.pop().unwrap().to_i64();
+                            self.valueStack.push(
+                                Val::Num(Num::I64(a ^ b))
+                            );
+                            None
+                        },
+
+                        Instr::I64Shl => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let b = self.valueStack.pop().unwrap().to_i64();
+                            self.valueStack.push(
+                                Val::Num(Num::I64(a << b))
+                            );
+                            None
+                        },
+                        Instr::I64Shl => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let b = self.valueStack.pop().unwrap().to_i64();
+                            self.valueStack.push(
+                                Val::Num(Num::I64(a << b))
+                            );
+                            None
+                        },
+                        Instr::I64ShrS => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let b = self.valueStack.pop().unwrap().to_i64();
+                            self.valueStack.push(
+                                Val::Num(Num::I64(a >> b))
+                            );
+                            None
+                        },
+                        Instr::I64ShrU => {
+                            let a = self.valueStack.pop().unwrap().to_i32() as u64;
+                            let b = self.valueStack.pop().unwrap().to_i32() as u64;
+                            self.valueStack.push(
+                                Val::Num(Num::I64((a >> b) as i64))
+                            );
+                            None
+                        },
+                        Instr::I64Rotl => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let b = self.valueStack.pop().unwrap().to_i64();
+                            self.valueStack.push(
+                                Val::Num(Num::I64(a.rotate_left(b as u32)))
+                            );
+                            None
+                        },
+                        Instr::I64Rotr => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let b = self.valueStack.pop().unwrap().to_i64();
+                            self.valueStack.push(
+                                Val::Num(Num::I64(a.rotate_right(b as u32)))
+                            );
+                            None
+                        },
+
+                        Instr::F32Add => {
+                            let a = self.valueStack.pop().unwrap().to_f32();
+                            let b = self.valueStack.pop().unwrap().to_f32();
+                            self.valueStack.push(
+                                Val::Num(Num::F32(a + b))
+                            );
+                            None
+                        },
+                        Instr::F32Sub => {
+                            let a = self.valueStack.pop().unwrap().to_f32();
+                            let b = self.valueStack.pop().unwrap().to_f32();
+                            self.valueStack.push(
+                                Val::Num(Num::F32(a - b))
+                            );
+                            None
+                        },
+                        Instr::F32Mul => {
+                            let a = self.valueStack.pop().unwrap().to_f32();
+                            let b = self.valueStack.pop().unwrap().to_f32();
+                            self.valueStack.push(
+                                Val::Num(Num::F32(a * b))
+                            );
+                            None
+                        },
+                        Instr::F32Div => {
+                            let a = self.valueStack.pop().unwrap().to_f32();
+                            let b = self.valueStack.pop().unwrap().to_f32();
+                            self.valueStack.push(
+                                Val::Num(Num::F32(a / b))
+                            );
+                            None
+                        },
+                        Instr::F32Min => {
+                            let a = self.valueStack.pop().unwrap().to_f32();
+                            let b = self.valueStack.pop().unwrap().to_f32();
+                            self.valueStack.push(
+                                Val::Num(Num::F32(a.min(b)))
+                            );
+                            None
+                        },
+                        Instr::F32Max => {
+                            let a = self.valueStack.pop().unwrap().to_f32();
+                            let b = self.valueStack.pop().unwrap().to_f32();
+                            self.valueStack.push(
+                                Val::Num(Num::F32(a.max(b)))
+                            );
+                            None
+                        },
+                        Instr::F32Copysign => {
+                            let a = self.valueStack.pop().unwrap().to_f32();
+                            let b = self.valueStack.pop().unwrap().to_f32();
+                            self.valueStack.push(
+                                Val::Num(Num::F32(a.copysign(b)))
+                            );
+                            None
+                        },
+                        Instr::F64Add => {
+                            let a = self.valueStack.pop().unwrap().to_f64();
+                            let b = self.valueStack.pop().unwrap().to_f64();
+                            self.valueStack.push(
+                                Val::Num(Num::F64(a + b))
+                            );
+                            None
+                        },
+                        Instr::F64Sub => {
+                            let a = self.valueStack.pop().unwrap().to_f64();
+                            let b = self.valueStack.pop().unwrap().to_f64();
+                            self.valueStack.push(
+                                Val::Num(Num::F64(a - b))
+                            );
+                            None
+                        },
+                        Instr::F64Mul => {
+                            let a = self.valueStack.pop().unwrap().to_f64();
+                            let b = self.valueStack.pop().unwrap().to_f64();
+                            self.valueStack.push(
+                                Val::Num(Num::F64(a * b))
+                            );
+                            None
+                        },
+                        Instr::F64Div => {
+                            let a = self.valueStack.pop().unwrap().to_f64();
+                            let b = self.valueStack.pop().unwrap().to_f64();
+                            self.valueStack.push(
+                                Val::Num(Num::F64(a / b))
+                            );
+                            None
+                        },
+                        Instr::F64Min => {
+                            let a = self.valueStack.pop().unwrap().to_f64();
+                            let b = self.valueStack.pop().unwrap().to_f64();
+                            self.valueStack.push(
+                                Val::Num(Num::F64(a.min(b)))
+                            );
+                            None
+                        },
+                        Instr::F64Max => {
+                            let a = self.valueStack.pop().unwrap().to_f64();
+                            let b = self.valueStack.pop().unwrap().to_f64();
+                            self.valueStack.push(
+                                Val::Num(Num::F64(a.max(b)))
+                            );
+                            None
+                        },
+                        Instr::F64Copysign => {
+                            let a = self.valueStack.pop().unwrap().to_f64();
+                            let b = self.valueStack.pop().unwrap().to_f64();
+                            self.valueStack.push(
+                                Val::Num(Num::F64(a.copysign(b)))
+                            );
+                            None
+                        },
                         _ => todo!(),
                     }
                 },
