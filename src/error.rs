@@ -10,8 +10,9 @@ pub enum RuntimeError {
     ExportFuncNotFound,
     #[error("Instruction Failed")]
     InstructionFailed,
+    #[error("Divide by Zero")]
+    ZeroDivideError,
 }
-
 #[derive(Debug, Error)]
 pub enum ParserError {
     #[error("Invalid Version")]
