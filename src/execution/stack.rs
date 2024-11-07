@@ -199,7 +199,7 @@ impl LabelStack{
             match instr {
                 AdminInstr::Instr(instr) => {
                     match instr {
-                        /*Numeric Instructions*/
+                        /*Single Operand Numeric Instructions*/
                         Instr::I32Const(x) => {
                             self.valueStack.push(Val::Num(Num::I32(x)));
                             None
@@ -340,6 +340,7 @@ impl LabelStack{
                             frame.locals[idx.0 as usize] = self.valueStack.pop().unwrap();
                             None
                         },
+                        /*Two Operand Numeric Instructions*/
                         Instr::I32Add => {
                             let a = self.valueStack.pop().unwrap().to_i32();
                             let b = self.valueStack.pop().unwrap().to_i32();
