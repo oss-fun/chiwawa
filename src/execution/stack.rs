@@ -216,6 +216,122 @@ impl LabelStack{
                             self.valueStack.push(Val::Num(Num::F64(x as f64)));
                             None
                         },
+                        Instr::I32Clz => {
+                            let x = self.valueStack.pop().unwrap().to_i32().leading_zeros();
+                            self.valueStack.push(Val::Num(Num::I32(x as i32)));
+                            None
+                        },
+                        Instr::I32Ctz => {
+                            let x = self.valueStack.pop().unwrap().to_i32().trailing_zeros();
+                            self.valueStack.push(Val::Num(Num::I32(x as i32)));
+                            None
+                        },
+                        Instr::I32Popcnt => {
+                            let x = self.valueStack.pop().unwrap().to_i32().count_ones();
+                            self.valueStack.push(Val::Num(Num::I32(x as i32)));
+                            None
+                        },
+                        Instr::I64Clz => {
+                            let x = self.valueStack.pop().unwrap().to_i64().leading_zeros();
+                            self.valueStack.push(Val::Num(Num::I64(x as i64)));
+                            None
+                        },
+                        Instr::I64Ctz => {
+                            let x = self.valueStack.pop().unwrap().to_i64().trailing_zeros();
+                            self.valueStack.push(Val::Num(Num::I64(x as i64)));
+                            None
+                        },
+                        Instr::I64Popcnt => {
+                            let x = self.valueStack.pop().unwrap().to_i64().count_ones();
+                            self.valueStack.push(Val::Num(Num::I64(x as i64)));
+                            None
+                        },
+                        Instr::F32Abs => {
+                            let x = self.valueStack.pop().unwrap().to_f32();
+                            self.valueStack.push(Val::Num(Num::F32(x.abs())));
+                            None
+                        },
+                        Instr::F32Neg => {
+                            let x = self.valueStack.pop().unwrap().to_f32();
+                            self.valueStack.push(Val::Num(Num::F32(x * -1.0)));
+                            None
+                        },
+                        Instr::F32Sqrt => {
+                            let x = self.valueStack.pop().unwrap().to_f32();
+                            self.valueStack.push(Val::Num(Num::F32(x.sqrt())));
+                            None
+                        },
+                        Instr::F32Ceil => {
+                            let x = self.valueStack.pop().unwrap().to_f32();
+                            self.valueStack.push(Val::Num(Num::F32(x.ceil())));
+                            None
+                        },
+                        Instr::F32Floor => {
+                            let x = self.valueStack.pop().unwrap().to_f32();
+                            self.valueStack.push(Val::Num(Num::F32(x.floor())));
+                            None
+                        },
+                        Instr::F32Trunc => {
+                            let x = self.valueStack.pop().unwrap().to_f32();
+                            self.valueStack.push(Val::Num(Num::F32(x.trunc())));
+                            None
+                        },
+                        Instr::F32Nearest => {
+                            let x = self.valueStack.pop().unwrap().to_f32() % 2.0;
+                            
+                            let ret = if x == 0.5 {
+                                x.floor()
+                            }else if x ==  -0.5{
+                                x.ceil()
+                            }else{
+                                x.round()
+                            };
+                            self.valueStack.push(Val::Num(Num::F32(ret)));
+                            None
+                        },
+                        Instr::F64Abs => {
+                            let x = self.valueStack.pop().unwrap().to_f64();
+                            self.valueStack.push(Val::Num(Num::F64(x.abs())));
+                            None
+                        },
+                        Instr::F32Neg => {
+                            let x = self.valueStack.pop().unwrap().to_f64();
+                            self.valueStack.push(Val::Num(Num::F64(x * -1.0)));
+                            None
+                        },
+                        Instr::F32Sqrt => {
+                            let x = self.valueStack.pop().unwrap().to_f64();
+                            self.valueStack.push(Val::Num(Num::F64(x.sqrt())));
+                            None
+                        },
+                        Instr::F32Ceil => {
+                            let x = self.valueStack.pop().unwrap().to_f64();
+                            self.valueStack.push(Val::Num(Num::F64(x.ceil())));
+                            None
+                        },
+                        Instr::F32Floor => {
+                            let x = self.valueStack.pop().unwrap().to_f64();
+                            self.valueStack.push(Val::Num(Num::F64(x.floor())));
+                            None
+                        },
+                        Instr::F32Trunc => {
+                            let x = self.valueStack.pop().unwrap().to_f64();
+                            self.valueStack.push(Val::Num(Num::F64(x.trunc())));
+                            None
+                        },
+                        Instr::F32Nearest => {
+                            let x = self.valueStack.pop().unwrap().to_f64() % 2.0;
+                            
+                            let ret = if x == 0.5 {
+                                x.floor()
+                            }else if x ==  -0.5{
+                                x.ceil()
+                            }else{
+                                x.round()
+                            };
+                            self.valueStack.push(Val::Num(Num::F64(ret)));
+                            None
+                        },
                         Instr::LocalGet(idx) => {
                             self.valueStack.push(frame.locals[idx.0 as usize].clone());
                             None
