@@ -3,6 +3,10 @@ use crate::structure::{instructions::Instr, types::*};
 use crate::error::RuntimeError;
 use std::rc::Weak;
 use std::borrow::Borrow;
+use num::NumCast;
+use std::cmp::{max, min};
+use std::io::Cursor;
+use byteorder::*;
 
 pub struct Stacks {
     pub activationFrameStack: Vec<FrameStack>,
@@ -980,6 +984,322 @@ impl LabelStack{
                             let b = self.valueStack.pop().unwrap().to_f64();
                             self.valueStack.push(
                                 Val::Num(Num::I32((a >= b) as i32))
+                            );
+                            None
+                        },
+                        /*Type Translation Instructions*/
+                        Instr::I32Extend8S => {
+                            let a = self.valueStack.pop().unwrap().to_i32();
+                            let result = (a & (2^(8-1) - 1)) | (0 - (a & 2^(8-1)));
+                            self.valueStack.push(
+                                Val::Num(Num::I32(result))
+                            );
+                            None
+                        },
+                        Instr::I64Extend8S => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let result = (a & (2^(8-1) - 1)) | (0 - (a & 2^(8-1)));
+                            self.valueStack.push(
+                                Val::Num(Num::I64(result))
+                            );
+                            None
+                        },
+                        Instr::I32Extend16S => {
+                            let a = self.valueStack.pop().unwrap().to_i32();
+                            let result = (a & (2^(16-1) - 1)) | (0 - (a & 2^(16-1)));
+                            self.valueStack.push(
+                                Val::Num(Num::I32(result))
+                            );
+                            None
+                        },
+                        Instr::I64Extend16S => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let result = (a & (2^(16-1) - 1)) | (0 - (a & 2^(16-1)));
+                            self.valueStack.push(
+                                Val::Num(Num::I64(result))
+                            );
+                            None
+                        },
+                        Instr::I64Extend32S => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let result = (a & (2^(32-1) - 1)) | (0 - (a & 2^(32-1)));
+                            self.valueStack.push(
+                                Val::Num(Num::I64(result))
+                            );
+                            None
+                        },
+                        Instr::I32WrapI64 => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(a as i32))
+                            );
+                            None
+                        },
+                        Instr::I64ExtendI32S => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let result = (a & (2^(32-1) - 1)) | (0 - (a & 2^(32-1)));
+                            self.valueStack.push(
+                                Val::Num(Num::I64(result))
+                            );
+                            None
+                        },
+                        Instr::I64ExtendI32U => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let result = (a & (2^32 - 1));
+                            self.valueStack.push(
+                                Val::Num(Num::I64(result))
+                            );
+                            None
+                        },
+                        Instr::I32TruncF32S => {
+                            let a = self.valueStack.pop().unwrap().to_f32();
+                            let result = <i32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(result))
+                            );
+                            None
+                        },
+                        Instr::I32TruncF32U => {
+                            let a = self.valueStack.pop().unwrap().to_f32();
+                            let result = <u32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(result as i32))
+                            );
+                            None
+                        },
+                        Instr::I32TruncF64S => {
+                            let a = self.valueStack.pop().unwrap().to_f64();
+                            let result = <i32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(result))
+                            );
+                            None
+                        },
+                        Instr::I32TruncF64U => {
+                            let a = self.valueStack.pop().unwrap().to_f64();
+                            let result = <u32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(result as i32))
+                            );
+                            None
+                        },
+                        Instr::I64TruncF32S => {
+                            let a = self.valueStack.pop().unwrap().to_f32();
+                            let result = <i64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            self.valueStack.push(
+                                Val::Num(Num::I64(result))
+                            );
+                            None
+                        },
+                        Instr::I64TruncF32U => {
+                            let a = self.valueStack.pop().unwrap().to_f32();
+                            let result = <u64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            self.valueStack.push(
+                                Val::Num(Num::I64(result as i64))
+                            );
+                            None
+                        },
+                        Instr::I64TruncF64S => {
+                            let a = self.valueStack.pop().unwrap().to_f64();
+                            let result = <i64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            self.valueStack.push(
+                                Val::Num(Num::I64(result))
+                            );
+                            None
+                        },
+                        Instr::I64TruncF64U => {
+                            let a = self.valueStack.pop().unwrap().to_f64();
+                            let result = <u64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            self.valueStack.push(
+                                Val::Num(Num::I64(result as i64))
+                            );
+                            None
+                        },
+                        Instr::I32TruncSatF32S => {
+                            let a = self.valueStack.pop().unwrap().to_f32();
+                            let cast = <i32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            let result = max(-2^(32-1), min(cast, 2^(32-1)-1));
+                            self.valueStack.push(
+                                Val::Num(Num::I32(result))
+                            );
+                            None
+                        },
+                        Instr::I32TruncSatF32U => {
+                            let a = self.valueStack.pop().unwrap().to_f32();
+                            let cast = <u32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            let result = max(0, min(cast, 2^(32-1)));
+                            self.valueStack.push(
+                                Val::Num(Num::I32(result as i32))
+                            );
+                            None
+                        },
+                        Instr::I32TruncSatF64S => {
+                            let a = self.valueStack.pop().unwrap().to_f64();
+                            let cast = <i32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            let result = max(-2^(32-1), min(cast, 2^(32-1)-1));
+                            self.valueStack.push(
+                                Val::Num(Num::I32(result))
+                            );
+                            None
+                        },
+                        Instr::I32TruncSatF64U => {
+                            let a = self.valueStack.pop().unwrap().to_f64();
+                            let cast = <u32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            let result = max(0, min(cast, 2^(32-1)));
+                            self.valueStack.push(
+                                Val::Num(Num::I32(result as i32))
+                            );
+                            None
+                        },
+                        Instr::I64TruncSatF32S => {
+                            let a = self.valueStack.pop().unwrap().to_f32();
+                            let cast = <i64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            let result = max(-2^(64-1), min(cast, 2^(64-1)-1));
+                            self.valueStack.push(
+                                Val::Num(Num::I64(result))
+                            );
+                            None
+                        },
+                        Instr::I64TruncSatF32U => {
+                            let a = self.valueStack.pop().unwrap().to_f32();
+                            let cast = <u64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            let result = max(0, min(cast, 2^(64-1)));
+                            self.valueStack.push(
+                                Val::Num(Num::I64(result as i64))
+                            );
+                            None
+                        },
+                        Instr::I64TruncSatF64S => {
+                            let a = self.valueStack.pop().unwrap().to_f64();
+                            let cast = <i64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            let result = max(-2^(64-1), min(cast, 2^(64-1)-1));
+                            self.valueStack.push(
+                                Val::Num(Num::I64(result))
+                            );
+                            None
+                        },
+                        Instr::I64TruncSatF64U => {
+                            let a = self.valueStack.pop().unwrap().to_f64();
+                            let cast = <u64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            let result = max(0, min(cast, 2^(64-1)));
+                            self.valueStack.push(
+                                Val::Num(Num::I64(result as i64))
+                            );
+                            None
+                        },
+                        Instr::F32DemoteF64 => {
+                            let a = self.valueStack.pop().unwrap().to_f64();
+                            self.valueStack.push(
+                                Val::Num(Num::F32(a as f32))
+                            );
+                            None
+                        },
+                        Instr::F64PromoteF32 => {
+                            let a = self.valueStack.pop().unwrap().to_f32();
+                            self.valueStack.push(
+                                Val::Num(Num::F64(a as f64))
+                            );
+                            None
+                        },
+
+                        Instr::F32ConvertI32S => {
+                            let a = self.valueStack.pop().unwrap().to_i32();
+                            self.valueStack.push(
+                                Val::Num(Num::F32(a as f32))
+                            );
+                            None
+                        },
+                        Instr::F32ConvertI32U => {
+                            let a = self.valueStack.pop().unwrap().to_i32() as u32;
+                            self.valueStack.push(
+                                Val::Num(Num::F32(a as f32))
+                            );
+                            None
+                        },
+                        Instr::F32ConvertI64S => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            self.valueStack.push(
+                                Val::Num(Num::F32(a as f32))
+                            );
+                            None
+                        },
+                        Instr::F32ConvertI64U => {
+                            let a = self.valueStack.pop().unwrap().to_i64() as u64;
+                            self.valueStack.push(
+                                Val::Num(Num::F32(a as f32))
+                            );
+                            None
+                        },
+                        Instr::F64ConvertI32S => {
+                            let a = self.valueStack.pop().unwrap().to_i32();
+                            self.valueStack.push(
+                                Val::Num(Num::F64(a as f64))
+                            );
+                            None
+                        },
+                        Instr::F64ConvertI32U => {
+                            let a = self.valueStack.pop().unwrap().to_i32() as u32;
+                            self.valueStack.push(
+                                Val::Num(Num::F64(a as f64))
+                            );
+                            None
+                        },
+                        Instr::F64ConvertI64S => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            self.valueStack.push(
+                                Val::Num(Num::F64(a as f64))
+                            );
+                            None
+                        },
+                        Instr::F64ConvertI64U => {
+                            let a = self.valueStack.pop().unwrap().to_i64() as u64;
+                            self.valueStack.push(
+                                Val::Num(Num::F64(a as f64))
+                            );
+                            None
+                        },
+                        Instr::I32ReinterpretF32 => {
+                            let a = self.valueStack.pop().unwrap().to_f32();
+                            let mut buf = vec![];
+                            buf.write_f32::<LittleEndian>(a).unwrap();
+                            let mut cursor = Cursor::new(buf);
+                            let result = cursor.read_i32::<LittleEndian>().unwrap();
+                            self.valueStack.push(
+                                Val::Num(Num::I32(result))
+                            );
+                            None
+                        },
+                        Instr::I64ReinterpretF64 => {
+                            let a = self.valueStack.pop().unwrap().to_f64();
+                            let mut buf = vec![];
+                            buf.write_f64::<LittleEndian>(a).unwrap();
+                            let mut cursor = Cursor::new(buf);
+                            let result = cursor.read_i64::<LittleEndian>().unwrap();
+                            self.valueStack.push(
+                                Val::Num(Num::I64(result))
+                            );
+                            None
+                        },
+                        Instr::F32ReinterpretI32 => {
+                            let a = self.valueStack.pop().unwrap().to_i32();
+                            let mut buf = vec![];
+                            buf.write_i32::<LittleEndian>(a).unwrap();
+                            let mut cursor = Cursor::new(buf);
+                            let result = cursor.read_f32::<LittleEndian>().unwrap();
+                            self.valueStack.push(
+                                Val::Num(Num::F32(result))
+                            );
+                            None
+                        },
+
+                        Instr::F64ReinterpretI64 => {
+                            let a = self.valueStack.pop().unwrap().to_i64();
+                            let mut buf = vec![];
+                            buf.write_i64::<LittleEndian>(a).unwrap();
+                            let mut cursor = Cursor::new(buf);
+                            let result = cursor.read_f64::<LittleEndian>().unwrap();
+                            self.valueStack.push(
+                                Val::Num(Num::F64(result))
                             );
                             None
                         },
