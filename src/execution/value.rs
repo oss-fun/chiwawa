@@ -17,14 +17,35 @@ impl Val {
             panic!();
         }
     }
+    pub fn to_i64(&self) ->i64{
+        if let Val::Num(Num::I64(num)) = self {
+            *num
+        } else {
+            panic!();
+        }
+    }
+    pub fn to_f32(&self) ->f32{
+        if let Val::Num(Num::F32(num)) = self {
+            *num
+        } else {
+            panic!();
+        }
+    }
+    pub fn to_f64(&self) ->f64{
+        if let Val::Num(Num::F64(num)) = self {
+            *num
+        } else {
+            panic!();
+        }
+    }
 }
 
 #[derive(Clone)]
 pub enum Num {
     I32(i32),
     I64(i64),
-    F32(u32),
-    F64(u64),
+    F32(f32),
+    F64(f64),
 }
 
 #[derive(Clone)]
