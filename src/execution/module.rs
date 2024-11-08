@@ -155,8 +155,8 @@ impl ModuleInst {
         match &expr.0[..] {
             &[Instr::I32Const(i)] => Val::Num(Num::I32(i)),
             &[Instr::I64Const(i)] => Val::Num(Num::I64(i)),
-            &[Instr::F32Const(i)] => Val::Num(Num::F32(i)),
-            &[Instr::F64Const(i)] => Val::Num(Num::F64(i)),
+            &[Instr::F32Const(i)] => Val::Num(Num::F32(i as f32)),
+            &[Instr::F64Const(i)] => Val::Num(Num::F64(i as f64)),
             &[Instr::V128Const(i)] => Val::Vec_(Vec_::V128(i)),
             _ => todo!(),
         }
