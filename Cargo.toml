@@ -5,8 +5,11 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.86"
+byteorder = "1.5.0"
 clap = { version = "4.5.7", features = ["derive"] }
 maplit = "1.0.2"
+num = "0.4.3"
+rmp = "0.8.14"
 thiserror = "1.0.61"
 wasmparser = "0.210.0"
 wat = "1.212.0"
