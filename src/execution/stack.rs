@@ -1304,6 +1304,10 @@ impl LabelStack{
                             frame.locals[idx.0 as usize] = self.valueStack.pop().unwrap();
                             None
                         },
+                        Instr::LocalTee(idx) => {
+                            frame.locals[idx.0 as usize] = self.valueStack.last().unwrap().clone();
+                            None
+                        },
                         _ => todo!(),
                     }
                 },
