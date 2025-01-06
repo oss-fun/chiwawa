@@ -336,14 +336,6 @@ impl LabelStack{
                             self.valueStack.push(Val::Num(Num::F64(ret)));
                             None
                         },
-                        Instr::LocalGet(idx) => {
-                            self.valueStack.push(frame.locals[idx.0 as usize].clone());
-                            None
-                        },
-                        Instr::LocalSet(idx) => {
-                            frame.locals[idx.0 as usize] = self.valueStack.pop().unwrap();
-                            None
-                        },
                         /*Two Operand Numeric Instructions*/
                         Instr::I32Add => {
                             let a = self.valueStack.pop().unwrap().to_i32();
@@ -1301,6 +1293,15 @@ impl LabelStack{
                             self.valueStack.push(
                                 Val::Num(Num::F64(result))
                             );
+                            None
+                        },
+                        /*Variable Instructions*/
+                        Instr::LocalGet(idx) => {
+                            self.valueStack.push(frame.locals[idx.0 as usize].clone());
+                            None
+                        },
+                        Instr::LocalSet(idx) => {
+                            frame.locals[idx.0 as usize] = self.valueStack.pop().unwrap();
                             None
                         },
                         _ => todo!(),
