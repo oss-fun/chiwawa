@@ -1,6 +1,7 @@
 use std::{rc::Rc, cell::RefCell, cell::Ref};
 use crate::structure::types::*;
 use super::value::Val;
+use crate::error::RuntimeError;
 
 #[derive(Clone)]
 pub struct GlobalAddr(Rc<RefCell<GlobalInst>>);
@@ -23,5 +24,13 @@ impl GlobalAddr {
     }
     pub fn get(&self) -> Val {
         self.0.borrow().value.clone()
+    }
+    pub fn set(&self, value: Val) -> Result<(), RuntimeError>{
+        let mut self_inst = self.0.borrow_mut();
+        if self_inst.value.val_type() == value.val_type() {
+            self_inst.value = value;
+            return Ok(());
+        }
+        Err(RuntimeError::InstructionFailed)
     }
 }

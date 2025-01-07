@@ -15,6 +15,7 @@ pub enum RuntimeError {
     #[error("Trunc Failed")]
     TruncError,
 }
+
 #[derive(Debug, Error)]
 pub enum ParserError {
     #[error("Invalid Version")]
