@@ -336,14 +336,6 @@ impl LabelStack{
                             self.valueStack.push(Val::Num(Num::F64(ret)));
                             None
                         },
-                        Instr::LocalGet(idx) => {
-                            self.valueStack.push(frame.locals[idx.0 as usize].clone());
-                            None
-                        },
-                        Instr::LocalSet(idx) => {
-                            frame.locals[idx.0 as usize] = self.valueStack.pop().unwrap();
-                            None
-                        },
                         /*Two Operand Numeric Instructions*/
                         Instr::I32Add => {
                             let a = self.valueStack.pop().unwrap().to_i32();
@@ -1303,6 +1295,29 @@ impl LabelStack{
                             );
                             None
                         },
+                        /*Variable Instructions*/
+                        Instr::LocalGet(idx) => {
+                            self.valueStack.push(frame.locals[idx.0 as usize].clone());
+                            None
+                        },
+                        Instr::LocalSet(idx) => {
+                            frame.locals[idx.0 as usize] = self.valueStack.pop().unwrap();
+                            None
+                        },
+                        Instr::LocalTee(idx) => {
+                            frame.locals[idx.0 as usize] = self.valueStack.last().unwrap().clone();
+                            None
+                        },
+                        Instr::GlobalGet(idx) =>{
+                            let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
+                            self.valueStack.push(module_inst.global_addrs.get_by_idx(idx).get());
+                            None
+                        },
+                        Instr::GlobalSet(idx) =>{
+                            let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
+                            module_inst.global_addrs.get_by_idx(idx).set(self.valueStack.pop().unwrap())?;
+                            None
+                        }
                         _ => todo!(),
                     }
                 },

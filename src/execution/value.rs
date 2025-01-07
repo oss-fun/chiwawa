@@ -1,4 +1,4 @@
-use crate::structure::types::ValueType;
+use crate::structure::types::{ValueType, NumType, VecType};
 use std::{rc::Rc, cell::RefCell};
 use super::{mem::MemAddr, global::GlobalAddr, func::FuncAddr, table::TableAddr};
 
@@ -36,6 +36,16 @@ impl Val {
             *num
         } else {
             panic!();
+        }
+    }
+    pub fn val_type(&self) -> ValueType {
+        match self {
+            Val::Num(Num::I32(_)) => ValueType::NumType(NumType::I32),
+            Val::Num(Num::I64(_))  => ValueType::NumType(NumType::I64),
+            Val::Num(Num::F32(_))  => ValueType::NumType(NumType::F32),
+            Val::Num(Num::F64(_))  => ValueType::NumType(NumType::F64),
+            Val::Vec_(Vec_::V128(_))  => ValueType::VecType(VecType::V128),
+            Val::Ref(_) => todo!(),
         }
     }
 }
