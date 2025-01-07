@@ -1,4 +1,4 @@
-use std::{rc::Rc, cell::RefCell};
+use std::{rc::Rc, cell::RefCell, cell::Ref};
 use crate::structure::types::*;
 use super::value::Val;
 
@@ -17,5 +17,11 @@ impl GlobalAddr {
                 value: value
             }
         )))
+    }
+    fn inst(&self) -> Ref<GlobalInst> {
+        self.0.borrow()
+    }
+    pub fn get(&self) -> Val {
+        self.0.borrow().value.clone()
     }
 }

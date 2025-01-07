@@ -1308,6 +1308,11 @@ impl LabelStack{
                             frame.locals[idx.0 as usize] = self.valueStack.last().unwrap().clone();
                             None
                         },
+                        Instr::GlobalGet(idx) =>{
+                            let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
+                            self.valueStack.push(module_inst.global_addrs.get_by_idx(idx).get());
+                            None
+                        },
                         _ => todo!(),
                     }
                 },
