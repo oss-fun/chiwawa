@@ -1,5 +1,6 @@
 use std::{rc::Rc, cell::RefCell};
-use crate::structure::types::*;
+use crate::structure::{types::*,instructions::Memarg};
+use crate::error::RuntimeError;
 
 #[derive(Clone)]
 pub struct MemAddr(Rc<RefCell<MemInst>>);
@@ -24,5 +25,8 @@ impl MemAddr {
             addr_self.data[index + offset] = *data;
         }
     }
-
+    pub fn read(&self, arg: &Memarg, ptr: i32) -> Result<i32, RuntimeError>{
+        let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap());
+        Ok(1)
+    }
 }
