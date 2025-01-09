@@ -25,7 +25,7 @@ impl MemAddr {
             addr_self.data[index + offset] = *data;
         }
     }
-    pub fn read(&self, arg: &Memarg, ptr: i32) -> Result<i32, RuntimeError>{
+    pub fn Load(&self, arg: &Memarg, ptr: i32) -> Result<i32, RuntimeError>{
         let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap());
         Ok(1)
     }
