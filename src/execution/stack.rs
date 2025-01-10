@@ -1321,7 +1321,7 @@ impl LabelStack{
                         Instr::I32Load(arg) =>{
                             let ptr = self.valueStack.pop().unwrap().to_i32();
                             let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
-                            self.valueStack.push(Val::Num(Num::I32(module_inst.mem_addrs[0].i32_load(&arg, ptr)?)));
+                            self.valueStack.push(Val::Num(Num::I32(module_inst.mem_addrs[0].load::<i32>(&arg, ptr)?)));
                             None
                         }
                         _ => todo!(),
