@@ -66,3 +66,13 @@ impl ByteMem for i64 {
         reader.read_i64::<LittleEndian>().unwrap()
     }
 }
+
+impl ByteMem for f32 {
+    fn len() -> usize{
+        consts::U4::to_usize()
+    }
+    fn from_byte(data: Vec<u8>) -> f32{
+        let mut reader = Cursor::new(data.as_slice());
+        reader.read_f32::<LittleEndian>().unwrap()
+    }
+}
