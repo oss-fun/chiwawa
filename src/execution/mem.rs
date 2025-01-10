@@ -28,15 +28,31 @@ impl MemAddr {
             addr_self.data[index + offset] = *data;
         }
     }
-    pub fn i32_load(&self, arg: &Memarg, ptr: i32) -> Result<i32, RuntimeError>{
+    pub fn load<T: ByteMem>(&self, arg: &Memarg, ptr: i32) -> Result<T, RuntimeError>{
         let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap()).ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
-        let len = consts::U4::to_usize();
+        let len =  <T>::len();
         let raw = &self.0.borrow().data;
+    
         if pos + len < raw.len(){
             return Err(RuntimeError::InstantiateFailed);
         }
+
         let data = Vec::from(&raw[pos..pos + len]);
+        Ok(<T>::from_byte(data))
+    }
+}
+
+pub trait ByteMem: Sized{
+    fn len() -> usize;
+    fn from_byte(data: Vec<u8>) -> Self;
+}
+
+impl ByteMem for i32 {
+    fn len() -> usize{
+        consts::U4::to_usize()
+    }
+    fn from_byte(data: Vec<u8>) -> i32{
         let mut reader = Cursor::new(data.as_slice());
-        Ok(reader.read_i32::<LittleEndian>().unwrap())
+        reader.read_i32::<LittleEndian>().unwrap()
     }
 }
