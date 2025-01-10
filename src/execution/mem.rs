@@ -1,6 +1,9 @@
 use std::{rc::Rc, cell::RefCell};
 use crate::structure::{types::*,instructions::Memarg};
 use crate::error::RuntimeError;
+use typenum::*;
+use std::io::Cursor;
+use byteorder::*;
 
 #[derive(Clone)]
 pub struct MemAddr(Rc<RefCell<MemInst>>);
@@ -25,8 +28,15 @@ impl MemAddr {
             addr_self.data[index + offset] = *data;
         }
     }
-    pub fn Load(&self, arg: &Memarg, ptr: i32) -> Result<i32, RuntimeError>{
-        let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap());
-        Ok(1)
+    pub fn i32_load(&self, arg: &Memarg, ptr: i32) -> Result<i32, RuntimeError>{
+        let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap()).ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
+        let len = consts::U4::to_usize();
+        let raw = &self.0.borrow().data;
+        if pos + len < raw.len(){
+            return Err(RuntimeError::InstantiateFailed);
+        }
+        let data = Vec::from(&raw[pos..pos + len]);
+        let mut reader = Cursor::new(data.as_slice());
+        Ok(reader.read_i32::<LittleEndian>().unwrap())
     }
 }
