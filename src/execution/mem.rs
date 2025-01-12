@@ -45,6 +45,7 @@ impl MemAddr {
 pub trait ByteMem: Sized{
     fn len() -> usize;
     fn from_byte(data: Vec<u8>) -> Self;
+    fn to_byte(self) -> Vec<u8>;
 }
 
 impl ByteMem for i32 {
@@ -54,6 +55,9 @@ impl ByteMem for i32 {
     fn from_byte(data: Vec<u8>) -> i32{
         let mut reader = Cursor::new(data.as_slice());
         reader.read_i32::<LittleEndian>().unwrap()
+    }
+    fn to_byte(self) -> Vec<u8>{
+        vec![]
     }
 }
 
@@ -65,6 +69,9 @@ impl ByteMem for i64 {
         let mut reader = Cursor::new(data.as_slice());
         reader.read_i64::<LittleEndian>().unwrap()
     }
+    fn to_byte(self) -> Vec<u8>{
+        vec![]
+    }
 }
 
 impl ByteMem for f32 {
@@ -75,6 +82,9 @@ impl ByteMem for f32 {
         let mut reader = Cursor::new(data.as_slice());
         reader.read_f32::<LittleEndian>().unwrap()
     }
+    fn to_byte(self) -> Vec<u8>{
+        vec![]
+    }
 }
 
 impl ByteMem for f64 {
@@ -84,5 +94,8 @@ impl ByteMem for f64 {
     fn from_byte(data: Vec<u8>) -> f64{
         let mut reader = Cursor::new(data.as_slice());
         reader.read_f64::<LittleEndian>().unwrap()
+    }
+    fn to_byte(self) -> Vec<u8>{
+        vec![]
     }
 }
