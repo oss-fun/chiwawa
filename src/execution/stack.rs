@@ -1348,6 +1348,13 @@ impl LabelStack{
                             let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
                             module_inst.mem_addrs[0].store::<i32>(&arg, ptr, data);
                             None
+                        },
+                        Instr::I64Store(arg) => {
+                            let ptr = self.valueStack.pop().unwrap().to_i32();
+                            let data = self.valueStack.pop().unwrap().to_i64();
+                            let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
+                            module_inst.mem_addrs[0].store::<i64>(&arg, ptr, data);
+                            None
                         }
                         _ => todo!(),
                     }
