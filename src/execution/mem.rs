@@ -34,7 +34,7 @@ impl MemAddr {
         let raw = &self.0.borrow().data;
     
         if pos + len < raw.len(){
-            return Err(RuntimeError::InstantiateFailed);
+            return Err(RuntimeError::InstructionFailed);
         }
 
         let data = Vec::from(&raw[pos..pos + len]);
