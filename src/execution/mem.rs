@@ -87,7 +87,9 @@ impl ByteMem for i64 {
         reader.read_i64::<LittleEndian>().unwrap()
     }
     fn to_byte(self) -> Vec<u8>{
-        vec![]
+        let mut buf: Vec<u8> =  Vec::with_capacity(Self::len());
+        buf.write_i64::<LittleEndian>(self).unwrap();
+        buf[..].to_vec()
     }
 }
 
