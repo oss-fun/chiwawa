@@ -40,6 +40,21 @@ impl MemAddr {
         let data = Vec::from(&raw[pos..pos + len]);
         Ok(<T>::from_byte(data))
     }
+    pub fn store<T:ByteMem>(&self, arg: &Memarg, ptr: i32, data: T)-> Result<(), RuntimeError>{
+        let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap()).ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
+        let data = <T>::to_byte(data);
+        let len =  <T>::len();
+        let mut raw = &mut self.0.borrow_mut().data;
+    
+        if pos + len < raw.len(){
+            return Err(RuntimeError::InstructionFailed);
+        }
+        for (i, x) in data.into_iter().enumerate(){
+            raw[pos + i] = x;
+        }
+
+        Ok(())
+    }
 }
 
 pub trait ByteMem: Sized{
@@ -57,7 +72,9 @@ impl ByteMem for i32 {
         reader.read_i32::<LittleEndian>().unwrap()
     }
     fn to_byte(self) -> Vec<u8>{
-        vec![]
+        let mut buf: Vec<u8> =  Vec::with_capacity(Self::len());
+        buf.write_i32::<LittleEndian>(self).unwrap();
+        buf[..].to_vec()
     }
 }
 
