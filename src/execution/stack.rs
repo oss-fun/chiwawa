@@ -1465,6 +1465,12 @@ impl LabelStack{
                             module_inst.mem_addrs[0].store::<i32>(&arg, ptr, data as i32);
                             None
                         },
+                        Instr::MemorySize =>{
+                            let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
+                            self.valueStack.push(Val::Num(Num::I32(module_inst.mem_addrs[0].mem_size())));
+
+                            None
+                        }
                         _ => todo!(),
                     }
                 },
