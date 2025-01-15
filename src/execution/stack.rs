@@ -1418,6 +1418,18 @@ impl LabelStack{
                             self.valueStack.push(Val::Num(Num::I64(module_inst.mem_addrs[0].load::<u16>(&arg, ptr)? as i64)));
                             None
                         },
+                        Instr::I64Load32S(arg) =>{
+                            let ptr = self.valueStack.pop().unwrap().to_i32();
+                            let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
+                            self.valueStack.push(Val::Num(Num::I64(module_inst.mem_addrs[0].load::<i32>(&arg, ptr)? as i64)));
+                            None
+                        },
+                        Instr::I64Load32U(arg) =>{
+                            let ptr = self.valueStack.pop().unwrap().to_i32();
+                            let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
+                            self.valueStack.push(Val::Num(Num::I64(module_inst.mem_addrs[0].load::<u32>(&arg, ptr)? as i64)));
+                            None
+                        },
                         Instr::I32Store8(arg) => {
                             let ptr = self.valueStack.pop().unwrap().to_i32();
                             let data = self.valueStack.pop().unwrap().to_i32();
@@ -1444,6 +1456,13 @@ impl LabelStack{
                             let data = self.valueStack.pop().unwrap().to_i64();
                             let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
                             module_inst.mem_addrs[0].store::<i16>(&arg, ptr, data as i16);
+                            None
+                        },
+                        Instr::I64Store32(arg) => {
+                            let ptr = self.valueStack.pop().unwrap().to_i32();
+                            let data = self.valueStack.pop().unwrap().to_i64();
+                            let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
+                            module_inst.mem_addrs[0].store::<i32>(&arg, ptr, data as i32);
                             None
                         },
                         _ => todo!(),
