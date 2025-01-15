@@ -55,6 +55,10 @@ impl MemAddr {
 
         Ok(())
     }
+
+    pub fn mem_size(&self) -> i32{
+        (self.0.borrow().data.len() / 65536) as i32
+    }
 }
 
 pub trait ByteMem: Sized{
