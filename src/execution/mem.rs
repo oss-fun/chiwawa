@@ -102,7 +102,9 @@ impl ByteMem for f32 {
         reader.read_f32::<LittleEndian>().unwrap()
     }
     fn to_byte(self) -> Vec<u8>{
-        vec![]
+        let mut buf: Vec<u8> =  Vec::with_capacity(Self::len());
+        buf.write_f32::<LittleEndian>(self).unwrap();
+        buf[..].to_vec()
     }
 }
 
@@ -115,6 +117,8 @@ impl ByteMem for f64 {
         reader.read_f64::<LittleEndian>().unwrap()
     }
     fn to_byte(self) -> Vec<u8>{
-        vec![]
+        let mut buf: Vec<u8> =  Vec::with_capacity(Self::len());
+        buf.write_f64::<LittleEndian>(self).unwrap();
+        buf[..].to_vec()
     }
 }
