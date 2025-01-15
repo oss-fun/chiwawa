@@ -59,6 +59,17 @@ impl MemAddr {
     pub fn mem_size(&self) -> i32{
         (self.0.borrow().data.len() / 65536) as i32
     }
+    
+    pub fn mem_grow(&self, size: i32) -> i32{
+        let prev_size = self.mem_size();
+        let new = prev_size + size;
+        if new > 65536 {
+            -1
+        } else {
+            self.0.borrow_mut().data.resize(new as usize * 65536, 0);
+            prev_size
+        }
+    }
 }
 
 pub trait ByteMem: Sized{

@@ -1470,6 +1470,12 @@ impl LabelStack{
                             self.valueStack.push(Val::Num(Num::I32(module_inst.mem_addrs[0].mem_size())));
 
                             None
+                        },
+                        Instr::MemoryGrow => {
+                            let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
+                            let size = self.valueStack.pop().unwrap().to_i32();
+                            self.valueStack.push(Val::Num(Num::I32(module_inst.mem_addrs[0].mem_grow(size))));
+                            None
                         }
                         _ => todo!(),
                     }
