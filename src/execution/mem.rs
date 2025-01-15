@@ -92,6 +92,36 @@ impl ByteMem for u8 {
     }
 }
 
+impl ByteMem for i16 {
+    fn len() -> usize{
+        consts::U2::to_usize()
+    }
+    fn from_byte(data: Vec<u8>) -> i16{
+        let mut reader = Cursor::new(data.as_slice());
+        reader.read_i16::<LittleEndian>().unwrap()
+    }
+    fn to_byte(self) -> Vec<u8>{
+        let mut buf: Vec<u8> =  Vec::with_capacity(Self::len());
+        buf.write_i16::<LittleEndian>(self).unwrap();
+        buf[..].to_vec()
+    }
+}
+
+impl ByteMem for u16 {
+    fn len() -> usize{
+        consts::U2::to_usize()
+    }
+    fn from_byte(data: Vec<u8>) -> u16{
+        let mut reader = Cursor::new(data.as_slice());
+        reader.read_u16::<LittleEndian>().unwrap()
+    }
+    fn to_byte(self) -> Vec<u8>{
+        let mut buf: Vec<u8> =  Vec::with_capacity(Self::len());
+        buf.write_u16::<LittleEndian>(self).unwrap();
+        buf[..].to_vec()
+    }
+}
+
 impl ByteMem for i32 {
     fn len() -> usize{
         consts::U4::to_usize()
