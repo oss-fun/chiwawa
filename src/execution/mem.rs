@@ -77,6 +77,20 @@ impl ByteMem for i8 {
         buf[..].to_vec()
     }
 }
+impl ByteMem for u8 {
+    fn len() -> usize{
+        consts::U1::to_usize()
+    }
+    fn from_byte(data: Vec<u8>) -> u8{
+        let mut reader = Cursor::new(data.as_slice());
+        reader.read_u8().unwrap()
+    }
+    fn to_byte(self) -> Vec<u8>{
+        let mut buf: Vec<u8> =  Vec::with_capacity(Self::len());
+        buf.write_u8(self).unwrap();
+        buf[..].to_vec()
+    }
+}
 
 impl ByteMem for i32 {
     fn len() -> usize{
