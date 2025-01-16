@@ -298,32 +298,32 @@ impl LabelStack{
                             self.valueStack.push(Val::Num(Num::F64(x.abs())));
                             None
                         },
-                        Instr::F32Neg => {
+                        Instr::F64Neg => {
                             let x = self.valueStack.pop().unwrap().to_f64();
                             self.valueStack.push(Val::Num(Num::F64(x * -1.0)));
                             None
                         },
-                        Instr::F32Sqrt => {
+                        Instr::F64Sqrt => {
                             let x = self.valueStack.pop().unwrap().to_f64();
                             self.valueStack.push(Val::Num(Num::F64(x.sqrt())));
                             None
                         },
-                        Instr::F32Ceil => {
+                        Instr::F64Ceil => {
                             let x = self.valueStack.pop().unwrap().to_f64();
                             self.valueStack.push(Val::Num(Num::F64(x.ceil())));
                             None
                         },
-                        Instr::F32Floor => {
+                        Instr::F64Floor => {
                             let x = self.valueStack.pop().unwrap().to_f64();
                             self.valueStack.push(Val::Num(Num::F64(x.floor())));
                             None
                         },
-                        Instr::F32Trunc => {
+                        Instr::F64Trunc => {
                             let x = self.valueStack.pop().unwrap().to_f64();
                             self.valueStack.push(Val::Num(Num::F64(x.trunc())));
                             None
                         },
-                        Instr::F32Nearest => {
+                        Instr::F64Nearest => {
                             let x = self.valueStack.pop().unwrap().to_f64() % 2.0;
                             
                             let ret = if x == 0.5 {
@@ -414,14 +414,6 @@ impl LabelStack{
                             let b = self.valueStack.pop().unwrap().to_i32();
                             self.valueStack.push(
                                 Val::Num(Num::I32(a ^ b))
-                            );
-                            None
-                        },
-                        Instr::I32Shl => {
-                            let a = self.valueStack.pop().unwrap().to_i32();
-                            let b = self.valueStack.pop().unwrap().to_i32();
-                            self.valueStack.push(
-                                Val::Num(Num::I32(a << b))
                             );
                             None
                         },
