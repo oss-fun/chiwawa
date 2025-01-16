@@ -2,7 +2,6 @@ use super::{value::*, module::*, func::*};
 use crate::structure::{instructions::Instr, types::*};
 use crate::error::RuntimeError;
 use std::rc::Weak;
-use std::borrow::Borrow;
 use num::NumCast;
 use std::cmp::{max, min};
 use std::io::Cursor;
