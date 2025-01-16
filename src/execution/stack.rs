@@ -1037,7 +1037,7 @@ impl LabelStack{
                         },
                         Instr::I64ExtendI32U => {
                             let a = self.valueStack.pop().unwrap().to_i64();
-                            let result = (a & (2^32 - 1));
+                            let result = a & (2^32 - 1);
                             self.valueStack.push(
                                 Val::Num(Num::I64(result))
                             );
