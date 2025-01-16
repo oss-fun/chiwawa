@@ -545,15 +545,6 @@ impl LabelStack{
                             );
                             None
                         },
-
-                        Instr::I64Shl => {
-                            let a = self.valueStack.pop().unwrap().to_i64();
-                            let b = self.valueStack.pop().unwrap().to_i64();
-                            self.valueStack.push(
-                                Val::Num(Num::I64(a << b))
-                            );
-                            None
-                        },
                         Instr::I64Shl => {
                             let a = self.valueStack.pop().unwrap().to_i64();
                             let b = self.valueStack.pop().unwrap().to_i64();
