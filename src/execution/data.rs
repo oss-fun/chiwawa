@@ -1,5 +1,4 @@
 use std::{rc::Rc, cell::RefCell};
-use crate::structure::types::*;
 
 pub struct DataAddr(Rc<RefCell<DataInst>>);
 pub struct DataInst {
