@@ -18,11 +18,11 @@ pub enum FuncInst {
 }
 
 impl FuncAddr {
-    pub fn call(&self, params: Vec<Val>) -> Vec<Val>{
+    pub fn call(&self, params: Vec<Val>) -> Result<Vec<Val>,RuntimeError>{
         let mut stack = Stacks::new(&self, params);
 
         loop{
-            stack.exec_instr();
+            stack.exec_instr()?;
             /*Reached Dummy Stack Frame*/
             if stack.activationFrameStack.len() == 1
             && stack.activationFrameStack.first().unwrap().labelStack.len() == 1
@@ -30,7 +30,7 @@ impl FuncAddr {
                 break;
             }
         }
-        stack.activationFrameStack.pop().unwrap().labelStack.pop().unwrap().valueStack
+        Ok(stack.activationFrameStack.pop().unwrap().labelStack.pop().unwrap().valueStack)
     }
 
     pub fn borrow(&self) -> Ref<FuncInst> {
