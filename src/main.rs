@@ -17,7 +17,7 @@ fn main() -> Result <()>{
     let _ = parser::parse_bytecode(&mut module, &args.path);
     let inst = ModuleInst::new(&module, hashmap!{}).unwrap();
     let params: Vec<Val> = vec![Val::Num(Num::I32(1)),Val::Num(Num::I32(1))];
-    let mut ret = inst.get_export_func("add")?.call(params);
+    let ret = inst.get_export_func("add")?.call(params);
     println!("1+1 = {}",ret?.pop().unwrap().to_i32());
     Ok(())
 }
