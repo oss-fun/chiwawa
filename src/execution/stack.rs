@@ -119,7 +119,7 @@ pub struct FrameStack {
 
 impl FrameStack{
     pub fn exec_instr_frame_level(&mut self) -> Result<Option<ModuleInstr>, RuntimeError>{
-        let mut cur_label = self.labelStack.last_mut().unwrap();
+        let cur_label = self.labelStack.last_mut().unwrap();
         if let Some(instr) = cur_label.exec_primitive_instr(&mut self.frame)?{
             match instr {
                 /*Redirect to Exec_instr(Handing Instruction Spanning Frame)*/
