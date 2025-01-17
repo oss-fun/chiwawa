@@ -43,9 +43,9 @@ impl Stacks {
     i.e., Invoke Wasm Function, Return Function and Call Host-function.
     */
     pub fn exec_instr(&mut self) -> Result<(), RuntimeError>{
-        let mut cur_frame = self.activation_frame_stack.last_mut().unwrap();
+        let cur_frame = self.activation_frame_stack.last_mut().unwrap();
         if let Some(instr) = cur_frame.exec_instr_frame_level()? {
-            let mut cur_label = cur_frame.label_stack.last_mut().unwrap();
+            let cur_label = cur_frame.label_stack.last_mut().unwrap();
             match instr {
                 ModuleInstr::Invoke(func_addr) => {
                     match &*func_addr.borrow(){
@@ -95,7 +95,7 @@ impl Stacks {
                 ModuleInstr::Return =>{
                     let ret = cur_label.value_stack.pop();
                     if !self.activation_frame_stack.pop().unwrap().void{
-                        let mut next = self.activation_frame_stack.last_mut().unwrap();
+                        let next = self.activation_frame_stack.last_mut().unwrap();
                         next.label_stack.last_mut().unwrap().value_stack.push(ret.unwrap());
                     }
                 }
