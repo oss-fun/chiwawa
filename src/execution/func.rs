@@ -24,13 +24,13 @@ impl FuncAddr {
         loop{
             stack.exec_instr()?;
             /*Reached Dummy Stack Frame*/
-            if stack.activationFrameStack.len() == 1
-            && stack.activationFrameStack.first().unwrap().labelStack.len() == 1
-            && stack.activationFrameStack.first().unwrap().labelStack.first().unwrap().instrs.is_empty(){
+            if stack.activation_frame_stack.len() == 1
+            && stack.activation_frame_stack.first().unwrap().label_stack.len() == 1
+            && stack.activation_frame_stack.first().unwrap().label_stack.first().unwrap().instrs.is_empty(){
                 break;
             }
         }
-        Ok(stack.activationFrameStack.pop().unwrap().labelStack.pop().unwrap().valueStack)
+        Ok(stack.activation_frame_stack.pop().unwrap().label_stack.pop().unwrap().value_stack)
     }
 
     pub fn borrow(&self) -> Ref<FuncInst> {
