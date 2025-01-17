@@ -37,7 +37,7 @@ impl GetInstanceByIdx<GlobalIdx> for Vec<GlobalAddr>{}
 pub type ImportObjects = HashMap<String, HashMap<String, Externval>>;
 
 impl ModuleInst {
-    pub fn new(module: &Module, imports: ImportObjects) -> Result<Rc<ModuleInst>, RuntimeError>{
+    pub fn new(module: &Module, _imports: ImportObjects) -> Result<Rc<ModuleInst>, RuntimeError>{
         let mut module_inst = ModuleInst {
             types: module.types.clone(),
             func_addrs: Vec::new(),
@@ -54,7 +54,7 @@ impl ModuleInst {
             todo!();
         }
 
-        for func in &module.funcs{
+        for _ in &module.funcs{
             module_inst.func_addrs.push(FuncAddr::alloc_empty())
         }
 
