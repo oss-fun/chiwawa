@@ -44,7 +44,7 @@ impl MemAddr {
         let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap()).ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
         let data = <T>::to_byte(data);
         let len =  <T>::len();
-        let mut raw = &mut self.0.borrow_mut().data;
+        let raw = &mut self.0.borrow_mut().data;
     
         if pos + len < raw.len(){
             return Err(RuntimeError::InstructionFailed);
