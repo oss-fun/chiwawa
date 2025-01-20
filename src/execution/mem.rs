@@ -14,10 +14,16 @@ pub struct MemInst {
 
 impl MemAddr {
     pub fn new(type_: &MemType) -> MemAddr{
+        let min = (type_.0.min * 65536) as usize;
+        let max = type_.0.max.map(|max| max);
         MemAddr(Rc::new(RefCell::new(
             MemInst{
-                type_: type_.clone(),
-                data: Vec::new(),
+                type_: MemType(Limits{min: min as u32, max}),
+                data: {
+                    let mut vec = Vec::with_capacity(min);
+                    vec.resize(min, 0);
+                    vec
+                },
             }
         )))
     }
