@@ -59,6 +59,14 @@ impl FuncAddr {
     pub fn replace(&self, func: Func, module: Weak<ModuleInst>){
         *self.0.borrow_mut() = FuncInst::new(func, module);
     }
+
+    pub fn func_type(&self) ->FuncType{
+        match &*self.0.borrow() {
+            FuncInst::RuntimeFunc { type_, .. } => type_.clone(),
+            FuncInst::HostFunc { type_, .. } => type_.clone(),
+        }
+        
+    }
 }
 
 impl FuncInst{

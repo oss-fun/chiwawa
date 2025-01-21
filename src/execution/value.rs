@@ -80,3 +80,13 @@ pub enum Externval {
     Mem(MemAddr),
     Global(GlobalAddr),
 }
+
+impl Externval {
+    pub fn as_func(self) -> Option<FuncAddr> {
+        if let Externval::Func(x) = self {
+            Some(x)
+        } else {
+            None
+        }
+    }
+}
