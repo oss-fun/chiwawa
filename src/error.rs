@@ -14,6 +14,8 @@ pub enum RuntimeError {
     ZeroDivideError,
     #[error("Trunc Failed")]
     TruncError,
+    #[error("Linnk Failed")]
+    LinkError
 }
 
 #[derive(Debug, Error)]
