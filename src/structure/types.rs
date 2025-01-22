@@ -33,6 +33,10 @@ impl FuncType{
     pub fn type_match(&self, other: &FuncType) -> bool {
         self == other
     }
+
+    pub fn params(&self) -> &Vec<ValueType> {
+        &self.params
+    }
 }
 
 pub trait GetIdx
