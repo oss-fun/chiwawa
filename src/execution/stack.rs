@@ -1459,7 +1459,31 @@ impl LabelStack{
                             self.value_stack.push(Val::Num(Num::I32(module_inst.mem_addrs[0].mem_grow(size))));
                             None
                         }
-                        _ => todo!(),
+                        Instr::V128Const(_) | Instr::V128Not | Instr::V128And | Instr::V128AndNot | Instr::V128Or | Instr::V128Xor | Instr::V128Bitselect | Instr::V128AnyTrue | 
+                        Instr::I8x16Shuffle(_) | Instr::I8x16Swizzle | Instr::I8x16Splat | Instr::I16x8Splat | Instr::I32x4Splat | Instr::I64x2Splat | Instr::F32x4Splat | Instr::F64x2Splat |
+                        Instr::I8x16ExtractLaneU(_) | Instr::I8x16ExtractLaneS(_) | Instr::I16x8ExtractLaneU(_) | Instr::I16x8ExtractLaneS(_) | Instr::I32x4ExtractLane(_) | Instr::I64x2ExtractLane(_) |
+                        Instr::F32x4ExtractLane(_) | Instr::F64x2ExtractLane(_) | Instr::I16x8ReplaceLane(_)| Instr::I32x4ReplaceLane(_) | Instr::I8x16ReplaceLane(_) | Instr::I64x2ReplaceLane(_) | Instr::F32x4ReplaceLane(_) |
+                        Instr::F64x2ReplaceLane(_) | Instr::I8x16Eq |  Instr::I8x16Ne | Instr::I8x16LtU | Instr::I8x16LtS| Instr::I8x16GtU| Instr::I8x16GtS| Instr::I8x16LeU|
+                        Instr::I8x16LeS| Instr::I8x16GeU| Instr::I8x16GeS| Instr::I16x8Eq| Instr::I16x8Ne| Instr::I16x8LtU| Instr::I16x8LtS| Instr::I16x8GtU| Instr::I16x8GtS| Instr::I16x8LeU|
+                        Instr::I16x8LeS| Instr::I16x8GeU| Instr::I16x8GeS| Instr::I32x4Eq| Instr::I32x4Ne| Instr::I32x4LtU| Instr::I32x4LtS| Instr::I32x4GtU| Instr::I32x4GtS| Instr::I32x4LeU| Instr::I32x4LeS| Instr::I32x4GeU|
+                        Instr::I32x4GeS| Instr::I64x2Eq| Instr::I64x2Ne| Instr::I64x2LtS| Instr::I64x2GtS| Instr::I64x2LeS| Instr::I64x2GeS| Instr::F32x4Eq| Instr::F32x4Ne| Instr::F32x4Lt| Instr::F32x4Gt| Instr::F32x4Le| Instr::F32x4Ge|
+                        Instr::F64x2Eq| Instr::F64x2Ne| Instr::F64x2Lt| Instr::F64x2Gt| Instr::F64x2Le| Instr::F64x2Ge| Instr::I8x16Abs| Instr::I16x8Abs| Instr::I32x4Abs| Instr::I64x2Abs| Instr::I8x16Neg| Instr::I16x8Neg| Instr::I32x4Neg|
+                        Instr::I64x2Neg| Instr::I8x16PopCnt| Instr::I16x8Q15MulrSatS| Instr::I32x4DotI16x8S| Instr::F32x4Abs| Instr::F32x4Neg| Instr::F32x4Sqrt| Instr::F32x4Ceil| Instr::F32x4Floor| Instr::F32x4Truc|
+                        Instr::F32x4Mearest| Instr::F64x2Abs| Instr::F64x2Neg| Instr::F64x2Sqrt| Instr::F64x2Ceil| Instr::F64x2Floor| Instr::F64x2Truc| Instr::F64x2Mearest| Instr::I8x16AllTrue| Instr::I16x8Alltrue|
+                        Instr::I32x4Alltrue| Instr::I64x2Alltrue| Instr::I8x16Bitmask| Instr::I16x8Bitmask| Instr::I32x4Bitmask| Instr::I64x2Bitmask| Instr::I8x16NarrowI16x8U| Instr::I8x16NarrowI16x8S| Instr::I16x8NarrowI32x4U|
+                        Instr::I16x8NarrowI32x4S| Instr::I16x8ExtendHalfI8x16U| Instr::I16x8ExtendHalfI8x16S| Instr::I32x4ExtendHalfI16x8U| Instr::I32x4ExtendHalfI16x8S| Instr::I64x2ExtendHalfI32x4U|Instr::I64x2ExtendHalfI32x4S|
+                        Instr::I8x16Shl| Instr::I8x16ShrU| Instr::I8x16ShrS| Instr::I16x8Shl| Instr::I16x8ShrU| Instr::I16xShrS| Instr::I32x4Shl|Instr::I32x4ShrU| Instr::I32x4ShrS| Instr::I64x2Shl| Instr::I64x2ShrU| Instr::I64x2ShrS|
+                        Instr::I8x16Add| Instr::I8x16Sub| Instr::I16x8Add| Instr::I16x8Sub| Instr::I32x4Add| Instr::I32x4Sub| Instr::I64x2Add| Instr::I64x2Sub| Instr::I8x16MinU| Instr::I8x16MinS| Instr::I8x16MaxU| Instr::I8x16MaxS|
+                        Instr::I16x8MinU| Instr::I16x8MinS| Instr::I16x8MaxU| Instr::I16x8MaxS| Instr::I32x4MinU| Instr::I32x4MinS| Instr::I32x4MaxU| Instr::I32x4MaxS| Instr::I8x16AddSatU| Instr::I8x16AddSatS|
+                        Instr::I8x16SubSatU| Instr::I8x16SubSatS| Instr::I16x8AddSatU| Instr::I16x8AddSatS| Instr::I16x8SubSatU| Instr::I16x8SubSatS| Instr::I16x8Mul| Instr::I32x4Mul| Instr::I64x2Mul| Instr::I8x16AvgrU|
+                        Instr::I16x8AvgrU| Instr::I16x8ExtmulHalfI8x16U| Instr::I16x8ExtmulHalfI8x16S| Instr::I32x4ExtmulHalfI16x8U| Instr::I32x4ExtmulHalfI16x8S| Instr::I64x2ExtmulHalfI32x4U| Instr::I64x2ExtmulHalfI32x4S| Instr::I16x8ExtaddPairwiseI8x16U|
+                        Instr::I16x8ExtaddPairwiseI8x16S| Instr::I32x4ExtaddPairwiseI16x8U| Instr::I32x4ExtaddPairwiseI16x8S| Instr::F32x4Add| Instr::F32x4Sub| Instr::F32x4Mul| Instr::F32x4Div| Instr::F32x4Min| Instr::F32x4Max| Instr::F32x4Pmin|
+                        Instr::F32x4Pmax| Instr::F64x2Add| Instr::F64x2Sub| Instr::F64x2Mul| Instr::F64x2Div| Instr::F64x2Min| Instr::F64x2Max| Instr::F64x2Pmin| Instr::F64x2Pmax| Instr::I32x4TruncSatF32x4U| Instr::I32x4TruncSatF32x4S|
+                        Instr::I32x4TruncSatF64x2UZero| Instr::I32x4TruncSatF64x2SZero| Instr::F32x4ConvertI32x4U| Instr::F32x4ConvertI32x4S| Instr::F32x4DemoteF64x2Zero| Instr::F64x2ConvertLowI32x4U| Instr::F64x2ConvertLowI32x4S| Instr::F64x2PromoteLowF32x4
+                        =>{
+                            todo!()
+                        },
+                        _ => todo!()
                     }
                 },
                 AdminInstr::FrameInstr(frame) => {
