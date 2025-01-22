@@ -1,7 +1,7 @@
 pub mod value;
 pub mod module;
+pub mod func;
 mod store;
-mod func;
 mod table;
 mod mem;
 mod global;
