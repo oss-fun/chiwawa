@@ -1485,8 +1485,10 @@ impl LabelStack{
                         },
                         Instr::RefNull(_)| Instr::RefIsNull| Instr::RefFunc(_) => {
                             todo!()
-                        }
-                        _ => todo!()
+                        },
+                        Instr::Drop| Instr::Select(_) => {
+                            todo!()
+                        },
                     }
                 },
                 AdminInstr::FrameInstr(frame) => {
