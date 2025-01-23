@@ -1489,6 +1489,10 @@ impl LabelStack{
                         Instr::Drop| Instr::Select(_) => {
                             todo!()
                         },
+                        Instr::TableGet(_)| Instr::TableSet(_)| Instr::TableSize(_)| Instr::TableGrow(_)| Instr::TableFill(_)| Instr::TableCopy(_,_)| Instr::TableInit(_,_)| Instr::ElemDrop(_) => {
+                            todo!()
+                        },
+
                     }
                 },
                 AdminInstr::FrameInstr(frame) => {
