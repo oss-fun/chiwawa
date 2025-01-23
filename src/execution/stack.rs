@@ -1521,6 +1521,16 @@ impl LabelStack{
                             )));
                             None
                         }
+                        Instr::Loop(type_, instrs) => {
+                            self.instrs.push(AdminInstr::FrameInstr(FrameInstr::Label(
+                                Label{
+                                    continue_: vec![Instr::Loop(type_.clone(), instrs.clone())],
+                                    locals_num: type_.1.iter().count(),
+                                },
+                                instrs
+                            )));
+                            None
+                        }
                        _ => todo!()
                     }
                 },
