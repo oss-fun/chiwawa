@@ -1492,7 +1492,12 @@ impl LabelStack{
                         Instr::TableGet(_)| Instr::TableSet(_)| Instr::TableSize(_)| Instr::TableGrow(_)| Instr::TableFill(_)| Instr::TableCopy(_,_)| Instr::TableInit(_,_)| Instr::ElemDrop(_) => {
                             todo!()
                         },
-
+                        Instr::V128Load(_)| Instr::V128Store(_)| Instr::V128Load8x8S(_)| Instr::V128Load8x8U(_)| Instr::V128Load16x4S(_)| Instr::V128Load16x4U(_)| Instr::V128Load32x2S(_)| Instr::V128Load32x2U(_)| Instr::V128Load8Splat(_)|
+                        Instr::V128Load16Splat(_)| Instr::V128Load32Splat(_)| Instr::V128Load64Splat(_)| Instr::V128Load8lane(_, _)| Instr::V128Load16lane(_, _)| Instr::V128Load32lane(_, _)| Instr::V128Load32Zero(_)| Instr::V128Load64Zero(_)|
+                        Instr::V128Load64lane(_, _)| Instr::V128Store8lane(_, _)| Instr::V128Store16lane(_, _)| Instr::V128Store32lane(_, _)| Instr::V128Store64lane(_, _) => {
+                            todo!()
+                        },
+                       // _ => todo!()
                     }
                 },
                 AdminInstr::FrameInstr(frame) => {
