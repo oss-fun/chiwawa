@@ -1511,7 +1511,17 @@ impl LabelStack{
                         },
                         Instr::Nop => None,
                         Instr::Unreachable => return Err(RuntimeError::Unreachable),
-                        _ => todo!()
+                        Instr::Block(type_, instrs) => {
+                            self.instrs.push(AdminInstr::FrameInstr(FrameInstr::Label(
+                                Label{
+                                    continue_: vec![],
+                                    locals_num: type_.1.iter().count(),
+                                },
+                                instrs
+                            )));
+                            None
+                        }
+                       _ => todo!()
                     }
                 },
                 AdminInstr::FrameInstr(frame) => {
