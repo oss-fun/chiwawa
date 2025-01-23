@@ -1548,6 +1548,15 @@ impl LabelStack{
                                 self.instrs.push(AdminInstr::FrameInstr(FrameInstr::Br(idx)))
                             }
                             None
+                        },
+                        Instr::BrTable(idxes,idx) =>{
+                            let i = self.value_stack.pop().unwrap().to_i32();
+                            if (i as usize) < idxes.len(){
+                                self.instrs.push(AdminInstr::FrameInstr(FrameInstr::Br(idxes[i as usize].clone())));
+                            }else{
+                                self.instrs.push(AdminInstr::FrameInstr(FrameInstr::Br(idx)));
+                            }
+                            None
                         }
                        _ => todo!()
                     }
