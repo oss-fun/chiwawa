@@ -1509,7 +1509,9 @@ impl LabelStack{
                         Instr::DataDrop(_) => {
                             todo!()
                         },
-                       // _ => todo!()
+                        Instr::Nop => None,
+                        Instr::Unreachable => return Err(RuntimeError::Unreachable),
+                        _ => todo!()
                     }
                 },
                 AdminInstr::FrameInstr(frame) => {

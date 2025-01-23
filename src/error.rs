@@ -15,7 +15,9 @@ pub enum RuntimeError {
     #[error("Trunc Failed")]
     TruncError,
     #[error("Linnk Failed")]
-    LinkError
+    LinkError,
+    #[error("Unreachable")]
+    Unreachable
 }
 
 #[derive(Debug, Error)]
