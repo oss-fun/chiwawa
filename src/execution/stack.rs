@@ -1530,6 +1530,24 @@ impl LabelStack{
                                 instrs
                             )));
                             None
+                        },
+                        Instr::If(type_, i1, i2) =>{
+                            let bool_ = self.value_stack.pop().unwrap().to_i32();
+                            self.instrs.push(AdminInstr::FrameInstr(FrameInstr::Label(
+                                Label{
+                                    continue_: vec![],
+                                    locals_num: type_.1.iter().count(),
+                                },
+                                if  bool_ != 0 {i1} else{i2},
+                            )));
+                            None
+                        },
+                        Instr::BrIf(idx) =>{
+                            let bool_ = self.value_stack.pop().unwrap().to_i32();
+                            if bool_ != 0 {
+                                self.instrs.push(AdminInstr::FrameInstr(FrameInstr::Br(idx)))
+                            }
+                            None
                         }
                        _ => todo!()
                     }
