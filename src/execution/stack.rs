@@ -1497,6 +1497,18 @@ impl LabelStack{
                         Instr::V128Load64lane(_, _)| Instr::V128Store8lane(_, _)| Instr::V128Store16lane(_, _)| Instr::V128Store32lane(_, _)| Instr::V128Store64lane(_, _) => {
                             todo!()
                         },
+                        Instr::MemoryFill=>{
+                            todo!()
+                        },
+                        Instr::MemoryCopy => {
+                            todo!()
+                        },
+                        Instr::MemoryInit(_) => {
+                            todo!()
+                        },
+                        Instr::DataDrop(_) => {
+                            todo!()
+                        },
                        // _ => todo!()
                     }
                 },
