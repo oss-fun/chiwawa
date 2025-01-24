@@ -19,6 +19,7 @@ impl Stacks {
                     frame: Frame{
                         locals: Vec::new(),
                         module: Weak::new(),
+                        locals_num: 0,
                     },
                     label_stack: vec![
                         LabelStack{
@@ -57,25 +58,32 @@ impl Stacks {
                                         locals.append(
                                             &mut cur_label.value_stack
                                         );
-                                        locals.append(
-                                            &mut code.locals.iter().map(|v| match v.1{
-                                                ValueType::NumType(NumType::I32) => Val::Num(Num::I32(v.0 as i32)),
-                                                ValueType::NumType(NumType::I64) => Val::Num(Num::I64(v.0 as i64)),
-                                                ValueType::NumType(NumType::F32) => Val::Num(Num::F32(v.0 as f32)),
-                                                ValueType::NumType(NumType::F64) => Val::Num(Num::F64(v.0 as f64)),
-                                                ValueType::VecType(VecType::V128) => Val::Vec_(Vec_::V128(v.0 as i128)),
-                                                ValueType::RefType(_) => todo!(),
-                                            }).collect()
-                                        );
+                                        println!("locals {}",locals.len());
+                                        for v in code.locals.iter(){
+                                            for _ in 1..(v.0){
+                                                locals.push(
+                                                    match v.1{
+                                                        ValueType::NumType(NumType::I32) => Val::Num(Num::I32(0 as i32)),
+                                                        ValueType::NumType(NumType::I64) => Val::Num(Num::I64(0 as i64)),
+                                                        ValueType::NumType(NumType::F32) => Val::Num(Num::F32(0 as f32)),
+                                                        ValueType::NumType(NumType::F64) => Val::Num(Num::F64(0 as f64)),
+                                                        ValueType::VecType(VecType::V128) => Val::Vec_(Vec_::V128(0 as i128)),
+                                                        ValueType::RefType(_) => todo!(),
+                                                    }
+                                                );
+                                            }
+                                        };
+                                        println!("locals {}",locals.len());
                                         locals
                                     },
                                     module: module.clone(),
+                                    locals_num: type_.results.first().iter().count()
                                 },
                                 label_stack: vec![
                                     LabelStack{
                                         label: Label{
                                             continue_: vec![],
-                                            locals_num: 0,
+                                            locals_num: type_.results.first().iter().count(),
                                         },
                                         instrs: code.body.0.clone().into_iter().map(AdminInstr::Instr).rev().collect(),
                                         value_stack: vec![],
@@ -108,6 +116,7 @@ impl Stacks {
 pub struct Frame{
     pub locals: Vec<Val>,
     pub module: Weak<ModuleInst>,
+    pub locals_num: usize,
 }
 
 pub struct FrameStack {
@@ -1556,6 +1565,12 @@ impl LabelStack{
                             }else{
                                 self.instrs.push(AdminInstr::FrameInstr(FrameInstr::Br(idx)));
                             }
+                            None
+                        },
+                        Instr::Call(idx) =>{
+                            println!("call{}",self.value_stack.len());
+                            let instance = frame.module.upgrade().unwrap();
+                            self.instrs.push(AdminInstr::ModuleInstr(ModuleInstr::Invoke(instance.func_addrs.get_by_idx(idx).clone())));
                             None
                         }
                        _ => todo!()

@@ -21,7 +21,7 @@ fn main() -> Result <()>{
     let mut imports: ImportObjects = HashMap::new();
 
     let inst = ModuleInst::new(&module, imports).unwrap();
-    let params: Vec<Val> = vec![Val::Num(Num::I32(0)),Val::Num(Num::I32(0)),Val::Num(Num::I32(0))];
+    let params: Vec<Val> = vec![Val::Num(Num::I32(0)),Val::Num(Num::I32(0))];
     let ret = inst.get_export_func("main")?.call(params);
     //println!("pi", ret?.pop().unwrap().to_i32());
     Ok(())
