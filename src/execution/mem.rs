@@ -34,28 +34,39 @@ impl MemAddr {
             addr_self.data[index + offset] = *data;
         }
     }
-    pub fn load<T: ByteMem>(&self, arg: &Memarg, ptr: i32) -> Result<T, RuntimeError>{
+    pub fn load<T: ByteMem>(&self, arg: &Memarg, mut ptr: i32) -> Result<T, RuntimeError>{
+        if ptr < 0{
+            ptr=ptr*-1;
+        }
         let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap()).ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
-        let len =  <T>::len();
+        let len = <T>::len();
         let raw = &self.0.borrow().data;
     
-        if pos + len < raw.len(){
+        if raw.len() < pos +len {
+            println!("load Err!");
             return Err(RuntimeError::InstructionFailed);
         }
 
         let data = Vec::from(&raw[pos..pos + len]);
         Ok(<T>::from_byte(data))
     }
-    pub fn store<T:ByteMem>(&self, arg: &Memarg, ptr: i32, data: T)-> Result<(), RuntimeError>{
-        let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap()).ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
-        let data = <T>::to_byte(data);
-        let len =  <T>::len();
-        let raw = &mut self.0.borrow_mut().data;
-    
-        if pos + len < raw.len(){
-            return Err(RuntimeError::InstructionFailed);
+    pub fn store<T:ByteMem>(&self, arg: &Memarg, mut ptr: i32, data: T)-> Result<(), RuntimeError>{
+        if ptr < 0{
+            ptr=ptr*-1;
         }
-        for (i, x) in data.into_iter().enumerate(){
+        let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap()).ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
+        let buf = <T>::to_byte(data);
+        let raw = &mut self.0.borrow_mut().data;
+
+        println!("ptr{:+}, offset{},pos{}", ptr, arg.offset,pos);
+
+       if raw.len() < pos + buf.len(){
+          println!("write Err");
+//return Err(RuntimeError::InstructionFailed);
+       //   return Ok(());
+ 
+        }
+        for (i, x) in buf.into_iter().enumerate(){
             raw[pos + i] = x;
         }
 
