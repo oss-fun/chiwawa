@@ -164,10 +164,6 @@ impl ModuleInst {
     }
 
     pub fn get_export_func(&self, name: &str) -> Result<FuncAddr, RuntimeError>{
-        println!("get_export_func!");
-        for export in self.exports.iter(){
-            println!("{}", export.name);
-        }
         let externval = self.exports.iter().find(|export| export.name == name).map(|export| export.value.clone());
         if let Some(Externval::Func(x)) = externval{
             Ok(x)
