@@ -307,7 +307,6 @@ fn decode_code_section(body: FunctionBody<'_>, module: &mut Module) -> Result<()
         let (cnt, ty) = pair?;
         let ty = match_value_type(ty);
         module.funcs[module.code_index].locals.push((cnt,ty));
-        println!("module.code_index{}, cnt{}",module.code_index, cnt);
     }
 
     let mut ops = body.get_operators_reader()?.into_iter_with_offsets().peekable();
