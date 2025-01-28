@@ -19,7 +19,7 @@ impl Stacks {
                     frame: Frame{
                         locals: Vec::new(),
                         module: Weak::new(),
-                        locals_num: 0,
+                        n: 0,
                     },
                     label_stack: vec![
                         LabelStack{
@@ -60,7 +60,6 @@ impl Stacks {
                                         );
                                         println!("locals {}",locals.len());
                                         for v in code.locals.iter(){
-                                            println!("cnt{}",v.0);
                                             for _ in 0..(v.0){
                                                 locals.push(
                                                     match v.1{
@@ -78,7 +77,7 @@ impl Stacks {
                                         locals
                                     },
                                     module: module.clone(),
-                                    locals_num: type_.results.first().iter().count()
+                                    n: type_.results.first().iter().count()
                                 },
                                 label_stack: vec![
                                     LabelStack{
@@ -102,10 +101,11 @@ impl Stacks {
 
                 },
                 ModuleInstr::Return =>{
+                    println!("return");
                     let ret = cur_label.value_stack.pop();
-                    if !self.activation_frame_stack.pop().unwrap().void{
-                        let next = self.activation_frame_stack.last_mut().unwrap();
-                        next.label_stack.last_mut().unwrap().value_stack.push(ret.unwrap());
+                    let n = self.activation_frame_stack.pop().unwrap().frame.n;
+                    if n != 0{
+                        self.activation_frame_stack.last_mut().unwrap().label_stack.last_mut().unwrap().value_stack.push(ret.unwrap());
                     }
                 }
             }
@@ -117,7 +117,7 @@ impl Stacks {
 pub struct Frame{
     pub locals: Vec<Val>,
     pub module: Weak<ModuleInst>,
-    pub locals_num: usize,
+    pub n: usize,
 }
 
 pub struct FrameStack {
@@ -218,6 +218,7 @@ impl LabelStack{
                             None
                         },
                         Instr::I64Const(x) => {
+                            println!("I64Const{}",x);
                             self.value_stack.push(Val::Num(Num::I64(x)));
                             None
                         },
@@ -1344,7 +1345,6 @@ impl LabelStack{
                             let data = self.value_stack.pop().unwrap().to_i32();
                             println!("data {}",data);
                             let ptr = self.value_stack.pop().unwrap().to_i32();
-                            println!("ptr {}",ptr);
                             let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
                             module_inst.mem_addrs[0].store::<i32>(&arg, ptr, data)?;
                             None
@@ -1585,8 +1585,10 @@ impl LabelStack{
                             let instance = frame.module.upgrade().unwrap();
                             self.instrs.push(AdminInstr::ModuleInstr(ModuleInstr::Invoke(instance.func_addrs.get_by_idx(idx).clone())));
                             None
-                        }
-                    _ => todo!()
+                        },
+                        Instr::Return => Some(FrameInstr::ModuleInstr(ModuleInstr::Return)),
+                        Instr::Br(idx) => Some(FrameInstr::Br(idx)),
+                        _ => todo!()
                     }
                 },
                 AdminInstr::FrameInstr(frame) => {
