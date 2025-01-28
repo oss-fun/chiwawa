@@ -28,7 +28,7 @@ impl Stacks {
                                 locals_num: 0,
                             },
                             instrs: vec![
-                                AdminInstr::ModuleInstr(ModuleInstr::Invoke(funcaddr.clone()))
+                                AdminInstr::Invoke(funcaddr.clone())
                             ],
                             value_stack: params.clone(),
                         },
@@ -48,7 +48,7 @@ impl Stacks {
         if let Some(instr) = cur_frame.exec_instr_frame_level()? {
             let cur_label = cur_frame.label_stack.last_mut().unwrap();
             match instr {
-                ModuleInstr::Invoke(func_addr) => {
+                ModuleLevelInstr::Invoke(func_addr) => {
                     match &*func_addr.borrow(){
                         FuncInst::RuntimeFunc{type_,module,code} => {
                             let frame = FrameStack{
@@ -100,7 +100,7 @@ impl Stacks {
                     }
 
                 },
-                ModuleInstr::Return =>{
+                ModuleLevelInstr::Return =>{
                     println!("return");
                     let ret = cur_label.value_stack.pop();
                     let n = self.activation_frame_stack.pop().unwrap().frame.n;
@@ -127,19 +127,14 @@ pub struct FrameStack {
 }
 
 impl FrameStack{
-    pub fn exec_instr_frame_level(&mut self) -> Result<Option<ModuleInstr>, RuntimeError>{
+    pub fn exec_instr_frame_level(&mut self) -> Result<Option<ModuleLevelInstr>, RuntimeError>{
         let cur_label = self.label_stack.last_mut().unwrap();
         if let Some(instr) = cur_label.exec_primitive_instr(&mut self.frame)?{
             match instr {
                 /*Redirect to Exec_instr(Handing Instruction Spanning Frame)*/
-                FrameInstr::ModuleInstr(module_instr) => {
-                    match module_instr{
-                        ModuleInstr::Return => Ok(Some(ModuleInstr::Return)),
-                        ModuleInstr::Invoke(fa) => Ok(Some(ModuleInstr::Invoke(fa))),
-
-                    }
-                },
-                FrameInstr::Br(idx) => {
+                FrameLevelInstr::Invoke(idx) => Ok(Some(ModuleLevelInstr::Invoke(idx))),
+                FrameLevelInstr::Return => Ok(Some(ModuleLevelInstr::Return)),
+                FrameLevelInstr::Br(idx) => {
                     let idx = idx.to_usize();
                     let mut cur_label_value = self.label_stack.last().unwrap().value_stack.clone();
                     for _ in 0..idx{
@@ -164,10 +159,10 @@ impl FrameStack{
                                 value_stack: cur_label_value,
                             }
                         );
-                        Ok(Some(ModuleInstr::Return))
+                        Ok(Some(ModuleLevelInstr::Return))
                     }
                 },
-                FrameInstr::Label(label, instrs) => {
+                FrameLevelInstr::Label(label, instrs) => {
                     self.label_stack.push(
                         LabelStack{
                             label,
@@ -177,14 +172,14 @@ impl FrameStack{
                     );
                     Ok(None)
                 },
-                FrameInstr::EndLabel => {
+                FrameLevelInstr::EndLabel => {
                     let mut cur_label = self.label_stack.pop().unwrap();
                     if let Some(last) = self.label_stack.last_mut() {
                         last.value_stack.append(&mut cur_label.value_stack);
                         Ok(None)
                     } else {
                         self.label_stack.push(cur_label);
-                        Ok(Some(ModuleInstr::Return)) 
+                        Ok(Some(ModuleLevelInstr::Return)) 
                     }
                 },
             }
@@ -207,7 +202,7 @@ pub struct LabelStack {
 }
 
 impl LabelStack{
-    pub fn exec_primitive_instr(&mut self, frame: &mut Frame) -> Result<Option<FrameInstr>, RuntimeError>{
+    pub fn exec_primitive_instr(&mut self, frame: &mut Frame) -> Result<Option<FrameLevelInstr>, RuntimeError>{
         Ok(if let Some(instr) = self.instrs.pop(){
             match instr {
                 AdminInstr::Instr(instr) => {
@@ -1534,104 +1529,104 @@ impl LabelStack{
                         Instr::Nop => None,
                         Instr::Unreachable => return Err(RuntimeError::Unreachable),
                         Instr::Block(type_, instrs) => {
-                            self.instrs.push(AdminInstr::FrameInstr(FrameInstr::Label(
+                            self.instrs.push(AdminInstr::Label(
                                 Label{
                                     continue_: vec![],
                                     locals_num: type_.1.iter().count(),
                                 },
                                 instrs
-                            )));
+                            ));
                             None
                         }
                         Instr::Loop(type_, instrs) => {
-                            self.instrs.push(AdminInstr::FrameInstr(FrameInstr::Label(
+                            self.instrs.push(AdminInstr::Label(
                                 Label{
                                     continue_: vec![Instr::Loop(type_.clone(), instrs.clone())],
                                     locals_num: type_.1.iter().count(),
                                 },
                                 instrs
-                            )));
+                            ));
                             None
                         },
                         Instr::If(type_, i1, i2) =>{
                             let bool_ = self.value_stack.pop().unwrap().to_i32();
-                            self.instrs.push(AdminInstr::FrameInstr(FrameInstr::Label(
+                            self.instrs.push(AdminInstr::Label(
                                 Label{
                                     continue_: vec![],
                                     locals_num: type_.1.iter().count(),
                                 },
                                 if  bool_ != 0 {i1} else{i2},
-                            )));
+                            ));
                             None
                         },
                         Instr::BrIf(idx) =>{
                             let bool_ = self.value_stack.pop().unwrap().to_i32();
                             if bool_ != 0 {
-                                self.instrs.push(AdminInstr::FrameInstr(FrameInstr::Br(idx)))
+                                self.instrs.push(AdminInstr::Br(idx))
                             }
                             None
                         },
                         Instr::BrTable(idxes,idx) =>{
                             let i = self.value_stack.pop().unwrap().to_i32();
                             if (i as usize) < idxes.len(){
-                                self.instrs.push(AdminInstr::FrameInstr(FrameInstr::Br(idxes[i as usize].clone())));
+                                self.instrs.push(AdminInstr::Br(idxes[i as usize].clone()));
                             }else{
-                                self.instrs.push(AdminInstr::FrameInstr(FrameInstr::Br(idx)));
+                                self.instrs.push(AdminInstr::Br(idx));
                             }
                             None
                         },
                         Instr::Call(idx) =>{
                             println!("call{}",self.value_stack.len());
                             let instance = frame.module.upgrade().unwrap();
-                            self.instrs.push(AdminInstr::ModuleInstr(ModuleInstr::Invoke(instance.func_addrs.get_by_idx(idx).clone())));
+                            self.instrs.push(AdminInstr::Invoke(instance.func_addrs.get_by_idx(idx).clone()));
                             None
                         },
-                        Instr::Return => Some(FrameInstr::ModuleInstr(ModuleInstr::Return)),
-                        Instr::Br(idx) => Some(FrameInstr::Br(idx)),
-                        _ => todo!()
+                        Instr::Br(idx) => {
+                            self.instrs.push(AdminInstr::Br(idx));
+                            None
+                        },
+                        Instr::Return => {
+                            self.instrs.push(AdminInstr::Return);
+                            None
+                        },
+                        _=> todo!(),
                     }
                 },
-                AdminInstr::FrameInstr(frame) => {
-                    match frame{
-                        FrameInstr::Br(idx) => Some(FrameInstr::Br(idx)),
-                        FrameInstr::Label(label, instrs) => Some(FrameInstr::Label(label, instrs)),
-                        FrameInstr::EndLabel => Some(FrameInstr::EndLabel),
-                        FrameInstr::ModuleInstr(m) => Some(FrameInstr::ModuleInstr(m)),
-                    }
-                },
-                AdminInstr::ModuleInstr(module) => {
-                    match module{
-                        ModuleInstr::Invoke(funcaddr) => Some(FrameInstr::ModuleInstr(ModuleInstr::Invoke(funcaddr))),
-                        ModuleInstr::Return => Some(FrameInstr::ModuleInstr(ModuleInstr::Return)),
-                    }
-                }
+                AdminInstr::Invoke(idx) => Some(FrameLevelInstr::Invoke(idx)),
+                AdminInstr::Return =>Some(FrameLevelInstr::Return),
+                AdminInstr::Label(label, instrs) => Some(FrameLevelInstr::Label(label, instrs)),
+                AdminInstr::Br(idx) => Some(FrameLevelInstr::Br(idx)),
                 _ => todo!(),
             }
         } else{
-            Some(FrameInstr::EndLabel)
+            Some(FrameLevelInstr::EndLabel)
         })
     }
 }
 
 #[derive(Clone)]
-pub enum ModuleInstr{
+pub enum FrameLevelInstr{
+    Label(Label, Vec<Instr>),
+    Br(LabelIdx),
+    EndLabel,
+    Invoke(FuncAddr),
+    Return
+}
+
+#[derive(Clone)]
+pub enum ModuleLevelInstr{
     Invoke(FuncAddr),
     Return,
-}
-#[derive(Clone)]
-pub enum FrameInstr{
-    Br(LabelIdx),
-    Label(Label, Vec<Instr>),
-    EndLabel,
-    ModuleInstr(ModuleInstr)
 }
 
 #[derive(Clone)]
 pub enum AdminInstr {
     Trap,
     Instr(Instr),
+    Invoke(FuncAddr),
+    Label(Label, Vec<Instr>),
+    Br(LabelIdx),
+    Return,
     Ref(FuncAddr),
-    ModuleInstr(ModuleInstr),
-    FrameInstr(FrameInstr),
     RefExtern(ExternAddr),
 }
