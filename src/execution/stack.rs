@@ -145,9 +145,8 @@ impl FrameStack{
                     let mut instrs = continue_label.continue_.clone().into_iter().map(AdminInstr::Instr).rev().collect::<Vec<_>>();
 
                     if let Some(dst_label) = self.label_stack.last_mut(){
-                        for _ in 0..continue_label.locals_num {
-                            dst_label.value_stack.push(cur_label_value.pop().unwrap());
-                        }
+                        let mut push = cur_label_value.split_off(cur_label_value.len()- continue_label.locals_num);
+                        dst_label.value_stack.append(&mut push);
                         Ok(None)
                     }else{
                         self.label_stack.push(
@@ -496,8 +495,8 @@ impl LabelStack{
                             None
                         },
                         Instr::I64DivU => {
-                            let rhs = self.value_stack.pop().unwrap().to_i32() as u64;
-                            let lhs = self.value_stack.pop().unwrap().to_i32() as u64;
+                            let rhs = self.value_stack.pop().unwrap().to_i64() as u64;
+                            let lhs = self.value_stack.pop().unwrap().to_i64() as u64;
                             self.value_stack.push(
                                 Val::Num(Num::I64(lhs.checked_div(rhs).ok_or_else(|| RuntimeError::ZeroDivideError)? as i64))
                             );
@@ -560,8 +559,8 @@ impl LabelStack{
                             None
                         },
                         Instr::I64ShrU => {
-                            let rhs = self.value_stack.pop().unwrap().to_i32() as u64;
-                            let lhs = self.value_stack.pop().unwrap().to_i32() as u64;
+                            let rhs = self.value_stack.pop().unwrap().to_i64() as u64;
+                            let lhs = self.value_stack.pop().unwrap().to_i64() as u64;
                             self.value_stack.push(
                                 Val::Num(Num::I64((lhs >> rhs) as i64))
                             );
@@ -1017,18 +1016,18 @@ impl LabelStack{
                             None
                         },
                         Instr::I64ExtendI32S => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
+                            let a = self.value_stack.pop().unwrap().to_i32();
                             let result = (a & (2^(32-1) - 1)) | (0 - (a & 2^(32-1)));
                             self.value_stack.push(
-                                Val::Num(Num::I64(result))
+                                Val::Num(Num::I64(result as i64))
                             );
                             None
                         },
                         Instr::I64ExtendI32U => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
+                            let a = self.value_stack.pop().unwrap().to_i32();
                             let result = a & (2^32 - 1);
                             self.value_stack.push(
-                                Val::Num(Num::I64(result))
+                                Val::Num(Num::I64(result as i64))
                             );
                             None
                         },
