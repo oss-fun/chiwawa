@@ -83,7 +83,7 @@ impl Stacks {
                                     LabelStack{
                                         label: Label{
                                             continue_: vec![],
-                                            locals_num: type_.results.first().iter().count(),
+                                            locals_num: type_.results.iter().count(),
                                         },
                                         instrs: code.body.0.clone().into_iter().map(AdminInstr::Instr).rev().collect(),
                                         value_stack: vec![],
@@ -138,15 +138,16 @@ impl FrameStack{
                     let idx = idx.to_usize();
                     let mut cur_label_value = self.label_stack.last().unwrap().value_stack.clone();
                     for _ in 0..idx{
-                        self.label_stack.pop();
+                        self.label_stack.pop().unwrap();
                     };
                     
                     let continue_label = self.label_stack.pop().unwrap().label;
-                    let mut instrs = continue_label.continue_.into_iter().map(AdminInstr::Instr).rev().collect();
+                    let mut instrs = continue_label.continue_.clone().into_iter().map(AdminInstr::Instr).rev().collect::<Vec<_>>();
 
                     if let Some(dst_label) = self.label_stack.last_mut(){
-                        dst_label.value_stack.append(&mut cur_label_value);
-                        dst_label.instrs.append(&mut instrs);
+                        for _ in 0..continue_label.locals_num {
+                            dst_label.value_stack.push(cur_label_value.pop().unwrap());
+                        }
                         Ok(None)
                     }else{
                         self.label_stack.push(
@@ -1542,7 +1543,7 @@ impl LabelStack{
                             self.instrs.push(AdminInstr::Label(
                                 Label{
                                     continue_: vec![Instr::Loop(type_.clone(), instrs.clone())],
-                                    locals_num: type_.1.iter().count(),
+                                    locals_num: 0,
                                 },
                                 instrs
                             ));
