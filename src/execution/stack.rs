@@ -344,355 +344,355 @@ impl LabelStack{
                         },
                         /*Two Operand Numeric Instructions*/
                         Instr::I32Add => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let b = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32(a + b))
+                                Val::Num(Num::I32(lhs + rhs))
                             );
                             None
                         },
                         Instr::I32Sub => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let b = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32(a - b))
+                                Val::Num(Num::I32(lhs - rhs))
                             );
                             None
                         },
                         Instr::I32Mul => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let b = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32(a * b))
+                                Val::Num(Num::I32(rhs * lhs))
                             );
                             None
                         },
                         Instr::I32DivS => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let b = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32(a.checked_div(b).ok_or_else(|| RuntimeError::ZeroDivideError)?))
+                                Val::Num(Num::I32(lhs.checked_div(rhs).ok_or_else(|| RuntimeError::ZeroDivideError)?))
                             );
                             None
                         },
                         Instr::I32DivU => {
-                            let a = self.value_stack.pop().unwrap().to_i32() as u32;
-                            let b = self.value_stack.pop().unwrap().to_i32() as u32;
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32(a.checked_div(b).ok_or_else(|| RuntimeError::ZeroDivideError)? as i32))
+                                Val::Num(Num::I32(lhs.checked_div(rhs).ok_or_else(|| RuntimeError::ZeroDivideError)? as i32))
                             );
                             None
                         },
                         Instr::I32RemS => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let b = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32(a.overflowing_rem(b).0))
+                                Val::Num(Num::I32(lhs.overflowing_rem(rhs).0))
                             );
                             None
                         },
                         Instr::I32RemU => {
-                            let a = self.value_stack.pop().unwrap().to_i32() as u32;
-                            let b = self.value_stack.pop().unwrap().to_i32() as u32;
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32(a.overflowing_rem(b).0 as i32))
+                                Val::Num(Num::I32(lhs.overflowing_rem(rhs).0 as i32))
                             );
                             None
                         },
                         Instr::I32And => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let b = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32(a & b))
+                                Val::Num(Num::I32(lhs & rhs))
                             );
                             None
                         },
                         Instr::I32Or => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let b = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32(a | b))
+                                Val::Num(Num::I32(lhs | rhs))
                             );
                             None
                         },
                         Instr::I32Xor => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let b = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32(a ^ b))
+                                Val::Num(Num::I32(lhs ^ rhs))
                             );
                             None
                         },
                         Instr::I32Shl => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let b = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32(a << b))
+                                Val::Num(Num::I32(lhs << rhs))
                             );
                             None
                         },
                         Instr::I32ShrS => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let b = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32(a >> b))
+                                Val::Num(Num::I32(lhs >> rhs))
                             );
                             None
                         },
                         Instr::I32ShrU => {
-                            let a = self.value_stack.pop().unwrap().to_i32() as u32;
-                            let b = self.value_stack.pop().unwrap().to_i32() as u32;
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a >> b) as i32))
+                                Val::Num(Num::I32((lhs >> rhs) as i32))
                             );
                             None
                         },
                         Instr::I32Rotl => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let b = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32(a.rotate_left(b as u32)))
+                                Val::Num(Num::I32(lhs.rotate_left(rhs as u32)))
                             );
                             None
                         },
                         Instr::I32Rotr => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let b = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32(a.rotate_right(b as u32)))
+                                Val::Num(Num::I32(lhs.rotate_right(rhs as u32)))
                             );
                             None
                         },
                         Instr::I64Add => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let b = self.value_stack.pop().unwrap().to_i64();
+                            let rhs = self.value_stack.pop().unwrap().to_i64();
+                            let lhs = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
-                                Val::Num(Num::I64(a + b))
+                                Val::Num(Num::I64(lhs + rhs))
                             );
                             None
                         },
                         Instr::I64Sub => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let b = self.value_stack.pop().unwrap().to_i64();
+                            let rhs = self.value_stack.pop().unwrap().to_i64();
+                            let lhs = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
-                                Val::Num(Num::I64(a - b))
+                                Val::Num(Num::I64(lhs - rhs))
                             );
                             None
                         },
                         Instr::I64Mul => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let b = self.value_stack.pop().unwrap().to_i64();
+                            let rhs = self.value_stack.pop().unwrap().to_i64();
+                            let lhs = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
-                                Val::Num(Num::I64(a * b))
+                                Val::Num(Num::I64(lhs * rhs))
                             );
                             None
                         },
                         Instr::I64DivS => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let b = self.value_stack.pop().unwrap().to_i64();
+                            let rhs = self.value_stack.pop().unwrap().to_i64();
+                            let lhs = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
-                                Val::Num(Num::I64(a.checked_div(b).ok_or_else(|| RuntimeError::ZeroDivideError)?))
+                                Val::Num(Num::I64(lhs.checked_div(rhs).ok_or_else(|| RuntimeError::ZeroDivideError)?))
                             );
                             None
                         },
                         Instr::I64DivU => {
-                            let a = self.value_stack.pop().unwrap().to_i32() as u64;
-                            let b = self.value_stack.pop().unwrap().to_i32() as u64;
+                            let rhs = self.value_stack.pop().unwrap().to_i32() as u64;
+                            let lhs = self.value_stack.pop().unwrap().to_i32() as u64;
                             self.value_stack.push(
-                                Val::Num(Num::I64(a.checked_div(b).ok_or_else(|| RuntimeError::ZeroDivideError)? as i64))
+                                Val::Num(Num::I64(lhs.checked_div(rhs).ok_or_else(|| RuntimeError::ZeroDivideError)? as i64))
                             );
                             None
                         },
                         Instr::I64RemS => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let b = self.value_stack.pop().unwrap().to_i64();
+                            let rhs = self.value_stack.pop().unwrap().to_i64();
+                            let lhs = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
-                                Val::Num(Num::I64(a.overflowing_rem(b).0))
+                                Val::Num(Num::I64(lhs.overflowing_rem(rhs).0))
                             );
                             None
                         },
                         Instr::I64RemU => {
-                            let a = self.value_stack.pop().unwrap().to_i32() as u64;
-                            let b = self.value_stack.pop().unwrap().to_i32() as u64;
+                            let rhs = self.value_stack.pop().unwrap().to_i32() as u64;
+                            let lhs = self.value_stack.pop().unwrap().to_i32() as u64;
                             self.value_stack.push(
-                                Val::Num(Num::I64(a.overflowing_rem(b).0 as i64))
+                                Val::Num(Num::I64(lhs.overflowing_rem(rhs).0 as i64))
                             );
                             None
                         },
                         Instr::I64And => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let b = self.value_stack.pop().unwrap().to_i64();
+                            let rhs = self.value_stack.pop().unwrap().to_i64();
+                            let lhs = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
-                                Val::Num(Num::I64(a & b))
+                                Val::Num(Num::I64(lhs & rhs))
                             );
                             None
                         },
                         Instr::I64Or => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let b = self.value_stack.pop().unwrap().to_i64();
+                            let rhs = self.value_stack.pop().unwrap().to_i64();
+                            let lhs = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
-                                Val::Num(Num::I64(a | b))
+                                Val::Num(Num::I64(lhs | rhs))
                             );
                             None
                         },
                         Instr::I64Xor => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let b = self.value_stack.pop().unwrap().to_i64();
+                            let rhs = self.value_stack.pop().unwrap().to_i64();
+                            let lhs = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
-                                Val::Num(Num::I64(a ^ b))
+                                Val::Num(Num::I64(lhs ^ rhs))
                             );
                             None
                         },
                         Instr::I64Shl => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let b = self.value_stack.pop().unwrap().to_i64();
+                            let rhs = self.value_stack.pop().unwrap().to_i64();
+                            let lhs = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
-                                Val::Num(Num::I64(a << b))
+                                Val::Num(Num::I64(lhs << rhs))
                             );
                             None
                         },
                         Instr::I64ShrS => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let b = self.value_stack.pop().unwrap().to_i64();
+                            let rhs = self.value_stack.pop().unwrap().to_i64();
+                            let lhs = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
-                                Val::Num(Num::I64(a >> b))
+                                Val::Num(Num::I64(lhs >> rhs))
                             );
                             None
                         },
                         Instr::I64ShrU => {
-                            let a = self.value_stack.pop().unwrap().to_i32() as u64;
-                            let b = self.value_stack.pop().unwrap().to_i32() as u64;
+                            let rhs = self.value_stack.pop().unwrap().to_i32() as u64;
+                            let lhs = self.value_stack.pop().unwrap().to_i32() as u64;
                             self.value_stack.push(
-                                Val::Num(Num::I64((a >> b) as i64))
+                                Val::Num(Num::I64((lhs >> rhs) as i64))
                             );
                             None
                         },
                         Instr::I64Rotl => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let b = self.value_stack.pop().unwrap().to_i64();
+                            let rhs = self.value_stack.pop().unwrap().to_i64();
+                            let lhs = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
-                                Val::Num(Num::I64(a.rotate_left(b as u32)))
+                                Val::Num(Num::I64(lhs.rotate_left(rhs as u32)))
                             );
                             None
                         },
                         Instr::I64Rotr => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let b = self.value_stack.pop().unwrap().to_i64();
+                            let rhs = self.value_stack.pop().unwrap().to_i64();
+                            let lhs = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
-                                Val::Num(Num::I64(a.rotate_right(b as u32)))
+                                Val::Num(Num::I64(lhs.rotate_right(rhs as u32)))
                             );
                             None
                         },
 
                         Instr::F32Add => {
-                            let a = self.value_stack.pop().unwrap().to_f32();
-                            let b = self.value_stack.pop().unwrap().to_f32();
+                            let rhs = self.value_stack.pop().unwrap().to_f32();
+                            let lhs = self.value_stack.pop().unwrap().to_f32();
                             self.value_stack.push(
-                                Val::Num(Num::F32(a + b))
+                                Val::Num(Num::F32(lhs + rhs))
                             );
                             None
                         },
                         Instr::F32Sub => {
-                            let a = self.value_stack.pop().unwrap().to_f32();
-                            let b = self.value_stack.pop().unwrap().to_f32();
+                            let rhs = self.value_stack.pop().unwrap().to_f32();
+                            let lhs = self.value_stack.pop().unwrap().to_f32();
                             self.value_stack.push(
-                                Val::Num(Num::F32(a - b))
+                                Val::Num(Num::F32(lhs - rhs))
                             );
                             None
                         },
                         Instr::F32Mul => {
-                            let a = self.value_stack.pop().unwrap().to_f32();
-                            let b = self.value_stack.pop().unwrap().to_f32();
+                            let rhs = self.value_stack.pop().unwrap().to_f32();
+                            let lhs = self.value_stack.pop().unwrap().to_f32();
                             self.value_stack.push(
-                                Val::Num(Num::F32(a * b))
+                                Val::Num(Num::F32(lhs * rhs))
                             );
                             None
                         },
                         Instr::F32Div => {
-                            let a = self.value_stack.pop().unwrap().to_f32();
-                            let b = self.value_stack.pop().unwrap().to_f32();
+                            let rhs = self.value_stack.pop().unwrap().to_f32();
+                            let lhs = self.value_stack.pop().unwrap().to_f32();
                             self.value_stack.push(
-                                Val::Num(Num::F32(a / b))
+                                Val::Num(Num::F32(lhs / rhs))
                             );
                             None
                         },
                         Instr::F32Min => {
-                            let a = self.value_stack.pop().unwrap().to_f32();
-                            let b = self.value_stack.pop().unwrap().to_f32();
+                            let rhs = self.value_stack.pop().unwrap().to_f32();
+                            let lhs = self.value_stack.pop().unwrap().to_f32();
                             self.value_stack.push(
-                                Val::Num(Num::F32(a.min(b)))
+                                Val::Num(Num::F32(lhs.min(rhs)))
                             );
                             None
                         },
                         Instr::F32Max => {
-                            let a = self.value_stack.pop().unwrap().to_f32();
-                            let b = self.value_stack.pop().unwrap().to_f32();
+                            let rhs = self.value_stack.pop().unwrap().to_f32();
+                            let lhs = self.value_stack.pop().unwrap().to_f32();
                             self.value_stack.push(
-                                Val::Num(Num::F32(a.max(b)))
+                                Val::Num(Num::F32(lhs.max(rhs)))
                             );
                             None
                         },
                         Instr::F32Copysign => {
-                            let a = self.value_stack.pop().unwrap().to_f32();
-                            let b = self.value_stack.pop().unwrap().to_f32();
+                            let rhs = self.value_stack.pop().unwrap().to_f32();
+                            let lhs = self.value_stack.pop().unwrap().to_f32();
                             self.value_stack.push(
-                                Val::Num(Num::F32(a.copysign(b)))
+                                Val::Num(Num::F32(lhs.copysign(rhs)))
                             );
                             None
                         },
                         Instr::F64Add => {
-                            let a = self.value_stack.pop().unwrap().to_f64();
-                            let b = self.value_stack.pop().unwrap().to_f64();
+                            let rhs = self.value_stack.pop().unwrap().to_f64();
+                            let lhs = self.value_stack.pop().unwrap().to_f64();
                             self.value_stack.push(
-                                Val::Num(Num::F64(a + b))
+                                Val::Num(Num::F64(lhs + rhs))
                             );
                             None
                         },
                         Instr::F64Sub => {
-                            let a = self.value_stack.pop().unwrap().to_f64();
-                            let b = self.value_stack.pop().unwrap().to_f64();
+                            let rhs = self.value_stack.pop().unwrap().to_f64();
+                            let lhs = self.value_stack.pop().unwrap().to_f64();
                             self.value_stack.push(
-                                Val::Num(Num::F64(a - b))
+                                Val::Num(Num::F64(lhs - rhs))
                             );
                             None
                         },
                         Instr::F64Mul => {
-                            let a = self.value_stack.pop().unwrap().to_f64();
-                            let b = self.value_stack.pop().unwrap().to_f64();
+                            let rhs = self.value_stack.pop().unwrap().to_f64();
+                            let lhs = self.value_stack.pop().unwrap().to_f64();
                             self.value_stack.push(
-                                Val::Num(Num::F64(a * b))
+                                Val::Num(Num::F64(lhs * rhs))
                             );
                             None
                         },
                         Instr::F64Div => {
-                            let a = self.value_stack.pop().unwrap().to_f64();
-                            let b = self.value_stack.pop().unwrap().to_f64();
+                            let rhs = self.value_stack.pop().unwrap().to_f64();
+                            let lhs = self.value_stack.pop().unwrap().to_f64();
                             self.value_stack.push(
-                                Val::Num(Num::F64(a / b))
+                                Val::Num(Num::F64(lhs / rhs))
                             );
                             None
                         },
                         Instr::F64Min => {
-                            let a = self.value_stack.pop().unwrap().to_f64();
-                            let b = self.value_stack.pop().unwrap().to_f64();
+                            let rhs = self.value_stack.pop().unwrap().to_f64();
+                            let lhs = self.value_stack.pop().unwrap().to_f64();
                             self.value_stack.push(
-                                Val::Num(Num::F64(a.min(b)))
+                                Val::Num(Num::F64(lhs.min(rhs)))
                             );
                             None
                         },
                         Instr::F64Max => {
-                            let a = self.value_stack.pop().unwrap().to_f64();
-                            let b = self.value_stack.pop().unwrap().to_f64();
+                            let rhs = self.value_stack.pop().unwrap().to_f64();
+                            let lhs = self.value_stack.pop().unwrap().to_f64();
                             self.value_stack.push(
-                                Val::Num(Num::F64(a.max(b)))
+                                Val::Num(Num::F64(lhs.max(rhs)))
                             );
                             None
                         },
                         Instr::F64Copysign => {
-                            let a = self.value_stack.pop().unwrap().to_f64();
-                            let b = self.value_stack.pop().unwrap().to_f64();
+                            let rhs = self.value_stack.pop().unwrap().to_f64();
+                            let lhs = self.value_stack.pop().unwrap().to_f64();
                             self.value_stack.push(
-                                Val::Num(Num::F64(a.copysign(b)))
+                                Val::Num(Num::F64(lhs.copysign(rhs)))
                             );
                             None
                         },
@@ -712,259 +712,259 @@ impl LabelStack{
                             None
                         },
                         Instr::I32Eq => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let b = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a == b) as i32))
+                                Val::Num(Num::I32((lhs == rhs) as i32))
                             );
                             None
                         },
                         Instr::I32Ne => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let b = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a != b) as i32))
+                                Val::Num(Num::I32((lhs != rhs) as i32))
                             );
                             None
                         },
                         Instr::I32LtS => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let b = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a < b) as i32))
+                                Val::Num(Num::I32((lhs < rhs) as i32))
                             );
                             None
                         },
                         Instr::I32LtU => {
-                            let a = self.value_stack.pop().unwrap().to_i32()as u32;
-                            let b = self.value_stack.pop().unwrap().to_i32() as u32;
+                            let rhs = self.value_stack.pop().unwrap().to_i32()as u32;
+                            let lhs = self.value_stack.pop().unwrap().to_i32() as u32;
                             self.value_stack.push(
-                                Val::Num(Num::I32((a < b) as i32))
+                                Val::Num(Num::I32((lhs < rhs) as i32))
                             );
                             None
                         },
                         Instr::I32GtS => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let b = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a > b) as i32))
+                                Val::Num(Num::I32((lhs > rhs) as i32))
                             );
                             None
                         },
                         Instr::I32GtU => {
-                            let a = self.value_stack.pop().unwrap().to_i32()as u32;
-                            let b = self.value_stack.pop().unwrap().to_i32() as u32;
+                            let rhs = self.value_stack.pop().unwrap().to_i32()as u32;
+                            let lhs = self.value_stack.pop().unwrap().to_i32() as u32;
                             self.value_stack.push(
-                                Val::Num(Num::I32((a > b) as i32))
+                                Val::Num(Num::I32((lhs > rhs) as i32))
                             );
                             None
                         },
                         Instr::I32LeS => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let b = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a <= b) as i32))
+                                Val::Num(Num::I32((lhs <= rhs) as i32))
                             );
                             None
                         },
                         Instr::I32LeU => {
-                            let a = self.value_stack.pop().unwrap().to_i32()as u32;
-                            let b = self.value_stack.pop().unwrap().to_i32() as u32;
+                            let rhs = self.value_stack.pop().unwrap().to_i32()as u32;
+                            let lhs = self.value_stack.pop().unwrap().to_i32() as u32;
                             self.value_stack.push(
-                                Val::Num(Num::I32((a <= b) as i32))
+                                Val::Num(Num::I32((lhs <= rhs) as i32))
                             );
                             None
                         },
                         Instr::I32GeS => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let b = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32();
+                            let lhs = self.value_stack.pop().unwrap().to_i32();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a >= b) as i32))
+                                Val::Num(Num::I32((lhs >= rhs) as i32))
                             );
                             None
                         },
                         Instr::I32GeU => {
-                            let a = self.value_stack.pop().unwrap().to_i32()as u32;
-                            let b = self.value_stack.pop().unwrap().to_i32() as u32;
+                            let rhs = self.value_stack.pop().unwrap().to_i32()as u32;
+                            let lhs = self.value_stack.pop().unwrap().to_i32() as u32;
                             self.value_stack.push(
-                                Val::Num(Num::I32((a >= b) as i32))
+                                Val::Num(Num::I32((lhs >= rhs) as i32))
                             );
                             None
                         },
                         Instr::I64Eq => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let b = self.value_stack.pop().unwrap().to_i64();
+                            let rhs = self.value_stack.pop().unwrap().to_i64();
+                            let lhs = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a == b) as i32))
+                                Val::Num(Num::I32((lhs == rhs) as i32))
                             );
                             None
                         },
                         Instr::I64Ne => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let b = self.value_stack.pop().unwrap().to_i64();
+                            let rhs = self.value_stack.pop().unwrap().to_i64();
+                            let lhs = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a != b) as i32))
+                                Val::Num(Num::I32((lhs != rhs) as i32))
                             );
                             None
                         },
                         Instr::I64LtS => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let b = self.value_stack.pop().unwrap().to_i64();
+                            let rhs = self.value_stack.pop().unwrap().to_i64();
+                            let lhs = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a < b) as i32))
+                                Val::Num(Num::I32((lhs < rhs) as i32))
                             );
                             None
                         },
                         Instr::I64LtU => {
-                            let a = self.value_stack.pop().unwrap().to_i64()as u64;
-                            let b = self.value_stack.pop().unwrap().to_i64() as u64;
+                            let rhs = self.value_stack.pop().unwrap().to_i64()as u64;
+                            let lhs = self.value_stack.pop().unwrap().to_i64() as u64;
                             self.value_stack.push(
-                                Val::Num(Num::I32((a < b) as i32))
+                                Val::Num(Num::I32((lhs < rhs) as i32))
                             );
                             None
                         },
                         Instr::I64GtS => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let b = self.value_stack.pop().unwrap().to_i64();
+                            let rhs = self.value_stack.pop().unwrap().to_i64();
+                            let lhs = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a > b) as i32))
+                                Val::Num(Num::I32((lhs > rhs) as i32))
                             );
                             None
                         },
                         Instr::I64GtU => {
-                            let a = self.value_stack.pop().unwrap().to_i64()as u64;
-                            let b = self.value_stack.pop().unwrap().to_i64() as u64;
+                            let rhs = self.value_stack.pop().unwrap().to_i64()as u64;
+                            let lhs = self.value_stack.pop().unwrap().to_i64() as u64;
                             self.value_stack.push(
-                                Val::Num(Num::I32((a > b) as i32))
+                                Val::Num(Num::I32((lhs > rhs) as i32))
                             );
                             None
                         },
                         Instr::I64LeS => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let b = self.value_stack.pop().unwrap().to_i64();
+                            let rhs = self.value_stack.pop().unwrap().to_i64();
+                            let lhs = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a <= b) as i32))
+                                Val::Num(Num::I32((lhs <= rhs) as i32))
                             );
                             None
                         },
                         Instr::I64LeU => {
-                            let a = self.value_stack.pop().unwrap().to_i64()as u64;
-                            let b = self.value_stack.pop().unwrap().to_i64() as u64;
+                            let rhs = self.value_stack.pop().unwrap().to_i64()as u64;
+                            let lhs = self.value_stack.pop().unwrap().to_i64() as u64;
                             self.value_stack.push(
-                                Val::Num(Num::I32((a <= b) as i32))
+                                Val::Num(Num::I32((lhs <= rhs) as i32))
                             );
                             None
                         },
                         Instr::I64GeS => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let b = self.value_stack.pop().unwrap().to_i64();
+                            let rhs = self.value_stack.pop().unwrap().to_i64();
+                            let lhs = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a >= b) as i32))
+                                Val::Num(Num::I32((lhs >= rhs) as i32))
                             );
                             None
                         },
                         Instr::I64GeU => {
-                            let a = self.value_stack.pop().unwrap().to_i64()as u64;
-                            let b = self.value_stack.pop().unwrap().to_i64() as u64;
+                            let rhs = self.value_stack.pop().unwrap().to_i64()as u64;
+                            let lhs = self.value_stack.pop().unwrap().to_i64() as u64;
                             self.value_stack.push(
-                                Val::Num(Num::I32((a >= b) as i32))
+                                Val::Num(Num::I32((lhs >= rhs) as i32))
                             );
                             None
                         },
                         Instr::F32Eq => {
-                            let a = self.value_stack.pop().unwrap().to_f32();
-                            let b = self.value_stack.pop().unwrap().to_f32();
+                            let rhs = self.value_stack.pop().unwrap().to_f32();
+                            let lhs = self.value_stack.pop().unwrap().to_f32();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a == b) as i32))
+                                Val::Num(Num::I32((lhs == rhs) as i32))
                             );
                             None
                         },
                         Instr::F32Ne => {
-                            let a = self.value_stack.pop().unwrap().to_f32();
-                            let b = self.value_stack.pop().unwrap().to_f32();
+                            let rhs = self.value_stack.pop().unwrap().to_f32();
+                            let lhs = self.value_stack.pop().unwrap().to_f32();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a != b) as i32))
+                                Val::Num(Num::I32((lhs != rhs) as i32))
                             );
                             None
                         },
                         Instr::F32Lt => {
-                            let a = self.value_stack.pop().unwrap().to_f32();
-                            let b = self.value_stack.pop().unwrap().to_f32();
+                            let rhs = self.value_stack.pop().unwrap().to_f32();
+                            let lhs = self.value_stack.pop().unwrap().to_f32();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a < b) as i32))
+                                Val::Num(Num::I32((lhs < rhs) as i32))
                             );
                             None
                         },
                         Instr::F32Gt => {
-                            let a = self.value_stack.pop().unwrap().to_f32();
-                            let b = self.value_stack.pop().unwrap().to_f32();
+                            let rhs = self.value_stack.pop().unwrap().to_f32();
+                            let lhs = self.value_stack.pop().unwrap().to_f32();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a > b) as i32))
+                                Val::Num(Num::I32((lhs > rhs) as i32))
                             );
                             None
                         },
                         Instr::F32Le => {
-                            let a = self.value_stack.pop().unwrap().to_f32();
-                            let b = self.value_stack.pop().unwrap().to_f32();
+                            let rhs = self.value_stack.pop().unwrap().to_f32();
+                            let lhs = self.value_stack.pop().unwrap().to_f32();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a <= b) as i32))
+                                Val::Num(Num::I32((lhs <= rhs) as i32))
                             );
                             None
                         },
                         Instr::F32Ge => {
-                            let a = self.value_stack.pop().unwrap().to_f32();
-                            let b = self.value_stack.pop().unwrap().to_f32();
+                            let rhs = self.value_stack.pop().unwrap().to_f32();
+                            let lhs = self.value_stack.pop().unwrap().to_f32();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a >= b) as i32))
+                                Val::Num(Num::I32((lhs >= rhs) as i32))
                             );
                             None
                         },
 
                         Instr::F64Eq => {
-                            let a = self.value_stack.pop().unwrap().to_f64();
-                            let b = self.value_stack.pop().unwrap().to_f64();
+                            let rhs = self.value_stack.pop().unwrap().to_f64();
+                            let lhs = self.value_stack.pop().unwrap().to_f64();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a == b) as i32))
+                                Val::Num(Num::I32((lhs == rhs) as i32))
                             );
                             None
                         },
                         Instr::F64Ne => {
-                            let a = self.value_stack.pop().unwrap().to_f64();
-                            let b = self.value_stack.pop().unwrap().to_f64();
+                            let rhs = self.value_stack.pop().unwrap().to_f64();
+                            let lhs = self.value_stack.pop().unwrap().to_f64();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a != b) as i32))
+                                Val::Num(Num::I32((lhs != rhs) as i32))
                             );
                             None
                         },
                         Instr::F64Lt => {
-                            let a = self.value_stack.pop().unwrap().to_f64();
-                            let b = self.value_stack.pop().unwrap().to_f64();
+                            let rhs = self.value_stack.pop().unwrap().to_f64();
+                            let lhs = self.value_stack.pop().unwrap().to_f64();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a < b) as i32))
+                                Val::Num(Num::I32((lhs < rhs) as i32))
                             );
                             None
                         },
                         Instr::F64Gt => {
-                            let a = self.value_stack.pop().unwrap().to_f64();
-                            let b = self.value_stack.pop().unwrap().to_f64();
+                            let rhs = self.value_stack.pop().unwrap().to_f64();
+                            let lhs = self.value_stack.pop().unwrap().to_f64();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a > b) as i32))
+                                Val::Num(Num::I32((lhs > rhs) as i32))
                             );
                             None
                         },
                         Instr::F64Le => {
-                            let a = self.value_stack.pop().unwrap().to_f64();
-                            let b = self.value_stack.pop().unwrap().to_f64();
+                            let rhs = self.value_stack.pop().unwrap().to_f64();
+                            let lhs = self.value_stack.pop().unwrap().to_f64();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a <= b) as i32))
+                                Val::Num(Num::I32((lhs <= rhs) as i32))
                             );
                             None
                         },
                         Instr::F64Ge => {
-                            let a = self.value_stack.pop().unwrap().to_f64();
-                            let b = self.value_stack.pop().unwrap().to_f64();
+                            let rhs = self.value_stack.pop().unwrap().to_f64();
+                            let lhs = self.value_stack.pop().unwrap().to_f64();
                             self.value_stack.push(
-                                Val::Num(Num::I32((a >= b) as i32))
+                                Val::Num(Num::I32((lhs >= rhs) as i32))
                             );
                             None
                         },
