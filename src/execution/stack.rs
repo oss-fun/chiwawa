@@ -145,6 +145,7 @@ impl FrameStack{
                     let mut instrs = continue_label.continue_.clone().into_iter().map(AdminInstr::Instr).rev().collect::<Vec<_>>();
 
                     if let Some(dst_label) = self.label_stack.last_mut(){
+                        dst_label.instrs.append(&mut instrs);
                         let mut push = cur_label_value.split_off(cur_label_value.len()- continue_label.locals_num);
                         dst_label.value_stack.append(&mut push);
                         Ok(None)
