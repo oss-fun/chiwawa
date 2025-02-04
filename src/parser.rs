@@ -215,8 +215,8 @@ fn parse_initexpr(expr: wasmparser::ConstExpr<'_>) -> Result<Expr, Box<dyn std::
         match op {
             wasmparser::Operator::I32Const {value} => instrs.push(Instr::I32Const(value)),
             wasmparser::Operator::I64Const {value} => instrs.push(Instr::I64Const(value)),
-            wasmparser::Operator::F32Const {value} => instrs.push(Instr::F32Const(value.bits())),
-            wasmparser::Operator::F64Const {value} => instrs.push(Instr::F64Const(value.bits())),
+            wasmparser::Operator::F32Const {value} => instrs.push(Instr::F32Const(f32::from_bits(value.bits()))),
+            wasmparser::Operator::F64Const {value} => instrs.push(Instr::F64Const(f64::from_bits(value.bits()))),
             wasmparser::Operator::RefNull {..} => instrs.push(Instr::RefNull(RefType::ExternalRef)),
             wasmparser::Operator::RefFunc {function_index} => instrs.push(Instr::RefFunc(FuncIdx(function_index))),
             wasmparser::Operator::GlobalGet {global_index} => instrs.push(Instr::GlobalGet(GlobalIdx(global_index))),
@@ -337,8 +337,8 @@ fn match_instr(ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>, op: wasmpar
         /* Numeric Instructions */
         wasmparser::Operator::I32Const {value} => Instr::I32Const(value),
         wasmparser::Operator::I64Const {value} => Instr::I64Const(value),
-        wasmparser::Operator::F32Const {value} => Instr::F32Const(value.bits()),
-        wasmparser::Operator::F64Const {value} => Instr::F64Const(value.bits()),
+        wasmparser::Operator::F32Const {value} => Instr::F32Const(f32::from_bits(value.bits())),
+        wasmparser::Operator::F64Const {value} => Instr::F64Const(f64::from_bits(value.bits())),
         wasmparser::Operator::I32Clz => Instr::I32Clz,
         wasmparser::Operator::I32Ctz => Instr::I32Ctz,
         wasmparser::Operator::I32Popcnt => Instr::I32Popcnt,
