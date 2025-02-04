@@ -35,15 +35,11 @@ impl MemAddr {
         }
     }
     pub fn load<T: ByteMem>(&self, arg: &Memarg, mut ptr: i32) -> Result<T, RuntimeError>{
-        if ptr < 0{
-            ptr=ptr*-1;
-        }
         let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap()).ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
         let len = <T>::len();
         let raw = &self.0.borrow().data;
     
         if raw.len() < pos +len {
-            println!("load Err!");
             return Err(RuntimeError::InstructionFailed);
         }
 
@@ -51,21 +47,14 @@ impl MemAddr {
         Ok(<T>::from_byte(data))
     }
     pub fn store<T:ByteMem>(&self, arg: &Memarg, mut ptr: i32, data: T)-> Result<(), RuntimeError>{
-        if ptr < 0{
-            ptr=ptr*-1;
-        }
         let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap()).ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
         let buf = <T>::to_byte(data);
         let raw = &mut self.0.borrow_mut().data;
 
-        println!("ptr{:+}, offset{},pos{}", ptr, arg.offset,pos);
-
-       if raw.len() < pos + buf.len(){
-          println!("write Err");
-//return Err(RuntimeError::InstructionFailed);
-       //   return Ok(());
- 
+        if raw.len() < pos + buf.len(){
+          return Err(RuntimeError::InstructionFailed);
         }
+
         for (i, x) in buf.into_iter().enumerate(){
             raw[pos + i] = x;
         }
