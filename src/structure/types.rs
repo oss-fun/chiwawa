@@ -23,10 +23,20 @@ pub enum RefType{
     FuncRef,
     ExternalRef,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FuncType{
     pub params: Vec<ValueType>,
     pub results: Vec<ValueType>,
+}
+
+impl FuncType{
+    pub fn type_match(&self, other: &FuncType) -> bool {
+        self == other
+    }
+
+    pub fn params(&self) -> &Vec<ValueType> {
+        &self.params
+    }
 }
 
 pub trait GetIdx

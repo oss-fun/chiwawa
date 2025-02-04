@@ -14,10 +14,16 @@ pub struct MemInst {
 
 impl MemAddr {
     pub fn new(type_: &MemType) -> MemAddr{
+        let min = (type_.0.min * 65536) as usize;
+        let max = type_.0.max.map(|max| max);
         MemAddr(Rc::new(RefCell::new(
             MemInst{
-                type_: type_.clone(),
-                data: Vec::new(),
+                type_: MemType(Limits{min: min as u32, max}),
+                data: {
+                    let mut vec = Vec::with_capacity(min);
+                    vec.resize(min, 0);
+                    vec
+                },
             }
         )))
     }
@@ -28,28 +34,28 @@ impl MemAddr {
             addr_self.data[index + offset] = *data;
         }
     }
-    pub fn load<T: ByteMem>(&self, arg: &Memarg, ptr: i32) -> Result<T, RuntimeError>{
+    pub fn load<T: ByteMem>(&self, arg: &Memarg, mut ptr: i32) -> Result<T, RuntimeError>{
         let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap()).ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
-        let len =  <T>::len();
+        let len = <T>::len();
         let raw = &self.0.borrow().data;
     
-        if pos + len < raw.len(){
+        if raw.len() < pos +len {
             return Err(RuntimeError::InstructionFailed);
         }
 
         let data = Vec::from(&raw[pos..pos + len]);
         Ok(<T>::from_byte(data))
     }
-    pub fn store<T:ByteMem>(&self, arg: &Memarg, ptr: i32, data: T)-> Result<(), RuntimeError>{
+    pub fn store<T:ByteMem>(&self, arg: &Memarg, mut ptr: i32, data: T)-> Result<(), RuntimeError>{
         let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap()).ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
-        let data = <T>::to_byte(data);
-        let len =  <T>::len();
+        let buf = <T>::to_byte(data);
         let raw = &mut self.0.borrow_mut().data;
-    
-        if pos + len < raw.len(){
-            return Err(RuntimeError::InstructionFailed);
+
+        if raw.len() < pos + buf.len(){
+          return Err(RuntimeError::InstructionFailed);
         }
-        for (i, x) in data.into_iter().enumerate(){
+
+        for (i, x) in buf.into_iter().enumerate(){
             raw[pos + i] = x;
         }
 
