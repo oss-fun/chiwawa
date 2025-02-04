@@ -58,7 +58,6 @@ impl Stacks {
                                         locals.append(
                                             &mut cur_label.value_stack.split_off(cur_label.value_stack.len() - type_.params().len())
                                         );
-                                        println!("locals {}",locals.len());
                                         for v in code.locals.iter(){
                                             for _ in 0..(v.0){
                                                 locals.push(
@@ -73,7 +72,6 @@ impl Stacks {
                                                 );
                                             }
                                         };
-                                        println!("locals after push{}",locals.len());
                                         locals
                                     },
                                     module: module.clone(),
@@ -101,7 +99,6 @@ impl Stacks {
 
                 },
                 ModuleLevelInstr::Return =>{
-                    println!("return");
                     let ret = cur_label.value_stack.pop();
                     let n = self.activation_frame_stack.pop().unwrap().frame.n;
                     if n != 0{
@@ -214,7 +211,6 @@ impl LabelStack{
                             None
                         },
                         Instr::I64Const(x) => {
-                            println!("I64Const{}",x);
                             self.value_stack.push(Val::Num(Num::I64(x)));
                             None
                         },
@@ -1245,7 +1241,6 @@ impl LabelStack{
                         },
                         /*Variable Instructions*/
                         Instr::LocalGet(idx) => {
-                            println!("localget idx={}", idx.0);
                             self.value_stack.push(frame.locals[idx.0 as usize].clone());
                             None
                         },
@@ -1258,19 +1253,16 @@ impl LabelStack{
                             None
                         },
                         Instr::GlobalGet(idx) =>{
-                            println!("globalget");
                             let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
                             self.value_stack.push(module_inst.global_addrs.get_by_idx(idx).get());
                             None
                         },
                         Instr::GlobalSet(idx) =>{
-                            println!("globalset");
                             let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
                             module_inst.global_addrs.get_by_idx(idx).set(self.value_stack.pop().unwrap())?;
                             None
                         },
                         Instr::I32Load(arg) =>{
-                            println!("i32load offset={}", arg.offset);
                             let ptr = self.value_stack.pop().unwrap().to_i32();
                             let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
                             self.value_stack.push(Val::Num(Num::I32(module_inst.mem_addrs[0].load::<i32>(&arg, ptr)?)));
@@ -1295,16 +1287,13 @@ impl LabelStack{
                             None
                         },
                         Instr::I32Store(arg) => {
-                            println!("i32store offset={}", arg.offset);
                             let data = self.value_stack.pop().unwrap().to_i32();
-                            println!("data {}",data);
                             let ptr = self.value_stack.pop().unwrap().to_i32();
                             let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
                             module_inst.mem_addrs[0].store::<i32>(&arg, ptr, data)?;
                             None
                         },
                         Instr::I64Store(arg) => {
-                            println!("i64store offset={}", arg.offset);
                             let data = self.value_stack.pop().unwrap().to_i64();
                             let ptr = self.value_stack.pop().unwrap().to_i32();
                             let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
@@ -1386,7 +1375,6 @@ impl LabelStack{
                             None
                         },
                         Instr::I32Store8(arg) => {
-                            println!("i32store8 offset={}", arg.offset);
                             let data = self.value_stack.pop().unwrap().to_i32();
                             let ptr = self.value_stack.pop().unwrap().to_i32();
                             let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
@@ -1394,7 +1382,6 @@ impl LabelStack{
                             None
                         },
                         Instr::I64Store8(arg) => {
-                            println!("32store8");
                             let data = self.value_stack.pop().unwrap().to_i64();
                             let ptr = self.value_stack.pop().unwrap().to_i32();
                             let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
@@ -1534,7 +1521,6 @@ impl LabelStack{
                             None
                         },
                         Instr::Call(idx) =>{
-                            println!("call{}",self.value_stack.len());
                             let instance = frame.module.upgrade().unwrap();
                             self.instrs.push(AdminInstr::Invoke(instance.func_addrs.get_by_idx(idx).clone()));
                             None
