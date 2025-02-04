@@ -969,46 +969,6 @@ impl LabelStack{
                             None
                         },
                         /*Type Translation Instructions*/
-                        Instr::I32Extend8S => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let result = (a & (2^(8-1) - 1)) | (0 - (a & 2^(8-1)));
-                            self.value_stack.push(
-                                Val::Num(Num::I32(result))
-                            );
-                            None
-                        },
-                        Instr::I64Extend8S => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let result = (a & (2^(8-1) - 1)) | (0 - (a & 2^(8-1)));
-                            self.value_stack.push(
-                                Val::Num(Num::I64(result))
-                            );
-                            None
-                        },
-                        Instr::I32Extend16S => {
-                            let a = self.value_stack.pop().unwrap().to_i32();
-                            let result = (a & (2^(16-1) - 1)) | (0 - (a & 2^(16-1)));
-                            self.value_stack.push(
-                                Val::Num(Num::I32(result))
-                            );
-                            None
-                        },
-                        Instr::I64Extend16S => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let result = (a & (2^(16-1) - 1)) | (0 - (a & 2^(16-1)));
-                            self.value_stack.push(
-                                Val::Num(Num::I64(result))
-                            );
-                            None
-                        },
-                        Instr::I64Extend32S => {
-                            let a = self.value_stack.pop().unwrap().to_i64();
-                            let result = (a & (2^(32-1) - 1)) | (0 - (a & 2^(32-1)));
-                            self.value_stack.push(
-                                Val::Num(Num::I64(result))
-                            );
-                            None
-                        },
                         Instr::I32WrapI64 => {
                             let a = self.value_stack.pop().unwrap().to_i64();
                             self.value_stack.push(
@@ -1018,9 +978,8 @@ impl LabelStack{
                         },
                         Instr::I64ExtendI32S => {
                             let a = self.value_stack.pop().unwrap().to_i32();
-                            let result = (a & (2^(32-1) - 1)) | (0 - (a & 2^(32-1)));
                             self.value_stack.push(
-                                Val::Num(Num::I64(result as i64))
+                                Val::Num(Num::I64(a as i64))
                             );
                             None
                         },
@@ -1306,7 +1265,6 @@ impl LabelStack{
                         },
                         Instr::GlobalSet(idx) =>{
                             println!("globalset");
-
                             let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
                             module_inst.global_addrs.get_by_idx(idx).set(self.value_stack.pop().unwrap())?;
                             None
@@ -1444,7 +1402,6 @@ impl LabelStack{
                             None
                         },
                         Instr::I32Store16(arg) => {
-                            println!("i32store16 offset={}", arg.offset);
                             let data = self.value_stack.pop().unwrap().to_i32();
                             let ptr = self.value_stack.pop().unwrap().to_i32();
                             let module_inst = frame.module.upgrade().ok_or_else(||RuntimeError::InstructionFailed).unwrap();
