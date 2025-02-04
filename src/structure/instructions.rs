@@ -8,8 +8,8 @@ pub enum Instr {
     /* Numeric Instructions */
     I32Const(i32),
     I64Const(i64),
-    F32Const(u32), // Bits of IEEE Binary 32 Floating Point Value
-    F64Const(u64), // Bits of IEEE Binary 64 Floating Point Value
+    F32Const(f32), // Bits of IEEE Binary 32 Floating Point Value
+    F64Const(f64), // Bits of IEEE Binary 64 Floating Point Value
     I32Clz,
     I32Ctz,
     I32Popcnt,
@@ -108,11 +108,6 @@ pub enum Instr {
     F64Gt,
     F64Le,
     F64Ge,
-    I32Extend8S,
-    I64Extend8S,
-    I32Extend16S,
-    I64Extend16S,
-    I64Extend32S,
     I32WrapI64,
     I64ExtendI32U,
     I64ExtendI32S,

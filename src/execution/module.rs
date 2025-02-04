@@ -37,7 +37,7 @@ impl GetInstanceByIdx<GlobalIdx> for Vec<GlobalAddr>{}
 pub type ImportObjects = HashMap<String, HashMap<String, Externval>>;
 
 impl ModuleInst {
-    pub fn new(module: &Module, _imports: ImportObjects) -> Result<Rc<ModuleInst>, RuntimeError>{
+    pub fn new(module: &Module, imports: ImportObjects) -> Result<Rc<ModuleInst>, RuntimeError>{
         let mut module_inst = ModuleInst {
             types: module.types.clone(),
             func_addrs: Vec::new(),
@@ -51,8 +51,20 @@ impl ModuleInst {
 
         /*Import is not supported*/
         if module.imports.len() != 0{
-            todo!();
+            println!("len{}",module.imports.len());
+            for import in &module.imports {
+                let val = imports.get(&import.module.0).and_then(|module| module.get(&import.name.0)).cloned().ok_or_else(|| RuntimeError::LinkError)?;
+                match &import.desc {
+                    ImportDesc::Func(idx) => {
+                        module_inst.func_addrs.push(
+                            val.as_func().filter(|func| func.func_type().type_match(module_inst.types.get_by_idx(idx.clone()))).ok_or_else(|| RuntimeError::LinkError)?,
+                        );
+                    },
+                    _ => todo!(),
+                }
+            }
         }
+
 
         for _ in &module.funcs{
             module_inst.func_addrs.push(FuncAddr::alloc_empty())
@@ -67,20 +79,30 @@ impl ModuleInst {
         }
 
         for global in &module.globals {
-            module_inst.global_addrs.push(GlobalAddr::new(&global.type_, ModuleInst::expr_to_const(&global.init)));
+            match module_inst.expr_to_const(&global.init){
+                Some(v) => module_inst.global_addrs.push(GlobalAddr::new(&global.type_, v)),
+                None => return Err(RuntimeError::InstantiateFailed)
+            }
         }
 
         for elem in &module.elems{
             if elem.type_ == RefType::ExternalRef{
                 panic!();
             }
-            let init: Vec<i32> = elem.init.clone().into_iter().map(|expr| ModuleInst::expr_to_const(&expr).to_i32()).collect();
+            let mut init: Vec<i32> = Vec::new();
+            for expr in elem.init.clone().into_iter(){
+                if let Some(cnst) = module_inst.expr_to_const(&expr) {
+                    init.push(cnst.to_i32());
+                }
+
+            }
+          //  let init: Vec<i32> = elem.init.clone().into_iter().map(|expr| module_inst.expr_to_const(&expr).unwrap().to_i32()).collect();
 
             module_inst.elem_addrs.push(ElemAddr::new(&elem.type_, &module_inst.func_addrs, &init));
 
             if elem.mode == ElemMode::Active{
                 let offset = match &elem.offset {
-                    Some(x) => ModuleInst::expr_to_const(x).to_i32(),
+                    Some(x) => module_inst.expr_to_const(x).unwrap().to_i32(),
                     None => 0,
                 };
     
@@ -96,7 +118,7 @@ impl ModuleInst {
             let init: Vec<u8> = data.init.iter().map(|x|x.0).collect();
             module_inst.data_addrs.push(DataAddr::new(&init));
             let offset = match &data.offset {
-                Some(x) => ModuleInst::expr_to_const(x).to_i32(),
+                Some(x) => module_inst.expr_to_const(x).unwrap().to_i32(),
                 None => 0,
             };
 
@@ -132,7 +154,7 @@ impl ModuleInst {
                     0
                 }
             }).sum::<usize>();
-            rc_module_inst.func_addrs[index].replace(func.clone(), Rc::downgrade(&rc_module_inst));
+         rc_module_inst.func_addrs[index].replace(func.clone(), Rc::downgrade(&rc_module_inst));
         }
         if let Some(start) = &module.start {
             //Todo: Invoke _start function
@@ -142,8 +164,8 @@ impl ModuleInst {
     }
 
     pub fn get_export_func(&self, name: &str) -> Result<FuncAddr, RuntimeError>{
-        let externval = self.exports.iter().find(|export| export.name == name).map(|export| export.value.clone()).unwrap();
-        if let Externval::Func(x) = externval{
+        let externval = self.exports.iter().find(|export| export.name == name).map(|export| export.value.clone());
+        if let Some(Externval::Func(x)) = externval{
             Ok(x)
         } else {
             Err(RuntimeError::ExportFuncNotFound)
@@ -151,14 +173,15 @@ impl ModuleInst {
 
     }
 
-    fn expr_to_const(expr: &Expr) -> Val{
+    fn expr_to_const(&self, expr: &Expr) -> Option<Val>{
         match &expr.0[..] {
-            &[Instr::I32Const(i)] => Val::Num(Num::I32(i)),
-            &[Instr::I64Const(i)] => Val::Num(Num::I64(i)),
-            &[Instr::F32Const(i)] => Val::Num(Num::F32(i as f32)),
-            &[Instr::F64Const(i)] => Val::Num(Num::F64(i as f64)),
-            &[Instr::V128Const(i)] => Val::Vec_(Vec_::V128(i)),
-            _ => todo!(),
+            &[Instr::I32Const(i)] => Some(Val::Num(Num::I32(i))),
+            &[Instr::I64Const(i)] => Some(Val::Num(Num::I64(i))),
+            &[Instr::F32Const(i)] => Some(Val::Num(Num::F32(i as f32))),
+            &[Instr::F64Const(i)] => Some(Val::Num(Num::F64(i as f64))),
+            &[Instr::V128Const(i)] => Some(Val::Vec_(Vec_::V128(i))),
+            [Instr::GlobalGet(i)] =>  Some(self.global_addrs.get_by_idx(i.clone()).get()),
+            _ => None,
         }
     }
 }
