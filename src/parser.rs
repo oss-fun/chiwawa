@@ -695,7 +695,15 @@ fn match_instr(ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>, op: wasmpar
         wasmparser::Operator::Return => Instr::Return,
         wasmparser::Operator::Call{function_index} => Instr::Call(FuncIdx(function_index)),
         wasmparser::Operator::CallIndirect{table_index, type_index} => Instr::CallIndirect(TableIdx(table_index), TypeIdx(type_index)),
-        _ => todo!(),
+        wasmparser::Operator::I32Extend8S => todo!(),
+        wasmparser::Operator::I32Extend16S => todo!(),
+        wasmparser::Operator::RefEq => todo!(),
+        wasmparser::Operator::I64Extend8S => todo!(),
+        wasmparser::Operator::I64Extend16S => todo!(),
+        wasmparser::Operator::I64Extend32S => todo!(),
+        wasmparser::Operator::I64Extend32S => todo!(),
+        _ => todo!()
+
     };
     Ok(instr)
 }
