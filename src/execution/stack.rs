@@ -6,6 +6,7 @@ use num::NumCast;
 use std::cmp::{max, min};
 use std::io::Cursor;
 use byteorder::*;
+use std::mem;
 
 pub struct Stacks {
     pub activation_frame_stack: Vec<FrameStack>,
@@ -984,6 +985,41 @@ impl LabelStack{
                             let result = a & (2^32 - 1);
                             self.value_stack.push(
                                 Val::Num(Num::I64(result as i64))
+                            );
+                            None
+                        },
+                        Instr::I32Extend8S =>{
+                            let a = self.value_stack.pop().unwrap().to_i32();
+                            self.value_stack.push(
+                                Val::Num(Num::I32((a as u32).try_into().unwrap()))
+                            );
+                            None
+                        },
+                        Instr::I32Extend16S =>{
+                            let a = self.value_stack.pop().unwrap().to_i32();
+                            self.value_stack.push(
+                                Val::Num(Num::I32((a as u32).try_into().unwrap()))
+                            );
+                            None
+                        },
+                        Instr::I64Extend8S =>{
+                            let a = self.value_stack.pop().unwrap().to_i32();
+                            self.value_stack.push(
+                                Val::Num(Num::I32((a as u64).try_into().unwrap()))
+                            );
+                            None
+                        },
+                        Instr::I64Extend16S =>{
+                            let a = self.value_stack.pop().unwrap().to_i32();
+                            self.value_stack.push(
+                                Val::Num(Num::I32((a as u64).try_into().unwrap()))
+                            );
+                            None
+                        },
+                        Instr::I64Extend32S =>{
+                            let a = self.value_stack.pop().unwrap().to_i32();
+                            self.value_stack.push(
+                                Val::Num(Num::I32((a as u64).try_into().unwrap()))
                             );
                             None
                         },
