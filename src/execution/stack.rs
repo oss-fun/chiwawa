@@ -1582,7 +1582,26 @@ impl LabelStack{
                             self.instrs.push(AdminInstr::Return);
                             None
                         },
-                        _=> todo!(),
+                        Instr::CallIndirect(tableidx, typeidx) => {
+                            let instance = frame.module.upgrade().unwrap();
+                            let table = instance.table_addrs.get_by_idx(tableidx);
+                            let i = self.value_stack.pop().unwrap().to_i32();
+
+                            let func = {
+                                if let Some(func) = table.get(i as usize) {
+                                    func
+                                } else {
+                                    return Err(RuntimeError::ExecutionFailed);
+                                }
+                            };
+
+                            if func.func_type() != *instance.types.get_by_idx(typeidx){
+                                return Err(RuntimeError::ExecutionFailed);
+                            }
+                            
+                            self.instrs.push(AdminInstr::Invoke(func.clone()));
+                            None
+                        },
                     }
                 },
                 AdminInstr::Invoke(idx) => Some(FrameLevelInstr::Invoke(idx)),
