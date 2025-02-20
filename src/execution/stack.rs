@@ -1457,6 +1457,13 @@ impl LabelStack{
                             self.value_stack.push(Val::Num(Num::I32(module_inst.mem_addrs[0].mem_grow(size))));
                             None
                         },
+                        Instr::Drop => {
+                            let _ = self.value_stack.pop();
+                            None
+                        },
+                        Instr::Select(_) => {
+                            todo!()
+                        },
                         Instr::V128Const(_) | Instr::V128Not | Instr::V128And | Instr::V128AndNot | Instr::V128Or | Instr::V128Xor | Instr::V128Bitselect | Instr::V128AnyTrue | 
                         Instr::I8x16Shuffle(_) | Instr::I8x16Swizzle | Instr::I8x16Splat | Instr::I16x8Splat | Instr::I32x4Splat | Instr::I64x2Splat | Instr::F32x4Splat | Instr::F64x2Splat |
                         Instr::I8x16ExtractLaneU(_) | Instr::I8x16ExtractLaneS(_) | Instr::I16x8ExtractLaneU(_) | Instr::I16x8ExtractLaneS(_) | Instr::I32x4ExtractLane(_) | Instr::I64x2ExtractLane(_) |
@@ -1482,9 +1489,6 @@ impl LabelStack{
                             todo!()
                         },
                         Instr::RefNull(_)| Instr::RefIsNull| Instr::RefFunc(_) => {
-                            todo!()
-                        },
-                        Instr::Drop| Instr::Select(_) => {
                             todo!()
                         },
                         Instr::TableGet(_)| Instr::TableSet(_)| Instr::TableSize(_)| Instr::TableGrow(_)| Instr::TableFill(_)| Instr::TableCopy(_,_)| Instr::TableInit(_,_)| Instr::ElemDrop(_) => {
