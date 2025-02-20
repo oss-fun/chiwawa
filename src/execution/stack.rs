@@ -1462,7 +1462,16 @@ impl LabelStack{
                             None
                         },
                         Instr::Select(_) => {
-                            todo!()
+                            let cond = self.value_stack.pop().unwrap().to_i32();
+                            let v2 = self.value_stack.pop().unwrap();
+                            let v1 = self.value_stack.pop().unwrap();
+                            if cond == 0 {
+                                self.value_stack.push(v2);
+                            }else{
+                                self.value_stack.push(v1);
+                            }
+                            None
+
                         },
                         Instr::V128Const(_) | Instr::V128Not | Instr::V128And | Instr::V128AndNot | Instr::V128Or | Instr::V128Xor | Instr::V128Bitselect | Instr::V128AnyTrue | 
                         Instr::I8x16Shuffle(_) | Instr::I8x16Swizzle | Instr::I8x16Splat | Instr::I16x8Splat | Instr::I32x4Splat | Instr::I64x2Splat | Instr::F32x4Splat | Instr::F64x2Splat |
