@@ -65,7 +65,6 @@ impl FuncAddr {
             FuncInst::RuntimeFunc { type_, .. } => type_.clone(),
             FuncInst::HostFunc { type_, .. } => type_.clone(),
         }
-        
     }
 }
 
