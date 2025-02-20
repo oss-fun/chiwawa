@@ -26,7 +26,8 @@ pub struct Global {
 
 pub struct Elem {
     pub type_: RefType,
-    pub init: Vec<Expr>,
+    pub init: Option<Vec<Expr>>,
+    pub idxes: Option<Vec<FuncIdx>>,
     pub mode: ElemMode,
     pub table_idx: Option<TableIdx>,
     pub offset: Option<Expr>,

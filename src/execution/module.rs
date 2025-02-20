@@ -90,15 +90,13 @@ impl ModuleInst {
                 panic!();
             }
             let mut init: Vec<i32> = Vec::new();
-            for expr in elem.init.clone().into_iter(){
-                if let Some(cnst) = module_inst.expr_to_const(&expr) {
-                    init.push(cnst.to_i32());
+            if let Some(idxes) = &elem.idxes{
+                for idx in idxes {
+                    init.push(idx.0 as i32);
                 }
-
             }
           //  let init: Vec<i32> = elem.init.clone().into_iter().map(|expr| module_inst.expr_to_const(&expr).unwrap().to_i32()).collect();
-
-            module_inst.elem_addrs.push(ElemAddr::new(&elem.type_, &module_inst.func_addrs, &init));
+          module_inst.elem_addrs.push(ElemAddr::new(&elem.type_, &module_inst.func_addrs, &init));
 
             if elem.mode == ElemMode::Active{
                 let offset = match &elem.offset {

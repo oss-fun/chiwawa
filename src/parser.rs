@@ -230,16 +230,14 @@ fn parse_initexpr(expr: wasmparser::ConstExpr<'_>) -> Result<Expr, Box<dyn std::
 fn decode_elem_section(body: SectionLimited<'_, wasmparser::Element<'_>>, module: &mut Module) -> Result<(), Box<dyn std::error::Error>> {
     for (_index, entry) in body.into_iter().enumerate() {
         let entry = entry?;
-
-        let (type_, init) = match entry.items {
+        let mut cnt =0;
+        let (type_, init, idxes) = match entry.items {
             wasmparser::ElementItems::Functions(funcs) => {
-                let mut exprs = Vec::new();
+                let mut idxes = Vec::new();
                 for func in funcs {
-                    let mut inst = Vec::new();
-                    inst.push(Instr::RefFunc(FuncIdx(func?)));
-                    exprs.push(Expr(inst));
+                    idxes.push(FuncIdx(func?));
                 }
-                (RefType::FuncRef, exprs)
+                (RefType::FuncRef, None, Some(idxes))
             },
             wasmparser::ElementItems::Expressions(type_, items) => {
                 let mut exprs = Vec::new();
@@ -249,9 +247,9 @@ fn decode_elem_section(body: SectionLimited<'_, wasmparser::Element<'_>>, module
                 }
 
                 if type_.is_func_ref() {
-                    (RefType::FuncRef, exprs)
+                    (RefType::FuncRef, Some(exprs), None)
                 } else {
-                    (RefType::ExternalRef, exprs)
+                    (RefType::ExternalRef, Some(exprs),None)
                 }
             }
         };
@@ -272,6 +270,7 @@ fn decode_elem_section(body: SectionLimited<'_, wasmparser::Element<'_>>, module
         module.elems.push(Elem{
             type_,
             init,
+            idxes,
             mode,
             table_idx,
             offset,

@@ -14,7 +14,12 @@ impl TableAddr{
         TableAddr(Rc::new(RefCell::new(
             TableInst{
                 type_:type_.clone(), 
-                elem: Vec::with_capacity(type_.0.min as usize)
+                elem: {
+                    let min = type_.0.min as usize;
+                    let mut vec = Vec::with_capacity(min);
+                    vec.resize(min, None);
+                    vec
+                }
             }
         )))
     }
@@ -26,9 +31,6 @@ impl TableAddr{
     }
     pub fn get(&self, i: usize) -> Option<FuncAddr>{
         let inst = self.0.borrow();
-        println!("i = {}",i);
-        println!("inst.elem.len() = {}",inst.elem.len());
-
         if i < inst.elem.len() as usize {
             inst.elem[i].clone()
         } else {
