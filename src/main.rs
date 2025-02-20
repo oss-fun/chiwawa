@@ -21,8 +21,8 @@ fn main() -> Result <()>{
     let mut imports: ImportObjects = HashMap::new();
 
     let inst = ModuleInst::new(&module, imports).unwrap();
-    let params: Vec<Val> = vec![Val::Num(Num::I64(1000))];
-    let ret = inst.get_export_func("calculate_pi")?.call(params);
+    let params: Vec<Val> = vec![];
+    let ret = inst.get_export_func("mandelbrot")?.call(params);
     println!("pi{}", ret?.pop().unwrap().to_f64());
     Ok(())
 }
