@@ -156,5 +156,54 @@ mod tests {
         assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 1);
         let ret = inst.get_export_func("rem_u").unwrap().call(vec![Val::Num(Num::I32(-5)),Val::Num(Num::I32(-2))]);
         assert_eq!(ret.unwrap().pop().unwrap().to_i32(), -5);
+
+        let ret = inst.get_export_func("and").unwrap().call(vec![Val::Num(Num::I32(1)),Val::Num(Num::I32(0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0);
+        let ret = inst.get_export_func("and").unwrap().call(vec![Val::Num(Num::I32(0)),Val::Num(Num::I32(1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0);
+        let ret = inst.get_export_func("and").unwrap().call(vec![Val::Num(Num::I32(1)),Val::Num(Num::I32(1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 1);
+        let ret = inst.get_export_func("and").unwrap().call(vec![Val::Num(Num::I32(0)),Val::Num(Num::I32(0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0);
+        let ret = inst.get_export_func("and").unwrap().call(vec![Val::Num(Num::I32(0x7fffffffu32 as i32)),Val::Num(Num::I32(0x80000000u32 as i32))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0);
+        let ret = inst.get_export_func("and").unwrap().call(vec![Val::Num(Num::I32(0x7fffffffu32 as i32)),Val::Num(Num::I32(-1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x7fffffffu32 as i32);
+        let ret = inst.get_export_func("and").unwrap().call(vec![Val::Num(Num::I32(0xf0f0ffffu32 as i32)),Val::Num(Num::I32(0xfffff0f0u32 as i32))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0xf0f0f0f0u32 as i32);
+        let ret = inst.get_export_func("and").unwrap().call(vec![Val::Num(Num::I32(0xffffffffu32 as i32)),Val::Num(Num::I32(0xffffffffu32 as i32))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0xffffffffu32 as i32);
+
+        let ret = inst.get_export_func("or").unwrap().call(vec![Val::Num(Num::I32(1)),Val::Num(Num::I32(0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 1);
+        let ret = inst.get_export_func("or").unwrap().call(vec![Val::Num(Num::I32(0)),Val::Num(Num::I32(1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 1);
+        let ret = inst.get_export_func("or").unwrap().call(vec![Val::Num(Num::I32(1)),Val::Num(Num::I32(1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 1);
+        let ret = inst.get_export_func("or").unwrap().call(vec![Val::Num(Num::I32(0)),Val::Num(Num::I32(0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0);
+        let ret = inst.get_export_func("or").unwrap().call(vec![Val::Num(Num::I32(0x7fffffffu32 as i32)),Val::Num(Num::I32(0x80000000u32 as i32))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), -1);
+        let ret = inst.get_export_func("or").unwrap().call(vec![Val::Num(Num::I32(0x80000000u32 as i32)),Val::Num(Num::I32(0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x80000000u32 as i32);
+        let ret = inst.get_export_func("or").unwrap().call(vec![Val::Num(Num::I32(0xf0f0ffffu32 as i32)),Val::Num(Num::I32(0xfffff0f0u32 as i32))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0xffffffffu32 as i32);
+
+        let ret = inst.get_export_func("xor").unwrap().call(vec![Val::Num(Num::I32(1)),Val::Num(Num::I32(0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 1);
+        let ret = inst.get_export_func("xor").unwrap().call(vec![Val::Num(Num::I32(0)),Val::Num(Num::I32(1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 1);
+        let ret = inst.get_export_func("xor").unwrap().call(vec![Val::Num(Num::I32(1)),Val::Num(Num::I32(1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0);
+        let ret = inst.get_export_func("xor").unwrap().call(vec![Val::Num(Num::I32(0)),Val::Num(Num::I32(0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0);
+        let ret = inst.get_export_func("xor").unwrap().call(vec![Val::Num(Num::I32(0x7fffffffu32 as i32)),Val::Num(Num::I32(0x80000000u32 as i32))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), -1);
+        let ret = inst.get_export_func("xor").unwrap().call(vec![Val::Num(Num::I32(0x80000000u32 as i32)),Val::Num(Num::I32(0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x80000000u32 as i32);
+        let ret = inst.get_export_func("xor").unwrap().call(vec![Val::Num(Num::I32(-1)),Val::Num(Num::I32(0x80000000u32 as i32))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x7fffffffu32 as i32);
+        let ret = inst.get_export_func("xor").unwrap().call(vec![Val::Num(Num::I32(0xf0f0ffffu32 as i32)),Val::Num(Num::I32(0xfffff0f0u32 as i32))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x0f0f0f0fu32 as i32);
     }
 }
