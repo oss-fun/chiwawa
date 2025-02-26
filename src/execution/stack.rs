@@ -6,7 +6,6 @@ use num::NumCast;
 use std::cmp::{max, min};
 use std::io::Cursor;
 use byteorder::*;
-use std::mem;
 
 pub struct Stacks {
     pub activation_frame_stack: Vec<FrameStack>,
