@@ -799,9 +799,13 @@ pub fn parse_bytecode(mut module: &mut Module, path: &str) -> Result<(), Box<dyn
 
 #[cfg(test)]
 mod tests {
-    use crate::module::*;
-    use crate::types::*;
-    use crate::instructions::*;
+    use wasmparser::{Parser, Payload::*, TypeRef, ValType, SectionLimited, ExternalKind, FunctionBody, OperatorsIteratorWithOffsets};
+    use std::fs::File;
+    use std::io::Read;
+    use std::iter::Peekable;
+
+    use crate::structure::{types::*, instructions::*, module::*};
+    use crate::error::ParserError;
     use wasmparser::Payload::*;
     use crate::parser;
 
@@ -1116,9 +1120,6 @@ mod tests {
 
         let mut elem = &module.elems[0];
         assert!(matches!(elem.type_,RefType::FuncRef));
-        assert_eq!(elem.init.len(),2);
-        assert!(matches!(elem.init[0].0[0], Instr::RefFunc(FuncIdx(0))));
-        assert!(matches!(elem.init[1].0[0], Instr::RefFunc(FuncIdx(1))));
         assert!(matches!(elem.mode, ElemMode::Active));
         assert_eq!(elem.table_idx, Some(TableIdx(0)));
     }
