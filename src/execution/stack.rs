@@ -388,8 +388,8 @@ impl LabelStack{
                             None
                         },
                         Instr::I32RemU => {
-                            let rhs = self.value_stack.pop().unwrap().to_i32();
-                            let lhs = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32() as u32;
+                            let lhs = self.value_stack.pop().unwrap().to_i32() as u32;
                             self.value_stack.push(
                                 Val::Num(Num::I32(lhs.overflowing_rem(rhs).0 as i32))
                             );
