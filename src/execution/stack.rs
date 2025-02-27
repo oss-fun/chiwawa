@@ -436,8 +436,8 @@ impl LabelStack{
                             None
                         },
                         Instr::I32ShrU => {
-                            let rhs = self.value_stack.pop().unwrap().to_i32();
-                            let lhs = self.value_stack.pop().unwrap().to_i32();
+                            let rhs = self.value_stack.pop().unwrap().to_i32() as u32;
+                            let lhs = self.value_stack.pop().unwrap().to_i32() as u32;
                             self.value_stack.push(
                                 Val::Num(Num::I32((lhs >> rhs) as i32))
                             );
