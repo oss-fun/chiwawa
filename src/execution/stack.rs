@@ -508,8 +508,8 @@ impl LabelStack{
                             None
                         },
                         Instr::I64RemU => {
-                            let rhs = self.value_stack.pop().unwrap().to_i32() as u64;
-                            let lhs = self.value_stack.pop().unwrap().to_i32() as u64;
+                            let rhs = self.value_stack.pop().unwrap().to_i64() as u64;
+                            let lhs = self.value_stack.pop().unwrap().to_i64() as u64;
                             self.value_stack.push(
                                 Val::Num(Num::I64(lhs.overflowing_rem(rhs).0 as i64))
                             );
@@ -1002,23 +1002,23 @@ impl LabelStack{
                             None
                         },
                         Instr::I64Extend8S =>{
-                            let a = self.value_stack.pop().unwrap().to_i32();
+                            let a = self.value_stack.pop().unwrap().to_i64() as i8;
                             self.value_stack.push(
-                                Val::Num(Num::I32((a as u64).try_into().unwrap()))
+                                Val::Num(Num::I64(a.into()))
                             );
                             None
                         },
                         Instr::I64Extend16S =>{
-                            let a = self.value_stack.pop().unwrap().to_i32();
+                            let a = self.value_stack.pop().unwrap().to_i64() as i16;
                             self.value_stack.push(
-                                Val::Num(Num::I32((a as u64).try_into().unwrap()))
+                                Val::Num(Num::I64(a.into()))
                             );
                             None
                         },
                         Instr::I64Extend32S =>{
-                            let a = self.value_stack.pop().unwrap().to_i32();
+                            let a = self.value_stack.pop().unwrap().to_i64() as i32;
                             self.value_stack.push(
-                                Val::Num(Num::I32((a as u64).try_into().unwrap()))
+                                Val::Num(Num::I64(a.into()))
                             );
                             None
                         },
