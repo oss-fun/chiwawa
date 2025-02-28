@@ -988,16 +988,16 @@ impl LabelStack{
                             None
                         },
                         Instr::I32Extend8S =>{
-                            let a = self.value_stack.pop().unwrap().to_i32();
+                            let a = self.value_stack.pop().unwrap().to_i32() as i8;
                             self.value_stack.push(
-                                Val::Num(Num::I32((a as u32).try_into().unwrap()))
+                                Val::Num(Num::I32(a.into()))
                             );
                             None
                         },
                         Instr::I32Extend16S =>{
-                            let a = self.value_stack.pop().unwrap().to_i32();
+                            let a = self.value_stack.pop().unwrap().to_i32() as i16;
                             self.value_stack.push(
-                                Val::Num(Num::I32((a as u32).try_into().unwrap()))
+                                Val::Num(Num::I32(a.into()))
                             );
                             None
                         },
