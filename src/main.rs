@@ -1540,5 +1540,16 @@ mod tests {
         let ret = inst.get_export_func("i64.trunc_f64_u").unwrap().call(vec![Val::Num(Num::F64(9223372036854775808.0))]);
         assert_eq!(ret.unwrap().pop().unwrap().to_i64(), -9223372036854775808);
 
+        let ret = inst.get_export_func("f32.convert_i32_s").unwrap().call(vec![Val::Num(Num::I32(1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 1.0);
+        let ret = inst.get_export_func("f32.convert_i32_s").unwrap().call(vec![Val::Num(Num::I32(-1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), -1.0);
+        let ret = inst.get_export_func("f32.convert_i32_s").unwrap().call(vec![Val::Num(Num::I32(0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 0.0);
+        let ret = inst.get_export_func("f32.convert_i32_s").unwrap().call(vec![Val::Num(Num::I32(2147483647))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 2147483648.0);
+        let ret = inst.get_export_func("f32.convert_i32_s").unwrap().call(vec![Val::Num(Num::I32(-2147483648))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), -2147483648.0);
+
     }
 }
