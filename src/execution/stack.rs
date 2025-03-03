@@ -1108,11 +1108,21 @@ impl LabelStack{
                         },
                         Instr::I32TruncSatF32U => {
                             let a = self.value_stack.pop().unwrap().to_f32();
-                            let cast = <u32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
-                            let result = max(0, min(cast, 2^(32-1)));
-                            self.value_stack.push(
-                                Val::Num(Num::I32(result as i32))
-                            );
+                            let result = if a.is_nan() {
+                                0
+                            } else if a.is_sign_negative() {
+                                0
+                            } else if a.is_infinite() {
+                                u32::MAX
+                            } else {
+                                let truncated = a.trunc();
+                                if truncated > u32::MAX as f32 {
+                                    u32::MAX
+                                } else {
+                                    truncated as u32
+                                }
+                            } as i32;                        
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32TruncSatF64S => {
