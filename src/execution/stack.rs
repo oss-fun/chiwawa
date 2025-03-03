@@ -1168,38 +1168,76 @@ impl LabelStack{
                         },
                         Instr::I64TruncSatF32S => {
                             let a = self.value_stack.pop().unwrap().to_f32();
-                            let cast = <i64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
-                            let result = max(-2^(64-1), min(cast, 2^(64-1)-1));
-                            self.value_stack.push(
-                                Val::Num(Num::I64(result))
-                            );
+                            let result = if a.is_nan() {
+                                0
+                            } else if a.is_infinite() {
+                                if a.is_sign_negative() {
+                                    i64::MIN
+                                } else {
+                                    i64::MAX
+                                }
+                            } else if a < i64::MIN as f32 {
+                                i64::MIN
+                            } else if a > i64::MAX as f32 {
+                                i64::MAX
+                            } else {
+                                a.trunc() as i64
+                            };        
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64TruncSatF32U => {
                             let a = self.value_stack.pop().unwrap().to_f32();
-                            let cast = <u64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
-                            let result = max(0, min(cast, 2^(64-1)));
-                            self.value_stack.push(
-                                Val::Num(Num::I64(result as i64))
-                            );
+                            let result = if a.is_nan() {
+                                0
+                            } else if a.is_infinite() {
+                                if a.is_sign_negative() {
+                                    0
+                                } else {
+                                    u64::MAX as i64
+                                }
+                            } else if a < 0.0 {
+                                0 
+                            } else if a > u64::MAX as f32 {
+                                u64::MAX as i64
+                            } else {
+                                a.trunc() as u64 as i64
+                            };
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64TruncSatF64S => {
                             let a = self.value_stack.pop().unwrap().to_f64();
-                            let cast = <i64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
-                            let result = max(-2^(64-1), min(cast, 2^(64-1)-1));
-                            self.value_stack.push(
-                                Val::Num(Num::I64(result))
-                            );
+                            let result = if a.is_nan() {
+                                0
+                            } else if a.is_infinite() {
+                                if a.is_sign_negative() {
+                                    i64::MIN
+                                } else {
+                                    i64::MAX
+                                }
+                            } else if a < i64::MIN as f64 {
+                                i64::MIN
+                            } else if a > i64::MAX as f64 {
+                                i64::MAX
+                            } else {
+                                a.trunc() as i64
+                            };
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64TruncSatF64U => {
                             let a = self.value_stack.pop().unwrap().to_f64();
-                            let cast = <u64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
-                            let result = max(0, min(cast, 2^(64-1)));
-                            self.value_stack.push(
-                                Val::Num(Num::I64(result as i64))
-                            );
+                            let result = if a.is_nan() || a < 0.0 {
+                                0
+                            } else if a.is_infinite() {
+                                u64::MAX as i64
+                            } else if a > u64::MAX as f64 {
+                                u64::MAX as i64
+                            } else {
+                                a.trunc() as u64 as i64
+                            };
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::F32DemoteF64 => {
