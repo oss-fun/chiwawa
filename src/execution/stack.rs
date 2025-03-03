@@ -1127,20 +1127,43 @@ impl LabelStack{
                         },
                         Instr::I32TruncSatF64S => {
                             let a = self.value_stack.pop().unwrap().to_f64();
-                            let cast = <i32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
-                            let result = max(-2^(32-1), min(cast, 2^(32-1)-1));
-                            self.value_stack.push(
-                                Val::Num(Num::I32(result))
-                            );
+                            let result = if a.is_nan() {
+                                0
+                            } else if a.is_infinite() && a.is_sign_negative() {
+                                i32::MIN
+                            } else if a.is_infinite() {
+                                i32::MAX
+                            } else {
+                                let truncated = a.trunc();
+                                if truncated < i32::MIN as f64 {
+                                    i32::MIN
+                                } else if truncated > i32::MAX as f64 {
+                                    i32::MAX
+                                } else {
+                                    truncated as i32
+                                }
+                            };
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32TruncSatF64U => {
                             let a = self.value_stack.pop().unwrap().to_f64();
-                            let cast = <u32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
-                            let result = max(0, min(cast, 2^(32-1)));
-                            self.value_stack.push(
-                                Val::Num(Num::I32(result as i32))
-                            );
+                            let result = if a.is_nan() {
+                                0
+                            } else if a.is_infinite() {
+                                if a.is_sign_negative() {
+                                    0 
+                                } else {
+                                    u32::MAX
+                                }
+                            } else if a < 0.0 {
+                                0 
+                            } else if a >= 4294967296.0 {
+                                u32::MAX
+                            } else {
+                                a.trunc() as u32
+                            };
+                            self.value_stack.push(Val::Num(Num::I32(result as i32)));
                             None
                         },
                         Instr::I64TruncSatF32S => {
