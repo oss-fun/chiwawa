@@ -1,6 +1,6 @@
 use std::{rc::Rc, cell::RefCell};
 use crate::structure::types::*;
-use super::{value::Ref, func::FuncAddr, module::*};
+use super::{func::FuncAddr, module::*};
 
 #[derive(Clone)]
 pub struct TableAddr(Rc<RefCell<TableInst>>);
