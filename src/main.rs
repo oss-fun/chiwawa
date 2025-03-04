@@ -1831,6 +1831,172 @@ mod tests {
         assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 0);
         let ret = inst.get_export_func("i64.trunc_sat_f64_u").unwrap().call(vec![Val::Num(Num::F64(f64::NAN))]);
         assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 0);
-        
+
+        let ret = inst.get_export_func("f32.convert_i32_s").unwrap().call(vec![Val::Num(Num::I32(16777217))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 16777216.0);
+        let ret = inst.get_export_func("f32.convert_i32_s").unwrap().call(vec![Val::Num(Num::I32(-16777217))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), -16777216.0);
+        let ret = inst.get_export_func("f32.convert_i32_s").unwrap().call(vec![Val::Num(Num::I32(16777219))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 16777220.0);
+        let ret = inst.get_export_func("f32.convert_i32_s").unwrap().call(vec![Val::Num(Num::I32(-16777219))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), -16777220.0);
+
+        let ret = inst.get_export_func("f32.convert_i64_s").unwrap().call(vec![Val::Num(Num::I64(1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 1.0);
+        let ret = inst.get_export_func("f32.convert_i64_s").unwrap().call(vec![Val::Num(Num::I64(-1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), -1.0);
+        let ret = inst.get_export_func("f32.convert_i64_s").unwrap().call(vec![Val::Num(Num::I64(0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 0.0);
+        let ret = inst.get_export_func("f32.convert_i64_s").unwrap().call(vec![Val::Num(Num::I64(9223372036854775807))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 9223372036854775807.0);
+        let ret = inst.get_export_func("f32.convert_i64_s").unwrap().call(vec![Val::Num(Num::I64(-9223372036854775808))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), -9223372036854775808.0);
+
+        let ret = inst.get_export_func("f32.convert_i64_s").unwrap().call(vec![Val::Num(Num::I64(16777217))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 16777216.0);
+        let ret = inst.get_export_func("f32.convert_i64_s").unwrap().call(vec![Val::Num(Num::I64(-16777217))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), -16777216.0);
+        let ret = inst.get_export_func("f32.convert_i64_s").unwrap().call(vec![Val::Num(Num::I64(16777219))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 16777220.0);
+        let ret = inst.get_export_func("f32.convert_i64_s").unwrap().call(vec![Val::Num(Num::I64(-16777219))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), -16777220.0);
+
+        let ret = inst.get_export_func("f64.convert_i32_s").unwrap().call(vec![Val::Num(Num::I32(1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(), 1.0);
+        let ret = inst.get_export_func("f64.convert_i32_s").unwrap().call(vec![Val::Num(Num::I32(-1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(), -1.0);
+        let ret = inst.get_export_func("f64.convert_i32_s").unwrap().call(vec![Val::Num(Num::I32(0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(), 0.0);
+        let ret = inst.get_export_func("f64.convert_i32_s").unwrap().call(vec![Val::Num(Num::I32(2147483647))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(), 2147483647.0);
+        let ret = inst.get_export_func("f64.convert_i32_s").unwrap().call(vec![Val::Num(Num::I32(-2147483648))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(), -2147483648.0);
+        let ret = inst.get_export_func("f64.convert_i32_s").unwrap().call(vec![Val::Num(Num::I32(987654321))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(), 987654321.0);
+
+        let ret = inst.get_export_func("f32.convert_i32_u").unwrap().call(vec![Val::Num(Num::I32(1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 1.0);
+        let ret = inst.get_export_func("f32.convert_i32_u").unwrap().call(vec![Val::Num(Num::I32(0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 0.0);
+        let ret = inst.get_export_func("f32.convert_i32_u").unwrap().call(vec![Val::Num(Num::I32(2147483647))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 2147483648.0);
+        let ret = inst.get_export_func("f32.convert_i32_u").unwrap().call(vec![Val::Num(Num::I32(-2147483648))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 2147483648.0);
+        let ret = inst.get_export_func("f32.convert_i32_u").unwrap().call(vec![Val::Num(Num::I32(0xffffffffu32 as i32))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 4294967296.0);
+        let ret = inst.get_export_func("f32.convert_i32_u").unwrap().call(vec![Val::Num(Num::I32(0x80000080u32 as i32))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), f32::from_bits(0x4f000000)); // 0x1.000000p+31
+
+        let ret = inst.get_export_func("f64.promote_f32").unwrap().call(vec![Val::Num(Num::F32(0.0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(), 0.0);
+        let ret = inst.get_export_func("f64.promote_f32").unwrap().call(vec![Val::Num(Num::F32(-0.0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(), -0.0);
+        let ret = inst.get_export_func("f64.promote_f32").unwrap().call(vec![Val::Num(Num::F32(1.0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(), 1.0);
+        let ret = inst.get_export_func("f64.promote_f32").unwrap().call(vec![Val::Num(Num::F32(-1.0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(), -1.0);
+        let ret = inst.get_export_func("f64.promote_f32").unwrap().call(vec![Val::Num(Num::F32(f32::NEG_INFINITY))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(), f64::NEG_INFINITY);
+        let ret = inst.get_export_func("f64.promote_f32").unwrap().call(vec![Val::Num(Num::F32(f32::NAN))]);
+        assert!(ret.unwrap().pop().unwrap().to_f64().is_nan());
+        let ret = inst.get_export_func("f64.promote_f32").unwrap().call(vec![Val::Num(Num::F32(-f32::NAN))]);
+        assert!(ret.unwrap().pop().unwrap().to_f64().is_nan());
+
+        let ret = inst.get_export_func("f32.reinterpret_i32").unwrap().call(vec![Val::Num(Num::I32(0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 0.0);
+        let ret = inst.get_export_func("f32.reinterpret_i32").unwrap().call(vec![Val::Num(Num::I32(0x80000000u32 as i32))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), -0.0);
+        let ret = inst.get_export_func("f32.reinterpret_i32").unwrap().call(vec![Val::Num(Num::I32(-1))]);
+        assert!(ret.unwrap().pop().unwrap().to_f32().is_nan());
+        let ret = inst.get_export_func("f32.reinterpret_i32").unwrap().call(vec![Val::Num(Num::I32(0xff800000u32 as i32))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), f32::NEG_INFINITY);
+        let ret = inst.get_export_func("f32.reinterpret_i32").unwrap().call(vec![Val::Num(Num::I32(0x7fc00000u32 as i32))]);
+        assert!(ret.unwrap().pop().unwrap().to_f32().is_nan());
+        let ret = inst.get_export_func("f32.reinterpret_i32").unwrap().call(vec![Val::Num(Num::I32(0xffc00000u32 as i32))]);
+        assert!(ret.unwrap().pop().unwrap().to_f32().is_nan());
+        let ret = inst.get_export_func("f32.reinterpret_i32").unwrap().call(vec![Val::Num(Num::I32(0x7fa00000u32 as i32))]);
+        assert!(ret.unwrap().pop().unwrap().to_f32().is_nan());
+        let ret = inst.get_export_func("f32.reinterpret_i32").unwrap().call(vec![Val::Num(Num::I32(0xffa00000u32 as i32))]);
+        assert!(ret.unwrap().pop().unwrap().to_f32().is_nan());
+
+        let ret = inst.get_export_func("f64.reinterpret_i64").unwrap().call(vec![Val::Num(Num::I64(0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(), 0.0);
+        let ret = inst.get_export_func("f64.reinterpret_i64").unwrap().call(vec![Val::Num(Num::I64(1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64().to_bits(), f64::from_bits(0x0000000000000001).to_bits());
+        let ret = inst.get_export_func("f64.reinterpret_i64").unwrap().call(vec![Val::Num(Num::I64(-1))]);
+        assert!(ret.unwrap().pop().unwrap().to_f64().is_nan());
+        let ret = inst.get_export_func("f64.reinterpret_i64").unwrap().call(vec![Val::Num(Num::I64(0x8000000000000000u64 as i64))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(), -0.0);
+        let ret = inst.get_export_func("f64.reinterpret_i64").unwrap().call(vec![Val::Num(Num::I64(1234567890))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64().to_bits(), f64::from_bits(0x00000000499602d2).to_bits());
+        let ret = inst.get_export_func("f64.reinterpret_i64").unwrap().call(vec![Val::Num(Num::I64(-9223372036854775807))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(), -f64::from_bits(0x0000000000000001));
+        let ret = inst.get_export_func("f64.reinterpret_i64").unwrap().call(vec![Val::Num(Num::I64(0x7ff0000000000000u64 as i64))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(), f64::INFINITY);
+        let ret = inst.get_export_func("f64.reinterpret_i64").unwrap().call(vec![Val::Num(Num::I64(0xfff0000000000000u64 as i64))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(), f64::NEG_INFINITY);
+        let ret = inst.get_export_func("f64.reinterpret_i64").unwrap().call(vec![Val::Num(Num::I64(0x7ff8000000000000u64 as i64))]);
+        assert!(ret.unwrap().pop().unwrap().to_f64().is_nan());
+        let ret = inst.get_export_func("f64.reinterpret_i64").unwrap().call(vec![Val::Num(Num::I64(0xfff8000000000000u64 as i64))]);
+        assert!(ret.unwrap().pop().unwrap().to_f64().is_nan());
+        let ret = inst.get_export_func("f64.reinterpret_i64").unwrap().call(vec![Val::Num(Num::I64(0x7ff4000000000000u64 as i64))]);
+        assert!(ret.unwrap().pop().unwrap().to_f64().is_nan());
+        let ret = inst.get_export_func("f64.reinterpret_i64").unwrap().call(vec![Val::Num(Num::I64(0xfff4000000000000u64 as i64))]);
+        assert!(ret.unwrap().pop().unwrap().to_f64().is_nan());
+
+        let ret = inst.get_export_func("i32.reinterpret_f32").unwrap().call(vec![Val::Num(Num::F32(0.0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0);
+        let ret = inst.get_export_func("i32.reinterpret_f32").unwrap().call(vec![Val::Num(Num::F32(-0.0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x80000000u32 as i32);
+        let ret = inst.get_export_func("i32.reinterpret_f32").unwrap().call(vec![Val::Num(Num::F32(f32::from_bits(1)))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 1);
+        let ret = inst.get_export_func("i32.reinterpret_f32").unwrap().call(vec![Val::Num(Num::F32(f32::from_bits(0x80000001)))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x80000001u32 as i32);
+        let ret = inst.get_export_func("i32.reinterpret_f32").unwrap().call(vec![Val::Num(Num::F32(1.0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 1065353216);
+        let ret = inst.get_export_func("i32.reinterpret_f32").unwrap().call(vec![Val::Num(Num::F32(3.1415926))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 1078530010);
+        let ret = inst.get_export_func("i32.reinterpret_f32").unwrap().call(vec![Val::Num(Num::F32(f32::from_bits(2139095039)))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 2139095039);
+        let ret = inst.get_export_func("i32.reinterpret_f32").unwrap().call(vec![Val::Num(Num::F32(f32::INFINITY))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x7f800000u32 as i32);
+        let ret = inst.get_export_func("i32.reinterpret_f32").unwrap().call(vec![Val::Num(Num::F32(f32::NEG_INFINITY))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0xff800000u32 as i32);
+        let ret = inst.get_export_func("i32.reinterpret_f32").unwrap().call(vec![Val::Num(Num::F32(f32::NAN))]);
+        assert!(ret.unwrap().pop().unwrap().to_i32() & 0x7f800000u32 as i32 == 0x7f800000u32 as i32); // NaN check
+        let ret = inst.get_export_func("i32.reinterpret_f32").unwrap().call(vec![Val::Num(Num::F32(-f32::NAN))]);
+        assert!(ret.unwrap().pop().unwrap().to_i32() & 0xff800000u32 as i32 == 0xff800000u32 as i32); // NaN check
+        let ret = inst.get_export_func("i32.reinterpret_f32").unwrap().call(vec![Val::Num(Num::F32(f32::from_bits(0x7fa00000)))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x7fa00000u32 as i32);
+        let ret = inst.get_export_func("i32.reinterpret_f32").unwrap().call(vec![Val::Num(Num::F32(f32::from_bits(0xffa00000)))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0xffa00000u32 as i32);
+
+        let ret = inst.get_export_func("i64.reinterpret_f64").unwrap().call(vec![Val::Num(Num::F64(0.0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 0);
+        let ret = inst.get_export_func("i64.reinterpret_f64").unwrap().call(vec![Val::Num(Num::F64(-0.0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 0x8000000000000000u64 as i64);
+        let ret = inst.get_export_func("i64.reinterpret_f64").unwrap().call(vec![Val::Num(Num::F64(f64::from_bits(1)))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 1);
+        let ret = inst.get_export_func("i64.reinterpret_f64").unwrap().call(vec![Val::Num(Num::F64(f64::from_bits(0x8000000000000001)))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 0x8000000000000001u64 as i64);
+        let ret = inst.get_export_func("i64.reinterpret_f64").unwrap().call(vec![Val::Num(Num::F64(1.0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 4607182418800017408);
+        let ret = inst.get_export_func("i64.reinterpret_f64").unwrap().call(vec![Val::Num(Num::F64(3.14159265358979))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 4614256656552045841);
+        let ret = inst.get_export_func("i64.reinterpret_f64").unwrap().call(vec![Val::Num(Num::F64(f64::from_bits(9218868437227405311)))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 9218868437227405311);
+        let ret = inst.get_export_func("i64.reinterpret_f64").unwrap().call(vec![Val::Num(Num::F64(f64::INFINITY))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 0x7ff0000000000000u64 as i64);
+        let ret = inst.get_export_func("i64.reinterpret_f64").unwrap().call(vec![Val::Num(Num::F64(f64::NEG_INFINITY))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 0xfff0000000000000u64 as i64);
+        let ret = inst.get_export_func("i64.reinterpret_f64").unwrap().call(vec![Val::Num(Num::F64(f64::NAN))]);
+        assert!(ret.unwrap().pop().unwrap().to_i64() & 0x7ff0000000000000u64 as i64 == 0x7ff0000000000000u64 as i64); // NaN check
+        let ret = inst.get_export_func("i64.reinterpret_f64").unwrap().call(vec![Val::Num(Num::F64(-f64::NAN))]);
+        assert!(ret.unwrap().pop().unwrap().to_i64() & 0xfff0000000000000u64 as i64 == 0xfff0000000000000u64 as i64); // NaN check
+        let ret = inst.get_export_func("i64.reinterpret_f64").unwrap().call(vec![Val::Num(Num::F64(f64::from_bits(0x7ff4000000000000)))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 0x7ff4000000000000u64 as i64);
+        let ret = inst.get_export_func("i64.reinterpret_f64").unwrap().call(vec![Val::Num(Num::F64(f64::from_bits(0xfff4000000000000)))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 0xfff4000000000000u64 as i64);
+
     }
 }
