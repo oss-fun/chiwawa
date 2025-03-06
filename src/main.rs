@@ -1999,4 +1999,24 @@ mod tests {
         assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 0xfff4000000000000u64 as i64);
 
     }
+
+    #[test]
+    fn call() {
+        let mut module = Module::new("test");
+        let _ = parser::parse_bytecode(&mut module, "test/call.wasm");    
+        let imports: ImportObjects = HashMap::new();
+        let inst = ModuleInst::new(&module, imports).unwrap();
+
+        let ret = inst.get_export_func("type-i32").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x132);
+
+        let ret = inst.get_export_func("type-i64").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 0x164);
+
+        let ret = inst.get_export_func("type-f32").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 3890.0);
+
+        let ret = inst.get_export_func("type-f64").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(),3940.0);
+    }
 }
