@@ -2018,5 +2018,29 @@ mod tests {
 
         let ret = inst.get_export_func("type-f64").unwrap().call(vec![]);
         assert_eq!(ret.unwrap().pop().unwrap().to_f64(),3940.0);
+
+        let ret = inst.get_export_func("type-first-i32").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 32);
+
+        let ret = inst.get_export_func("type-first-i64").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 64);
+
+        let ret = inst.get_export_func("type-first-f32").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 1.32);
+
+        let ret = inst.get_export_func("type-first-f64").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(), 1.64);
+
+        let ret = inst.get_export_func("type-second-i32").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 32);
+
+        let ret = inst.get_export_func("type-second-i64").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 64);
+
+        let ret = inst.get_export_func("type-second-f32").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 32.0);
+
+        let ret = inst.get_export_func("type-second-f64").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f64(), 64.1);
     }
 }
