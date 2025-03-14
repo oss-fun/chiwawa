@@ -8,14 +8,14 @@ Chiwawa (Pronunciation of chihuahua) is a self-hosted Wasm runtime that enables 
 
 ```
 cargo build
- ./target/debug/chiwawa --path something.wasm
+ ./target/debug/chiwawa something.wasm --invoke func-name
 ```
 
 ### For self-hosted
 
 ```
 cargo build --target wasm32-wasi
-somethingWasmRuntime target/wasm32-wasi/debug/chiwawa.wasm --path something.wasm
+somethingWasmRuntime target/wasm32-wasi/debug/chiwawa.wasm something.wasm --invoke func-name
 ```
 
 
