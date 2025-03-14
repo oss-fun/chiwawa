@@ -2042,5 +2042,32 @@ mod tests {
 
         let ret = inst.get_export_func("type-second-f64").unwrap().call(vec![]);
         assert_eq!(ret.unwrap().pop().unwrap().to_f64(), 64.1);
+        
+        let ret = inst.get_export_func("fac").unwrap().call(vec![Val::Num(Num::I64(0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 1);
+
+        let ret = inst.get_export_func("fac").unwrap().call(vec![Val::Num(Num::I64(1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 1);
+
+        let ret = inst.get_export_func("fac").unwrap().call(vec![Val::Num(Num::I64(5))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 120);
+
+        let ret = inst.get_export_func("fac-acc").unwrap().call(vec![
+            Val::Num(Num::I64(0)),
+            Val::Num(Num::I64(1)),
+        ]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 1);
+
+        let ret = inst.get_export_func("fac-acc").unwrap().call(vec![
+            Val::Num(Num::I64(1)),
+            Val::Num(Num::I64(1)),
+        ]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 1);
+
+        let ret = inst.get_export_func("fac-acc").unwrap().call(vec![
+            Val::Num(Num::I64(5)),
+            Val::Num(Num::I64(1)),
+        ]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 120);
     }
 }
