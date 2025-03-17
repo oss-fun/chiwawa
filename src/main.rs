@@ -2082,5 +2082,14 @@ mod tests {
         let ret = inst.get_export_func("fib").unwrap().call(vec![Val::Num(Num::I64(20))]);
         assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 10946);
 
+
+        let ret = inst.get_export_func("even").unwrap().call(vec![Val::Num(Num::I64(0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 44);
+        let ret = inst.get_export_func("even").unwrap().call(vec![Val::Num(Num::I64(1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 99);
+        let ret = inst.get_export_func("even").unwrap().call(vec![Val::Num(Num::I64(100))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 44);
+        let ret = inst.get_export_func("even").unwrap().call(vec![Val::Num(Num::I64(77))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 99);
     }
 }
