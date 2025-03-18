@@ -2123,5 +2123,41 @@ mod tests {
         assert!(ret.unwrap().is_empty());
         let ret = inst.get_export_func("as-store-last").unwrap().call(vec![]);
         assert!(ret.unwrap().is_empty());
+
+        let ret = inst.get_export_func("as-memory.grow-value").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 1);
+        let ret = inst.get_export_func("as-return-value").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x132);
+        let ret = inst.get_export_func("as-drop-operand").unwrap().call(vec![]);
+        assert!(ret.unwrap().is_empty());
+        let ret = inst.get_export_func("as-br-value").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x132);
+        let ret = inst.get_export_func("as-local.set-value").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x132);
+        let ret = inst.get_export_func("as-local.tee-value").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x132);
+        let ret = inst.get_export_func("as-global.set-value").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x132);
+        let ret = inst.get_export_func("as-load-operand").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 1);
+        let ret = inst.get_export_func("as-unary-operand").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_f32(), 0.0);
+        let ret = inst.get_export_func("as-binary-left").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 11);
+        let ret = inst.get_export_func("as-binary-right").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 9);
+        let ret = inst.get_export_func("as-test-operand").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0);
+        let ret = inst.get_export_func("as-compare-left").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 1);
+        let ret = inst.get_export_func("as-compare-right").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 1);
+        let ret = inst.get_export_func("as-convert-operand").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 1);
+        let ret = inst.get_export_func("as-call_indirect-first").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x132);
+        let ret = inst.get_export_func("as-call_indirect-mid").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 2);
+
     }
 }
