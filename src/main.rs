@@ -2119,5 +2119,9 @@ mod tests {
         let ret = inst.get_export_func("as-br_table-last").unwrap().call(vec![]);
         assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 2);
 
+        let ret = inst.get_export_func("as-store-first").unwrap().call(vec![]);
+        assert!(ret.unwrap().is_empty());
+        let ret = inst.get_export_func("as-store-last").unwrap().call(vec![]);
+        assert!(ret.unwrap().is_empty());
     }
 }
