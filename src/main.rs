@@ -2101,5 +2101,13 @@ mod tests {
         let ret = inst.get_export_func("odd").unwrap().call(vec![Val::Num(Num::I64(77))]);
         assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 44);
 
+        let ret = inst.get_export_func("as-select-first").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x132);
+        let ret = inst.get_export_func("as-select-mid").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 2);
+        let ret = inst.get_export_func("as-select-last").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 2);
+
+
     }
 }
