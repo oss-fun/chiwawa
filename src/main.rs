@@ -2108,6 +2108,16 @@ mod tests {
         let ret = inst.get_export_func("as-select-last").unwrap().call(vec![]);
         assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 2);
 
+        let ret = inst.get_export_func("as-if-condition").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 1);
+        let ret = inst.get_export_func("as-br_if-first").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x132);
+        let ret = inst.get_export_func("as-br_if-last").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 2);
+        let ret = inst.get_export_func("as-br_table-first").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x132);
+        let ret = inst.get_export_func("as-br_table-last").unwrap().call(vec![]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 2);
 
     }
 }
