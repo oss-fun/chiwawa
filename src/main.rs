@@ -2091,5 +2091,15 @@ mod tests {
         assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 44);
         let ret = inst.get_export_func("even").unwrap().call(vec![Val::Num(Num::I64(77))]);
         assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 99);
+
+        let ret = inst.get_export_func("odd").unwrap().call(vec![Val::Num(Num::I64(0))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 99);
+        let ret = inst.get_export_func("odd").unwrap().call(vec![Val::Num(Num::I64(1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 44);
+        let ret = inst.get_export_func("odd").unwrap().call(vec![Val::Num(Num::I64(200))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 99);
+        let ret = inst.get_export_func("odd").unwrap().call(vec![Val::Num(Num::I64(77))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 44);
+
     }
 }
