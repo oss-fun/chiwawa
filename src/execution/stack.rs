@@ -6,6 +6,7 @@ use num::NumCast;
 use std::cmp::{max, min};
 use std::io::Cursor;
 use byteorder::*;
+use std::arch::asm;
 
 pub struct Stacks {
     pub activation_frame_stack: Vec<FrameStack>,
@@ -341,10 +342,24 @@ impl LabelStack{
                         /*Two Operand Numeric Instructions*/
                         Instr::I32Add => {
                             let rhs = self.value_stack.pop().unwrap().to_i32();
-                            let lhs = self.value_stack.pop().unwrap().to_i32();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(lhs + rhs))
-                            );
+                            let mut lhs = self.value_stack.pop().unwrap().to_i32();
+                            let mut result: i32 =0;
+                            println!("rhs{} ,lhs{}",rhs,lhs);
+                            unsafe{
+                                asm!(
+                                    "i32.const {0}",
+                                    "i32.const {1}",
+                                    "i32.add",
+                                    "local.set 0",
+                                    inout(local) lhs,
+                                    in(local) rhs,
+                                    //out(local) result,
+                                );
+                            }
+                            println!("result {}", lhs);
+                            self.value_stack.push(Val::Num(Num::I32(result)));
+                             //   Val::Num(Num::I32(lhs + rhs))
+
                             None
                         },
                         Instr::I32Sub => {
