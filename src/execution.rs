@@ -8,4 +8,7 @@ mod global;
 mod elem;
 mod data;
 mod export;
+#[cfg(feature = "interp")]
 mod stack;
+#[cfg(feature = "fast")]
+mod stackopt;

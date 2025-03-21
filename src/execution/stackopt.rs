@@ -343,9 +343,21 @@ impl LabelStack{
                         Instr::I32Add => {
                             let rhs = self.value_stack.pop().unwrap().to_i32();
                             let lhs = self.value_stack.pop().unwrap().to_i32();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(lhs+rhs))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i32.add",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
+                             //   Val::Num(Num::I32(lhs + rhs))
+
                             None
                         },
                         Instr::I32Sub => {
