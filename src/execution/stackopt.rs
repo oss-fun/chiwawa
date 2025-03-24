@@ -613,121 +613,271 @@ impl LabelStack{
                         Instr::I64Add => {
                             let rhs = self.value_stack.pop().unwrap().to_i64();
                             let lhs = self.value_stack.pop().unwrap().to_i64();
-                            self.value_stack.push(
-                                Val::Num(Num::I64(lhs + rhs))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i64.add",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64Sub => {
                             let rhs = self.value_stack.pop().unwrap().to_i64();
                             let lhs = self.value_stack.pop().unwrap().to_i64();
-                            self.value_stack.push(
-                                Val::Num(Num::I64(lhs - rhs))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i64.sub",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64Mul => {
                             let rhs = self.value_stack.pop().unwrap().to_i64();
                             let lhs = self.value_stack.pop().unwrap().to_i64();
-                            self.value_stack.push(
-                                Val::Num(Num::I64(lhs * rhs))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i64.mul",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64DivS => {
                             let rhs = self.value_stack.pop().unwrap().to_i64();
                             let lhs = self.value_stack.pop().unwrap().to_i64();
-                            self.value_stack.push(
-                                Val::Num(Num::I64(lhs.checked_div(rhs).ok_or_else(|| RuntimeError::ZeroDivideError)?))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i64.div_s",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64DivU => {
                             let rhs = self.value_stack.pop().unwrap().to_i64() as u64;
                             let lhs = self.value_stack.pop().unwrap().to_i64() as u64;
-                            self.value_stack.push(
-                                Val::Num(Num::I64(lhs.checked_div(rhs).ok_or_else(|| RuntimeError::ZeroDivideError)? as i64))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i64.div_u",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64RemS => {
                             let rhs = self.value_stack.pop().unwrap().to_i64();
                             let lhs = self.value_stack.pop().unwrap().to_i64();
-                            self.value_stack.push(
-                                Val::Num(Num::I64(lhs.overflowing_rem(rhs).0))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i64.rem_s",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64RemU => {
                             let rhs = self.value_stack.pop().unwrap().to_i64() as u64;
                             let lhs = self.value_stack.pop().unwrap().to_i64() as u64;
-                            self.value_stack.push(
-                                Val::Num(Num::I64(lhs.overflowing_rem(rhs).0 as i64))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i64.rem_u",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64And => {
                             let rhs = self.value_stack.pop().unwrap().to_i64();
                             let lhs = self.value_stack.pop().unwrap().to_i64();
-                            self.value_stack.push(
-                                Val::Num(Num::I64(lhs & rhs))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i64.and",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64Or => {
                             let rhs = self.value_stack.pop().unwrap().to_i64();
                             let lhs = self.value_stack.pop().unwrap().to_i64();
-                            self.value_stack.push(
-                                Val::Num(Num::I64(lhs | rhs))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i64.or",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64Xor => {
                             let rhs = self.value_stack.pop().unwrap().to_i64();
                             let lhs = self.value_stack.pop().unwrap().to_i64();
-                            self.value_stack.push(
-                                Val::Num(Num::I64(lhs ^ rhs))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i64.xor",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64Shl => {
                             let rhs = self.value_stack.pop().unwrap().to_i64();
                             let lhs = self.value_stack.pop().unwrap().to_i64();
-                            self.value_stack.push(
-                                Val::Num(Num::I64(lhs << rhs))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i64.shl",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64ShrS => {
                             let rhs = self.value_stack.pop().unwrap().to_i64();
                             let lhs = self.value_stack.pop().unwrap().to_i64();
-                            self.value_stack.push(
-                                Val::Num(Num::I64(lhs >> rhs))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i64.shr_s",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64ShrU => {
                             let rhs = self.value_stack.pop().unwrap().to_i64() as u64;
                             let lhs = self.value_stack.pop().unwrap().to_i64() as u64;
-                            self.value_stack.push(
-                                Val::Num(Num::I64((lhs >> rhs) as i64))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i64.shr_u",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64Rotl => {
                             let rhs = self.value_stack.pop().unwrap().to_i64();
                             let lhs = self.value_stack.pop().unwrap().to_i64();
-                            self.value_stack.push(
-                                Val::Num(Num::I64(lhs.rotate_left(rhs as u32)))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i64.rotl",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64Rotr => {
                             let rhs = self.value_stack.pop().unwrap().to_i64();
                             let lhs = self.value_stack.pop().unwrap().to_i64();
-                            self.value_stack.push(
-                                Val::Num(Num::I64(lhs.rotate_right(rhs as u32)))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i64.rotr",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
 
