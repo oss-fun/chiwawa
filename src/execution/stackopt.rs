@@ -356,120 +356,258 @@ impl LabelStack{
                                 );
                             }
                             self.value_stack.push(Val::Num(Num::I32(result)));
-                             //   Val::Num(Num::I32(lhs + rhs))
-
                             None
                         },
                         Instr::I32Sub => {
                             let rhs = self.value_stack.pop().unwrap().to_i32();
                             let lhs = self.value_stack.pop().unwrap().to_i32();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(lhs - rhs))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i32.sub",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32Mul => {
                             let rhs = self.value_stack.pop().unwrap().to_i32();
                             let lhs = self.value_stack.pop().unwrap().to_i32();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(rhs * lhs))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i32.mul",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32DivS => {
                             let rhs = self.value_stack.pop().unwrap().to_i32();
                             let lhs = self.value_stack.pop().unwrap().to_i32();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(lhs.checked_div(rhs).ok_or_else(|| RuntimeError::ZeroDivideError)?))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i32.div_s",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32DivU => {
                             let rhs = self.value_stack.pop().unwrap().to_i32() as u32;
                             let lhs = self.value_stack.pop().unwrap().to_i32() as u32;
-                            self.value_stack.push(
-                                Val::Num(Num::I32(lhs.checked_div(rhs).ok_or_else(|| RuntimeError::ZeroDivideError)? as i32))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i32.div_u",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32RemS => {
                             let rhs = self.value_stack.pop().unwrap().to_i32();
                             let lhs = self.value_stack.pop().unwrap().to_i32();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(lhs.overflowing_rem(rhs).0))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i32.rem_s",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32RemU => {
                             let rhs = self.value_stack.pop().unwrap().to_i32() as u32;
                             let lhs = self.value_stack.pop().unwrap().to_i32() as u32;
-                            self.value_stack.push(
-                                Val::Num(Num::I32(lhs.overflowing_rem(rhs).0 as i32))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i32.rem_u",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32And => {
                             let rhs = self.value_stack.pop().unwrap().to_i32();
                             let lhs = self.value_stack.pop().unwrap().to_i32();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(lhs & rhs))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i32.and",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32Or => {
                             let rhs = self.value_stack.pop().unwrap().to_i32();
                             let lhs = self.value_stack.pop().unwrap().to_i32();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(lhs | rhs))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i32.or",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32Xor => {
                             let rhs = self.value_stack.pop().unwrap().to_i32();
                             let lhs = self.value_stack.pop().unwrap().to_i32();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(lhs ^ rhs))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i32.xor",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32Shl => {
                             let rhs = self.value_stack.pop().unwrap().to_i32();
                             let lhs = self.value_stack.pop().unwrap().to_i32();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(lhs << rhs))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i32.shl",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32ShrS => {
                             let rhs = self.value_stack.pop().unwrap().to_i32();
                             let lhs = self.value_stack.pop().unwrap().to_i32();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(lhs >> rhs))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i32.shr_s",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32ShrU => {
                             let rhs = self.value_stack.pop().unwrap().to_i32() as u32;
                             let lhs = self.value_stack.pop().unwrap().to_i32() as u32;
-                            self.value_stack.push(
-                                Val::Num(Num::I32((lhs >> rhs) as i32))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i32.shr_u",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32Rotl => {
                             let rhs = self.value_stack.pop().unwrap().to_i32();
                             let lhs = self.value_stack.pop().unwrap().to_i32();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(lhs.rotate_left(rhs as u32)))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i32.rotl",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32Rotr => {
                             let rhs = self.value_stack.pop().unwrap().to_i32();
                             let lhs = self.value_stack.pop().unwrap().to_i32();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(lhs.rotate_right(rhs as u32)))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "i32.rotr",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I64Add => {
