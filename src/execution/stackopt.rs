@@ -884,113 +884,253 @@ impl LabelStack{
                         Instr::F32Add => {
                             let rhs = self.value_stack.pop().unwrap().to_f32();
                             let lhs = self.value_stack.pop().unwrap().to_f32();
-                            self.value_stack.push(
-                                Val::Num(Num::F32(lhs + rhs))
-                            );
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "f32.add",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result)));
                             None
                         },
                         Instr::F32Sub => {
                             let rhs = self.value_stack.pop().unwrap().to_f32();
                             let lhs = self.value_stack.pop().unwrap().to_f32();
-                            self.value_stack.push(
-                                Val::Num(Num::F32(lhs - rhs))
-                            );
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "f32.sub",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result)));
                             None
                         },
                         Instr::F32Mul => {
                             let rhs = self.value_stack.pop().unwrap().to_f32();
                             let lhs = self.value_stack.pop().unwrap().to_f32();
-                            self.value_stack.push(
-                                Val::Num(Num::F32(lhs * rhs))
-                            );
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "f32.mul",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result)));
                             None
                         },
                         Instr::F32Div => {
                             let rhs = self.value_stack.pop().unwrap().to_f32();
                             let lhs = self.value_stack.pop().unwrap().to_f32();
-                            self.value_stack.push(
-                                Val::Num(Num::F32(lhs / rhs))
-                            );
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "f32.div",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result)));
                             None
                         },
                         Instr::F32Min => {
                             let rhs = self.value_stack.pop().unwrap().to_f32();
                             let lhs = self.value_stack.pop().unwrap().to_f32();
-                            self.value_stack.push(
-                                Val::Num(Num::F32(lhs.min(rhs)))
-                            );
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "f32.min",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result)));
                             None
                         },
                         Instr::F32Max => {
                             let rhs = self.value_stack.pop().unwrap().to_f32();
                             let lhs = self.value_stack.pop().unwrap().to_f32();
-                            self.value_stack.push(
-                                Val::Num(Num::F32(lhs.max(rhs)))
-                            );
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "f32.max",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result)));
                             None
                         },
                         Instr::F32Copysign => {
                             let rhs = self.value_stack.pop().unwrap().to_f32();
                             let lhs = self.value_stack.pop().unwrap().to_f32();
-                            self.value_stack.push(
-                                Val::Num(Num::F32(lhs.copysign(rhs)))
-                            );
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "f32.copysign",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result)));
                             None
                         },
                         Instr::F64Add => {
                             let rhs = self.value_stack.pop().unwrap().to_f64();
                             let lhs = self.value_stack.pop().unwrap().to_f64();
-                            self.value_stack.push(
-                                Val::Num(Num::F64(lhs + rhs))
-                            );
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "f64.add",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result)));
                             None
                         },
                         Instr::F64Sub => {
                             let rhs = self.value_stack.pop().unwrap().to_f64();
                             let lhs = self.value_stack.pop().unwrap().to_f64();
-                            self.value_stack.push(
-                                Val::Num(Num::F64(lhs - rhs))
-                            );
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "f64.sub",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result)));
                             None
                         },
                         Instr::F64Mul => {
                             let rhs = self.value_stack.pop().unwrap().to_f64();
                             let lhs = self.value_stack.pop().unwrap().to_f64();
-                            self.value_stack.push(
-                                Val::Num(Num::F64(lhs * rhs))
-                            );
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "f64.mul",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result)));
                             None
                         },
                         Instr::F64Div => {
                             let rhs = self.value_stack.pop().unwrap().to_f64();
                             let lhs = self.value_stack.pop().unwrap().to_f64();
-                            self.value_stack.push(
-                                Val::Num(Num::F64(lhs / rhs))
-                            );
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "f64.div",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result)));
                             None
                         },
                         Instr::F64Min => {
                             let rhs = self.value_stack.pop().unwrap().to_f64();
                             let lhs = self.value_stack.pop().unwrap().to_f64();
-                            self.value_stack.push(
-                                Val::Num(Num::F64(lhs.min(rhs)))
-                            );
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "f64.min",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result)));
                             None
                         },
                         Instr::F64Max => {
                             let rhs = self.value_stack.pop().unwrap().to_f64();
                             let lhs = self.value_stack.pop().unwrap().to_f64();
-                            self.value_stack.push(
-                                Val::Num(Num::F64(lhs.max(rhs)))
-                            );
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "f64.max",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result)));
                             None
                         },
                         Instr::F64Copysign => {
                             let rhs = self.value_stack.pop().unwrap().to_f64();
                             let lhs = self.value_stack.pop().unwrap().to_f64();
-                            self.value_stack.push(
-                                Val::Num(Num::F64(lhs.copysign(rhs)))
-                            );
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "local.get {1}",
+                                    "f64.copysign",
+                                    "local.set {2}",
+                                    in(local) lhs,
+                                    in(local) rhs,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result)));
                             None
                         },
                         /*Numeric Comparison Instruction*/
