@@ -14,8 +14,9 @@ cargo build
 ### For self-hosted
 
 ```
-cargo build --target wasm32-wasi
-somethingWasmRuntime target/wasm32-wasi/debug/chiwawa.wasm something.wasm --invoke func-name
+cargo build --target wasm32-wasip1 --release --features interp #Normal Interpreter
+cargo build --target wasm32-wasip1 --release --features fast #Inline Wasm Bytecode Optimization
+somethingWasmRuntime target/wasm32-wasip1/release/chiwawa.wasm something.wasm --invoke func-name --params "I64(100)"
 ```
 
 
