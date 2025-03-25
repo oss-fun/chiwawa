@@ -1744,9 +1744,17 @@ impl LabelStack{
                         /*Type Translation Instructions*/
                         Instr::I32WrapI64 => {
                             let a = self.value_stack.pop().unwrap().to_i64();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(a as i32))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i32.wrap_i64",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I64ExtendI32S => {
@@ -1758,379 +1766,544 @@ impl LabelStack{
                         },
                         Instr::I64ExtendI32U => {
                             let a = self.value_stack.pop().unwrap().to_i32() as u32;
-                            self.value_stack.push(
-                                Val::Num(Num::I64(a.into()))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i64.extend_i32_u",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I32Extend8S =>{
                             let a = self.value_stack.pop().unwrap().to_i32() as i8;
-                            self.value_stack.push(
-                                Val::Num(Num::I32(a.into()))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i32.extend8_s",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32Extend16S =>{
                             let a = self.value_stack.pop().unwrap().to_i32() as i16;
-                            self.value_stack.push(
-                                Val::Num(Num::I32(a.into()))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i32.extend16_s",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I64Extend8S =>{
-                            let a = self.value_stack.pop().unwrap().to_i64() as i8;
-                            self.value_stack.push(
-                                Val::Num(Num::I64(a.into()))
-                            );
+                            let a = self.value_stack.pop().unwrap().to_i64();
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i64.extend8_s",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64Extend16S =>{
-                            let a = self.value_stack.pop().unwrap().to_i64() as i16;
-                            self.value_stack.push(
-                                Val::Num(Num::I64(a.into()))
-                            );
+                            let a = self.value_stack.pop().unwrap().to_i64();
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i64.extend16_s",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64Extend32S =>{
-                            let a = self.value_stack.pop().unwrap().to_i64() as i32;
-                            self.value_stack.push(
-                                Val::Num(Num::I64(a.into()))
-                            );
+                            let a = self.value_stack.pop().unwrap().to_i64();
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i64.extend32_s",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I32TruncF32S => {
                             let a = self.value_stack.pop().unwrap().to_f32();
-                            let result = <i32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(result))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i32.trunc_f32_s",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32TruncF32U => {
                             let a = self.value_stack.pop().unwrap().to_f32();
-                            let result = <u32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(result as i32))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i32.trunc_f32_u",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32TruncF64S => {
                             let a = self.value_stack.pop().unwrap().to_f64();
-                            let result = <i32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(result))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i32.trunc_f64_s",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32TruncF64U => {
                             let a = self.value_stack.pop().unwrap().to_f64();
-                            let result = <u32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(result as i32))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i32.trunc_f64_u",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I64TruncF32S => {
                             let a = self.value_stack.pop().unwrap().to_f32();
-                            let result = <i64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
-                            self.value_stack.push(
-                                Val::Num(Num::I64(result))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i64.trunc_f32_s",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64TruncF32U => {
                             let a = self.value_stack.pop().unwrap().to_f32();
-                            let result = <u64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
-                            self.value_stack.push(
-                                Val::Num(Num::I64(result as i64))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i64.trunc_f32_u",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64TruncF64S => {
                             let a = self.value_stack.pop().unwrap().to_f64();
-                            let result = <i64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
-                            self.value_stack.push(
-                                Val::Num(Num::I64(result))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i64.trunc_f64_s",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64TruncF64U => {
                             let a = self.value_stack.pop().unwrap().to_f64();
-                            let result = <u64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
-                            self.value_stack.push(
-                                Val::Num(Num::I64(result as i64))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i64.trunc_f64_u",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I32TruncSatF32S => {
                             let a = self.value_stack.pop().unwrap().to_f32();
-                            let result = if a.is_nan() {
-                                0
-                            } else if a.is_infinite() && a.is_sign_negative() {
-                                i32::MIN
-                            } else if a.is_infinite() {
-                                i32::MAX
-                            } else {
-                                let truncated = a.trunc();
-                                if truncated < i32::MIN as f32 {
-                                    i32::MIN
-                                } else if truncated > i32::MAX as f32 {
-                                    i32::MAX
-                                } else {
-                                    truncated as i32
-                                }
-                            };
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i32.trunc_sat_f32_s",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
                             self.value_stack.push(Val::Num(Num::I32(result)));                            
                             None
                         },
                         Instr::I32TruncSatF32U => {
                             let a = self.value_stack.pop().unwrap().to_f32();
-                            let result = if a.is_nan() {
-                                0
-                            } else if a.is_sign_negative() {
-                                0
-                            } else if a.is_infinite() {
-                                u32::MAX
-                            } else {
-                                let truncated = a.trunc();
-                                if truncated > u32::MAX as f32 {
-                                    u32::MAX
-                                } else {
-                                    truncated as u32
-                                }
-                            } as i32;                        
-                            self.value_stack.push(Val::Num(Num::I32(result)));
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i32.trunc_sat_f32_u",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));                           
                             None
                         },
                         Instr::I32TruncSatF64S => {
                             let a = self.value_stack.pop().unwrap().to_f64();
-                            let result = if a.is_nan() {
-                                0
-                            } else if a.is_infinite() && a.is_sign_negative() {
-                                i32::MIN
-                            } else if a.is_infinite() {
-                                i32::MAX
-                            } else {
-                                let truncated = a.trunc();
-                                if truncated < i32::MIN as f64 {
-                                    i32::MIN
-                                } else if truncated > i32::MAX as f64 {
-                                    i32::MAX
-                                } else {
-                                    truncated as i32
-                                }
-                            };
-                            self.value_stack.push(Val::Num(Num::I32(result)));
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i32.trunc_sat_f64_s",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));          
                             None
                         },
                         Instr::I32TruncSatF64U => {
                             let a = self.value_stack.pop().unwrap().to_f64();
-                            let result = if a.is_nan() {
-                                0
-                            } else if a.is_infinite() {
-                                if a.is_sign_negative() {
-                                    0 
-                                } else {
-                                    u32::MAX
-                                }
-                            } else if a < 0.0 {
-                                0 
-                            } else if a >= 4294967296.0 {
-                                u32::MAX
-                            } else {
-                                a.trunc() as u32
-                            };
-                            self.value_stack.push(Val::Num(Num::I32(result as i32)));
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i32.trunc_sat_f64_u",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));          
                             None
                         },
                         Instr::I64TruncSatF32S => {
                             let a = self.value_stack.pop().unwrap().to_f32();
-                            let result = if a.is_nan() {
-                                0
-                            } else if a.is_infinite() {
-                                if a.is_sign_negative() {
-                                    i64::MIN
-                                } else {
-                                    i64::MAX
-                                }
-                            } else if a < i64::MIN as f32 {
-                                i64::MIN
-                            } else if a > i64::MAX as f32 {
-                                i64::MAX
-                            } else {
-                                a.trunc() as i64
-                            };        
-                            self.value_stack.push(Val::Num(Num::I64(result)));
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i64.trunc_sat_f32_s",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));          
                             None
                         },
                         Instr::I64TruncSatF32U => {
                             let a = self.value_stack.pop().unwrap().to_f32();
-                            let result = if a.is_nan() {
-                                0
-                            } else if a.is_infinite() {
-                                if a.is_sign_negative() {
-                                    0
-                                } else {
-                                    u64::MAX as i64
-                                }
-                            } else if a < 0.0 {
-                                0 
-                            } else if a > u64::MAX as f32 {
-                                u64::MAX as i64
-                            } else {
-                                a.trunc() as u64 as i64
-                            };
-                            self.value_stack.push(Val::Num(Num::I64(result)));
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i64.trunc_sat_f32_u",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));  
                             None
                         },
                         Instr::I64TruncSatF64S => {
                             let a = self.value_stack.pop().unwrap().to_f64();
-                            let result = if a.is_nan() {
-                                0
-                            } else if a.is_infinite() {
-                                if a.is_sign_negative() {
-                                    i64::MIN
-                                } else {
-                                    i64::MAX
-                                }
-                            } else if a < i64::MIN as f64 {
-                                i64::MIN
-                            } else if a > i64::MAX as f64 {
-                                i64::MAX
-                            } else {
-                                a.trunc() as i64
-                            };
-                            self.value_stack.push(Val::Num(Num::I64(result)));
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i64.trunc_sat_f64_s",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));  
                             None
                         },
                         Instr::I64TruncSatF64U => {
                             let a = self.value_stack.pop().unwrap().to_f64();
-                            let result = if a.is_nan() || a < 0.0 {
-                                0
-                            } else if a.is_infinite() {
-                                u64::MAX as i64
-                            } else if a > u64::MAX as f64 {
-                                u64::MAX as i64
-                            } else {
-                                a.trunc() as u64 as i64
-                            };
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i64.trunc_sat_f64_u",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
                             self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::F32DemoteF64 => {
                             let a = self.value_stack.pop().unwrap().to_f64();
-                            self.value_stack.push(
-                                Val::Num(Num::F32(a as f32))
-                            );
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f32.demote_f64",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result)));  
                             None
                         },
                         Instr::F64PromoteF32 => {
                             let a = self.value_stack.pop().unwrap().to_f32();
-                            self.value_stack.push(
-                                Val::Num(Num::F64(a as f64))
-                            );
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f64.promote_f32",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result)));  
                             None
                         },
 
                         Instr::F32ConvertI32S => {
                             let a = self.value_stack.pop().unwrap().to_i32();
-                            self.value_stack.push(
-                                Val::Num(Num::F32(a as f32))
-                            );
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f32.convert_i32_s",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result)));  
                             None
                         },
                         Instr::F32ConvertI32U => {
                             let a = self.value_stack.pop().unwrap().to_i32() as u32;
-                            self.value_stack.push(
-                                Val::Num(Num::F32(a as f32))
-                            );
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f32.convert_i32_u",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result))); 
                             None
                         },
                         Instr::F32ConvertI64S => {
                             let a = self.value_stack.pop().unwrap().to_i64();
-                            self.value_stack.push(
-                                Val::Num(Num::F32(a as f32))
-                            );
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f32.convert_i64_s",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result))); 
                             None
                         },
                         Instr::F32ConvertI64U => {
                             let a = self.value_stack.pop().unwrap().to_i64() as u64;
-                            self.value_stack.push(
-                                Val::Num(Num::F32(a as f32))
-                            );
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f32.convert_i64_u",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result))); 
                             None
                         },
                         Instr::F64ConvertI32S => {
                             let a = self.value_stack.pop().unwrap().to_i32();
-                            self.value_stack.push(
-                                Val::Num(Num::F64(a as f64))
-                            );
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f64.convert_i32_s",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result))); 
                             None
                         },
                         Instr::F64ConvertI32U => {
                             let a = self.value_stack.pop().unwrap().to_i32() as u32;
-                            self.value_stack.push(
-                                Val::Num(Num::F64(a as f64))
-                            );
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f64.convert_i32_u",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result))); 
                             None
                         },
                         Instr::F64ConvertI64S => {
                             let a = self.value_stack.pop().unwrap().to_i64();
-                            self.value_stack.push(
-                                Val::Num(Num::F64(a as f64))
-                            );
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f64.convert_i64_s",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result))); 
                             None
                         },
                         Instr::F64ConvertI64U => {
                             let a = self.value_stack.pop().unwrap().to_i64() as u64;
-                            self.value_stack.push(
-                                Val::Num(Num::F64(a as f64))
-                            );
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f64.convert_i64_u",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result))); 
                             None
                         },
                         Instr::I32ReinterpretF32 => {
                             let a = self.value_stack.pop().unwrap().to_f32();
-                            let mut buf = vec![];
-                            buf.write_f32::<LittleEndian>(a).unwrap();
-                            let mut cursor = Cursor::new(buf);
-                            let result = cursor.read_i32::<LittleEndian>().unwrap();
-                            self.value_stack.push(
-                                Val::Num(Num::I32(result))
-                            );
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i32.reinterpret_f32",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result))); 
                             None
                         },
                         Instr::I64ReinterpretF64 => {
                             let a = self.value_stack.pop().unwrap().to_f64();
-                            let mut buf = vec![];
-                            buf.write_f64::<LittleEndian>(a).unwrap();
-                            let mut cursor = Cursor::new(buf);
-                            let result = cursor.read_i64::<LittleEndian>().unwrap();
-                            self.value_stack.push(
-                                Val::Num(Num::I64(result))
-                            );
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i64.reinterpret_f64",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result))); 
                             None
                         },
                         Instr::F32ReinterpretI32 => {
                             let a = self.value_stack.pop().unwrap().to_i32();
-                            let mut buf = vec![];
-                            buf.write_i32::<LittleEndian>(a).unwrap();
-                            let mut cursor = Cursor::new(buf);
-                            let result = cursor.read_f32::<LittleEndian>().unwrap();
-                            self.value_stack.push(
-                                Val::Num(Num::F32(result))
-                            );
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f32.reinterpret_i32",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result))); 
                             None
                         },
 
                         Instr::F64ReinterpretI64 => {
                             let a = self.value_stack.pop().unwrap().to_i64();
-                            let mut buf = vec![];
-                            buf.write_i64::<LittleEndian>(a).unwrap();
-                            let mut cursor = Cursor::new(buf);
-                            let result = cursor.read_f64::<LittleEndian>().unwrap();
-                            self.value_stack.push(
-                                Val::Num(Num::F64(result))
-                            );
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f64.reinterpret_i64",
+                                    "local.set {1}",
+                                    in(local) a,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result))); 
                             None
                         },
                         /*Variable Instructions*/
