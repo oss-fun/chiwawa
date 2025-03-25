@@ -1,6 +1,10 @@
 use std::{rc::Rc, cell::*, rc::Weak};
 use crate::structure::{types::*,module::*, instructions::Expr};
+#[cfg(feature = "interp")]
 use super::{value::Val, module::*, stack::*};
+#[cfg(feature = "fast")]
+use super::{value::Val, module::*, stackopt::*};
+
 use crate::error::RuntimeError;
 
 #[derive(Clone)]
