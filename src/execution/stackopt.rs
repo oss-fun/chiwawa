@@ -224,119 +224,303 @@ impl LabelStack{
                             None
                         },
                         Instr::I32Clz => {
-                            let x = self.value_stack.pop().unwrap().to_i32().leading_zeros();
-                            self.value_stack.push(Val::Num(Num::I32(x as i32)));
+                            let x = self.value_stack.pop().unwrap().to_i32();
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i32.clz",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32Ctz => {
-                            let x = self.value_stack.pop().unwrap().to_i32().trailing_zeros();
-                            self.value_stack.push(Val::Num(Num::I32(x as i32)));
+                            let x = self.value_stack.pop().unwrap().to_i32();
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i32.ctz",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I32Popcnt => {
-                            let x = self.value_stack.pop().unwrap().to_i32().count_ones();
-                            self.value_stack.push(Val::Num(Num::I32(x as i32)));
+                            let x = self.value_stack.pop().unwrap().to_i32();
+                            let mut result: i32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i32.popcnt",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I32(result)));
                             None
                         },
                         Instr::I64Clz => {
-                            let x = self.value_stack.pop().unwrap().to_i64().leading_zeros();
-                            self.value_stack.push(Val::Num(Num::I64(x as i64)));
+                            let x = self.value_stack.pop().unwrap().to_i64();
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i64.clz",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64Ctz => {
-                            let x = self.value_stack.pop().unwrap().to_i64().trailing_zeros();
-                            self.value_stack.push(Val::Num(Num::I64(x as i64)));
+                            let x = self.value_stack.pop().unwrap().to_i64();
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i64.ctz",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::I64Popcnt => {
-                            let x = self.value_stack.pop().unwrap().to_i64().count_ones();
-                            self.value_stack.push(Val::Num(Num::I64(x as i64)));
+                            let x = self.value_stack.pop().unwrap().to_i64();
+                            let mut result: i64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "i64.popcnt",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::I64(result)));
                             None
                         },
                         Instr::F32Abs => {
                             let x = self.value_stack.pop().unwrap().to_f32();
-                            self.value_stack.push(Val::Num(Num::F32(x.abs())));
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f32.abs",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result)));
                             None
                         },
                         Instr::F32Neg => {
                             let x = self.value_stack.pop().unwrap().to_f32();
-                            self.value_stack.push(Val::Num(Num::F32(x * -1.0)));
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f32.neg",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result)));
                             None
                         },
                         Instr::F32Sqrt => {
                             let x = self.value_stack.pop().unwrap().to_f32();
-                            self.value_stack.push(Val::Num(Num::F32(x.sqrt())));
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f32.sqrt",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result)));
                             None
                         },
                         Instr::F32Ceil => {
                             let x = self.value_stack.pop().unwrap().to_f32();
-                            self.value_stack.push(Val::Num(Num::F32(x.ceil())));
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f32.ceil",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result)));
                             None
                         },
                         Instr::F32Floor => {
                             let x = self.value_stack.pop().unwrap().to_f32();
-                            self.value_stack.push(Val::Num(Num::F32(x.floor())));
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f32.floor",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result)));
                             None
                         },
                         Instr::F32Trunc => {
                             let x = self.value_stack.pop().unwrap().to_f32();
-                            self.value_stack.push(Val::Num(Num::F32(x.trunc())));
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f32.trunc",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result)));
                             None
                         },
                         Instr::F32Nearest => {
-                            let x = self.value_stack.pop().unwrap().to_f32() % 2.0;
-                            
-                            let ret = if x == 0.5 {
-                                x.floor()
-                            }else if x ==  -0.5{
-                                x.ceil()
-                            }else{
-                                x.round()
-                            };
-                            self.value_stack.push(Val::Num(Num::F32(ret)));
+                            let x = self.value_stack.pop().unwrap().to_f32();
+                            let mut result: f32;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f32.nearest",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F32(result)));
                             None
                         },
                         Instr::F64Abs => {
                             let x = self.value_stack.pop().unwrap().to_f64();
-                            self.value_stack.push(Val::Num(Num::F64(x.abs())));
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f64.abs",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result)));
                             None
                         },
                         Instr::F64Neg => {
                             let x = self.value_stack.pop().unwrap().to_f64();
-                            self.value_stack.push(Val::Num(Num::F64(x * -1.0)));
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f64.neg",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result)));
                             None
                         },
                         Instr::F64Sqrt => {
                             let x = self.value_stack.pop().unwrap().to_f64();
-                            self.value_stack.push(Val::Num(Num::F64(x.sqrt())));
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f64.sqrt",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result)));
                             None
                         },
                         Instr::F64Ceil => {
                             let x = self.value_stack.pop().unwrap().to_f64();
-                            self.value_stack.push(Val::Num(Num::F64(x.ceil())));
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f64.ceil",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result)));
                             None
                         },
                         Instr::F64Floor => {
                             let x = self.value_stack.pop().unwrap().to_f64();
-                            self.value_stack.push(Val::Num(Num::F64(x.floor())));
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f64.floor",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result)));
                             None
                         },
                         Instr::F64Trunc => {
                             let x = self.value_stack.pop().unwrap().to_f64();
-                            self.value_stack.push(Val::Num(Num::F64(x.trunc())));
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f64.trunc",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result)));
                             None
                         },
                         Instr::F64Nearest => {
-                            let x = self.value_stack.pop().unwrap().to_f64() % 2.0;
-                            
-                            let ret = if x == 0.5 {
-                                x.floor()
-                            }else if x ==  -0.5{
-                                x.ceil()
-                            }else{
-                                x.round()
-                            };
-                            self.value_stack.push(Val::Num(Num::F64(ret)));
+                            let x = self.value_stack.pop().unwrap().to_f64();
+                            let mut result: f64;
+                            unsafe{
+                                asm!(
+                                    "local.get {0}",
+                                    "f64.nearest",
+                                    "local.set {1}",
+                                    in(local) x,
+                                    out(local) result,
+                                );
+                            }
+                            self.value_stack.push(Val::Num(Num::F64(result)));
                             None
                         },
                         /*Two Operand Numeric Instructions*/
