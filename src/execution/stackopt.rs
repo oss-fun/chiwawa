@@ -623,55 +623,25 @@ impl LabelStack{
                         Instr::I32And => {
                             let rhs = self.value_stack.pop().unwrap().to_i32();
                             let lhs = self.value_stack.pop().unwrap().to_i32();
-                            let mut result: i32;
-                            unsafe{
-                                asm!(
-                                    "local.get {0}",
-                                    "local.get {1}",
-                                    "i32.and",
-                                    "local.set {2}",
-                                    in(local) lhs,
-                                    in(local) rhs,
-                                    out(local) result,
-                                );
-                            }
-                            self.value_stack.push(Val::Num(Num::I32(result)));
+                            self.value_stack.push(
+                                Val::Num(Num::I32(lhs & rhs))
+                            );
                             None
                         },
                         Instr::I32Or => {
                             let rhs = self.value_stack.pop().unwrap().to_i32();
                             let lhs = self.value_stack.pop().unwrap().to_i32();
-                            let mut result: i32;
-                            unsafe{
-                                asm!(
-                                    "local.get {0}",
-                                    "local.get {1}",
-                                    "i32.or",
-                                    "local.set {2}",
-                                    in(local) lhs,
-                                    in(local) rhs,
-                                    out(local) result,
-                                );
-                            }
-                            self.value_stack.push(Val::Num(Num::I32(result)));
+                            self.value_stack.push(
+                                Val::Num(Num::I32(lhs | rhs))
+                            );
                             None
                         },
                         Instr::I32Xor => {
                             let rhs = self.value_stack.pop().unwrap().to_i32();
                             let lhs = self.value_stack.pop().unwrap().to_i32();
-                            let mut result: i32;
-                            unsafe{
-                                asm!(
-                                    "local.get {0}",
-                                    "local.get {1}",
-                                    "i32.xor",
-                                    "local.set {2}",
-                                    in(local) lhs,
-                                    in(local) rhs,
-                                    out(local) result,
-                                );
-                            }
-                            self.value_stack.push(Val::Num(Num::I32(result)));
+                            self.value_stack.push(
+                                Val::Num(Num::I32(lhs ^ rhs))
+                            );
                             None
                         },
                         Instr::I32Shl => {
@@ -863,55 +833,25 @@ impl LabelStack{
                         Instr::I64And => {
                             let rhs = self.value_stack.pop().unwrap().to_i64();
                             let lhs = self.value_stack.pop().unwrap().to_i64();
-                            let mut result: i64;
-                            unsafe{
-                                asm!(
-                                    "local.get {0}",
-                                    "local.get {1}",
-                                    "i64.and",
-                                    "local.set {2}",
-                                    in(local) lhs,
-                                    in(local) rhs,
-                                    out(local) result,
-                                );
-                            }
-                            self.value_stack.push(Val::Num(Num::I64(result)));
+                            self.value_stack.push(
+                                Val::Num(Num::I64(lhs & rhs))
+                            );
                             None
                         },
                         Instr::I64Or => {
                             let rhs = self.value_stack.pop().unwrap().to_i64();
                             let lhs = self.value_stack.pop().unwrap().to_i64();
-                            let mut result: i64;
-                            unsafe{
-                                asm!(
-                                    "local.get {0}",
-                                    "local.get {1}",
-                                    "i64.or",
-                                    "local.set {2}",
-                                    in(local) lhs,
-                                    in(local) rhs,
-                                    out(local) result,
-                                );
-                            }
-                            self.value_stack.push(Val::Num(Num::I64(result)));
+                            self.value_stack.push(
+                                Val::Num(Num::I64(lhs | rhs))
+                            );
                             None
                         },
                         Instr::I64Xor => {
                             let rhs = self.value_stack.pop().unwrap().to_i64();
                             let lhs = self.value_stack.pop().unwrap().to_i64();
-                            let mut result: i64;
-                            unsafe{
-                                asm!(
-                                    "local.get {0}",
-                                    "local.get {1}",
-                                    "i64.xor",
-                                    "local.set {2}",
-                                    in(local) lhs,
-                                    in(local) rhs,
-                                    out(local) result,
-                                );
-                            }
-                            self.value_stack.push(Val::Num(Num::I64(result)));
+                            self.value_stack.push(
+                                Val::Num(Num::I64(lhs ^ rhs))
+                            );
                             None
                         },
                         Instr::I64Shl => {
