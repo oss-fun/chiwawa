@@ -4,18 +4,13 @@ Chiwawa (Pronunciation of chihuahua) is a self-hosted Wasm runtime that enables 
 
 
 ## Build and Run
-### For native
 
 ```
-cargo build
- ./target/debug/chiwawa something.wasm --invoke func-name
-```
+# Normal Interpreter
+cargo build --target wasm32-wasip1 --release --features interp
 
-### For self-hosted
-
-```
-cargo build --target wasm32-wasip1 --release --features interp #Normal Interpreter
-cargo build --target wasm32-wasip1 --release --features fast #Inline Wasm Bytecode Optimization
+#Inline Wasm Bytecode Optimization
+cargo build --target wasm32-wasip1 --release --features fast
 somethingWasmRuntime target/wasm32-wasip1/release/chiwawa.wasm something.wasm --invoke func-name --params "I64(100)"
 ```
 
