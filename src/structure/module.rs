@@ -1,7 +1,7 @@
 use crate::structure::types::*;
 use crate::structure::instructions::*;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Func {
     pub type_: TypeIdx,
     pub locals: Vec<(u32,ValueType)>,
