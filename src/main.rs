@@ -45,7 +45,7 @@ fn main() -> Result <()>{
     let mut imports: ImportObjects = HashMap::new();
     let inst = ModuleInst::new(&module, imports).unwrap();
     let ret = inst.get_export_func(&cli.invoke)?.call(params);
-    println!("pi{}", ret?.pop().unwrap().to_f64());
+   // println!("pi{}", ret?.pop().unwrap().to_f64());
     Ok(())
 }
 

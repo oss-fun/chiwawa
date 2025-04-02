@@ -3,6 +3,9 @@ use crate::structure::{types::*,module::*, instructions::Expr};
 use super::value::Val; // Import Val directly
 use super::module::*; // Keep module import
 use crate::error::RuntimeError; // Import RuntimeError
+use crate::execution::stackopt;
+#[cfg(feature = "interp")] // Conditionally import stack
+use crate::execution::stack;
 
 use std::fmt::{self, Debug}; // Import Debug and fmt
 
@@ -41,22 +44,40 @@ impl Debug for FuncInst {
 
 // Implementation for FuncAddr to hold the methods
 impl FuncAddr {
-    // The call method seems to depend on the 'interp' feature and stack module,
-    // which might be causing the unresolved import error.
-    // Commenting out the body for now.
-    pub fn call(&self, _params: Vec<Val>) -> Result<Vec<Val>, RuntimeError> {
-        // let mut stack = Stacks::new(&self, params);
-        // loop{
-        //     stack.exec_instr()?;
-        //     /*Reached Dummy Stack Frame*/
-        //     if stack.activation_frame_stack.len() == 1
-        //     && stack.activation_frame_stack.first().unwrap().label_stack.len() == 1
-        //     && stack.activation_frame_stack.first().unwrap().label_stack.first().unwrap().processed_instrs.is_empty(){
-        //         break;
-        //     }
-        // }
-        // Ok(stack.activation_frame_stack.pop().unwrap().label_stack.pop().unwrap().value_stack)
-        Err(RuntimeError::Unimplemented) // Return unimplemented error for now
+    pub fn call(&self, params: Vec<Val>) -> Result<Vec<Val>, RuntimeError> {
+        #[cfg(feature = "fast")]
+        {
+            let mut dtc_stacks = stackopt::Stacks::new(self, params)?;
+            dtc_stacks.exec_instr()
+        }
+        #[cfg(all(not(feature = "fast"), feature = "interp"))]
+        {
+            let mut stack_stacks = stack::Stacks::new(self, params);
+            loop {
+                match stack_stacks.exec_instr() {
+                    Ok(()) => { // Assuming Ok(()) means continue
+                        // Check completion condition based on stack state
+                        if stack_stacks.activation_frame_stack.len() == 1
+                        && stack_stacks.activation_frame_stack.first().map_or(true, |f| f.label_stack.len() == 1)
+                        && stack_stacks.activation_frame_stack.first().and_then(|f| f.label_stack.first()).map_or(true, |l| l.instrs.is_empty())
+                        {
+                            break;
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            // Return final value stack
+            if let Some(last_frame) = stack_stacks.activation_frame_stack.pop() {
+                if let Some(last_label) = last_frame.label_stack.pop() {
+                    Ok(last_label.value_stack)
+                } else {
+                    Err(RuntimeError::StackError("Final label stack empty".to_string()))
+                }
+            } else {
+                 Err(RuntimeError::StackError("Final frame stack empty".to_string()))
+            }
+        }
     }
 
     pub fn borrow(&self) -> Ref<FuncInst> {

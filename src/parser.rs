@@ -230,7 +230,7 @@ fn parse_initexpr(expr: wasmparser::ConstExpr<'_>) -> Result<Expr, Box<dyn std::
 fn decode_elem_section(body: SectionLimited<'_, wasmparser::Element<'_>>, module: &mut Module) -> Result<(), Box<dyn std::error::Error>> {
     for (_index, entry) in body.into_iter().enumerate() {
         let entry = entry?;
-        let mut cnt =0;
+        let _cnt = 0; // Marked as unused
         let (type_, init, idxes) = match entry.items {
             wasmparser::ElementItems::Functions(funcs) => {
                 let mut idxes = Vec::new();
