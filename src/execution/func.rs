@@ -3,6 +3,7 @@ use crate::structure::{types::*,module::*, instructions::Expr};
 use super::value::Val; // Import Val directly
 use super::module::*; // Keep module import
 use crate::error::RuntimeError; // Import RuntimeError
+#[cfg(feature = "fast")] // Conditionally import stackopt
 use crate::execution::stackopt;
 #[cfg(feature = "interp")] // Conditionally import stack
 use crate::execution::stack;
@@ -68,16 +69,16 @@ impl FuncAddr {
                 }
             }
             // Return final value stack
-            if let Some(last_frame) = stack_stacks.activation_frame_stack.pop() {
+            if let Some(mut last_frame) = stack_stacks.activation_frame_stack.pop() {
                 if let Some(last_label) = last_frame.label_stack.pop() {
-                    Ok(last_label.value_stack)
-                } else {
-                    Err(RuntimeError::StackError("Final label stack empty".to_string()))
+                            Ok(last_label.value_stack)
+                        } else {
+                            Err(RuntimeError::StackError("Final label stack empty"))
+                        }
+                    } else {
+                         Err(RuntimeError::StackError("Final frame stack empty"))
+                    }
                 }
-            } else {
-                 Err(RuntimeError::StackError("Final frame stack empty".to_string()))
-            }
-        }
     }
 
     pub fn borrow(&self) -> Ref<FuncInst> {
