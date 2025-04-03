@@ -3,8 +3,9 @@ use crate::structure::types::*;
 use super::value::Val;
 use crate::error::RuntimeError;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)] // Added Debug
 pub struct GlobalAddr(Rc<RefCell<GlobalInst>>);
+#[derive(Debug)] // Added Debug
 pub struct GlobalInst {
     pub type_: GlobalType,
     pub value: Val,
