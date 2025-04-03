@@ -1294,22 +1294,31 @@ fn handle_f64_ge(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize,
 // --- Arithmetic Handlers ---
 fn handle_i32_clz(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
-    let mut result: i32;
+    let result: i32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "i32.clz", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = x.leading_zeros() as i32; }
     ctx.value_stack.push(Val::Num(Num::I32(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_i32_ctz(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
-    let mut result: i32;
+    let result: i32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "i32.ctz", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = x.trailing_zeros() as i32; }
     ctx.value_stack.push(Val::Num(Num::I32(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_i32_popcnt(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
-    let mut result: i32;
+    let result: i32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "i32.popcnt", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = x.count_ones() as i32; }
     ctx.value_stack.push(Val::Num(Num::I32(result)));
     Ok(ctx.ip + 1)
 }
@@ -1319,36 +1328,44 @@ fn handle_i32_mul(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize
 fn handle_i32_div_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
-    let mut result: i32;
+    let result: i32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i32.div_s", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
-    // TODO: Trap on division by zero or overflow (MIN / -1)
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.checked_div(rhs).ok_or(RuntimeError::ZeroDivideError)?; } // TODO: Check overflow MIN / -1
     ctx.value_stack.push(Val::Num(Num::I32(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_i32_div_u(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32() as u32;
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32() as u32;
-    let mut result: u32;
+    let result: u32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i32.div_u", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
-     // TODO: Trap on division by zero
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.checked_div(rhs).ok_or(RuntimeError::ZeroDivideError)?; }
     ctx.value_stack.push(Val::Num(Num::I32(result as i32)));
     Ok(ctx.ip + 1)
 }
 fn handle_i32_rem_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
-    let mut result: i32;
+    let result: i32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i32.rem_s", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
-     // TODO: Trap on division by zero
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.checked_rem(rhs).ok_or(RuntimeError::ZeroDivideError)?; }
     ctx.value_stack.push(Val::Num(Num::I32(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_i32_rem_u(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32() as u32;
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32() as u32;
-    let mut result: u32;
+    let result: u32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i32.rem_u", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
-     // TODO: Trap on division by zero
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.checked_rem(rhs).ok_or(RuntimeError::ZeroDivideError)?; }
     ctx.value_stack.push(Val::Num(Num::I32(result as i32)));
     Ok(ctx.ip + 1)
 }
@@ -1358,62 +1375,86 @@ fn handle_i32_xor(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize
 fn handle_i32_shl(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
-    let mut result: i32;
+    let result: i32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i32.shl", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.wrapping_shl(rhs as u32); } // Use wrapping_shl for Rust equivalent
     ctx.value_stack.push(Val::Num(Num::I32(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_i32_shr_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
-    let mut result: i32;
+    let result: i32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i32.shr_s", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.wrapping_shr(rhs as u32); } // Use wrapping_shr
     ctx.value_stack.push(Val::Num(Num::I32(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_i32_shr_u(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32() as u32; // Shift amount is also treated as u32 by Wasm spec
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32() as u32;
-    let mut result: u32;
+    let result: u32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i32.shr_u", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.wrapping_shr(rhs); } // Use wrapping_shr
     ctx.value_stack.push(Val::Num(Num::I32(result as i32)));
     Ok(ctx.ip + 1)
 }
 fn handle_i32_rotl(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
-    let mut result: i32;
+    let result: i32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i32.rotl", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.rotate_left(rhs as u32); }
     ctx.value_stack.push(Val::Num(Num::I32(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_i32_rotr(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
-    let mut result: i32;
+    let result: i32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i32.rotr", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.rotate_right(rhs as u32); }
     ctx.value_stack.push(Val::Num(Num::I32(result)));
     Ok(ctx.ip + 1)
 }
 
 fn handle_i64_clz(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
-    let mut result: i64;
+    let result: i64;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "i64.clz", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = x.leading_zeros() as i64; }
     ctx.value_stack.push(Val::Num(Num::I64(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_i64_ctz(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
-    let mut result: i64;
+    let result: i64;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "i64.ctz", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = x.trailing_zeros() as i64; }
     ctx.value_stack.push(Val::Num(Num::I64(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_i64_popcnt(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
-    let mut result: i64;
+    let result: i64;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "i64.popcnt", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = x.count_ones() as i64; }
     ctx.value_stack.push(Val::Num(Num::I64(result)));
     Ok(ctx.ip + 1)
 }
@@ -1423,36 +1464,44 @@ fn handle_i64_mul(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize
 fn handle_i64_div_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
-    let mut result: i64;
+    let result: i64;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i64.div_s", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
-    // TODO: Trap on division by zero or overflow
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.checked_div(rhs).ok_or(RuntimeError::ZeroDivideError)?; } // TODO: Check overflow MIN / -1
     ctx.value_stack.push(Val::Num(Num::I64(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_i64_div_u(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64() as u64;
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64() as u64;
-    let mut result: u64;
+    let result: u64;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i64.div_u", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
-    // TODO: Trap on division by zero
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.checked_div(rhs).ok_or(RuntimeError::ZeroDivideError)?; }
     ctx.value_stack.push(Val::Num(Num::I64(result as i64)));
     Ok(ctx.ip + 1)
 }
 fn handle_i64_rem_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
-    let mut result: i64;
+    let result: i64;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i64.rem_s", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
-    // TODO: Trap on division by zero
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.checked_rem(rhs).ok_or(RuntimeError::ZeroDivideError)?; }
     ctx.value_stack.push(Val::Num(Num::I64(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_i64_rem_u(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64() as u64;
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64() as u64;
-    let mut result: u64;
+    let result: u64;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i64.rem_u", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
-    // TODO: Trap on division by zero
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.checked_rem(rhs).ok_or(RuntimeError::ZeroDivideError)?; }
     ctx.value_stack.push(Val::Num(Num::I64(result as i64)));
     Ok(ctx.ip + 1)
 }
@@ -1462,90 +1511,129 @@ fn handle_i64_xor(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize
 fn handle_i64_shl(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64(); // Wasm uses i64 for shift amount
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
-    let mut result: i64;
+    let result: i64;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i64.shl", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.wrapping_shl(rhs as u32); } // Shift amount is modulo 64, cast to u32 is safe
     ctx.value_stack.push(Val::Num(Num::I64(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_i64_shr_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
-    let mut result: i64;
+    let result: i64;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i64.shr_s", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.wrapping_shr(rhs as u32); }
     ctx.value_stack.push(Val::Num(Num::I64(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_i64_shr_u(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64() as u64; // Wasm uses i64 for shift amount, but spec treats it modulo 64
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64() as u64; // Treat lhs as unsigned
-    let mut result: u64;
+    let result: u64;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i64.shr_u", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.wrapping_shr(rhs as u32); }
     ctx.value_stack.push(Val::Num(Num::I64(result as i64)));
     Ok(ctx.ip + 1)
 }
 fn handle_i64_rotl(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
-    let mut result: i64;
+    let result: i64;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i64.rotl", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.rotate_left(rhs as u32); }
     ctx.value_stack.push(Val::Num(Num::I64(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_i64_rotr(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
-    let mut result: i64;
+    let result: i64;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i64.rotr", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.rotate_right(rhs as u32); }
     ctx.value_stack.push(Val::Num(Num::I64(result)));
     Ok(ctx.ip + 1)
 }
 
 fn handle_f32_abs(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
-    let mut result: f32;
+    let result: f32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "f32.abs", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = x.abs(); }
     ctx.value_stack.push(Val::Num(Num::F32(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_f32_neg(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
-    let mut result: f32;
+    let result: f32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "f32.neg", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = -x; }
     ctx.value_stack.push(Val::Num(Num::F32(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_f32_ceil(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
-    let mut result: f32;
+    let result: f32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "f32.ceil", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = x.ceil(); }
     ctx.value_stack.push(Val::Num(Num::F32(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_f32_floor(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
-    let mut result: f32;
+    let result: f32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "f32.floor", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = x.floor(); }
     ctx.value_stack.push(Val::Num(Num::F32(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_f32_trunc(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
-    let mut result: f32;
+    let result: f32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "f32.trunc", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = x.trunc(); }
     ctx.value_stack.push(Val::Num(Num::F32(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_f32_nearest(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
-    let mut result: f32;
+    let result: f32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "f32.nearest", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { // Rust's round ties half to even, Wasm ties half away from zero
+      let y = x.fract();
+      result = if y == 0.5 { x.floor() + 1.0 } else if y == -0.5 { x.ceil() - 1.0 } else { x.round() };
+    }
     ctx.value_stack.push(Val::Num(Num::F32(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_f32_sqrt(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
-    let mut result: f32;
+    let result: f32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "f32.sqrt", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = x.sqrt(); }
     ctx.value_stack.push(Val::Num(Num::F32(result)));
     Ok(ctx.ip + 1)
 }
@@ -1556,67 +1644,97 @@ fn handle_f32_div(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize
 fn handle_f32_min(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
-    let mut result: f32;
+    let result: f32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "f32.min", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.min(rhs); } // Wasm min/max behavior matches Rust for non-NaNs
     ctx.value_stack.push(Val::Num(Num::F32(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_f32_max(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
-    let mut result: f32;
+    let result: f32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "f32.max", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.max(rhs); }
     ctx.value_stack.push(Val::Num(Num::F32(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_f32_copysign(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
-    let mut result: f32;
+    let result: f32;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "f32.copysign", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = lhs.copysign(rhs); }
     ctx.value_stack.push(Val::Num(Num::F32(result)));
     Ok(ctx.ip + 1)
 }
 
 fn handle_f64_abs(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
-    let mut result: f64;
+    let result: f64;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "f64.abs", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = x.abs(); }
     ctx.value_stack.push(Val::Num(Num::F64(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_f64_neg(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
-    let mut result: f64;
+    let result: f64;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "f64.neg", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = -x; }
     ctx.value_stack.push(Val::Num(Num::F64(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_f64_ceil(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
-    let mut result: f64;
+    let result: f64;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "f64.ceil", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = x.ceil(); }
     ctx.value_stack.push(Val::Num(Num::F64(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_f64_floor(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
-    let mut result: f64;
+    let result: f64;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "f64.floor", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = x.floor(); }
     ctx.value_stack.push(Val::Num(Num::F64(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_f64_trunc(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
-    let mut result: f64;
+    let result: f64;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "f64.trunc", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { result = x.trunc(); }
     ctx.value_stack.push(Val::Num(Num::F64(result)));
     Ok(ctx.ip + 1)
 }
 fn handle_f64_nearest(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
-    let mut result: f64;
+    let result: f64;
+    #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "f64.nearest", "local.set {1}", in(local) x, out(local) result); }
+    #[cfg(not(target_arch = "wasm32"))]
+    { // Rust's round ties half to even, Wasm ties half away from zero
+      let y = x.fract();
+      result = if y == 0.5 { x.floor() + 1.0 } else if y == -0.5 { x.ceil() - 1.0 } else { x.round() };
+    }
     ctx.value_stack.push(Val::Num(Num::F64(result)));
     Ok(ctx.ip + 1)
 }
