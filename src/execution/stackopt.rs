@@ -7,6 +7,7 @@ use crate::structure::types::{FuncIdx, GlobalIdx, LocalIdx, TableIdx, TypeIdx, L
 use crate::structure::instructions::Memarg; // Use Memarg directly
 use crate::structure::module::Func; // Import Func from module
 use std::collections::HashMap;
+use num::{Float, NumCast}; // Added for trunc handlers
 // Removed unused ops: Rem, Shl, Shr
 use std::ops::{BitAnd, BitOr, BitXor, Add, Sub, Mul, Div};
 use lazy_static::lazy_static; // Keep lazy_static for HANDLER_TABLE
@@ -611,29 +612,32 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
 
 
     // Apply fixups for Br, BrIf, If, Else
-    for (fixup_pc, relative_depth, is_if_false_jump, is_else_jump) in &fixups {
-        // Find the target label's info by simulating the label stack state *at the fixup instruction*
-        let mut temp_label_stack: Vec<(usize, bool)> = Vec::new();
-        let mut target_info: Option<(usize, bool)> = None;
-        for (pc, instr) in processed.iter().enumerate().take(*fixup_pc + 1) { // Iterate up to the instruction needing fixup
-             match instr.handler_index {
-                HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_IF => {
-                    temp_label_stack.push((pc, instr.handler_index == HANDLER_IDX_LOOP));
-                }
-                HANDLER_IDX_END => {
-                    temp_label_stack.pop();
-                }
-                _ => {}
+    // Rebuild the control stack state *at the point of each fixup* to find the correct target block start PC
+    let mut current_control_stack: Vec<(usize, bool)> = Vec::new();
+    for (pc, instr) in processed.iter_mut().enumerate() { // Iterate through instructions needing potential patching
+
+        // Maintain the current control stack state
+        match instr.handler_index {
+            HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_IF => {
+                current_control_stack.push((pc, instr.handler_index == HANDLER_IDX_LOOP));
             }
-            if pc == *fixup_pc { // We are at the instruction needing fixup
-                if temp_label_stack.len() > *relative_depth {
-                    target_info = Some(temp_label_stack[temp_label_stack.len() - 1 - *relative_depth]);
-                }
-                break;
+            HANDLER_IDX_END => {
+                current_control_stack.pop(); // Pop when exiting a block
             }
+            _ => {}
         }
 
-        if let Some((target_start_pc, is_loop)) = target_info {
+        // Check if this instruction needs fixup
+        if let Some((_fixup_pc, relative_depth, is_if_false_jump, is_else_jump)) = fixups.iter().find(|(fp, _, _, _)| *fp == pc) {
+
+            // Find the target block's start_pc based on relative_depth
+            if current_control_stack.len() <= *relative_depth {
+                println!("Warning: Invalid relative depth {} for branch at pc {}", relative_depth, pc);
+                instr.operand = Operand::LabelIdx(usize::MAX); // Mark as error
+                continue;
+            }
+            let (target_start_pc, is_loop) = current_control_stack[current_control_stack.len() - 1 - *relative_depth];
+
             let target_ip = if is_loop {
                 target_start_pc // Loop branches target the beginning
             } else {
@@ -642,29 +646,30 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
             };
 
             if target_ip == usize::MAX {
-                 println!("Warning: Could not find end for branch target label {} at pc {}", relative_depth, fixup_pc);
-                 // Keep operand as usize::MAX to indicate error
+                 println!("Warning: Could not find end for branch target label {} at pc {}", relative_depth, pc);
+                 instr.operand = Operand::LabelIdx(usize::MAX); // Mark as error
                  continue;
             }
 
-            if let Some(instr) = processed.get_mut(*fixup_pc) {
-                if *is_if_false_jump { // This is an If instruction needing its false jump target
-                    let else_target = *if_else_map.get(&target_start_pc).unwrap_or(&target_ip); // Target Else+1 or End+1
-                    instr.operand = Operand::LabelIdx(else_target);
-                } else if *is_else_jump { // This is an Else instruction needing its jump-to-end target
-                    instr.operand = Operand::LabelIdx(target_ip); // Target is End+1
-                } else { // This is a Br or BrIf instruction
-                    instr.operand = Operand::LabelIdx(target_ip);
-                }
-            }
-        } else {
-            println!("Warning: Failed to resolve branch target for label {} at pc {}", relative_depth, fixup_pc);
-            // Set to MAX to indicate error?
-             if let Some(instr) = processed.get_mut(*fixup_pc) {
-                instr.operand = Operand::LabelIdx(usize::MAX);
+            println!("[DTC Fixup] pc: {}, depth: {}, is_if: {}, is_else: {}, target_ip: {}", pc, relative_depth, is_if_false_jump, is_else_jump, target_ip); // Added log
+
+            // Patch the operand
+            if *is_if_false_jump { // This is an If instruction needing its false jump target
+                let else_target = *if_else_map.get(&target_start_pc).unwrap_or(&target_ip); // Target Else+1 or End+1
+                println!("[DTC Fixup] If pc: {}, else_target: {}", pc, else_target); // Added log
+                instr.operand = Operand::LabelIdx(else_target);
+            } else if *is_else_jump { // This is an Else instruction needing its jump-to-end target
+                instr.operand = Operand::LabelIdx(target_ip); // Target is End+1
+                println!("[DTC Fixup] Else pc: {}, target_ip: {}", pc, target_ip); // Added log
+            } else { // This is a Br or BrIf instruction
+                instr.operand = Operand::LabelIdx(target_ip);
+                println!("[DTC Fixup] Br/BrIf pc: {}, target_ip: {}", pc, target_ip); // Added log
             }
         }
     }
+
+    /* // Old fixup logic removed
+    */
     // TODO: Fixup BrTable targets similarly
 
     Ok(processed)
@@ -927,6 +932,7 @@ impl FrameStack{
     /// Ok(None) if the frame execution completes normally (reaches end),
     /// or Err on runtime error.
     fn run_dtc_loop(&mut self, called_func_addr_out: &mut Option<FuncAddr>) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError> { // Outer Result for panic safety
+        println!("[DTC] Entering run_dtc_loop"); // Added log
         // Get mutable access to the current label stack
         let current_label_stack = self.label_stack.last_mut().ok_or(RuntimeError::StackError("Label stack empty"))?;
         let processed_code = &current_label_stack.processed_instrs;
@@ -947,6 +953,8 @@ impl FrameStack{
             // Clone instruction to avoid borrowing issues when context is passed mutably
             // This might be optimizable later if context passing is changed.
             let instruction = processed_code[ip].clone();
+            println!("[DTC Loop] ip: {}, handler_idx: {}, operand: {:?}", ip, instruction.handler_index, instruction.operand); // Modified log
+            println!("[DTC Loop] Stack BEFORE: {:?}", current_label_stack.value_stack); // Added log
             let handler_fn = HANDLER_TABLE.get(instruction.handler_index)
                                         .ok_or(RuntimeError::InvalidHandlerIndex)?;
 
@@ -959,10 +967,12 @@ impl FrameStack{
 
             // --- Execute Handler ---
             let result = handler_fn(&mut context, instruction.operand.clone()); // Clone operand
+            println!("[DTC Loop] Stack AFTER: {:?}", current_label_stack.value_stack); // Added log
             // --- End Execute Handler ---
 
             match result {
                 Ok(next_ip) => {
+                    println!("[DTC Loop] Handler result: Ok({})", next_ip); // Added log
                     if next_ip == usize::MAX { // Sentinel for Return
                         return Ok(Ok(Some(ModuleLevelInstr::Return)));
                     } else if next_ip == usize::MAX - 1 { // Sentinel for Call
@@ -1201,6 +1211,7 @@ fn handle_call(_ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, R
     if let Operand::FuncIdx(_) = operand {
          // Signal call using sentinel value. The actual FuncAddr resolution
          // happens in the run_dtc_loop based on the operand.
+         println!("[DTC] handle_call called with operand: {:?}", operand); // Added log
          Ok(usize::MAX - 1) // Use sentinel value for Call
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -1354,7 +1365,9 @@ fn handle_i32_rem_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usi
     #[cfg(target_arch = "wasm32")]
     unsafe { asm!("local.get {0}", "local.get {1}", "i32.rem_s", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
     #[cfg(not(target_arch = "wasm32"))]
-    { result = lhs.checked_rem(rhs).ok_or(RuntimeError::ZeroDivideError)?; }
+    {
+        result = lhs.overflowing_rem(rhs).0;
+    }
     ctx.value_stack.push(Val::Num(Num::I32(result)));
     Ok(ctx.ip + 1)
 }
@@ -1739,6 +1752,177 @@ fn handle_f64_nearest(ctx: &mut ExecutionContext, _operand: Operand) -> Result<u
     Ok(ctx.ip + 1)
 }
 
+// --- Extend Handlers ---
+fn handle_i32_extend8_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+    let extended = (val as i8) as i32; // Cast to i8 performs sign extension
+    ctx.value_stack.push(Val::Num(Num::I32(extended)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_i32_extend16_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+    let extended = (val as i16) as i32; // Cast to i16 performs sign extension
+    ctx.value_stack.push(Val::Num(Num::I32(extended)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_i64_extend8_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
+    let extended = (val as i8) as i64; // Cast to i8 performs sign extension
+    ctx.value_stack.push(Val::Num(Num::I64(extended)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_i64_extend16_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
+    let extended = (val as i16) as i64; // Cast to i16 performs sign extension
+    ctx.value_stack.push(Val::Num(Num::I64(extended)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_i64_extend32_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32(); // Changed to to_i32()
+    let extended = val as i64; // Cast i32 to i64 performs sign extension
+    ctx.value_stack.push(Val::Num(Num::I64(extended)));
+    Ok(ctx.ip + 1)
+}
+// --- End Extend Handlers ---
+
+// --- Conversion Handlers (Simple) ---
+fn handle_i32_wrap_i64(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
+    let result = val as i32; // Wrapping conversion
+    ctx.value_stack.push(Val::Num(Num::I32(result)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_i64_extend_i32_u(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+    let extended = (val as u32) as i64; // Cast to u32 first, then to i64 for zero-extension
+    ctx.value_stack.push(Val::Num(Num::I64(extended)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_f64_promote_f32(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
+    let promoted = val as f64;
+    ctx.value_stack.push(Val::Num(Num::F64(promoted)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_f32_demote_f64(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
+    let demoted = val as f32;
+    ctx.value_stack.push(Val::Num(Num::F32(demoted)));
+    Ok(ctx.ip + 1)
+}
+// --- End Conversion Handlers (Simple) ---
+
+// --- Truncation Handlers (Float to Int) ---
+fn handle_i32_trunc_f32_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
+    if val.is_nan() { return Err(RuntimeError::InvalidConversionToInt); }
+    let truncated = val.trunc();
+    if !(truncated >= (i32::MIN as f32) && truncated < ((i32::MAX as u32 + 1) as f32)) { // Check range carefully
+        return Err(RuntimeError::IntegerOverflow);
+    }
+    ctx.value_stack.push(Val::Num(Num::I32(truncated as i32)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_i32_trunc_f32_u(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
+    if val.is_nan() { return Err(RuntimeError::InvalidConversionToInt); }
+    let truncated = val.trunc();
+    // Check range: 0 <= truncated < 2^32
+    if !(truncated >= 0.0 && truncated < 4294967296.0) {
+        return Err(RuntimeError::IntegerOverflow);
+    }
+    ctx.value_stack.push(Val::Num(Num::I32(truncated as u32 as i32)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_i32_trunc_f64_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
+    if val.is_nan() { return Err(RuntimeError::InvalidConversionToInt); }
+    let truncated = val.trunc();
+    // Check range: i32::MIN <= truncated < 2^31
+    if !(truncated >= (i32::MIN as f64) && truncated < 2147483648.0) {
+        return Err(RuntimeError::IntegerOverflow);
+    }
+    ctx.value_stack.push(Val::Num(Num::I32(truncated as i32)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_i32_trunc_f64_u(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
+    if val.is_nan() { return Err(RuntimeError::InvalidConversionToInt); }
+    let truncated = val.trunc();
+    // Check range: 0 <= truncated < 2^32
+    if !(truncated >= 0.0 && truncated < 4294967296.0) {
+        return Err(RuntimeError::IntegerOverflow);
+    }
+    ctx.value_stack.push(Val::Num(Num::I32(truncated as u32 as i32)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_i64_trunc_f32_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
+    if val.is_nan() { return Err(RuntimeError::InvalidConversionToInt); }
+    let truncated = val.trunc();
+    // Check range: i64::MIN <= truncated < 2^63
+    if !(truncated >= (i64::MIN as f32) && truncated < (i64::MAX as f32)) { // Approximate check for f32 range
+         if truncated.is_finite() && truncated.is_sign_positive() { // Handle large positive values near i64::MAX
+             if truncated >= 9223372036854775808.0 { return Err(RuntimeError::IntegerOverflow); }
+         } else if truncated.is_finite() && truncated.is_sign_negative() { // Handle large negative values near i64::MIN
+             if truncated < -9223372036854775808.0 { return Err(RuntimeError::IntegerOverflow); }
+         } else { // Inf or other cases
+             return Err(RuntimeError::IntegerOverflow);
+         }
+    }
+    ctx.value_stack.push(Val::Num(Num::I64(truncated as i64)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_i64_trunc_f32_u(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
+    if val.is_nan() { return Err(RuntimeError::InvalidConversionToInt); }
+    let truncated = val.trunc();
+    // Check range: 0 <= truncated < 2^64
+    if !(truncated >= 0.0 && truncated < 18446744073709551616.0) { // 2.0f32.powi(64)
+        return Err(RuntimeError::IntegerOverflow);
+    }
+    ctx.value_stack.push(Val::Num(Num::I64(truncated as u64 as i64)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_i64_trunc_f64_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
+    if val.is_nan() { return Err(RuntimeError::InvalidConversionToInt); }
+    let truncated = val.trunc();
+    // Check range: i64::MIN <= truncated < 2^63
+    if !(truncated >= (i64::MIN as f64) && truncated < 9223372036854775808.0) {
+        return Err(RuntimeError::IntegerOverflow);
+    }
+    ctx.value_stack.push(Val::Num(Num::I64(truncated as i64)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_i64_trunc_f64_u(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
+    if val.is_nan() { return Err(RuntimeError::InvalidConversionToInt); }
+    let truncated = val.trunc();
+    // Check range: 0 <= truncated < 2^64
+    if !(truncated >= 0.0 && truncated < 18446744073709551616.0) { // 2.0f64.powi(64)
+        return Err(RuntimeError::IntegerOverflow);
+    }
+    ctx.value_stack.push(Val::Num(Num::I64(truncated as u64 as i64)));
+    Ok(ctx.ip + 1)
+}
+// --- End Truncation Handlers ---
+
+
 fn handle_unimplemented(_ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
     println!("Error: Unimplemented instruction reached with operand: {:?}", operand);
     Err(RuntimeError::UnimplementedInstruction) // Return error for unimplemented
@@ -1748,6 +1932,7 @@ fn handle_unimplemented(_ctx: &mut ExecutionContext, operand: Operand) -> Result
 
 // Signals function return to the outer loop
 fn handle_return(_ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    println!("[DTC] handle_return called"); // Added log
     Ok(usize::MAX) // Sentinel for Return
 }
 
@@ -2098,16 +2283,45 @@ lazy_static! {
         // table[HANDLER_IDX_I32_REINTERPRET_F32] = handle_i32_reinterpret_f32;
         // table[HANDLER_IDX_I64_REINTERPRET_F64] = handle_i64_reinterpret_f64;
         // table[HANDLER_IDX_F32_REINTERPRET_I32] = handle_f32_reinterpret_i32;
-        // table[HANDLER_IDX_F64_REINTERPRET_I64] = handle_f64_reinterpret_i64;
+        // table[HANDLER_IDX_F64_REINTERPRET_I64] = handle_f64_reinterpret_i64; // TODO
 
-        // Assign extend handlers (assuming they exist)
-        // table[HANDLER_IDX_I32_EXTEND8_S] = handle_i32_extend8_s;
-        // table[HANDLER_IDX_I32_EXTEND16_S] = handle_i32_extend16_s;
-        // table[HANDLER_IDX_I64_EXTEND8_S] = handle_i64_extend8_s;
-        // table[HANDLER_IDX_I64_EXTEND16_S] = handle_i64_extend16_s;
-        // table[HANDLER_IDX_I64_EXTEND32_S] = handle_i64_extend32_s;
+        // Assign conversion handlers (partial)
+        table[HANDLER_IDX_I32_WRAP_I64] = handle_i32_wrap_i64;
+        table[HANDLER_IDX_I32_TRUNC_F32_S] = handle_i32_trunc_f32_s;
+        table[HANDLER_IDX_I32_TRUNC_F32_U] = handle_i32_trunc_f32_u;
+        table[HANDLER_IDX_I32_TRUNC_F64_S] = handle_i32_trunc_f64_s;
+        table[HANDLER_IDX_I32_TRUNC_F64_U] = handle_i32_trunc_f64_u;
+        table[HANDLER_IDX_I64_EXTEND_I32_S] = handle_i64_extend32_s; // Corrected function name typo
+        table[HANDLER_IDX_I64_EXTEND_I32_U] = handle_i64_extend_i32_u;
+        table[HANDLER_IDX_I64_TRUNC_F32_S] = handle_i64_trunc_f32_s;
+        table[HANDLER_IDX_I64_TRUNC_F32_U] = handle_i64_trunc_f32_u;
+        table[HANDLER_IDX_I64_TRUNC_F64_S] = handle_i64_trunc_f64_s;
+        table[HANDLER_IDX_I64_TRUNC_F64_U] = handle_i64_trunc_f64_u;
+        // table[HANDLER_IDX_F32_CONVERT_I32_S] = handle_f32_convert_i32_s; // TODO
+        // table[HANDLER_IDX_F32_CONVERT_I32_U] = handle_f32_convert_i32_u; // TODO
+        // table[HANDLER_IDX_F32_CONVERT_I64_S] = handle_f32_convert_i64_s; // TODO
+        // table[HANDLER_IDX_F32_CONVERT_I64_U] = handle_f32_convert_i64_u; // TODO
+        table[HANDLER_IDX_F32_DEMOTE_F64] = handle_f32_demote_f64;
+        // table[HANDLER_IDX_F64_CONVERT_I32_S] = handle_f64_convert_i32_s; // TODO
+        // table[HANDLER_IDX_F64_CONVERT_I32_U] = handle_f64_convert_i32_u; // TODO
+        // table[HANDLER_IDX_F64_CONVERT_I64_S] = handle_f64_convert_i64_s; // TODO
+        // table[HANDLER_IDX_F64_CONVERT_I64_U] = handle_f64_convert_i64_u; // TODO
+        table[HANDLER_IDX_F64_PROMOTE_F32] = handle_f64_promote_f32;
+        // table[HANDLER_IDX_I32_REINTERPRET_F32] = handle_i32_reinterpret_f32; // TODO
+        // table[HANDLER_IDX_I64_REINTERPRET_F64] = handle_i64_reinterpret_f64; // TODO
+        // table[HANDLER_IDX_F32_REINTERPRET_I32] = handle_f32_reinterpret_i32; // TODO
+        // table[HANDLER_IDX_F64_REINTERPRET_I64] = handle_f64_reinterpret_i64; // TODO
+        // ... other conversion handlers ...
 
-        // TODO: Add remaining handlers as they are implemented
+
+        // Assign extend handlers
+        table[HANDLER_IDX_I32_EXTEND8_S] = handle_i32_extend8_s;
+        table[HANDLER_IDX_I32_EXTEND16_S] = handle_i32_extend16_s;
+        table[HANDLER_IDX_I64_EXTEND8_S] = handle_i64_extend8_s;
+        table[HANDLER_IDX_I64_EXTEND16_S] = handle_i64_extend16_s;
+        table[HANDLER_IDX_I64_EXTEND32_S] = handle_i64_extend32_s; // Correctly assign the implemented handler
+
+        // TODO: Add remaining handlers as they are implemented (TruncSat, etc.)
 
         table
     };
