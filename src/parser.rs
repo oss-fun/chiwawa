@@ -301,6 +301,7 @@ fn decode_data_section(body: SectionLimited<'_, wasmparser::Data<'_>>, module: &
     }
     Ok(())
 }
+
 fn decode_code_section(body: FunctionBody<'_>, module: &mut Module) -> Result<(), Box<dyn std::error::Error>> {
     for pair in body.get_locals_reader()? {
         let (cnt, ty) = pair?;
@@ -308,33 +309,34 @@ fn decode_code_section(body: FunctionBody<'_>, module: &mut Module) -> Result<()
         module.funcs[module.code_index].locals.push((cnt,ty));
     }
 
-    let mut ops = body.get_operators_reader()?.into_iter_with_offsets().peekable();
-    let (instrs, _) = decode_instrs(&mut ops)?;
+    // --- Reverted and Modified Code ---
+    let mut ops_reader = body.get_operators_reader()?;
+    let mut ops_iter = ops_reader.into_iter_with_offsets().peekable();
+    let instrs = decode_instrs_with_markers(&mut ops_iter)?; // Use new function
     module.funcs[module.code_index].body = Expr(instrs);
     module.code_index += 1;
+    // --- End Reverted and Modified Code ---
     Ok(())
 }
 
-fn decode_instrs(ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>) -> Result<(Vec<Instr>,bool), Box<dyn std::error::Error>>{
+// Modified function to generate flat list with markers
+fn decode_instrs_with_markers(ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>) -> Result<Vec<Instr>, Box<dyn std::error::Error>> {
     let mut instrs = Vec::new();
-    let mut next = false;
-    while let Some(res) = ops.next(){
-        let (op, _offset) = res?;
-        if matches!(op, wasmparser::Operator::Else) {
-            next = true
-        }
-        if (matches!(op, wasmparser::Operator::End) || matches!(op, wasmparser::Operator::Else) || ops.peek().is_none()) {
-            break;
-        }
-        instrs.push(match_instr(ops, op)?);
+    // Loop until the iterator is exhausted
+    while let Some(res) = ops.next() {
+        let (op, offset) = res?;
+        // map_operator_to_instr handles all operators now, including markers
+        instrs.push(map_operator_to_instr(op, offset)?);
     }
-    Ok((instrs, next))
+    Ok(instrs)
 }
 
-fn match_instr(ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>, op: wasmparser::Operator) -> Result<Instr, Box<dyn std::error::Error>> {
+
+// Renamed and modified to generate flat instructions and markers
+fn map_operator_to_instr(op: wasmparser::Operator, _offset: usize) -> Result<Instr, Box<dyn std::error::Error>> {
     let instr = match op {
         /* Numeric Instructions */
-        wasmparser::Operator::I32Const {value} => Instr::I32Const(value),
+        wasmparser::Operator::I32Const { value } => Instr::I32Const(value),
         wasmparser::Operator::I64Const {value} => Instr::I64Const(value),
         wasmparser::Operator::F32Const {value} => Instr::F32Const(f32::from_bits(value.bits())),
         wasmparser::Operator::F64Const {value} => Instr::F64Const(f64::from_bits(value.bits())),
@@ -641,49 +643,35 @@ fn match_instr(ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>, op: wasmpar
         wasmparser::Operator::Nop => Instr::Nop,
         wasmparser::Operator::Unreachable => Instr::Unreachable,
         wasmparser::Operator::Block{blockty} => {
-            let (instrs, _) = decode_instrs(ops)?;
+            // Generate Block instruction without inner instructions
             let ty = match blockty {
                 wasmparser::BlockType::Empty => BlockType(None,None),
                 wasmparser::BlockType::Type(v) => BlockType(None, Some(match_value_type(v))),
                 wasmparser::BlockType::FuncType(idx) =>BlockType(Some(TypeIdx(idx)), None),
             };
-            Instr::Block(
-                ty,
-                instrs
-            )
+            Instr::Block(ty, vec![]) // Empty vec for flat structure
         },
         wasmparser::Operator::Loop{blockty} => {
-            let (instrs, _) = decode_instrs(ops)?;
+            // Generate Loop instruction without inner instructions
             let ty = match blockty {
                 wasmparser::BlockType::Empty => BlockType(None,None),
                 wasmparser::BlockType::Type(v) => BlockType(None, Some(match_value_type(v))),
                 wasmparser::BlockType::FuncType(idx) =>BlockType(Some(TypeIdx(idx)), None),
             };
-            Instr::Loop(
-                ty,
-                instrs
-            )
+            Instr::Loop(ty, vec![]) // Empty vec for flat structure
         },
         wasmparser::Operator::If{blockty} => {
-            let mut else_instrs = Vec::new();
-        
-            let (instrs, next) = decode_instrs(ops)?;
-            
-            if next {
-                (else_instrs, _) = decode_instrs(ops)?
-            }
-
+            // Generate If instruction without inner instructions
             let ty = match blockty {
                 wasmparser::BlockType::Empty => BlockType(None,None),
                 wasmparser::BlockType::Type(v) => BlockType(None, Some(match_value_type(v))),
                 wasmparser::BlockType::FuncType(idx) =>BlockType(Some(TypeIdx(idx)), None),
             };
-            Instr::If(
-                ty,
-                instrs,
-                else_instrs,
-            )
+            Instr::If(ty, vec![], vec![]) // Empty vecs for flat structure
         },
+        // Generate markers for Else and End
+        wasmparser::Operator::Else => Instr::ElseMarker,
+        wasmparser::Operator::End => Instr::EndMarker,
         wasmparser::Operator::Br{relative_depth} => Instr::Br(LabelIdx(relative_depth)),
         wasmparser::Operator::BrIf{relative_depth} => Instr::BrIf(LabelIdx(relative_depth)),
         wasmparser::Operator::BrTable{targets} => {
@@ -700,7 +688,7 @@ fn match_instr(ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>, op: wasmpar
         wasmparser::Operator::I64Extend8S => Instr::I64Extend8S,
         wasmparser::Operator::I64Extend16S => Instr::I64Extend16S,
         wasmparser::Operator::I64Extend32S => Instr::I64Extend32S,
-        _ => todo!()
+        _ => todo!("Unhandled operator in map_operator_to_instr: {:?}", op)
 
     };
     Ok(instr)
@@ -1221,7 +1209,16 @@ mod tests {
         
         let func_body = &module.funcs[0].body;
         println!("{:?}",func_body);
-        let expected = Expr(vec![Instr::I32Const(0),Instr::If(BlockType(None, Some(ValueType::NumType(NumType::I32))),vec![Instr::I32Const(1)],vec![Instr::I32Const(2)])]);
+        // Expected value for flat instruction list with markers
+        let expected = Expr(vec![
+            Instr::I32Const(0),
+            Instr::If(BlockType(None, Some(ValueType::NumType(NumType::I32))), vec![], vec![]),
+            Instr::I32Const(1),
+            Instr::ElseMarker,
+            Instr::I32Const(2),
+            Instr::EndMarker,
+            Instr::EndMarker, // Function body EndMarker
+        ]);
         assert_eq!(expected, *func_body);
    }
 
@@ -1266,7 +1263,21 @@ mod tests {
        assert_eq!(func_num, 1);
        
        let func_body = &module.funcs[0].body;
-       let expected = Expr(vec![Instr::Loop(BlockType(None, None), vec![Instr::LocalGet(LocalIdx(0)), Instr::I32Const(1), Instr::I32Add, Instr::LocalSet(LocalIdx(0)), Instr::LocalGet(LocalIdx(0)), Instr::I32Const(10), Instr::I32LtS, Instr::BrIf(LabelIdx(0))])]);
+       println!("{:?}",func_body);
+       // Expected value for flat instruction list with markers
+       let expected = Expr(vec![
+           Instr::Loop(BlockType(None, None), vec![]),
+           Instr::LocalGet(LocalIdx(0)),
+           Instr::I32Const(1),
+           Instr::I32Add,
+           Instr::LocalSet(LocalIdx(0)),
+           Instr::LocalGet(LocalIdx(0)),
+           Instr::I32Const(10),
+           Instr::I32LtS,
+           Instr::BrIf(LabelIdx(0)),
+           Instr::EndMarker, // End marker for Loop
+           Instr::EndMarker, // Function body EndMarker
+       ]);
        assert_eq!(expected, *func_body);
   }
 }

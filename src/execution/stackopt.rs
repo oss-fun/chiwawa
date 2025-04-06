@@ -279,16 +279,13 @@ const MAX_HANDLER_INDEX: usize = 0xC5; // Adjust size based on implemented handl
 
 // --- Preprocessing Function ---
 
-/// Preprocesses a sequence of Wasm instructions into the DTC format.
+/// Preprocesses a sequence of Wasm instructions (flat list with markers) into the DTC format.
 /// Resolves branch targets and maps instructions to handler indices.
 fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedInstr>, RuntimeError> {
     let mut processed = Vec::with_capacity(original_instrs.len());
-    // Stack stores: (processed_pc_start, is_loop) - Used for branch target calculation
-    let mut label_control_stack: Vec<(usize, bool)> = Vec::new();
     // Stores fixup info: (pc_to_patch, relative_depth, is_if_false_jump, is_else_jump)
+    // Note: relative_depth is usize::MAX for fixups that are completed.
     let mut fixups: Vec<(usize, usize, bool, bool)> = Vec::new();
-    // Stores If/Block start pc for End/Else fixup: (processed_pc_of_if_or_block)
-    let mut block_fixup_stack: Vec<usize> = Vec::new();
 
     // Pass 1: Map instructions, identify labels, store fixup info
     for instr in original_instrs.iter() {
@@ -300,112 +297,68 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
             Instr::Unreachable => handler_index = HANDLER_IDX_UNREACHABLE,
             Instr::Nop => handler_index = HANDLER_IDX_NOP,
 
+            // Control flow instructions (Block, Loop, If) - just map handler, operand patched later if needed
             Instr::Block(_, _) => {
                 handler_index = HANDLER_IDX_BLOCK;
-                label_control_stack.push((current_processed_pc, false));
-                block_fixup_stack.push(current_processed_pc);
-                // Operand will be patched in Pass 2
-                operand = Operand::LabelIdx(usize::MAX); // Placeholder for end_ip + 1
             }
             Instr::Loop(_, _) => {
                 handler_index = HANDLER_IDX_LOOP;
-                label_control_stack.push((current_processed_pc, true));
-                block_fixup_stack.push(current_processed_pc); // Loops also have an 'end'
-                // Operand is the loop start address, no fixup needed for this itself
                 operand = Operand::LabelIdx(current_processed_pc);
             }
             Instr::If(_, _, _) => {
                 handler_index = HANDLER_IDX_IF;
-                label_control_stack.push((current_processed_pc, false));
-                block_fixup_stack.push(current_processed_pc);
-                // Add fixup entry for the jump-if-false, targetting the 'End' (or 'Else')
                 fixups.push((current_processed_pc, 0, true, false)); // is_if_false_jump = true
                 operand = Operand::LabelIdx(usize::MAX); // Placeholder for else/end target
             }
-            // TODO: Fix block/if/else/end handling. These variants don't exist directly in Instr.
-            // Instr::Else => {
-            //     let if_pc = match label_control_stack.last() {
-            //         Some((pc, false)) => *pc, // Must be inside an If (not Loop)
-            //         _ => return Err(RuntimeError::InvalidWasm("Else without matching If")),
-            //     };
-            //     // Add fixup for the unconditional jump over the else block
-            //     fixups.push((current_processed_pc, 0, true)); // Special marker for Else jump
-            //     (HANDLER_IDX_ELSE, Operand::LabelIdx(usize::MAX)) // Target (End) to be patched
-            // }
-            // Instr::End => {
-            //     let end_pc = current_processed_pc; // End instruction's own PC (handler index is END)
-            //     if let Some((_start_pc, _is_loop)) = label_control_stack.pop() {
-            //          let block_instr_pc = block_fixup_stack.pop().ok_or(RuntimeError::InvalidWasm("Block fixup stack mismatch"))?;
+            Instr::ElseMarker => {
+                handler_index = HANDLER_IDX_ELSE;
+                fixups.push((current_processed_pc, 0, false, true)); // is_else_jump = true
+                operand = Operand::LabelIdx(usize::MAX); // Placeholder for End target
+            }
+            Instr::EndMarker => {
+                handler_index = HANDLER_IDX_END;
+            }
 
-            //         // Patch the corresponding Block/If instruction
-            //         if let Some(start_instr) = processed.get_mut(block_instr_pc) {
-            //             match &mut start_instr.operand {
-            //                 Operand::BlockInfo { end_ip } => *end_ip = end_pc + 1, // Target is *after* End
-            //                 Operand::IfInfo { else_ip, end_ip } => {
-            //                     *end_ip = end_pc + 1; // Target is *after* End
-            //                     // If there was no Else, patch the If's jump target (which is stored in fixups)
-            //                     if else_ip.is_none() {
-            //                         // Find the fixup entry for this If
-            //                         if let Some((if_fixup_pc, 0, false)) = fixups.iter_mut().find(|(pc, d, is_else)| *pc == block_instr_pc && *d == 0 && !*is_else) {
-            //                              // Patch If's operand directly (no Else jump)
-            //                              processed[*if_fixup_pc].operand = Operand::LabelIdx(end_pc + 1); // If jumps after End
-            //                         }
-            //                     }
-            //                 }
-            //                 _ => {} // Loop operand doesn't need end_ip patching here
-            //             }
-            //         }
-            //          // Patch the corresponding Else jump if it exists
-            //          if let Some((else_fixup_pc, 0, true)) = fixups.iter_mut().find(|(pc, d, is_else)| *pc > block_instr_pc && *d == 0 && *is_else) {
-            //              // Find the Else instruction PC corresponding to this block
-            //              let else_pc = processed.iter().position(|p| p.handler_index == HANDLER_IDX_ELSE && p.operand == Operand::LabelIdx(usize::MAX)); // Simplified search
-            //              if let Some(pc) = else_pc {
-            //                  if pc == *else_fixup_pc { // Ensure it's the correct Else
-            //                      processed[pc].operand = Operand::LabelIdx(end_pc + 1); // Else jumps after End
-            //                  }
-            //              }
-            //          }
-            //     } else {
-            //         return Err(RuntimeError::InvalidWasm("Unmatched End instruction"));
-            //     }
-            //     (HANDLER_IDX_END, Operand::None)
-            // }
-
+            // Branch instructions - add fixup request
             Instr::Br(label_idx) => {
                 handler_index = HANDLER_IDX_BR;
                 fixups.push((current_processed_pc, label_idx.0 as usize, false, false));
-                operand = Operand::LabelIdx(usize::MAX);
+                operand = Operand::LabelIdx(usize::MAX); // Placeholder
             }
             Instr::BrIf(label_idx) => {
                 handler_index = HANDLER_IDX_BR_IF;
                 fixups.push((current_processed_pc, label_idx.0 as usize, false, false));
-                operand = Operand::LabelIdx(usize::MAX);
+                operand = Operand::LabelIdx(usize::MAX); // Placeholder
             }
-            Instr::BrTable(_indices, _default) => { // Renamed variables
+            Instr::BrTable(indices, default) => {
                 handler_index = HANDLER_IDX_BR_TABLE;
-                // TODO: Add fixup info for BrTable
-                operand = Operand::None; // Placeholder
+                for label_idx in indices.iter() {
+                    fixups.push((current_processed_pc, label_idx.0 as usize, false, false));
+                }
+                fixups.push((current_processed_pc, default.0 as usize, false, false));
+                operand = Operand::None; // Placeholder, will be replaced in Pass 4
             }
+
+            // Other instructions - map directly
             Instr::Return => handler_index = HANDLER_IDX_RETURN,
             Instr::Call(func_idx) => {
                 handler_index = HANDLER_IDX_CALL;
                 operand = Operand::FuncIdx(func_idx.clone());
             }
-            Instr::CallIndirect(_table_idx, _type_idx) => { // Renamed variables
+            Instr::CallIndirect(table_idx, type_idx) => {
                 handler_index = HANDLER_IDX_CALL_INDIRECT;
-                // TODO: Combine indices into operand
-                operand = Operand::None; // Placeholder
+                operand = Operand::TypeIdx(type_idx.clone());
             }
-
             Instr::Drop => handler_index = HANDLER_IDX_DROP,
-            Instr::Select(_) => handler_index = HANDLER_IDX_SELECT,
-
+            Instr::Select(_) => { // Ignore type for now, validation should handle
+                handler_index = HANDLER_IDX_SELECT;
+                operand = Operand::None;
+            }
             Instr::LocalGet(idx) => { handler_index = HANDLER_IDX_LOCAL_GET; operand = Operand::LocalIdx(idx.clone()); }
             Instr::LocalSet(idx) => { handler_index = HANDLER_IDX_LOCAL_SET; operand = Operand::LocalIdx(idx.clone()); }
             Instr::LocalTee(idx) => { handler_index = HANDLER_IDX_LOCAL_TEE; operand = Operand::LocalIdx(idx.clone()); }
             Instr::GlobalGet(idx) => { handler_index = HANDLER_IDX_GLOBAL_GET; operand = Operand::GlobalIdx(idx.clone()); }
             Instr::GlobalSet(idx) => { handler_index = HANDLER_IDX_GLOBAL_SET; operand = Operand::GlobalIdx(idx.clone()); }
-
             Instr::I32Load(arg) => { handler_index = HANDLER_IDX_I32_LOAD; operand = Operand::MemArg(arg.clone()); }
             Instr::I64Load(arg) => { handler_index = HANDLER_IDX_I64_LOAD; operand = Operand::MemArg(arg.clone()); }
             Instr::F32Load(arg) => { handler_index = HANDLER_IDX_F32_LOAD; operand = Operand::MemArg(arg.clone()); }
@@ -431,12 +384,10 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
             Instr::I64Store32(arg) => { handler_index = HANDLER_IDX_I64_STORE32; operand = Operand::MemArg(arg.clone()); }
             Instr::MemorySize => handler_index = HANDLER_IDX_MEMORY_SIZE,
             Instr::MemoryGrow => handler_index = HANDLER_IDX_MEMORY_GROW,
-
             Instr::I32Const(v) => { handler_index = HANDLER_IDX_I32_CONST; operand = Operand::I32(*v); }
             Instr::I64Const(v) => { handler_index = HANDLER_IDX_I64_CONST; operand = Operand::I64(*v); }
-            Instr::F32Const(v) => { handler_index = HANDLER_IDX_F32_CONST; operand = Operand::F32(*v as f32); }
-            Instr::F64Const(v) => { handler_index = HANDLER_IDX_F64_CONST; operand = Operand::F64(*v as f64); }
-
+            Instr::F32Const(v) => { handler_index = HANDLER_IDX_F32_CONST; operand = Operand::F32(*v); }
+            Instr::F64Const(v) => { handler_index = HANDLER_IDX_F64_CONST; operand = Operand::F64(*v); }
             Instr::I32Eqz => handler_index = HANDLER_IDX_I32_EQZ,
             Instr::I32Eq => handler_index = HANDLER_IDX_I32_EQ,
             Instr::I32Ne => handler_index = HANDLER_IDX_I32_NE,
@@ -448,7 +399,6 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
             Instr::I32LeU => handler_index = HANDLER_IDX_I32_LE_U,
             Instr::I32GeS => handler_index = HANDLER_IDX_I32_GE_S,
             Instr::I32GeU => handler_index = HANDLER_IDX_I32_GE_U,
-
             Instr::I64Eqz => handler_index = HANDLER_IDX_I64_EQZ,
             Instr::I64Eq => handler_index = HANDLER_IDX_I64_EQ,
             Instr::I64Ne => handler_index = HANDLER_IDX_I64_NE,
@@ -460,21 +410,18 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
             Instr::I64LeU => handler_index = HANDLER_IDX_I64_LE_U,
             Instr::I64GeS => handler_index = HANDLER_IDX_I64_GE_S,
             Instr::I64GeU => handler_index = HANDLER_IDX_I64_GE_U,
-
             Instr::F32Eq => handler_index = HANDLER_IDX_F32_EQ,
             Instr::F32Ne => handler_index = HANDLER_IDX_F32_NE,
             Instr::F32Lt => handler_index = HANDLER_IDX_F32_LT,
             Instr::F32Gt => handler_index = HANDLER_IDX_F32_GT,
             Instr::F32Le => handler_index = HANDLER_IDX_F32_LE,
             Instr::F32Ge => handler_index = HANDLER_IDX_F32_GE,
-
             Instr::F64Eq => handler_index = HANDLER_IDX_F64_EQ,
             Instr::F64Ne => handler_index = HANDLER_IDX_F64_NE,
             Instr::F64Lt => handler_index = HANDLER_IDX_F64_LT,
             Instr::F64Gt => handler_index = HANDLER_IDX_F64_GT,
             Instr::F64Le => handler_index = HANDLER_IDX_F64_LE,
             Instr::F64Ge => handler_index = HANDLER_IDX_F64_GE,
-
             Instr::I32Clz => handler_index = HANDLER_IDX_I32_CLZ,
             Instr::I32Ctz => handler_index = HANDLER_IDX_I32_CTZ,
             Instr::I32Popcnt => handler_index = HANDLER_IDX_I32_POPCNT,
@@ -493,7 +440,6 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
             Instr::I32ShrU => handler_index = HANDLER_IDX_I32_SHR_U,
             Instr::I32Rotl => handler_index = HANDLER_IDX_I32_ROTL,
             Instr::I32Rotr => handler_index = HANDLER_IDX_I32_ROTR,
-
             Instr::I64Clz => handler_index = HANDLER_IDX_I64_CLZ,
             Instr::I64Ctz => handler_index = HANDLER_IDX_I64_CTZ,
             Instr::I64Popcnt => handler_index = HANDLER_IDX_I64_POPCNT,
@@ -512,7 +458,6 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
             Instr::I64ShrU => handler_index = HANDLER_IDX_I64_SHR_U,
             Instr::I64Rotl => handler_index = HANDLER_IDX_I64_ROTL,
             Instr::I64Rotr => handler_index = HANDLER_IDX_I64_ROTR,
-
             Instr::F32Abs => handler_index = HANDLER_IDX_F32_ABS,
             Instr::F32Neg => handler_index = HANDLER_IDX_F32_NEG,
             Instr::F32Ceil => handler_index = HANDLER_IDX_F32_CEIL,
@@ -527,7 +472,6 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
             Instr::F32Min => handler_index = HANDLER_IDX_F32_MIN,
             Instr::F32Max => handler_index = HANDLER_IDX_F32_MAX,
             Instr::F32Copysign => handler_index = HANDLER_IDX_F32_COPYSIGN,
-
             Instr::F64Abs => handler_index = HANDLER_IDX_F64_ABS,
             Instr::F64Neg => handler_index = HANDLER_IDX_F64_NEG,
             Instr::F64Ceil => handler_index = HANDLER_IDX_F64_CEIL,
@@ -542,7 +486,6 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
             Instr::F64Min => handler_index = HANDLER_IDX_F64_MIN,
             Instr::F64Max => handler_index = HANDLER_IDX_F64_MAX,
             Instr::F64Copysign => handler_index = HANDLER_IDX_F64_COPYSIGN,
-
             Instr::I32WrapI64 => handler_index = HANDLER_IDX_I32_WRAP_I64,
             Instr::I32TruncF32S => handler_index = HANDLER_IDX_I32_TRUNC_F32_S,
             Instr::I32TruncF32U => handler_index = HANDLER_IDX_I32_TRUNC_F32_U,
@@ -568,114 +511,207 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
             Instr::I64ReinterpretF64 => handler_index = HANDLER_IDX_I64_REINTERPRET_F64,
             Instr::F32ReinterpretI32 => handler_index = HANDLER_IDX_F32_REINTERPRET_I32,
             Instr::F64ReinterpretI64 => handler_index = HANDLER_IDX_F64_REINTERPRET_I64,
-
             Instr::I32Extend8S => handler_index = HANDLER_IDX_I32_EXTEND8_S,
             Instr::I32Extend16S => handler_index = HANDLER_IDX_I32_EXTEND16_S,
             Instr::I64Extend8S => handler_index = HANDLER_IDX_I64_EXTEND8_S,
             Instr::I64Extend16S => handler_index = HANDLER_IDX_I64_EXTEND16_S,
             Instr::I64Extend32S => handler_index = HANDLER_IDX_I64_EXTEND32_S,
-
-            // TODO: Add remaining instructions (Ref types, Table, Bulk Memory, SIMD, TruncSat)
+            // Catch-all for other instructions (should be expanded)
             _ => {
                 println!("Warning: Unhandled instruction in preprocessing pass 1: {:?}", instr);
-                handler_index = HANDLER_IDX_NOP; // Placeholder
+                handler_index = HANDLER_IDX_NOP; // Placeholder for unhandled
             }
-        };
+        }
         processed.push(ProcessedInstr { handler_index, operand });
     }
 
-    // Pass 2 (Fixup): Resolve branch targets
-    let mut block_end_map: HashMap<usize, usize> = HashMap::new(); // Map block_start_pc -> end_pc + 1
-    let mut if_else_map: HashMap<usize, usize> = HashMap::new(); // Map if_start_pc -> else_pc + 1
-    let mut control_stack_for_fixup: Vec<(usize, bool)> = Vec::new(); // (processed_pc_start, is_loop)
+    // Pass 2 (Map Building): Build maps for End and Else targets
+    let mut block_end_map: HashMap<usize, usize> = HashMap::new(); // Map block_start_pc -> end_marker_pc + 1
+    let mut if_else_map: HashMap<usize, usize> = HashMap::new(); // Map if_start_pc -> else_marker_pc + 1
+    let mut control_stack_for_map_building: Vec<(usize, bool)> = Vec::new(); // (processed_pc_start, is_loop)
 
-    // Re-scan to build block end map and if/else map accurately
     for (pc, instr) in processed.iter().enumerate() {
          match instr.handler_index {
             HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_IF => {
-                control_stack_for_fixup.push((pc, instr.handler_index == HANDLER_IDX_LOOP));
+                control_stack_for_map_building.push((pc, instr.handler_index == HANDLER_IDX_LOOP));
             }
             HANDLER_IDX_ELSE => {
-                if let Some((if_start_pc, false)) = control_stack_for_fixup.last() {
-                    if_else_map.insert(*if_start_pc, pc + 1);
+                // Find the corresponding If's start_pc on the stack
+                if let Some((if_start_pc, false)) = control_stack_for_map_building.last() {
+                    if_else_map.insert(*if_start_pc, pc + 1); // Map If start to Else+1
+                } else {
+                     return Err(RuntimeError::InvalidWasm("ElseMarker without matching If"));
                 }
             }
             HANDLER_IDX_END => {
-                if let Some((start_pc, _)) = control_stack_for_fixup.pop() {
-                    block_end_map.insert(start_pc, pc + 1);
+                if let Some((start_pc, _)) = control_stack_for_map_building.pop() {
+                    block_end_map.insert(start_pc, pc + 1); // Map Block/Loop/If start to End+1
+                } else {
+                     // Allow EndMarker at the end of the function body
+                     if pc == processed.len() - 1 && control_stack_for_map_building.is_empty() {
+                         // This is the final EndMarker for the function, ignore it for block mapping
+                     } else {
+                         return Err(RuntimeError::InvalidWasm("Unmatched EndMarker"));
+                     }
                 }
             }
             _ => {}
         }
     }
-    control_stack_for_fixup.clear(); // Reset for actual fixup pass
+    // Ensure stack is empty after map building (all blocks closed)
+    if !control_stack_for_map_building.is_empty() {
+        return Err(RuntimeError::InvalidWasm("Unclosed control block at end of function"));
+    }
+
+    // Pass 3 (Fixup Br, BrIf, If, Else): Resolve branch targets using maps
+    let mut current_control_stack_pass3: Vec<(usize, bool)> = Vec::new(); // Separate stack for this pass
+    for fixup_index in 0..fixups.len() {
+        // Use a mutable borrow to potentially mark fixups as done (if needed later)
+        let (fixup_pc, relative_depth, is_if_false_jump, is_else_jump) = fixups[fixup_index];
+
+        // Skip if already processed (e.g., by BrTable logic in Pass 4) or if it's a BrTable fixup
+        let is_br_table_fixup = processed.get(fixup_pc).map_or(false, |instr| instr.handler_index == HANDLER_IDX_BR_TABLE);
+        if relative_depth == usize::MAX || is_br_table_fixup {
+             continue;
+        }
 
 
-    // Apply fixups for Br, BrIf, If, Else
-    // Rebuild the control stack state *at the point of each fixup* to find the correct target block start PC
-    let mut current_control_stack: Vec<(usize, bool)> = Vec::new();
-    for (pc, instr) in processed.iter_mut().enumerate() { // Iterate through instructions needing potential patching
+        // Rebuild the control stack state *up to the point of the fixup instruction*
+        current_control_stack_pass3.clear();
+        for (pc, instr) in processed.iter().enumerate().take(fixup_pc + 1) { // Include the instruction needing fixup
+            match instr.handler_index {
+                HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_IF => {
+                    current_control_stack_pass3.push((pc, instr.handler_index == HANDLER_IDX_LOOP));
+                }
+                HANDLER_IDX_END => {
+                    // Only pop if the stack is not empty (handles final function EndMarker)
+                    if !current_control_stack_pass3.is_empty() {
+                        current_control_stack_pass3.pop();
+                    }
+                }
+                _ => {}
+            }
+        }
 
-        // Maintain the current control stack state
+
+        // Find the target block's start_pc based on relative_depth
+        if current_control_stack_pass3.len() <= relative_depth {
+            println!("Warning: Invalid relative depth {} for branch at pc {}", relative_depth, fixup_pc);
+            // Mark fixup as done/error
+            fixups[fixup_index].1 = usize::MAX;
+            continue; // Skip this fixup
+        }
+        // Target block is 'relative_depth' levels up the stack
+        let (target_start_pc, is_loop) = current_control_stack_pass3[current_control_stack_pass3.len() - 1 - relative_depth];
+
+        let target_ip = if is_loop {
+            target_start_pc // Loop branches target the Loop instruction itself
+        } else {
+            // Block/If branches target *after* the corresponding EndMarker
+            *block_end_map.get(&target_start_pc)
+                .ok_or_else(|| {
+                    println!("Error: Could not find EndMarker for block starting at {}", target_start_pc);
+                    RuntimeError::InvalidWasm("Missing EndMarker for branch target")
+                })?
+        };
+
+        println!("[DTC Fixup] pc: {}, depth: {}, is_if: {}, is_else: {}, target_ip: {}", fixup_pc, relative_depth, is_if_false_jump, is_else_jump, target_ip);
+
+        // Patch the operand in the 'processed' vector
+        if let Some(instr_to_patch) = processed.get_mut(fixup_pc) {
+            if is_if_false_jump { // This is an If instruction needing its false jump target
+                // Target is ElseMarker+1 if it exists, otherwise EndMarker+1
+                let else_target = *if_else_map.get(&target_start_pc).unwrap_or(&target_ip);
+                println!("[DTC Fixup] If pc: {}, else_target: {}", fixup_pc, else_target);
+                instr_to_patch.operand = Operand::LabelIdx(else_target);
+            } else if is_else_jump { // This is an ElseMarker instruction needing its jump-to-end target
+                // Target is the corresponding EndMarker + 1
+                instr_to_patch.operand = Operand::LabelIdx(target_ip);
+                println!("[DTC Fixup] Else pc: {}, target_ip: {}", fixup_pc, target_ip);
+            } else { // This is a Br or BrIf instruction
+                // Target is Loop start or EndMarker + 1
+                instr_to_patch.operand = Operand::LabelIdx(target_ip);
+                println!("[DTC Fixup] Br/BrIf pc: {}, target_ip: {}", fixup_pc, target_ip);
+            }
+        } else {
+             println!("Warning: Could not find instruction to patch at pc {}", fixup_pc);
+        }
+
+        // Mark fixup as done
+        fixups[fixup_index].1 = usize::MAX;
+    }
+
+    // Pass 4 (Fixup BrTable): Resolve BrTable targets
+    let mut current_control_stack_pass4: Vec<(usize, bool)> = Vec::new(); // Separate stack for this pass
+    for (pc, instr) in processed.iter_mut().enumerate() {
+        // Maintain control stack state for Pass 4
         match instr.handler_index {
             HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_IF => {
-                current_control_stack.push((pc, instr.handler_index == HANDLER_IDX_LOOP));
+                current_control_stack_pass4.push((pc, instr.handler_index == HANDLER_IDX_LOOP));
             }
             HANDLER_IDX_END => {
-                current_control_stack.pop(); // Pop when exiting a block
+                 if !current_control_stack_pass4.is_empty() {
+                    current_control_stack_pass4.pop();
+                 }
             }
             _ => {}
         }
 
-        // Check if this instruction needs fixup
-        if let Some((_fixup_pc, relative_depth, is_if_false_jump, is_else_jump)) = fixups.iter().find(|(fp, _, _, _)| *fp == pc) {
+        // Process BrTable instructions
+        if instr.handler_index == HANDLER_IDX_BR_TABLE && instr.operand == Operand::None {
+            let mut resolved_targets = Vec::new();
+            let mut resolved_default = usize::MAX;
 
-            // Find the target block's start_pc based on relative_depth
-            if current_control_stack.len() <= *relative_depth {
-                println!("Warning: Invalid relative depth {} for branch at pc {}", relative_depth, pc);
-                instr.operand = Operand::LabelIdx(usize::MAX); // Mark as error
-                continue;
-            }
-            let (target_start_pc, is_loop) = current_control_stack[current_control_stack.len() - 1 - *relative_depth];
+            // Find fixup indices associated *only* with this BrTable pc
+            let mut fixup_indices_for_this_br_table = fixups.iter().enumerate()
+                .filter(|(_, (fp, depth, _, _))| *fp == pc && *depth != usize::MAX) // Filter by pc and not already processed
+                .map(|(idx, _)| idx) // Get the original index in the fixups vector
+                .collect::<Vec<_>>();
 
-            let target_ip = if is_loop {
-                target_start_pc // Loop branches target the beginning
+            // The last fixup entry corresponds to the default target
+            if let Some(default_fixup_idx) = fixup_indices_for_this_br_table.pop() {
+                 let (_, relative_depth, _, _) = fixups[default_fixup_idx]; // Use original index
+                 if current_control_stack_pass4.len() <= relative_depth {
+                     println!("Warning: Invalid relative depth {} for BrTable default at pc {}", relative_depth, pc);
+                     resolved_default = usize::MAX; // Mark as error
+                 } else {
+                     let (target_start_pc, is_loop) = current_control_stack_pass4[current_control_stack_pass4.len() - 1 - relative_depth];
+                     resolved_default = if is_loop { target_start_pc } else { *block_end_map.get(&target_start_pc).unwrap_or(&usize::MAX) };
+                 }
+                 fixups[default_fixup_idx].1 = usize::MAX; // Mark as done using original index
             } else {
-                // Block/If branches target *after* the corresponding End
-                *block_end_map.get(&target_start_pc).unwrap_or(&usize::MAX)
-            };
-
-            if target_ip == usize::MAX {
-                 println!("Warning: Could not find end for branch target label {} at pc {}", relative_depth, pc);
-                 instr.operand = Operand::LabelIdx(usize::MAX); // Mark as error
-                 continue;
+                 println!("Warning: Could not find default target fixup for BrTable at pc {}", pc);
             }
 
-            println!("[DTC Fixup] pc: {}, depth: {}, is_if: {}, is_else: {}, target_ip: {}", pc, relative_depth, is_if_false_jump, is_else_jump, target_ip); // Added log
-
-            // Patch the operand
-            if *is_if_false_jump { // This is an If instruction needing its false jump target
-                let else_target = *if_else_map.get(&target_start_pc).unwrap_or(&target_ip); // Target Else+1 or End+1
-                println!("[DTC Fixup] If pc: {}, else_target: {}", pc, else_target); // Added log
-                instr.operand = Operand::LabelIdx(else_target);
-            } else if *is_else_jump { // This is an Else instruction needing its jump-to-end target
-                instr.operand = Operand::LabelIdx(target_ip); // Target is End+1
-                println!("[DTC Fixup] Else pc: {}, target_ip: {}", pc, target_ip); // Added log
-            } else { // This is a Br or BrIf instruction
-                instr.operand = Operand::LabelIdx(target_ip);
-                println!("[DTC Fixup] Br/BrIf pc: {}, target_ip: {}", pc, target_ip); // Added log
+            // Resolve remaining targets (in the order they appeared in the original BrTable instruction)
+            for fixup_idx in fixup_indices_for_this_br_table { // Iterate through original indices
+                 let (_, relative_depth, _, _) = fixups[fixup_idx]; // Use original index
+                 let target_ip = if current_control_stack_pass4.len() <= relative_depth {
+                     println!("Warning: Invalid relative depth {} for BrTable target at pc {}", relative_depth, pc);
+                     usize::MAX // Mark as error
+                 } else {
+                     let (target_start_pc, is_loop) = current_control_stack_pass4[current_control_stack_pass4.len() - 1 - relative_depth];
+                     if is_loop { target_start_pc } else { *block_end_map.get(&target_start_pc).unwrap_or(&usize::MAX) }
+                 };
+                 resolved_targets.push(target_ip);
+                 fixups[fixup_idx].1 = usize::MAX; // Mark as done using original index
             }
+
+            println!("[DTC Fixup] BrTable pc: {}, targets: {:?}, default: {}", pc, resolved_targets, resolved_default);
+            instr.operand = Operand::BrTable { targets: resolved_targets, default: resolved_default };
         }
     }
 
-    /* // Old fixup logic removed
-    */
-    // TODO: Fixup BrTable targets similarly
+
+    // Verify all fixups were applied (optional, for debugging)
+    if let Some((pc, depth, _, _)) = fixups.iter().find(|(_, d, _, _)| *d != usize::MAX) {
+         println!("Warning: Unresolved fixup remaining at pc {} with depth {}", pc, depth);
+         // return Err(RuntimeError::InvalidWasm("Unresolved branch target"));
+    }
+
 
     Ok(processed)
 }
-
-
 // --- Stack Structures (Adapted for DTC) ---
 
 pub struct Stacks {

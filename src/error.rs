@@ -58,4 +58,10 @@ pub enum ParserError {
     VersionError,
     #[error("Unsupported OP Code in Global Section Init Expr at Offset: {offset}")]
     InitExprUnsupportedOPCodeError{offset: usize},
+    #[error("Unexpected Else operator found")]
+    UnexpectedElse,
+    #[error("Unexpected End operator found")]
+    UnexpectedEnd,
+    #[error("Invalid Wasm: {0}")]
+    InvalidWasm(&'static str), // Added for general Wasm parsing errors
 }
