@@ -615,23 +615,18 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
                 })?
         };
 
-        println!("[DTC Fixup] pc: {}, depth: {}, is_if: {}, is_else: {}, target_ip: {}", fixup_pc, relative_depth, is_if_false_jump, is_else_jump, target_ip);
-
         // Patch the operand in the 'processed' vector
         if let Some(instr_to_patch) = processed.get_mut(fixup_pc) {
             if is_if_false_jump { // This is an If instruction needing its false jump target
                 // Target is ElseMarker+1 if it exists, otherwise EndMarker+1
                 let else_target = *if_else_map.get(&target_start_pc).unwrap_or(&target_ip);
-                println!("[DTC Fixup] If pc: {}, else_target: {}", fixup_pc, else_target);
                 instr_to_patch.operand = Operand::LabelIdx(else_target);
             } else if is_else_jump { // This is an ElseMarker instruction needing its jump-to-end target
                 // Target is the corresponding EndMarker + 1
                 instr_to_patch.operand = Operand::LabelIdx(target_ip);
-                println!("[DTC Fixup] Else pc: {}, target_ip: {}", fixup_pc, target_ip);
             } else { // This is a Br or BrIf instruction
                 // Target is Loop start or EndMarker + 1
                 instr_to_patch.operand = Operand::LabelIdx(target_ip);
-                println!("[DTC Fixup] Br/BrIf pc: {}, target_ip: {}", fixup_pc, target_ip);
             }
         } else {
              println!("Warning: Could not find instruction to patch at pc {}", fixup_pc);
@@ -697,7 +692,6 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
                  fixups[fixup_idx].1 = usize::MAX; // Mark as done using original index
             }
 
-            println!("[DTC Fixup] BrTable pc: {}, targets: {:?}, default: {}", pc, resolved_targets, resolved_default);
             instr.operand = Operand::BrTable { targets: resolved_targets, default: resolved_default };
         }
     }
@@ -950,7 +944,7 @@ impl Stacks {
             }
         }
         // Should only be reached if the initial stack was empty or after the last frame is popped.
-        Ok(vec![])
+    Ok(vec![])
     }
 }
 
@@ -975,7 +969,6 @@ impl FrameStack{
     /// Ok(None) if the frame execution completes normally (reaches end),
     /// or Err on runtime error.
     fn run_dtc_loop(&mut self, called_func_addr_out: &mut Option<FuncAddr>) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError> { // Outer Result for panic safety
-        println!("[DTC] Entering run_dtc_loop"); // Added log
         // Get mutable access to the current label stack
         let current_label_stack = self.label_stack.last_mut().ok_or(RuntimeError::StackError("Label stack empty"))?;
         let processed_code = &current_label_stack.processed_instrs; // Immutable borrow
@@ -997,8 +990,6 @@ impl FrameStack{
 
             // Clone instruction to avoid borrowing issues when context is passed mutably
             let instruction = processed_code[ip].clone(); // Clone from immutable borrow
-            println!("[DTC Loop] ip: {}, handler_idx: {}, operand: {:?}", ip, instruction.handler_index, instruction.operand); // Modified log
-            println!("[DTC Loop] Stack BEFORE: {:?}", current_label_stack.value_stack); // Added log
 
             // Need mutable access to value_stack within the LabelStack
             // We already have `current_label_stack` as mutable, so we can borrow its fields mutably.
@@ -1014,12 +1005,10 @@ impl FrameStack{
 
             // --- Execute Handler ---
             let result = handler_fn(&mut context, instruction.operand.clone()); // Clone operand
-            println!("[DTC Loop] Stack AFTER: {:?}", current_label_stack.value_stack); // Added log
             // --- End Execute Handler ---
 
             match result {
                 Ok(next_ip) => {
-                    println!("[DTC Loop] Handler result: Ok({})", next_ip); // Added log
                     if next_ip == usize::MAX { // Sentinel for Return
                         // Update IP *before* returning signal
                         current_label_stack.ip = ip + 1; // Point to instruction *after* return
@@ -1267,7 +1256,6 @@ fn handle_call(_ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, R
     if let Operand::FuncIdx(_) = operand {
          // Signal call using sentinel value. The actual FuncAddr resolution
          // happens in the run_dtc_loop based on the operand.
-         println!("[DTC] handle_call called with operand: {:?}", operand); // Added log
          Ok(usize::MAX - 1) // Use sentinel value for Call
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -1984,11 +1972,78 @@ fn handle_unimplemented(_ctx: &mut ExecutionContext, operand: Operand) -> Result
     Err(RuntimeError::UnimplementedInstruction) // Return error for unimplemented
 }
 
-// --- Added Handler Implementations (Partial, with TODOs) ---
+fn handle_br_table(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    let i = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+    if let Operand::BrTable { targets, default } = operand {
+        // Get the target index, using default if index is out of bounds
+        let target_ip = if let Some(target) = targets.get(i as usize) {
+            *target
+        } else {
+            default
+        };
+
+        // Check if the target IP was resolved during preprocessing
+        if target_ip == usize::MAX {
+            return Err(RuntimeError::ExecutionFailed("Branch fixup not done for BrTable target"));
+        }
+        // TODO: Handle value transfer for branches if needed based on label arity
+        Ok(target_ip)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_call_indirect(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::TypeIdx(expected_type_idx) = operand {
+        let table_idx = 0; // Assuming table index 0 for now
+        let i = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32(); // Function index from stack
+
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        let table_addr = module_inst.table_addrs.get(table_idx).ok_or(RuntimeError::TableNotFound)?; // Get table address
+
+        // Use the get method which returns Option<FuncAddr>
+        let func_ref_option = table_addr.get(i as usize); // Corrected: Use get() and usize
+
+        if let Some(func_addr) = func_ref_option { // Check the Option
+             // Check function type
+             let actual_type = func_addr.func_type();
+             let expected_type = module_inst.types.get_by_idx(expected_type_idx);
+
+            if actual_type != *expected_type {
+                 return Err(RuntimeError::IndirectCallTypeMismatch);
+            }
+            // Signal call using sentinel value.
+             Ok(usize::MAX - 1) // Sentinel for Call
+        } else {
+            // Handle the case where the table element is None or index is out of bounds
+            // TODO: Distinguish between UninitializedElement and TableOutOfBounds if necessary
+            Err(RuntimeError::UninitializedElement)
+        }
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_select(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let cond = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+    let val2 = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?;
+    let val1 = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?;
+
+    // Type check (optional but good practice, though validation should catch this)
+    // if val1.value_type() != val2.value_type() {
+    //     return Err(RuntimeError::TypeMismatch);
+    // }
+
+    if cond != 0 {
+        ctx.value_stack.push(val1);
+    } else {
+        ctx.value_stack.push(val2);
+    }
+    Ok(ctx.ip + 1)
+}
 
 // Signals function return to the outer loop
 fn handle_return(_ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
-    println!("[DTC] handle_return called"); // Added log
     Ok(usize::MAX) // Sentinel for Return
 }
 
@@ -2083,6 +2138,207 @@ fn handle_i32_load(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize
     }
 }
 
+fn handle_i64_load(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32(); // Address is i32
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() {
+            return Err(RuntimeError::MemoryNotFound);
+        }
+        let mem_addr = &module_inst.mem_addrs[0]; // Assuming memidx 0
+        // Load i64 value from memory
+        let val = mem_addr.load::<i64>(&arg, ptr)?;
+        ctx.value_stack.push(Val::Num(Num::I64(val)));
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_f32_load(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32(); // Address is i32
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() {
+            return Err(RuntimeError::MemoryNotFound);
+        }
+        let mem_addr = &module_inst.mem_addrs[0]; // Assuming memidx 0
+        // Load f32 value from memory
+        let val = mem_addr.load::<f32>(&arg, ptr)?;
+        ctx.value_stack.push(Val::Num(Num::F32(val)));
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_f64_load(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32(); // Address is i32
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() {
+            return Err(RuntimeError::MemoryNotFound);
+        }
+        let mem_addr = &module_inst.mem_addrs[0]; // Assuming memidx 0
+        // Load f64 value from memory
+        let val = mem_addr.load::<f64>(&arg, ptr)?;
+        ctx.value_stack.push(Val::Num(Num::F64(val)));
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_i32_load8_s(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() { return Err(RuntimeError::MemoryNotFound); }
+        let mem_addr = &module_inst.mem_addrs[0];
+        let val_i8 = mem_addr.load::<i8>(&arg, ptr)?;
+        let val_i32 = val_i8 as i32; // Sign extension
+        ctx.value_stack.push(Val::Num(Num::I32(val_i32)));
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_i32_load8_u(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() { return Err(RuntimeError::MemoryNotFound); }
+        let mem_addr = &module_inst.mem_addrs[0];
+        let val_u8 = mem_addr.load::<u8>(&arg, ptr)?;
+        let val_i32 = val_u8 as i32; // Zero extension
+        ctx.value_stack.push(Val::Num(Num::I32(val_i32)));
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_i32_load16_s(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() { return Err(RuntimeError::MemoryNotFound); }
+        let mem_addr = &module_inst.mem_addrs[0];
+        let val_i16 = mem_addr.load::<i16>(&arg, ptr)?;
+        let val_i32 = val_i16 as i32; // Sign extension
+        ctx.value_stack.push(Val::Num(Num::I32(val_i32)));
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_i32_load16_u(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() { return Err(RuntimeError::MemoryNotFound); }
+        let mem_addr = &module_inst.mem_addrs[0];
+        let val_u16 = mem_addr.load::<u16>(&arg, ptr)?;
+        let val_i32 = val_u16 as i32; // Zero extension
+        ctx.value_stack.push(Val::Num(Num::I32(val_i32)));
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_i64_load8_s(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() { return Err(RuntimeError::MemoryNotFound); }
+        let mem_addr = &module_inst.mem_addrs[0];
+        let val_i8 = mem_addr.load::<i8>(&arg, ptr)?;
+        let val_i64 = val_i8 as i64; // Sign extension
+        ctx.value_stack.push(Val::Num(Num::I64(val_i64)));
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_i64_load8_u(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() { return Err(RuntimeError::MemoryNotFound); }
+        let mem_addr = &module_inst.mem_addrs[0];
+        let val_u8 = mem_addr.load::<u8>(&arg, ptr)?;
+        let val_i64 = val_u8 as i64; // Zero extension
+        ctx.value_stack.push(Val::Num(Num::I64(val_i64)));
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_i64_load16_s(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() { return Err(RuntimeError::MemoryNotFound); }
+        let mem_addr = &module_inst.mem_addrs[0];
+        let val_i16 = mem_addr.load::<i16>(&arg, ptr)?;
+        let val_i64 = val_i16 as i64; // Sign extension
+        ctx.value_stack.push(Val::Num(Num::I64(val_i64)));
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_i64_load16_u(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() { return Err(RuntimeError::MemoryNotFound); }
+        let mem_addr = &module_inst.mem_addrs[0];
+        let val_u16 = mem_addr.load::<u16>(&arg, ptr)?;
+        let val_i64 = val_u16 as i64; // Zero extension
+        ctx.value_stack.push(Val::Num(Num::I64(val_i64)));
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_i64_load32_s(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() { return Err(RuntimeError::MemoryNotFound); }
+        let mem_addr = &module_inst.mem_addrs[0];
+        let val_i32 = mem_addr.load::<i32>(&arg, ptr)?;
+        let val_i64 = val_i32 as i64; // Sign extension
+        ctx.value_stack.push(Val::Num(Num::I64(val_i64)));
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_i64_load32_u(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() { return Err(RuntimeError::MemoryNotFound); }
+        let mem_addr = &module_inst.mem_addrs[0];
+        let val_u32 = mem_addr.load::<u32>(&arg, ptr)?;
+        let val_i64 = val_u32 as i64; // Zero extension
+        ctx.value_stack.push(Val::Num(Num::I64(val_i64)));
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
 fn handle_i32_store(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
     if let Operand::MemArg(arg) = operand {
         // Wasm spec pops value first, then address
@@ -2096,6 +2352,123 @@ fn handle_i32_store(ctx: &mut ExecutionContext, operand: Operand) -> Result<usiz
         // Assuming mem_addr is Rc<RefCell<MemInst>> and MemInst has load/store methods
         // Also assuming MemAddr has a method like `store` similar to stack.rs
         mem_addr.store::<i32>(&arg, ptr, data)?;
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_i64_store(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let data = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() { return Err(RuntimeError::MemoryNotFound); }
+        let mem_addr = &module_inst.mem_addrs[0];
+        mem_addr.store::<i64>(&arg, ptr, data)?;
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_f32_store(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let data = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() { return Err(RuntimeError::MemoryNotFound); }
+        let mem_addr = &module_inst.mem_addrs[0];
+        mem_addr.store::<f32>(&arg, ptr, data)?;
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_f64_store(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let data = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() { return Err(RuntimeError::MemoryNotFound); }
+        let mem_addr = &module_inst.mem_addrs[0];
+        mem_addr.store::<f64>(&arg, ptr, data)?;
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_i32_store8(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let data = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() { return Err(RuntimeError::MemoryNotFound); }
+        let mem_addr = &module_inst.mem_addrs[0];
+        // Store lower 8 bits
+        mem_addr.store::<i8>(&arg, ptr, data as i8)?;
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_i32_store16(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let data = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() { return Err(RuntimeError::MemoryNotFound); }
+        let mem_addr = &module_inst.mem_addrs[0];
+        // Store lower 16 bits
+        mem_addr.store::<i16>(&arg, ptr, data as i16)?;
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_i64_store8(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let data = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() { return Err(RuntimeError::MemoryNotFound); }
+        let mem_addr = &module_inst.mem_addrs[0];
+        // Store lower 8 bits
+        mem_addr.store::<i8>(&arg, ptr, data as i8)?;
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_i64_store16(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let data = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() { return Err(RuntimeError::MemoryNotFound); }
+        let mem_addr = &module_inst.mem_addrs[0];
+        // Store lower 16 bits
+        mem_addr.store::<i16>(&arg, ptr, data as i16)?;
+        Ok(ctx.ip + 1)
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_i64_store32(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
+    if let Operand::MemArg(arg) = operand {
+        let data = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
+        let ptr = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+        let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() { return Err(RuntimeError::MemoryNotFound); }
+        let mem_addr = &module_inst.mem_addrs[0];
+        // Store lower 32 bits
+        mem_addr.store::<i32>(&arg, ptr, data as i32)?;
         Ok(ctx.ip + 1)
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -2151,6 +2524,115 @@ fn handle_f64_copysign(ctx: &mut ExecutionContext, _operand: Operand) -> Result<
     Ok(ctx.ip + 1)
 }
 
+fn handle_memory_size(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+    if module_inst.mem_addrs.is_empty() {
+        return Err(RuntimeError::MemoryNotFound);
+    }
+    let mem_addr = &module_inst.mem_addrs[0]; // Assuming memidx 0
+    // Assuming MemAddr has a size() method returning current size in pages
+    let size = mem_addr.mem_size();
+    ctx.value_stack.push(Val::Num(Num::I32(size as i32)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_memory_grow(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let delta = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+    let module_inst = ctx.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
+    if module_inst.mem_addrs.is_empty() {
+        return Err(RuntimeError::MemoryNotFound);
+    }
+    let mem_addr = &module_inst.mem_addrs[0]; // Assuming memidx 0
+    // Assuming MemAddr has a grow() method returning previous size or -1 on failure
+    let prev_size = mem_addr.mem_grow((delta as u32).try_into().unwrap());
+    ctx.value_stack.push(Val::Num(Num::I32(prev_size as i32)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_f32_convert_i32_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+    let result = val as f32; // i32 to f32 conversion
+    ctx.value_stack.push(Val::Num(Num::F32(result)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_f32_convert_i32_u(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+    let result = (val as u32) as f32; // i32 -> u32 -> f32 conversion
+    ctx.value_stack.push(Val::Num(Num::F32(result)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_f32_convert_i64_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
+    let result = val as f32; // i64 to f32 conversion
+    ctx.value_stack.push(Val::Num(Num::F32(result)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_f32_convert_i64_u(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
+    let result = (val as u64) as f32; // i64 -> u64 -> f32 conversion
+    ctx.value_stack.push(Val::Num(Num::F32(result)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_f64_convert_i32_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+    let result = val as f64; // i32 to f64 conversion
+    ctx.value_stack.push(Val::Num(Num::F64(result)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_f64_convert_i32_u(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+    let result = (val as u32) as f64; // i32 -> u32 -> f64 conversion
+    ctx.value_stack.push(Val::Num(Num::F64(result)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_f64_convert_i64_s(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
+    let result = val as f64; // i64 to f64 conversion
+    ctx.value_stack.push(Val::Num(Num::F64(result)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_f64_convert_i64_u(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
+    let result = (val as u64) as f64; // i64 -> u64 -> f64 conversion
+    ctx.value_stack.push(Val::Num(Num::F64(result)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_i32_reinterpret_f32(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val_f32 = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f32();
+    let val_i32 = unsafe { std::mem::transmute::<f32, i32>(val_f32) };
+    ctx.value_stack.push(Val::Num(Num::I32(val_i32)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_i64_reinterpret_f64(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val_f64 = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
+    let val_i64 = unsafe { std::mem::transmute::<f64, i64>(val_f64) };
+    ctx.value_stack.push(Val::Num(Num::I64(val_i64)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_f32_reinterpret_i32(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val_i32 = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i32();
+    let val_f32 = unsafe { std::mem::transmute::<i32, f32>(val_i32) };
+    ctx.value_stack.push(Val::Num(Num::F32(val_f32)));
+    Ok(ctx.ip + 1)
+}
+
+fn handle_f64_reinterpret_i64(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
+    let val_i64 = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_i64();
+    let val_f64 = unsafe { std::mem::transmute::<i64, f64>(val_i64) };
+    ctx.value_stack.push(Val::Num(Num::F64(val_f64)));
+    Ok(ctx.ip + 1)
+}
+
 // --- Handler Table ---
 lazy_static! {
     static ref HANDLER_TABLE: Vec<HandlerFn> = {
@@ -2166,13 +2648,13 @@ lazy_static! {
         table[HANDLER_IDX_END] = handle_end;
         table[HANDLER_IDX_BR] = handle_br;
         table[HANDLER_IDX_BR_IF] = handle_br_if;
-        // table[HANDLER_IDX_BR_TABLE] = handle_br_table; // TODO
+        table[HANDLER_IDX_BR_TABLE] = handle_br_table; 
         table[HANDLER_IDX_RETURN] = handle_return;
         table[HANDLER_IDX_CALL] = handle_call;
-        // table[HANDLER_IDX_CALL_INDIRECT] = handle_call_indirect; // TODO
+        table[HANDLER_IDX_CALL_INDIRECT] = handle_call_indirect; 
 
         table[HANDLER_IDX_DROP] = handle_drop;
-        // table[HANDLER_IDX_SELECT] = handle_select; // TODO
+        table[HANDLER_IDX_SELECT] = handle_select; 
 
         table[HANDLER_IDX_LOCAL_GET] = handle_local_get;
         table[HANDLER_IDX_LOCAL_SET] = handle_local_set;
@@ -2181,38 +2663,39 @@ lazy_static! {
         table[HANDLER_IDX_GLOBAL_SET] = handle_global_set;
 
         table[HANDLER_IDX_I32_LOAD] = handle_i32_load;
-        // TODO: Add other implemented load/store handlers
-        table[HANDLER_IDX_I64_LOAD] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_F32_LOAD] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_F64_LOAD] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_I32_LOAD8_S] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_I32_LOAD8_U] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_I32_LOAD16_S] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_I32_LOAD16_U] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_I64_LOAD8_S] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_I64_LOAD8_U] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_I64_LOAD16_S] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_I64_LOAD16_U] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_I64_LOAD32_S] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_I64_LOAD32_U] = handle_unimplemented; // Placeholder
+        table[HANDLER_IDX_I64_LOAD] = handle_i64_load;
+        table[HANDLER_IDX_F32_LOAD] = handle_f32_load;
+        table[HANDLER_IDX_F64_LOAD] = handle_f64_load;
+        table[HANDLER_IDX_I32_LOAD] = handle_i32_load;
+        table[HANDLER_IDX_I64_LOAD] = handle_i64_load; 
+        table[HANDLER_IDX_F32_LOAD] = handle_f32_load; 
+        table[HANDLER_IDX_F64_LOAD] = handle_f64_load; 
+        table[HANDLER_IDX_I32_LOAD8_S] = handle_i32_load8_s; 
+        table[HANDLER_IDX_I32_LOAD8_U] = handle_i32_load8_u; 
+        table[HANDLER_IDX_I32_LOAD16_S] = handle_i32_load16_s; 
+        table[HANDLER_IDX_I32_LOAD16_U] = handle_i32_load16_u; 
+        table[HANDLER_IDX_I64_LOAD8_S] = handle_i64_load8_s; 
+        table[HANDLER_IDX_I64_LOAD8_U] = handle_i64_load8_u; 
+        table[HANDLER_IDX_I64_LOAD16_S] = handle_i64_load16_s; 
+        table[HANDLER_IDX_I64_LOAD16_U] = handle_i64_load16_u; 
+        table[HANDLER_IDX_I64_LOAD32_S] = handle_i64_load32_s; 
+        table[HANDLER_IDX_I64_LOAD32_U] = handle_i64_load32_u; 
         table[HANDLER_IDX_I32_STORE] = handle_i32_store;
-        table[HANDLER_IDX_I64_STORE] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_F32_STORE] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_F64_STORE] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_I32_STORE8] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_I32_STORE16] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_I64_STORE8] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_I64_STORE16] = handle_unimplemented; // Placeholder
-        table[HANDLER_IDX_I64_STORE32] = handle_unimplemented; // Placeholder
-        // table[HANDLER_IDX_MEMORY_SIZE] = handle_memory_size; // TODO
-        // table[HANDLER_IDX_MEMORY_GROW] = handle_memory_grow; // TODO
-
+        table[HANDLER_IDX_I32_STORE] = handle_i32_store;
+        table[HANDLER_IDX_I64_STORE] = handle_i64_store; 
+        table[HANDLER_IDX_F32_STORE] = handle_f32_store; 
+        table[HANDLER_IDX_F64_STORE] = handle_f64_store; 
+        table[HANDLER_IDX_I32_STORE8] = handle_i32_store8; 
+        table[HANDLER_IDX_I32_STORE16] = handle_i32_store16; 
+        table[HANDLER_IDX_I64_STORE8] = handle_i64_store8; 
+        table[HANDLER_IDX_I64_STORE16] = handle_i64_store16; 
+        table[HANDLER_IDX_I64_STORE32] = handle_i64_store32; 
+        table[HANDLER_IDX_MEMORY_SIZE] = handle_memory_size;
+        table[HANDLER_IDX_MEMORY_GROW] = handle_memory_grow;
         table[HANDLER_IDX_I32_CONST] = handle_i32_const;
         table[HANDLER_IDX_I64_CONST] = handle_i64_const;
         table[HANDLER_IDX_F32_CONST] = handle_f32_const;
         table[HANDLER_IDX_F64_CONST] = handle_f64_const;
-
-        // Assign all comparison handlers
         table[HANDLER_IDX_I32_EQZ] = handle_i32_eqz;
         table[HANDLER_IDX_I32_EQ] = handle_i32_eq;
         table[HANDLER_IDX_I32_NE] = handle_i32_ne;
@@ -2247,8 +2730,6 @@ lazy_static! {
         table[HANDLER_IDX_F64_GT] = handle_f64_gt;
         table[HANDLER_IDX_F64_LE] = handle_f64_le;
         table[HANDLER_IDX_F64_GE] = handle_f64_ge;
-
-        // Assign all arithmetic handlers
         table[HANDLER_IDX_I32_CLZ] = handle_i32_clz;
         table[HANDLER_IDX_I32_CTZ] = handle_i32_ctz;
         table[HANDLER_IDX_I32_POPCNT] = handle_i32_popcnt;
@@ -2313,70 +2794,36 @@ lazy_static! {
         table[HANDLER_IDX_F64_MIN] = handle_f64_min;
         table[HANDLER_IDX_F64_MAX] = handle_f64_max;
         table[HANDLER_IDX_F64_COPYSIGN] = handle_f64_copysign;
-
-        // Assign all conversion handlers (assuming they exist and are correct)
-        // table[HANDLER_IDX_I32_WRAP_I64] = handle_i32_wrap_i64;
-        // table[HANDLER_IDX_I32_TRUNC_F32_S] = handle_i32_trunc_f32_s;
-        // table[HANDLER_IDX_I32_TRUNC_F32_U] = handle_i32_trunc_f32_u;
-        // table[HANDLER_IDX_I32_TRUNC_F64_S] = handle_i32_trunc_f64_s;
-        // table[HANDLER_IDX_I32_TRUNC_F64_U] = handle_i32_trunc_f64_u;
-        // table[HANDLER_IDX_I64_EXTEND_I32_S] = handle_i64_extend_i32_s;
-        // table[HANDLER_IDX_I64_EXTEND_I32_U] = handle_i64_extend_i32_u;
-        // table[HANDLER_IDX_I64_TRUNC_F32_S] = handle_i64_trunc_f32_s;
-        // table[HANDLER_IDX_I64_TRUNC_F32_U] = handle_i64_trunc_f32_u;
-        // table[HANDLER_IDX_I64_TRUNC_F64_S] = handle_i64_trunc_f64_s;
-        // table[HANDLER_IDX_I64_TRUNC_F64_U] = handle_i64_trunc_f64_u;
-        // table[HANDLER_IDX_F32_CONVERT_I32_S] = handle_f32_convert_i32_s;
-        // table[HANDLER_IDX_F32_CONVERT_I32_U] = handle_f32_convert_i32_u;
-        // table[HANDLER_IDX_F32_CONVERT_I64_S] = handle_f32_convert_i64_s;
-        // table[HANDLER_IDX_F32_CONVERT_I64_U] = handle_f32_convert_i64_u;
-        // table[HANDLER_IDX_F32_DEMOTE_F64] = handle_f32_demote_f64;
-        // table[HANDLER_IDX_F64_CONVERT_I32_S] = handle_f64_convert_i32_s;
-        // table[HANDLER_IDX_F64_CONVERT_I32_U] = handle_f64_convert_i32_u;
-        // table[HANDLER_IDX_F64_CONVERT_I64_S] = handle_f64_convert_i64_s;
-        // table[HANDLER_IDX_F64_CONVERT_I64_U] = handle_f64_convert_i64_u;
-        // table[HANDLER_IDX_F64_PROMOTE_F32] = handle_f64_promote_f32;
-        // table[HANDLER_IDX_I32_REINTERPRET_F32] = handle_i32_reinterpret_f32;
-        // table[HANDLER_IDX_I64_REINTERPRET_F64] = handle_i64_reinterpret_f64;
-        // table[HANDLER_IDX_F32_REINTERPRET_I32] = handle_f32_reinterpret_i32;
-        // table[HANDLER_IDX_F64_REINTERPRET_I64] = handle_f64_reinterpret_i64; // TODO
-
-        // Assign conversion handlers (partial)
+        table[HANDLER_IDX_F32_CONVERT_I32_S] = handle_f32_convert_i32_s; 
+        table[HANDLER_IDX_F32_CONVERT_I32_U] = handle_f32_convert_i32_u; 
+        table[HANDLER_IDX_F32_CONVERT_I64_S] = handle_f32_convert_i64_s; 
+        table[HANDLER_IDX_F32_CONVERT_I64_U] = handle_f32_convert_i64_u; 
+        table[HANDLER_IDX_F64_CONVERT_I32_S] = handle_f64_convert_i32_s; 
+        table[HANDLER_IDX_F64_CONVERT_I32_U] = handle_f64_convert_i32_u; 
+        table[HANDLER_IDX_F64_CONVERT_I64_S] = handle_f64_convert_i64_s; 
+        table[HANDLER_IDX_F64_CONVERT_I64_U] = handle_f64_convert_i64_u; 
+        table[HANDLER_IDX_I32_REINTERPRET_F32] = handle_i32_reinterpret_f32; 
+        table[HANDLER_IDX_I64_REINTERPRET_F64] = handle_i64_reinterpret_f64; 
+        table[HANDLER_IDX_F32_REINTERPRET_I32] = handle_f32_reinterpret_i32; 
+        table[HANDLER_IDX_F64_REINTERPRET_I64] = handle_f64_reinterpret_i64; 
         table[HANDLER_IDX_I32_WRAP_I64] = handle_i32_wrap_i64;
         table[HANDLER_IDX_I32_TRUNC_F32_S] = handle_i32_trunc_f32_s;
         table[HANDLER_IDX_I32_TRUNC_F32_U] = handle_i32_trunc_f32_u;
         table[HANDLER_IDX_I32_TRUNC_F64_S] = handle_i32_trunc_f64_s;
         table[HANDLER_IDX_I32_TRUNC_F64_U] = handle_i32_trunc_f64_u;
-        table[HANDLER_IDX_I64_EXTEND_I32_S] = handle_i64_extend32_s; // Corrected function name typo
+        table[HANDLER_IDX_I64_EXTEND_I32_S] = handle_i64_extend32_s;
         table[HANDLER_IDX_I64_EXTEND_I32_U] = handle_i64_extend_i32_u;
         table[HANDLER_IDX_I64_TRUNC_F32_S] = handle_i64_trunc_f32_s;
         table[HANDLER_IDX_I64_TRUNC_F32_U] = handle_i64_trunc_f32_u;
         table[HANDLER_IDX_I64_TRUNC_F64_S] = handle_i64_trunc_f64_s;
         table[HANDLER_IDX_I64_TRUNC_F64_U] = handle_i64_trunc_f64_u;
-        // table[HANDLER_IDX_F32_CONVERT_I32_S] = handle_f32_convert_i32_s; // TODO
-        // table[HANDLER_IDX_F32_CONVERT_I32_U] = handle_f32_convert_i32_u; // TODO
-        // table[HANDLER_IDX_F32_CONVERT_I64_S] = handle_f32_convert_i64_s; // TODO
-        // table[HANDLER_IDX_F32_CONVERT_I64_U] = handle_f32_convert_i64_u; // TODO
         table[HANDLER_IDX_F32_DEMOTE_F64] = handle_f32_demote_f64;
-        // table[HANDLER_IDX_F64_CONVERT_I32_S] = handle_f64_convert_i32_s; // TODO
-        // table[HANDLER_IDX_F64_CONVERT_I32_U] = handle_f64_convert_i32_u; // TODO
-        // table[HANDLER_IDX_F64_CONVERT_I64_S] = handle_f64_convert_i64_s; // TODO
-        // table[HANDLER_IDX_F64_CONVERT_I64_U] = handle_f64_convert_i64_u; // TODO
         table[HANDLER_IDX_F64_PROMOTE_F32] = handle_f64_promote_f32;
-        // table[HANDLER_IDX_I32_REINTERPRET_F32] = handle_i32_reinterpret_f32; // TODO
-        // table[HANDLER_IDX_I64_REINTERPRET_F64] = handle_i64_reinterpret_f64; // TODO
-        // table[HANDLER_IDX_F32_REINTERPRET_I32] = handle_f32_reinterpret_i32; // TODO
-        // table[HANDLER_IDX_F64_REINTERPRET_I64] = handle_f64_reinterpret_i64; // TODO
-        // ... other conversion handlers ...
-
-
-        // Assign extend handlers
         table[HANDLER_IDX_I32_EXTEND8_S] = handle_i32_extend8_s;
         table[HANDLER_IDX_I32_EXTEND16_S] = handle_i32_extend16_s;
         table[HANDLER_IDX_I64_EXTEND8_S] = handle_i64_extend8_s;
         table[HANDLER_IDX_I64_EXTEND16_S] = handle_i64_extend16_s;
-        table[HANDLER_IDX_I64_EXTEND32_S] = handle_i64_extend32_s; // Correctly assign the implemented handler
-
+        table[HANDLER_IDX_I64_EXTEND32_S] = handle_i64_extend32_s;
         // TODO: Add remaining handlers as they are implemented (TruncSat, etc.)
 
         table
