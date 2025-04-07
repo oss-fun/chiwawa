@@ -435,6 +435,8 @@ pub enum Instr {
     Return,
     Call(FuncIdx),
     CallIndirect(TableIdx, TypeIdx),
+    ElseMarker,
+    EndMarker,
 }
 
 #[derive(Debug,PartialEq, Clone)]

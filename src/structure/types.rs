@@ -117,22 +117,22 @@ pub struct BlockType(pub Option<TypeIdx>, pub Option<ValueType>);
 pub struct Byte(pub u8);
 pub struct Name(pub String);
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct TableType (pub Limits, pub RefType);
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct Limits {
     pub min: u32,
     pub max: Option<u32>,
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct MemType (pub Limits);
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct GlobalType (pub Mut , pub ValueType);
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub enum Mut {
     Const,
     Var,

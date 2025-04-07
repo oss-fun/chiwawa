@@ -2,8 +2,9 @@ use std::{rc::Rc, cell::RefCell};
 use crate::structure::types::*;
 use super::{func::FuncAddr, module::*};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TableAddr(Rc<RefCell<TableInst>>);
+#[derive(Debug)]
 pub struct TableInst {
     pub type_: TableType,
     pub elem: Vec<Option<FuncAddr>>,
