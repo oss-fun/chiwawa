@@ -1,26 +1,21 @@
 use super::{value::*};
-use crate::structure::{instructions::Instr}; // Removed unused types::*
+use crate::structure::{instructions::Instr};
 use crate::error::RuntimeError;
 use std::arch::asm;
-// Import necessary index types directly from types module
-use crate::structure::types::{FuncIdx, GlobalIdx, LocalIdx, TableIdx, TypeIdx, LabelIdx as StructureLabelIdx}; // Re-added LabelIdx alias
-use crate::structure::instructions::Memarg; // Use Memarg directly
-use crate::structure::module::Func; // Import Func from module
+use crate::structure::types::{FuncIdx, GlobalIdx, LocalIdx, TableIdx, TypeIdx, LabelIdx as StructureLabelIdx};
+use crate::structure::instructions::Memarg; 
+use crate::structure::module::Func;
 use std::collections::HashMap;
-use num::{Float, NumCast}; // Added for trunc handlers
-// Removed unused ops: Rem, Shl, Shr
+use num::{Float, NumCast};
 use std::ops::{BitAnd, BitOr, BitXor, Add, Sub, Mul, Div};
-use lazy_static::lazy_static; // Keep lazy_static for HANDLER_TABLE
-use crate::execution::value::Val; // Ensure Val is imported
-use crate::execution::module::{ModuleInst, GetInstanceByIdx}; // Ensure ModuleInst and GetInstanceByIdx are imported
-use crate::execution::func::{FuncAddr, FuncInst}; // Removed Func import here
-use std::rc::{Rc, Weak}; // Ensure Rc and Weak are imported
-use crate::structure::types::{FuncType, ValueType, NumType, VecType}; // Ensure type definitions are imported
+use lazy_static::lazy_static;
+use crate::execution::value::Val;
+use crate::execution::module::{ModuleInst, GetInstanceByIdx}; 
+use crate::execution::func::{FuncAddr, FuncInst};
+use std::rc::{Rc, Weak}; 
+use crate::structure::types::{FuncType, ValueType, NumType, VecType}; 
 
-// --- DTC Types ---
-
-/// Represents operands for Wasm instructions after preprocessing.
-#[derive(Clone, Debug, PartialEq)] // Add PartialEq for fixup logic
+#[derive(Clone, Debug, PartialEq)]
 pub enum Operand {
     None,
     I32(i32),
@@ -32,51 +27,31 @@ pub enum Operand {
     FuncIdx(FuncIdx),
     TableIdx(TableIdx),
     TypeIdx(TypeIdx),
-    LabelIdx(usize), // Resolved instruction pointer index for branches
-    MemArg(Memarg), // Corrected typo MemArg -> Memarg
-    BrTable { targets: Vec<usize>, default: usize }, // Resolved indices
-    // BlockInfo and IfInfo are no longer needed as operands after fixup
-    // Add other operand types as needed (e.g., for SIMD, RefTypes)
+    LabelIdx(usize),
+    MemArg(Memarg),
+    BrTable { targets: Vec<usize>, default: usize },
 }
 
-/// Represents a preprocessed instruction for Direct Threaded Code.
 #[derive(Clone, Debug)]
 pub struct ProcessedInstr {
-    /// Index into the handler table.
     handler_index: usize,
-    /// Operand for the instruction.
     operand: Operand,
 }
 
-/// Context passed to instruction handlers.
-/// Contains mutable references to the necessary execution state.
 pub struct ExecutionContext<'a> {
-    // Changed frame type to access runtime state (locals, module)
     pub frame: &'a mut crate::execution::stackopt::Frame,
     pub value_stack: &'a mut Vec<Val>,
-    // Instruction pointer - handlers will return the *next* ip or signal transition
     pub ip: usize,
-    // Potentially add direct access to memory, tables, etc. if needed
-    // pub memory: &'a mut MemInst,
 }
 
-/// Type alias for instruction handler functions.
-/// Takes the execution context and operand.
-/// Returns Ok(next_ip) to continue, or Ok(usize::MAX) to signal return, Ok(usize::MAX-1) for call.
-/// Returns Err on runtime error.
 type HandlerFn = fn(&mut ExecutionContext, Operand) -> Result<usize, RuntimeError>;
 
-// Enum for communication between run_dtc_loop and exec_instr
 #[derive(Clone)]
 pub enum ModuleLevelInstr{
     Invoke(FuncAddr),
     Return,
 }
 
-// --- End DTC Types ---
-
-// --- Handler Index Constants (Systematic Mapping Needed) ---
-// Map Wasm opcodes (or Instr enum variants) to table indices.
 const HANDLER_IDX_UNREACHABLE: usize = 0x00;
 const HANDLER_IDX_NOP: usize = 0x01;
 const HANDLER_IDX_BLOCK: usize = 0x02;
@@ -274,30 +249,25 @@ const HANDLER_IDX_I64_EXTEND32_S: usize = 0xC4;
 
 // TODO: Add remaining indices (Ref types, Table, Bulk Memory, SIMD, TruncSat)
 
-const MAX_HANDLER_INDEX: usize = 0xC5; // Adjust size based on implemented handlers
+const MAX_HANDLER_INDEX: usize = 0xC5;
 
-
-// --- Preprocessing Function ---
-
-/// Preprocesses a sequence of Wasm instructions (flat list with markers) into the DTC format.
-/// Resolves branch targets and maps instructions to handler indices.
 fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedInstr>, RuntimeError> {
     let mut processed = Vec::with_capacity(original_instrs.len());
+
     // Stores fixup info: (pc_to_patch, relative_depth, is_if_false_jump, is_else_jump)
     // Note: relative_depth is usize::MAX for fixups that are completed.
     let mut fixups: Vec<(usize, usize, bool, bool)> = Vec::new();
 
-    // Pass 1: Map instructions, identify labels, store fixup info
+    // Phase 1: Map instructions, identify labels, store fixup info
     for instr in original_instrs.iter() {
         let current_processed_pc = processed.len();
-        let mut handler_index = HANDLER_IDX_NOP; // Default
+        let mut handler_index = HANDLER_IDX_NOP;
         let mut operand = Operand::None;
 
         match instr {
             Instr::Unreachable => handler_index = HANDLER_IDX_UNREACHABLE,
             Instr::Nop => handler_index = HANDLER_IDX_NOP,
 
-            // Control flow instructions (Block, Loop, If) - just map handler, operand patched later if needed
             Instr::Block(_, _) => {
                 handler_index = HANDLER_IDX_BLOCK;
             }
@@ -307,28 +277,26 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
             }
             Instr::If(_, _, _) => {
                 handler_index = HANDLER_IDX_IF;
-                fixups.push((current_processed_pc, 0, true, false)); // is_if_false_jump = true
-                operand = Operand::LabelIdx(usize::MAX); // Placeholder for else/end target
+                fixups.push((current_processed_pc, 0, true, false));
+                operand = Operand::LabelIdx(usize::MAX);
             }
             Instr::ElseMarker => {
                 handler_index = HANDLER_IDX_ELSE;
-                fixups.push((current_processed_pc, 0, false, true)); // is_else_jump = true
-                operand = Operand::LabelIdx(usize::MAX); // Placeholder for End target
+                fixups.push((current_processed_pc, 0, false, true));
+                operand = Operand::LabelIdx(usize::MAX);
             }
             Instr::EndMarker => {
                 handler_index = HANDLER_IDX_END;
             }
-
-            // Branch instructions - add fixup request
             Instr::Br(label_idx) => {
                 handler_index = HANDLER_IDX_BR;
                 fixups.push((current_processed_pc, label_idx.0 as usize, false, false));
-                operand = Operand::LabelIdx(usize::MAX); // Placeholder
+                operand = Operand::LabelIdx(usize::MAX);
             }
             Instr::BrIf(label_idx) => {
                 handler_index = HANDLER_IDX_BR_IF;
                 fixups.push((current_processed_pc, label_idx.0 as usize, false, false));
-                operand = Operand::LabelIdx(usize::MAX); // Placeholder
+                operand = Operand::LabelIdx(usize::MAX); 
             }
             Instr::BrTable(indices, default) => {
                 handler_index = HANDLER_IDX_BR_TABLE;
@@ -336,10 +304,8 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
                     fixups.push((current_processed_pc, label_idx.0 as usize, false, false));
                 }
                 fixups.push((current_processed_pc, default.0 as usize, false, false));
-                operand = Operand::None; // Placeholder, will be replaced in Pass 4
+                operand = Operand::None;
             }
-
-            // Other instructions - map directly
             Instr::Return => handler_index = HANDLER_IDX_RETURN,
             Instr::Call(func_idx) => {
                 handler_index = HANDLER_IDX_CALL;
@@ -350,7 +316,7 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
                 operand = Operand::TypeIdx(type_idx.clone());
             }
             Instr::Drop => handler_index = HANDLER_IDX_DROP,
-            Instr::Select(_) => { // Ignore type for now, validation should handle
+            Instr::Select(_) => {
                 handler_index = HANDLER_IDX_SELECT;
                 operand = Operand::None;
             }
@@ -516,16 +482,15 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
             Instr::I64Extend8S => handler_index = HANDLER_IDX_I64_EXTEND8_S,
             Instr::I64Extend16S => handler_index = HANDLER_IDX_I64_EXTEND16_S,
             Instr::I64Extend32S => handler_index = HANDLER_IDX_I64_EXTEND32_S,
-            // Catch-all for other instructions (should be expanded)
             _ => {
                 println!("Warning: Unhandled instruction in preprocessing pass 1: {:?}", instr);
-                handler_index = HANDLER_IDX_NOP; // Placeholder for unhandled
+                handler_index = HANDLER_IDX_NOP;
             }
         }
         processed.push(ProcessedInstr { handler_index, operand });
     }
 
-    // Pass 2 (Map Building): Build maps for End and Else targets
+    // Phase 2 (Map Building): Build maps for End and Else targets
     let mut block_end_map: HashMap<usize, usize> = HashMap::new(); // Map block_start_pc -> end_marker_pc + 1
     let mut if_else_map: HashMap<usize, usize> = HashMap::new(); // Map if_start_pc -> else_marker_pc + 1
     let mut control_stack_for_map_building: Vec<(usize, bool)> = Vec::new(); // (processed_pc_start, is_loop)
@@ -558,12 +523,11 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
             _ => {}
         }
     }
-    // Ensure stack is empty after map building (all blocks closed)
     if !control_stack_for_map_building.is_empty() {
         return Err(RuntimeError::InvalidWasm("Unclosed control block at end of function"));
     }
 
-    // Pass 3 (Fixup Br, BrIf, If, Else): Resolve branch targets using maps
+    // Phase 3 (Fixup Br, BrIf, If, Else): Resolve branch targets using maps
     let mut current_control_stack_pass3: Vec<(usize, bool)> = Vec::new(); // Separate stack for this pass
     for fixup_index in 0..fixups.len() {
         // Use a mutable borrow to potentially mark fixups as done (if needed later)
@@ -636,7 +600,7 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
         fixups[fixup_index].1 = usize::MAX;
     }
 
-    // Pass 4 (Fixup BrTable): Resolve BrTable targets
+    // Phase 4 (Fixup BrTable): Resolve BrTable targets
     let mut current_control_stack_pass4: Vec<(usize, bool)> = Vec::new(); // Separate stack for this pass
     for (pc, instr) in processed.iter_mut().enumerate() {
         // Maintain control stack state for Pass 4
@@ -706,7 +670,6 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
 
     Ok(processed)
 }
-// --- Stack Structures (Adapted for DTC) ---
 
 pub struct Stacks {
     pub activation_frame_stack: Vec<FrameStack>,
@@ -1163,13 +1126,6 @@ macro_rules! cmpop {
         }
     };
 }
-
-// Removed unused macro: convertop
-// macro_rules! convertop { ... }
-
-// Removed unused macro: reinterpretop
-// macro_rules! reinterpretop { ... }
-
 
 fn handle_unreachable(_ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     Err(RuntimeError::Unreachable)
@@ -2636,9 +2592,7 @@ fn handle_f64_reinterpret_i64(ctx: &mut ExecutionContext, _operand: Operand) -> 
 // --- Handler Table ---
 lazy_static! {
     static ref HANDLER_TABLE: Vec<HandlerFn> = {
-        let mut table: Vec<HandlerFn> = vec![handle_unimplemented; MAX_HANDLER_INDEX]; // Initialize with unimplemented handler
-
-        // Assign implemented handlers based on their index constants
+        let mut table: Vec<HandlerFn> = vec![handle_unimplemented; MAX_HANDLER_INDEX];
         table[HANDLER_IDX_UNREACHABLE] = handle_unreachable;
         table[HANDLER_IDX_NOP] = handle_nop;
         table[HANDLER_IDX_BLOCK] = handle_block;
@@ -2652,16 +2606,13 @@ lazy_static! {
         table[HANDLER_IDX_RETURN] = handle_return;
         table[HANDLER_IDX_CALL] = handle_call;
         table[HANDLER_IDX_CALL_INDIRECT] = handle_call_indirect; 
-
         table[HANDLER_IDX_DROP] = handle_drop;
         table[HANDLER_IDX_SELECT] = handle_select; 
-
         table[HANDLER_IDX_LOCAL_GET] = handle_local_get;
         table[HANDLER_IDX_LOCAL_SET] = handle_local_set;
         table[HANDLER_IDX_LOCAL_TEE] = handle_local_tee;
         table[HANDLER_IDX_GLOBAL_GET] = handle_global_get;
         table[HANDLER_IDX_GLOBAL_SET] = handle_global_set;
-
         table[HANDLER_IDX_I32_LOAD] = handle_i32_load;
         table[HANDLER_IDX_I64_LOAD] = handle_i64_load;
         table[HANDLER_IDX_F32_LOAD] = handle_f32_load;
@@ -2825,7 +2776,6 @@ lazy_static! {
         table[HANDLER_IDX_I64_EXTEND16_S] = handle_i64_extend16_s;
         table[HANDLER_IDX_I64_EXTEND32_S] = handle_i64_extend32_s;
         // TODO: Add remaining handlers as they are implemented (TruncSat, etc.)
-
         table
     };
 }

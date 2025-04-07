@@ -1,14 +1,14 @@
 use std::{rc::Rc, cell::*, rc::Weak};
 use crate::structure::{types::*,module::*, instructions::Expr};
-use super::value::Val; // Import Val directly
-use super::module::*; // Keep module import
-use crate::error::RuntimeError; // Import RuntimeError
-#[cfg(feature = "fast")] // Conditionally import stackopt
+use super::value::Val;
+use super::module::*;
+use crate::error::RuntimeError;
+#[cfg(feature = "fast")]
 use crate::execution::stackopt;
-#[cfg(feature = "interp")] // Conditionally import stack
+#[cfg(feature = "interp")] 
 use crate::execution::stack;
 
-use std::fmt::{self, Debug}; // Import Debug and fmt
+use std::fmt::{self, Debug};
 
 #[derive(Clone, Debug)]
 pub struct FuncAddr(Rc<RefCell<FuncInst>>);
@@ -43,7 +43,6 @@ impl Debug for FuncInst {
 }
 
 
-// Implementation for FuncAddr to hold the methods
 impl FuncAddr {
     pub fn call(&self, params: Vec<Val>) -> Result<Vec<Val>, RuntimeError> {
         #[cfg(feature = "fast")]
@@ -56,8 +55,7 @@ impl FuncAddr {
             let mut stack_stacks = stack::Stacks::new(self, params);
             loop {
                 match stack_stacks.exec_instr() {
-                    Ok(()) => { // Assuming Ok(()) means continue
-                        // Check completion condition based on stack state
+                    Ok(()) => { 
                         if stack_stacks.activation_frame_stack.len() == 1
                         && stack_stacks.activation_frame_stack.first().map_or(true, |f| f.label_stack.len() == 1)
                         && stack_stacks.activation_frame_stack.first().and_then(|f| f.label_stack.first()).map_or(true, |l| l.instrs.is_empty())
@@ -120,6 +118,3 @@ impl FuncAddr {
         }
     }
 }
-
-// Removed the separate FuncInst impl block as `new` is now handled within `replace`
-// or could be a separate associated function if needed elsewhere.
