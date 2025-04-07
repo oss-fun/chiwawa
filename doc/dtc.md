@@ -94,6 +94,63 @@ Direct Threaded Code (DTC) は、インタプリタ（特に仮想マシンや�
     }
     // この時点で current_control_stack_pass3 は fixup_pc 時点のネスト状態を表す
     ```
+*   **Phase 3: Br, BrIf, If, Else の Fixup**
+    *   `fixups` ベクタ内の `BrTable` 以外の分岐情報を処理。
+    *   各 Fixup 情報 `(fixup_pc, relative_depth, ...)` について：
+        1.  **制御スタック再構築:** `processed` 列を先頭から `fixup_pc` までスキャンし、その時点での `Block`, `Loop`, `If` のネスト状態をスタックに再現。
+        2.  **ターゲットブロック特定:** `relative_depth` を使って、再構築したスタックからジャンプ対象ブロックの開始 PC (`target_start_pc`) を特定。
+        3.  **絶対ターゲット PC 計算:** ターゲットが `Loop` なら `target_start_pc`、`Block`/`If` なら `block_end_map` を使って対応する `End` の次の PC を `target_ip` として計算。
+        4.  **オペランド更新:** 計算した `target_ip` を `processed[fixup_pc]` の `operand` (`Operand::LabelIdx`) に書き込む。`If`/`Else` の場合は `if_else_map` も参照。
+
+         ```
+        | PC (ip) | Handler Index        | 説明                     |
+        | :------ | :------------------- | :----------------------- |
+        | 0       | HANDLER_IDX_BLOCK    | 外側の Block 開始        |
+        | 1       | HANDLER_IDX_I32_CONST |                          |
+        | 2       | HANDLER_IDX_IF       | If 開始                  |
+        | 3       | HANDLER_IDX_I32_CONST | (then 節)                |
+        | 4       | HANDLER_IDX_LOCAL_SET | (then 節)                |
+        | 5       | HANDLER_IDX_BR       | Br 0 (fixup対象 @ pc=5) |
+        | 6       | HANDLER_IDX_END      | If 終了                  |
+        | 7       | HANDLER_IDX_END      | 外側の Block 終了        |
+
+        Fixup 対象: pc = 5, relative_depth = 0 (元の命令: Br 0)
+        ----------------------------------------------------------
+        1. 制御スタック再構築 (pc = 0 から 5 までスキャン):
+        pc = 0 (BLOCK): push (0, false) -> Stack: [(0, false)]
+        pc = 1 (CONST): no change     -> Stack: [(0, false)]
+        pc = 2 (IF):    push (2, false) -> Stack: [(0, false), (2, false)]
+        pc = 3 (CONST): no change     -> Stack: [(0, false), (2, false)]
+        pc = 4 (SET):   no change     -> Stack: [(0, false), (2, false)]
+        pc = 5 (BR):    スキャン終了
+        ==> 再構築されたスタック: [(0, false), (2, false)]
+
+        2. ターゲットブロック特定:
+        - relative_depth = 0 なので、スタックのトップ要素を取得。
+        - target_block = (pc=2, is_loop=false)
+        - target_start_pc = 2
+        - is_loop = false
+
+        3. 絶対ターゲット PC 計算:
+        - is_loop が false なので、block_end_map を使用。
+        - block_end_map には、Phase 2 で「PC=2 で始まるブロックは PC=6 の End の次 (PC=7) で終わる」という情報が記録されていると仮定 (block_end_map[2] == 7)。
+        - target_ip = block_end_map[&target_start_pc] = block_end_map[&2] = 7
+
+        4. オペランド更新:
+        - processed[fixup_pc] (つまり processed[5]) の operand を更新。
+        - 元の命令は Br なので、計算した target_ip を設定。
+        - processed[5].operand = Operand::LabelIdx(7)
+        ```
+
+*   **Phase 4: BrTable の Fixup**
+    *   `BrTable` 命令のオペランド (`Operand::None` のままのもの) を処理。
+    *   **理由:** `BrTable` は複数のターゲットを持つため、他の分岐が解決された後 (Phase 3 完了後) に処理することで、各ターゲット解決時の制御スタック再構築が正しく行えることを保証。
+    *   各 `BrTable` 命令 (`pc`) について：
+        1.  **関連 Fixup 特定:** `fixups` から `pc` に対応するエントリを全て見つける。
+        2.  **各ターゲット解決:** 見つけた各 Fixup 情報について、Phase 3 と同様に制御スタック再構築とマップ参照を行い、絶対宛先 PC を計算します（最後の Fixup はデフォルト分岐に対応）。
+        3.  **オペランド更新:** 解決した全ターゲット PC のリストとデフォルト PC を `processed[pc]` の `operand` に `Operand::BrTable { targets: [...], default: ... }` として書き込む。
+
+この複数パスによる Fixup により、実行ループは分岐命令に対して単純に `operand` 内の絶対 PC を返すだけで良い。
 
 ### 3. ハンドラテーブル (`HANDLER_TABLE`)
 
