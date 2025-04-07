@@ -1024,7 +1024,7 @@ impl LabelStack{
                         },
                         Instr::I32TruncF32S => {
                             let a = self.value_stack.pop().unwrap().to_f32();
-                            let result = <i32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            let result = <i32 as NumCast>::from(a).ok_or_else(|| RuntimeError::ExecutionFailed("Truncation failed")).unwrap();
                             self.value_stack.push(
                                 Val::Num(Num::I32(result))
                             );
@@ -1032,7 +1032,7 @@ impl LabelStack{
                         },
                         Instr::I32TruncF32U => {
                             let a = self.value_stack.pop().unwrap().to_f32();
-                            let result = <u32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            let result = <u32 as NumCast>::from(a).ok_or_else(|| RuntimeError::ExecutionFailed("Truncation failed")).unwrap();
                             self.value_stack.push(
                                 Val::Num(Num::I32(result as i32))
                             );
@@ -1040,7 +1040,7 @@ impl LabelStack{
                         },
                         Instr::I32TruncF64S => {
                             let a = self.value_stack.pop().unwrap().to_f64();
-                            let result = <i32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            let result = <i32 as NumCast>::from(a).ok_or_else(|| RuntimeError::ExecutionFailed("Truncation failed")).unwrap();
                             self.value_stack.push(
                                 Val::Num(Num::I32(result))
                             );
@@ -1048,7 +1048,7 @@ impl LabelStack{
                         },
                         Instr::I32TruncF64U => {
                             let a = self.value_stack.pop().unwrap().to_f64();
-                            let result = <u32 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            let result = <u32 as NumCast>::from(a).ok_or_else(|| RuntimeError::ExecutionFailed("Truncation failed")).unwrap();
                             self.value_stack.push(
                                 Val::Num(Num::I32(result as i32))
                             );
@@ -1056,7 +1056,7 @@ impl LabelStack{
                         },
                         Instr::I64TruncF32S => {
                             let a = self.value_stack.pop().unwrap().to_f32();
-                            let result = <i64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            let result = <i64 as NumCast>::from(a).ok_or_else(|| RuntimeError::ExecutionFailed("Truncation failed")).unwrap();
                             self.value_stack.push(
                                 Val::Num(Num::I64(result))
                             );
@@ -1064,7 +1064,7 @@ impl LabelStack{
                         },
                         Instr::I64TruncF32U => {
                             let a = self.value_stack.pop().unwrap().to_f32();
-                            let result = <u64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            let result = <u64 as NumCast>::from(a).ok_or_else(|| RuntimeError::ExecutionFailed("Truncation failed")).unwrap();
                             self.value_stack.push(
                                 Val::Num(Num::I64(result as i64))
                             );
@@ -1072,7 +1072,7 @@ impl LabelStack{
                         },
                         Instr::I64TruncF64S => {
                             let a = self.value_stack.pop().unwrap().to_f64();
-                            let result = <i64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            let result = <i64 as NumCast>::from(a).ok_or_else(|| RuntimeError::ExecutionFailed("Truncation failed")).unwrap();
                             self.value_stack.push(
                                 Val::Num(Num::I64(result))
                             );
@@ -1080,7 +1080,7 @@ impl LabelStack{
                         },
                         Instr::I64TruncF64U => {
                             let a = self.value_stack.pop().unwrap().to_f64();
-                            let result = <u64 as NumCast>::from(a).ok_or_else(|| RuntimeError::TruncError).unwrap();
+                            let result = <u64 as NumCast>::from(a).ok_or_else(|| RuntimeError::ExecutionFailed("Truncation failed")).unwrap();
                             self.value_stack.push(
                                 Val::Num(Num::I64(result as i64))
                             );
@@ -1673,12 +1673,12 @@ impl LabelStack{
                                 if let Some(func) = table.get(i as usize) {
                                     func
                                 } else {
-                                    return Err(RuntimeError::ExecutionFailed);
+                                    return Err(RuntimeError::ExecutionFailed("Undefined element in table")); // Added error message
                                 }
                             };
 
                             if func.func_type() != *instance.types.get_by_idx(typeidx){
-                                return Err(RuntimeError::ExecutionFailed);
+                                return Err(RuntimeError::ExecutionFailed("Indirect call type mismatch")); // Added error message
                             }
                             
                             self.instrs.push(AdminInstr::Invoke(func.clone()));

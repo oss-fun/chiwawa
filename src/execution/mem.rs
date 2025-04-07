@@ -5,8 +5,9 @@ use typenum::*;
 use std::io::Cursor;
 use byteorder::*;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MemAddr(Rc<RefCell<MemInst>>);
+#[derive(Debug)]
 pub struct MemInst {
     pub type_: MemType,
     pub data: Vec<u8>,
@@ -34,7 +35,7 @@ impl MemAddr {
             addr_self.data[index + offset] = *data;
         }
     }
-    pub fn load<T: ByteMem>(&self, arg: &Memarg, mut ptr: i32) -> Result<T, RuntimeError>{
+    pub fn load<T: ByteMem>(&self, arg: &Memarg, ptr: i32) -> Result<T, RuntimeError>{
         let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap()).ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
         let len = <T>::len();
         let raw = &self.0.borrow().data;
@@ -46,7 +47,7 @@ impl MemAddr {
         let data = Vec::from(&raw[pos..pos + len]);
         Ok(<T>::from_byte(data))
     }
-    pub fn store<T:ByteMem>(&self, arg: &Memarg, mut ptr: i32, data: T)-> Result<(), RuntimeError>{
+    pub fn store<T:ByteMem>(&self, arg: &Memarg, ptr: i32, data: T)-> Result<(), RuntimeError>{
         let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap()).ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
         let buf = <T>::to_byte(data);
         let raw = &mut self.0.borrow_mut().data;
