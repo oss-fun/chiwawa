@@ -759,6 +759,7 @@ impl Stacks {
                         },
                         processed_instrs,
                         value_stack: vec![],
+                        ip: 0, // Initialize IP to 0
                     }],
                     void: type_.results.is_empty(),
                 };
@@ -795,7 +796,7 @@ impl Stacks {
             match module_level_instr_result {
                 Ok(Some(instr)) => { // Frame transition requested (Return/Call)
                     // Need mutable borrow for potential param passing in Invoke
-                    let mut current_frame_stack = self.activation_frame_stack.last_mut().unwrap(); // Should not panic if loop condition holds
+                    let current_frame_stack = self.activation_frame_stack.last_mut().unwrap(); // Should not panic if loop condition holds
                     // Ensure label_stack is not empty before accessing last_mut
                     if current_frame_stack.label_stack.is_empty() {
                         // This should ideally not happen if run_dtc_loop returned Ok(Some(...))
@@ -813,7 +814,7 @@ impl Stacks {
                                     if cur_label_stack.value_stack.len() < params_len {
                                         return Err(RuntimeError::ValueStackUnderflow);
                                     }
-                                    let mut params = cur_label_stack.value_stack.split_off(cur_label_stack.value_stack.len() - params_len);
+                                    let params = cur_label_stack.value_stack.split_off(cur_label_stack.value_stack.len() - params_len); // No mut needed
 
                                     // Initialize locals (params + defaults)
                                     let mut locals = params;
@@ -849,6 +850,7 @@ impl Stacks {
                                                 },
                                                 processed_instrs: processed_code,
                                                 value_stack: vec![],
+                                                ip: 0, // Initialize IP for new frame
                                             }
                                         ],
                                         void: type_.results.is_empty(),
@@ -868,14 +870,17 @@ impl Stacks {
                                         Ok(Some(result_val)) => {
                                             // Push result onto the *caller's* stack (which is current_frame_stack)
                                             cur_label_stack.value_stack.push(result_val);
+                                            // Host call finished, advance IP in the *caller* frame
+                                            cur_label_stack.ip += 1;
                                         }
                                         Ok(None) => {
-                                            // No return value, do nothing
+                                            // No return value, still advance IP in the caller frame
+                                            cur_label_stack.ip += 1;
                                         }
                                         Err(e) => return Err(e), // Propagate host error
                                     }
                                     // Host call doesn't push a new Wasm frame, continue in current frame loop?
-                                    // Or does the outer loop handle this implicitly by continuing? Let's assume continue.
+                                    // The loop continues naturally after IP is advanced.
                                 },
                             }
                         },
@@ -903,6 +908,7 @@ impl Stacks {
                             if let Some(caller_frame) = self.activation_frame_stack.last_mut() {
                                  if let Some(caller_label_stack) = caller_frame.label_stack.last_mut() {
                                      caller_label_stack.value_stack.extend(return_values);
+                                     // Caller's IP was already advanced by run_dtc_loop before returning the Return signal
                                  } else {
                                      return Err(RuntimeError::StackError("Caller label stack empty during return"));
                                  }
@@ -931,6 +937,7 @@ impl Stacks {
                      if let Some(caller_frame) = self.activation_frame_stack.last_mut() {
                           if let Some(caller_label_stack) = caller_frame.label_stack.last_mut() {
                              caller_label_stack.value_stack.extend(return_values);
+                             // Caller's IP was already advanced by run_dtc_loop before reaching the end
                          } else {
                              return Err(RuntimeError::StackError("Caller label stack empty during implicit return"));
                          }
@@ -963,7 +970,7 @@ pub struct FrameStack {
 }
 
 impl FrameStack{
-    /// Runs the Direct Threaded Code loop for this frame.
+/// Runs the Direct Threaded Code loop for this frame.
     /// Returns Ok(Some(ModuleLevelInstr)) if a frame transition (Call/Return) is needed,
     /// Ok(None) if the frame execution completes normally (reaches end),
     /// or Err on runtime error.
@@ -971,34 +978,38 @@ impl FrameStack{
         println!("[DTC] Entering run_dtc_loop"); // Added log
         // Get mutable access to the current label stack
         let current_label_stack = self.label_stack.last_mut().ok_or(RuntimeError::StackError("Label stack empty"))?;
-        let processed_code = &current_label_stack.processed_instrs;
+        let processed_code = &current_label_stack.processed_instrs; // Immutable borrow
 
         if processed_code.is_empty() {
-            // If there's no code (e.g., initial frame before first invoke), signal completion.
              return Ok(Ok(None));
         }
 
-        let mut ip = 0; // Instruction pointer for the processed code
+        // Use the ip stored in the LabelStack
+        let mut ip = current_label_stack.ip;
 
         loop {
             if ip >= processed_code.len() {
                 // Reached end of code block naturally
+                // Update the stored IP before breaking/returning
+                current_label_stack.ip = ip;
                 break;
             }
 
             // Clone instruction to avoid borrowing issues when context is passed mutably
-            // This might be optimizable later if context passing is changed.
-            let instruction = processed_code[ip].clone();
+            let instruction = processed_code[ip].clone(); // Clone from immutable borrow
             println!("[DTC Loop] ip: {}, handler_idx: {}, operand: {:?}", ip, instruction.handler_index, instruction.operand); // Modified log
             println!("[DTC Loop] Stack BEFORE: {:?}", current_label_stack.value_stack); // Added log
+
+            // Need mutable access to value_stack within the LabelStack
+            // We already have `current_label_stack` as mutable, so we can borrow its fields mutably.
             let handler_fn = HANDLER_TABLE.get(instruction.handler_index)
                                         .ok_or(RuntimeError::InvalidHandlerIndex)?;
 
             // Pass mutable references to frame and value_stack
-            let mut context = ExecutionContext { // Added mut here
-                frame: &mut self.frame, // Pass mutable reference to the stackopt::Frame
-                value_stack: &mut current_label_stack.value_stack,
-                ip,
+            let mut context = ExecutionContext {
+                frame: &mut self.frame,
+                value_stack: &mut current_label_stack.value_stack, // Mutable borrow here
+                ip, // Pass current ip
             };
 
             // --- Execute Handler ---
@@ -1010,29 +1021,36 @@ impl FrameStack{
                 Ok(next_ip) => {
                     println!("[DTC Loop] Handler result: Ok({})", next_ip); // Added log
                     if next_ip == usize::MAX { // Sentinel for Return
+                        // Update IP *before* returning signal
+                        current_label_stack.ip = ip + 1; // Point to instruction *after* return
                         return Ok(Ok(Some(ModuleLevelInstr::Return)));
                     } else if next_ip == usize::MAX - 1 { // Sentinel for Call
+                         // Update IP *before* returning signal
+                         current_label_stack.ip = ip + 1; // Point to instruction *after* call
                          // Extract FuncIdx from the *original* instruction operand
-                         if let Operand::FuncIdx(func_idx) = &processed_code[ip].operand { // Borrow operand here
+                         if let Operand::FuncIdx(func_idx) = &instruction.operand { // Use cloned instruction
                              let instance = self.frame.module.upgrade().ok_or(RuntimeError::ModuleInstanceGone)?;
-                             // E0308 Fix: Pass func_idx directly (it's already a reference)
                              let func_addr = instance.func_addrs.get_by_idx(func_idx.clone()).clone();
                              *called_func_addr_out = Some(func_addr.clone()); // Store the called address
                              return Ok(Ok(Some(ModuleLevelInstr::Invoke(func_addr))));
                          } else {
-                             // This indicates an internal error
                              return Ok(Err(RuntimeError::ExecutionFailed("Invalid operand found for call signal")));
                          }
                     }
                     // TODO: Handle CallIndirect similarly
-                    ip = next_ip; // Continue execution
+                    ip = next_ip; // Continue execution at the address returned by handler (e.g., branch target)
                 }
-                Err(e) => { return Ok(Err(e)); } // Wrap runtime error in Ok for panic safety layer
+                Err(e) => {
+                    // Update IP before propagating error
+                    current_label_stack.ip = ip;
+                    return Ok(Err(e));
+                } // Wrap runtime error in Ok for panic safety layer
             }
         }
 
         // If loop finishes normally (reaches end of code), it's like an implicit return.
         // The outer exec_instr loop will handle popping the frame.
+        // IP is already updated before breaking.
         Ok(Ok(None))
     }
 }
@@ -1047,7 +1065,9 @@ pub struct LabelStack {
     pub label: Label,
     pub processed_instrs: Vec<ProcessedInstr>, // DTC instruction format
     pub value_stack: Vec<Val>,
+    pub ip: usize, // Instruction pointer for this label/frame level
 }
+
 
 // These enums might be simplified or removed later if FrameStack::run_dtc_loop handles everything
 #[derive(Clone)]
