@@ -46,17 +46,16 @@ fn main() -> Result <()>{
     let inst = ModuleInst::new(&module, imports).unwrap();
     let result = inst.get_export_func(&cli.invoke)?.call(params);
 
-    // Use match to handle the result without moving it
     match result {
         Ok(mut values) => {
             if let Some(val) = values.pop() {
-                println!("Result: {:?}", val); // Print the result if any
+                println!("Result: {:?}", val);
             } else {
                 println!("Result: (no values returned)");
             }
         }
         Err(e) => {
-            eprintln!("Error: {:?}", e); // Print error if execution failed
+            eprintln!("Error: {:?}", e);
         }
     }
     Ok(())
@@ -819,8 +818,6 @@ mod tests {
         assert_eq!(ret.unwrap().pop().unwrap().to_i32(), -1);
     }
 
-    // --- i64 tests ---
-    // (Split similarly to i32 tests)
     #[test]
     fn test_i64_add() {
         let inst = load_instance("test/i64.wasm");
@@ -836,10 +833,6 @@ mod tests {
         assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 0x40000000u64 as i64);
     }
 
-    // ... (Add tests for i64 sub, mul, div_s, div_u, rem_s, rem_u, and, or, xor, shl, shr_s, shr_u, rotl, rotr, clz, ctz, popcnt, eqz, eq, ne, lt_s, lt_u, le_s, le_u, gt_s, gt_u, ge_s, ge_u, extend8_s, extend16_s, extend32_s) ...
-
-    // --- conversions tests ---
-    // (Split similarly)
     #[test]
     fn test_i64_extend_i32_s() {
         let inst = load_instance("test/conversions.wasm");
@@ -857,10 +850,6 @@ mod tests {
         assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 0xffffffff80000000u64 as i64);
     }
 
-    // ... (Add tests for i64.extend_i32_u, i32.wrap_i64, i32.trunc_f32_s, etc.) ...
-
-    // --- call tests ---
-    // (Split similarly)
     #[test]
     fn test_call_type_i32() {
         let inst = load_instance("test/call.wasm");
@@ -878,7 +867,5 @@ mod tests {
         let ret = inst.get_export_func("fac").unwrap().call(vec![Val::Num(Num::I64(5))]);
         assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 120);
     }
-
-    // ... (Add tests for other call scenarios like type-i64, type-f32, fac-acc, fib, even, odd, as-*) ...
 
 }

@@ -5,9 +5,9 @@ use typenum::*;
 use std::io::Cursor;
 use byteorder::*;
 
-#[derive(Clone, Debug)] // Added Debug
+#[derive(Clone, Debug)]
 pub struct MemAddr(Rc<RefCell<MemInst>>);
-#[derive(Debug)] // Added Debug
+#[derive(Debug)]
 pub struct MemInst {
     pub type_: MemType,
     pub data: Vec<u8>,
