@@ -78,10 +78,10 @@ Direct Threaded Code (DTC) は、インタプリタ（特に仮想マシンや�
 *  分岐先の解決には依存関係があるため、複数回の走査が必要である。
     *   Phase 1 で命令を変換しつつ、未解決の分岐情報を `fixups` に記録する。
     *   Phase 2 で `End` や `Else` の位置情報を `HashMap` に記録する。これは Pass 3/4 で分岐先を計算するために必要。
-    *   Phase 3/4 で `fixups` を処理し、Pass 2 のマップ情報と**制御スタックの再構築**を用いて絶対的な分岐先 PC を計算し、`ProcessedInstr` のオペランドを更新します。`BrTable` は複数のターゲットを持つため、他の分岐命令解決後 (Phase 4) に処理されます。
+    *   Phase 3/4 で `fixups` を処理し、Pass 2 のマップ情報と**制御スタックの再構築**を用いて絶対的な分岐先 PC を計算し、`ProcessedInstr` のオペランドを更新する。`BrTable` は複数のターゲットを持つため、他の分岐命令解決後 (Phase 4) に処理する。
 *   **制御スタック再構築の理由 (Phase 3/4):** Wasm の分岐は相対深度で行われるため、各分岐命令 (`fixup_pc`) が実行される時点での正しいネスト構造を知る必要がある。
 そのため、各 Fixup ごとに命令列の先頭から `fixup_pc` までをスキャンし、その時点での制御スタック (`current_control_stack_passX`) を再現。
-これにより、`relative_depth` を使って正しいターゲットブロックを特定できます。
+これにより、`relative_depth` を使って正しいターゲットブロックを特定できる。
     ```rust
     // Phase 3 内の制御スタック再構築ループ (簡略化)
     current_control_stack_pass3.clear();
@@ -97,7 +97,7 @@ Direct Threaded Code (DTC) は、インタプリタ（特に仮想マシンや�
 
 ### 3. ハンドラテーブル (`HANDLER_TABLE`)
 
-*   **役割:** 命令コード（のインデックス）から対応するハンドラ関数へのマッピングを提供し。
+*   **役割:** 命令コード（のインデックス）から対応するハンドラ関数へのマッピングを提供。
 *   **理由:** `handler_index` を使った O(1) の高速なルックアップを可能にする。
 `lazy_static!` を使うのは、関数ポインタを含む静的ベクターを安全に初期化するため。
 `const` 文脈では関数ポインタの直接代入が制限される。
@@ -117,14 +117,13 @@ Direct Threaded Code (DTC) は、インタプリタ（特に仮想マシンや�
     }
     ```
 
-### 4. 命令ハンドラ (`handle_*` 関数群)
+### 4. 命令ハンドラ (`handle_*` )
 
-*   **役割:** 個々の Wasm 命令のセマンティクス（スタック操作、計算、メモリ/テーブル/グローバルアクセスなど）を実装します。
-*   **理由:** 各命令の処理を独立した関数に分離することで、コードのモジュール性と可読性を高めます。DTC の文脈では、これらの関数が実行ループから直接呼び出される単位となります。
-*   **戻り値の設計理由:**
-    *   `Ok(ctx.ip + 1)`: 最も一般的なケース。単純に次の命令に進むことを示す。
-    *   `Ok(target_ip)`: 分岐命令用。前処理で計算済みの絶対 PC を返すことで、ループ側での計算を不要にする。
-    *   `Ok(usize::MAX - 1)` / `Ok(usize::MAX)`: Call/Return 用のセンチネル値。実行ループに特別なアクション（フレーム操作）が必要であることを効率的に伝える。
+*   **役割:** 個々の Wasm 命令のセマンティクス（スタック操作、計算、メモリ/テーブル/グローバルアクセスなど）を実装する。
+*   **戻り値:**
+    *   `Ok(ctx.ip + 1)`: 最も一般的なケース。単純に次の命令に進む。
+    *   `Ok(target_ip)`: 分岐命令用。前処理で計算済みの絶対 PC を返すことで、ループ側での計算が不要。
+    *   `Ok(usize::MAX - 1)` / `Ok(usize::MAX)`: Call/Return 用の値。実行ループに特別なアクション（フレーム操作）が必要であることを伝える。
 
     ```rust
     // 例: i32.add (マクロ使用)
@@ -162,31 +161,12 @@ Direct Threaded Code (DTC) は、インタプリタ（特に仮想マシンや�
     }
     ```
 
-### 5. 実行ループ (`FrameStack::run_dtc_loop` メソッド)
+### 5. 実行ループ (`FrameStack::run_dtc_loop` )
 
-*   **役割:** DTC の心臓部。現在の関数フレーム内で `ProcessedInstr` 列を高速に実行します。
-*   **理由:** `match` によるディスパッチを排除し、テーブルルックアップ (`HANDLER_TABLE.get(...)`) と関数呼び出し (`handler_fn(...)`) の単純な繰り返しにすることで、インタプリタの主要なオーバーヘッドを削減します。Call/Return のようなフレームを跨ぐ操作は、センチネル値を返すことで上位の `exec_instr` に委譲します。
+*   **役割:** 現在の関数フレーム内で `ProcessedInstr` 列を高速。
+*   `match` によるディスパッチを排除し、テーブルルックアップ (`HANDLER_TABLE.get(...)`) と関数呼び出し (`handler_fn(...)`) の単純な繰り返しにすることで、インタプリタの主要なオーバーヘッドを削減。Call/Return のようなフレームを跨ぐ操作は、 `exec_instr` に委譲。
 
-    ```rust
-    // run_dtc_loop のコア部分 (簡略化)
-    loop {
-        if ip >= processed_code.len() { break; } // コード終端
-        let instruction = processed_code[ip].clone();
-        let handler_fn = HANDLER_TABLE.get(instruction.handler_index)?; // ★テーブル参照
-        let mut context = ExecutionContext { /* ... */ };
-        let result = handler_fn(&mut context, instruction.operand.clone()); // ★ハンドラ呼び出し
-        match result {
-            Ok(next_ip) => {
-                if next_ip == usize::MAX { /* Return シグナル */ return Ok(Ok(Some(ModuleLevelInstr::Return))); }
-                else if next_ip == usize::MAX - 1 { /* Call シグナル */ /* ... */ return Ok(Ok(Some(ModuleLevelInstr::Invoke(func_addr)))); }
-                ip = next_ip; // ★次の IP へ更新
-            }
-            Err(e) => { /* エラー */ return Ok(Err(e)); }
-        }
-    }
-    ```
+### 6. フレーム管理 (`Stacks::exec_instr` )
 
-### 6. フレーム管理 (`Stacks::exec_instr` メソッド)
-
-*   **役割:** 関数呼び出し全体の制御と、関数フレーム (`FrameStack`) の管理を行います。
-*   **理由:** `run_dtc_loop` は単一フレーム内の実行に特化しているため、フレーム作成（`Invoke` 時、`preprocess_instructions` 呼び出しを含む）や破棄（`Return` 時）、ホスト関数呼び出しといった、フレームを跨ぐ処理をこのメソッドが担当します。
+*   **役割:** 関数呼び出し全体の制御と、関数フレーム (`FrameStack`) の管理。
+*   `run_dtc_loop` は単一フレーム内の実行に特化しているため、フレーム作成（`Invoke` 時、`preprocess_instructions` 呼び出しを含む）や破棄（`Return` 時）、ホスト関数呼び出しといった、フレームを跨ぐ処理をこのメソッドが担当。
