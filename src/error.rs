@@ -50,6 +50,14 @@ pub enum RuntimeError {
     InvalidParameterCount,
     #[error("Host Function Call is Unimplemented")]
     UnimplementedHostFunction,
+    #[error("Table Instance Not Found")]
+    TableNotFound,
+    #[error("Type Not Found in Module")]
+    TypeNotFound,
+    #[error("Indirect Call Type Mismatch")]
+    IndirectCallTypeMismatch,
+    #[error("Uninitialized Element in Table")]
+    UninitializedElement,
 }
 
 #[derive(Debug, Error)]
