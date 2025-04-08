@@ -310,7 +310,7 @@ fn decode_code_section(body: FunctionBody<'_>, module: &mut Module) -> Result<()
     }
 
     // --- Reverted and Modified Code ---
-    let mut ops_reader = body.get_operators_reader()?;
+    let ops_reader = body.get_operators_reader()?;
     let mut ops_iter = ops_reader.into_iter_with_offsets().peekable();
     let instrs = decode_instrs_with_markers(&mut ops_iter)?; // Use new function
     module.funcs[module.code_index].body = Expr(instrs);

@@ -42,7 +42,7 @@ fn main() -> Result <()>{
     };
     let mut module = Module::new("test");
     let _ = parser::parse_bytecode(&mut module, &cli.path);
-    let mut imports: ImportObjects = HashMap::new();
+    let imports: ImportObjects = HashMap::new();
     let inst = ModuleInst::new(&module, imports).unwrap();
     let result = inst.get_export_func(&cli.invoke)?.call(params);
 
