@@ -16,7 +16,3 @@ thiserror = "1.0.61"
 typenum = "1.17.0"
 wasmparser = "0.210.0"
 wat = "1.212.0"
-
-[features]
-interp = []
-fast = []

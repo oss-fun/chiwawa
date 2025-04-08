@@ -3,11 +3,7 @@ use crate::structure::{types::*,module::*, instructions::Expr};
 use super::value::Val;
 use super::module::*;
 use crate::error::RuntimeError;
-#[cfg(feature = "fast")]
-use crate::execution::stackopt;
-#[cfg(feature = "interp")] 
-use crate::execution::stack;
-
+use crate::execution::stack::Stacks;
 use std::fmt::{self, Debug};
 
 #[derive(Clone, Debug)]
@@ -45,38 +41,8 @@ impl Debug for FuncInst {
 
 impl FuncAddr {
     pub fn call(&self, params: Vec<Val>) -> Result<Vec<Val>, RuntimeError> {
-        #[cfg(feature = "fast")]
-        {
-            let mut dtc_stacks = stackopt::Stacks::new(self, params)?;
-            dtc_stacks.exec_instr()
-        }
-        #[cfg(all(not(feature = "fast"), feature = "interp"))]
-        {
-            let mut stack_stacks = stack::Stacks::new(self, params);
-            loop {
-                match stack_stacks.exec_instr() {
-                    Ok(()) => { 
-                        if stack_stacks.activation_frame_stack.len() == 1
-                        && stack_stacks.activation_frame_stack.first().map_or(true, |f| f.label_stack.len() == 1)
-                        && stack_stacks.activation_frame_stack.first().and_then(|f| f.label_stack.first()).map_or(true, |l| l.instrs.is_empty())
-                        {
-                            break;
-                        }
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-            // Return final value stack
-            if let Some(mut last_frame) = stack_stacks.activation_frame_stack.pop() {
-                if let Some(last_label) = last_frame.label_stack.pop() {
-                            Ok(last_label.value_stack)
-                        } else {
-                            Err(RuntimeError::StackError("Final label stack empty"))
-                        }
-                    } else {
-                         Err(RuntimeError::StackError("Final frame stack empty"))
-                    }
-                }
+        let mut dtc_stacks = Stacks::new(self, params)?;
+        dtc_stacks.exec_instr()
     }
 
     pub fn borrow(&self) -> Ref<FuncInst> {
