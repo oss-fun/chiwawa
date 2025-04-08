@@ -4,16 +4,14 @@ use crate::error::RuntimeError;
 use std::arch::asm;
 use crate::structure::types::{FuncIdx, GlobalIdx, LocalIdx, TableIdx, TypeIdx, LabelIdx as StructureLabelIdx};
 use crate::structure::instructions::Memarg; 
-use crate::structure::module::Func;
 use std::collections::HashMap;
-use num::{Float, NumCast};
 use std::ops::{BitAnd, BitOr, BitXor, Add, Sub, Mul, Div};
 use lazy_static::lazy_static;
 use crate::execution::value::Val;
 use crate::execution::module::{ModuleInst, GetInstanceByIdx}; 
 use crate::execution::func::{FuncAddr, FuncInst};
-use std::rc::{Rc, Weak}; 
-use crate::structure::types::{FuncType, ValueType, NumType, VecType}; 
+use std::rc::{Weak}; 
+use crate::structure::types::{ValueType, NumType, VecType}; 
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Operand {
@@ -261,7 +259,7 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
     // Phase 1: Map instructions, identify labels, store fixup info
     for instr in original_instrs.iter() {
         let current_processed_pc = processed.len();
-        let mut handler_index = HANDLER_IDX_NOP;
+        let mut handler_index;
         let mut operand = Operand::None;
 
         match instr {
@@ -311,7 +309,7 @@ fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedIns
                 handler_index = HANDLER_IDX_CALL;
                 operand = Operand::FuncIdx(func_idx.clone());
             }
-            Instr::CallIndirect(table_idx, type_idx) => {
+            Instr::CallIndirect(_table_idx, type_idx) => {
                 handler_index = HANDLER_IDX_CALL_INDIRECT;
                 operand = Operand::TypeIdx(type_idx.clone());
             }
@@ -748,7 +746,7 @@ impl Stacks {
                         // This should ideally not happen if run_dtc_loop returned Ok(Some(...))
                         return Err(RuntimeError::StackError("Label stack empty during frame transition"));
                     }
-                    let mut cur_label_stack = current_frame_stack.label_stack.last_mut().unwrap();
+                    let cur_label_stack = current_frame_stack.label_stack.last_mut().unwrap();
 
                     match instr {
                         ModuleLevelInstr::Invoke(func_addr) => {
@@ -2347,7 +2345,7 @@ fn handle_i64_store32(ctx: &mut ExecutionContext, operand: Operand) -> Result<us
 
 fn handle_f64_sqrt(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let x = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
-    let mut result: f64;
+    let result: f64;
     result = x.sqrt();
     // unsafe { asm!("local.get {0}", "f64.sqrt", "local.set {1}", in(local) x, out(local) result); }
     ctx.value_stack.push(Val::Num(Num::F64(result)));
@@ -2362,7 +2360,7 @@ fn handle_f64_div(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize
 fn handle_f64_min(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
-    let mut result: f64;
+    let result: f64;
     result = lhs.min(rhs);
     // unsafe { asm!("local.get {0}", "local.get {1}", "f64.min", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
     ctx.value_stack.push(Val::Num(Num::F64(result)));
@@ -2372,7 +2370,7 @@ fn handle_f64_min(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize
 fn handle_f64_max(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
-    let mut result: f64;
+    let result: f64;
     result = lhs.max(rhs);
     // unsafe { asm!("local.get {0}", "local.get {1}", "f64.max", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
     ctx.value_stack.push(Val::Num(Num::F64(result)));
@@ -2382,7 +2380,7 @@ fn handle_f64_max(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize
 fn handle_f64_copysign(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
     let rhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
     let lhs = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?.to_f64();
-    let mut result: f64;
+    let result: f64;
     result = lhs.copysign(rhs);
     // unsafe { asm!("local.get {0}", "local.get {1}", "f64.copysign", "local.set {2}", in(local) lhs, in(local) rhs, out(local) result); }
     ctx.value_stack.push(Val::Num(Num::F64(result)));
