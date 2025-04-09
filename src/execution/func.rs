@@ -61,7 +61,8 @@ impl FuncAddr {
                     code: Func{
                         type_: TypeIdx(0),
                         locals: Vec::new(),
-                        body: Expr(Vec::new())
+                        body: Vec::new(),
+                        fixups: Vec::new()
                     }
                 }
             ))

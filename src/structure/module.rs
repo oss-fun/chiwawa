@@ -1,11 +1,13 @@
 use crate::structure::types::*;
 use crate::structure::instructions::*;
+use crate::execution::stack::*;
 
 #[derive(Clone, Debug)]
 pub struct Func {
     pub type_: TypeIdx,
     pub locals: Vec<(u32,ValueType)>,
-    pub body: Expr,
+    pub body: Vec<ProcessedInstr>,
+    pub fixups: Vec<FixupInfo>,
 }
 
 #[derive(Clone)]
