@@ -1,6 +1,7 @@
 pub mod value;
 pub mod module;
 pub mod func;
+pub mod stack;
 mod store;
 mod table;
 mod mem;
@@ -8,4 +9,3 @@ mod global;
 mod elem;
 mod data;
 mod export;
-mod stack;
