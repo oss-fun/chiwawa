@@ -1,9 +1,8 @@
 use super::{value::*};
 use crate::structure::{instructions::Instr};
 use crate::error::RuntimeError;
-use std::arch::asm;
 use crate::structure::types::{FuncIdx, GlobalIdx, LocalIdx, TableIdx, TypeIdx, LabelIdx as StructureLabelIdx};
-use crate::structure::instructions::Memarg; 
+use crate::structure::instructions::Memarg;
 use std::collections::HashMap;
 use std::ops::{BitAnd, BitOr, BitXor, Add, Sub, Mul, Div};
 use lazy_static::lazy_static;
@@ -32,9 +31,12 @@ pub enum Operand {
 
 #[derive(Clone, Debug)]
 pub struct ProcessedInstr {
-    handler_index: usize,
-    operand: Operand,
+    pub handler_index: usize,
+    pub operand: Operand,
 }
+
+// Stores fixup info: (pc_to_patch, relative_depth, is_if_false_jump, is_else_jump)
+pub type FixupInfo = (usize, usize, bool, bool);
 
 pub struct ExecutionContext<'a> {
     pub frame: &'a mut crate::execution::stack::Frame,
@@ -50,443 +52,211 @@ pub enum ModuleLevelInstr{
     Return,
 }
 
-const HANDLER_IDX_UNREACHABLE: usize = 0x00;
-const HANDLER_IDX_NOP: usize = 0x01;
-const HANDLER_IDX_BLOCK: usize = 0x02;
-const HANDLER_IDX_LOOP: usize = 0x03;
-const HANDLER_IDX_IF: usize = 0x04;
-const HANDLER_IDX_ELSE: usize = 0x05;
-const HANDLER_IDX_END: usize = 0x0B;
-const HANDLER_IDX_BR: usize = 0x0C;
-const HANDLER_IDX_BR_IF: usize = 0x0D;
-const HANDLER_IDX_BR_TABLE: usize = 0x0E;
-const HANDLER_IDX_RETURN: usize = 0x0F;
-const HANDLER_IDX_CALL: usize = 0x10;
-const HANDLER_IDX_CALL_INDIRECT: usize = 0x11;
+pub const HANDLER_IDX_UNREACHABLE: usize = 0x00;
+pub const HANDLER_IDX_NOP: usize = 0x01;
+pub const HANDLER_IDX_BLOCK: usize = 0x02;
+pub const HANDLER_IDX_LOOP: usize = 0x03;
+pub const HANDLER_IDX_IF: usize = 0x04;
+pub const HANDLER_IDX_ELSE: usize = 0x05;
+pub const HANDLER_IDX_END: usize = 0x0B;
+pub const HANDLER_IDX_BR: usize = 0x0C;
+pub const HANDLER_IDX_BR_IF: usize = 0x0D;
+pub const HANDLER_IDX_BR_TABLE: usize = 0x0E;
+pub const HANDLER_IDX_RETURN: usize = 0x0F;
+pub const HANDLER_IDX_CALL: usize = 0x10;
+pub const HANDLER_IDX_CALL_INDIRECT: usize = 0x11;
 
-const HANDLER_IDX_DROP: usize = 0x1A;
-const HANDLER_IDX_SELECT: usize = 0x1B;
-// const HANDLER_IDX_SELECT_T: usize = 0x1C;
+pub const HANDLER_IDX_DROP: usize = 0x1A;
+pub const HANDLER_IDX_SELECT: usize = 0x1B;
+// pub const HANDLER_IDX_SELECT_T: usize = 0x1C;
 
-const HANDLER_IDX_LOCAL_GET: usize = 0x20;
-const HANDLER_IDX_LOCAL_SET: usize = 0x21;
-const HANDLER_IDX_LOCAL_TEE: usize = 0x22;
-const HANDLER_IDX_GLOBAL_GET: usize = 0x23;
-const HANDLER_IDX_GLOBAL_SET: usize = 0x24;
-// const HANDLER_IDX_TABLE_GET: usize = 0x25;
-// const HANDLER_IDX_TABLE_SET: usize = 0x26;
+pub const HANDLER_IDX_LOCAL_GET: usize = 0x20;
+pub const HANDLER_IDX_LOCAL_SET: usize = 0x21;
+pub const HANDLER_IDX_LOCAL_TEE: usize = 0x22;
+pub const HANDLER_IDX_GLOBAL_GET: usize = 0x23;
+pub const HANDLER_IDX_GLOBAL_SET: usize = 0x24;
+// pub const HANDLER_IDX_TABLE_GET: usize = 0x25;
+// pub const HANDLER_IDX_TABLE_SET: usize = 0x26;
 
-const HANDLER_IDX_I32_LOAD: usize = 0x28;
-const HANDLER_IDX_I64_LOAD: usize = 0x29;
-const HANDLER_IDX_F32_LOAD: usize = 0x2A;
-const HANDLER_IDX_F64_LOAD: usize = 0x2B;
-const HANDLER_IDX_I32_LOAD8_S: usize = 0x2C;
-const HANDLER_IDX_I32_LOAD8_U: usize = 0x2D;
-const HANDLER_IDX_I32_LOAD16_S: usize = 0x2E;
-const HANDLER_IDX_I32_LOAD16_U: usize = 0x2F;
-const HANDLER_IDX_I64_LOAD8_S: usize = 0x30;
-const HANDLER_IDX_I64_LOAD8_U: usize = 0x31;
-const HANDLER_IDX_I64_LOAD16_S: usize = 0x32;
-const HANDLER_IDX_I64_LOAD16_U: usize = 0x33;
-const HANDLER_IDX_I64_LOAD32_S: usize = 0x34;
-const HANDLER_IDX_I64_LOAD32_U: usize = 0x35;
-const HANDLER_IDX_I32_STORE: usize = 0x36;
-const HANDLER_IDX_I64_STORE: usize = 0x37;
-const HANDLER_IDX_F32_STORE: usize = 0x38;
-const HANDLER_IDX_F64_STORE: usize = 0x39;
-const HANDLER_IDX_I32_STORE8: usize = 0x3A;
-const HANDLER_IDX_I32_STORE16: usize = 0x3B;
-const HANDLER_IDX_I64_STORE8: usize = 0x3C;
-const HANDLER_IDX_I64_STORE16: usize = 0x3D;
-const HANDLER_IDX_I64_STORE32: usize = 0x3E;
-const HANDLER_IDX_MEMORY_SIZE: usize = 0x3F;
-const HANDLER_IDX_MEMORY_GROW: usize = 0x40;
+pub const HANDLER_IDX_I32_LOAD: usize = 0x28;
+pub const HANDLER_IDX_I64_LOAD: usize = 0x29;
+pub const HANDLER_IDX_F32_LOAD: usize = 0x2A;
+pub const HANDLER_IDX_F64_LOAD: usize = 0x2B;
+pub const HANDLER_IDX_I32_LOAD8_S: usize = 0x2C;
+pub const HANDLER_IDX_I32_LOAD8_U: usize = 0x2D;
+pub const HANDLER_IDX_I32_LOAD16_S: usize = 0x2E;
+pub const HANDLER_IDX_I32_LOAD16_U: usize = 0x2F;
+pub const HANDLER_IDX_I64_LOAD8_S: usize = 0x30;
+pub const HANDLER_IDX_I64_LOAD8_U: usize = 0x31;
+pub const HANDLER_IDX_I64_LOAD16_S: usize = 0x32;
+pub const HANDLER_IDX_I64_LOAD16_U: usize = 0x33;
+pub const HANDLER_IDX_I64_LOAD32_S: usize = 0x34;
+pub const HANDLER_IDX_I64_LOAD32_U: usize = 0x35;
+pub const HANDLER_IDX_I32_STORE: usize = 0x36;
+pub const HANDLER_IDX_I64_STORE: usize = 0x37;
+pub const HANDLER_IDX_F32_STORE: usize = 0x38;
+pub const HANDLER_IDX_F64_STORE: usize = 0x39;
+pub const HANDLER_IDX_I32_STORE8: usize = 0x3A;
+pub const HANDLER_IDX_I32_STORE16: usize = 0x3B;
+pub const HANDLER_IDX_I64_STORE8: usize = 0x3C;
+pub const HANDLER_IDX_I64_STORE16: usize = 0x3D;
+pub const HANDLER_IDX_I64_STORE32: usize = 0x3E;
+pub const HANDLER_IDX_MEMORY_SIZE: usize = 0x3F;
+pub const HANDLER_IDX_MEMORY_GROW: usize = 0x40;
 
-const HANDLER_IDX_I32_CONST: usize = 0x41;
-const HANDLER_IDX_I64_CONST: usize = 0x42;
-const HANDLER_IDX_F32_CONST: usize = 0x43;
-const HANDLER_IDX_F64_CONST: usize = 0x44;
+pub const HANDLER_IDX_I32_CONST: usize = 0x41;
+pub const HANDLER_IDX_I64_CONST: usize = 0x42;
+pub const HANDLER_IDX_F32_CONST: usize = 0x43;
+pub const HANDLER_IDX_F64_CONST: usize = 0x44;
 
-const HANDLER_IDX_I32_EQZ: usize = 0x45;
-const HANDLER_IDX_I32_EQ: usize = 0x46;
-const HANDLER_IDX_I32_NE: usize = 0x47;
-const HANDLER_IDX_I32_LT_S: usize = 0x48;
-const HANDLER_IDX_I32_LT_U: usize = 0x49;
-const HANDLER_IDX_I32_GT_S: usize = 0x4A;
-const HANDLER_IDX_I32_GT_U: usize = 0x4B;
-const HANDLER_IDX_I32_LE_S: usize = 0x4C;
-const HANDLER_IDX_I32_LE_U: usize = 0x4D;
-const HANDLER_IDX_I32_GE_S: usize = 0x4E;
-const HANDLER_IDX_I32_GE_U: usize = 0x4F;
+pub const HANDLER_IDX_I32_EQZ: usize = 0x45;
+pub const HANDLER_IDX_I32_EQ: usize = 0x46;
+pub const HANDLER_IDX_I32_NE: usize = 0x47;
+pub const HANDLER_IDX_I32_LT_S: usize = 0x48;
+pub const HANDLER_IDX_I32_LT_U: usize = 0x49;
+pub const HANDLER_IDX_I32_GT_S: usize = 0x4A;
+pub const HANDLER_IDX_I32_GT_U: usize = 0x4B;
+pub const HANDLER_IDX_I32_LE_S: usize = 0x4C;
+pub const HANDLER_IDX_I32_LE_U: usize = 0x4D;
+pub const HANDLER_IDX_I32_GE_S: usize = 0x4E;
+pub const HANDLER_IDX_I32_GE_U: usize = 0x4F;
 
-const HANDLER_IDX_I64_EQZ: usize = 0x50;
-const HANDLER_IDX_I64_EQ: usize = 0x51;
-const HANDLER_IDX_I64_NE: usize = 0x52;
-const HANDLER_IDX_I64_LT_S: usize = 0x53;
-const HANDLER_IDX_I64_LT_U: usize = 0x54;
-const HANDLER_IDX_I64_GT_S: usize = 0x55;
-const HANDLER_IDX_I64_GT_U: usize = 0x56;
-const HANDLER_IDX_I64_LE_S: usize = 0x57;
-const HANDLER_IDX_I64_LE_U: usize = 0x58;
-const HANDLER_IDX_I64_GE_S: usize = 0x59;
-const HANDLER_IDX_I64_GE_U: usize = 0x5A;
+pub const HANDLER_IDX_I64_EQZ: usize = 0x50;
+pub const HANDLER_IDX_I64_EQ: usize = 0x51;
+pub const HANDLER_IDX_I64_NE: usize = 0x52;
+pub const HANDLER_IDX_I64_LT_S: usize = 0x53;
+pub const HANDLER_IDX_I64_LT_U: usize = 0x54;
+pub const HANDLER_IDX_I64_GT_S: usize = 0x55;
+pub const HANDLER_IDX_I64_GT_U: usize = 0x56;
+pub const HANDLER_IDX_I64_LE_S: usize = 0x57;
+pub const HANDLER_IDX_I64_LE_U: usize = 0x58;
+pub const HANDLER_IDX_I64_GE_S: usize = 0x59;
+pub const HANDLER_IDX_I64_GE_U: usize = 0x5A;
 
-const HANDLER_IDX_F32_EQ: usize = 0x5B;
-const HANDLER_IDX_F32_NE: usize = 0x5C;
-const HANDLER_IDX_F32_LT: usize = 0x5D;
-const HANDLER_IDX_F32_GT: usize = 0x5E;
-const HANDLER_IDX_F32_LE: usize = 0x5F;
-const HANDLER_IDX_F32_GE: usize = 0x60;
+pub const HANDLER_IDX_F32_EQ: usize = 0x5B;
+pub const HANDLER_IDX_F32_NE: usize = 0x5C;
+pub const HANDLER_IDX_F32_LT: usize = 0x5D;
+pub const HANDLER_IDX_F32_GT: usize = 0x5E;
+pub const HANDLER_IDX_F32_LE: usize = 0x5F;
+pub const HANDLER_IDX_F32_GE: usize = 0x60;
 
-const HANDLER_IDX_F64_EQ: usize = 0x61;
-const HANDLER_IDX_F64_NE: usize = 0x62;
-const HANDLER_IDX_F64_LT: usize = 0x63;
-const HANDLER_IDX_F64_GT: usize = 0x64;
-const HANDLER_IDX_F64_LE: usize = 0x65;
-const HANDLER_IDX_F64_GE: usize = 0x66;
+pub const HANDLER_IDX_F64_EQ: usize = 0x61;
+pub const HANDLER_IDX_F64_NE: usize = 0x62;
+pub const HANDLER_IDX_F64_LT: usize = 0x63;
+pub const HANDLER_IDX_F64_GT: usize = 0x64;
+pub const HANDLER_IDX_F64_LE: usize = 0x65;
+pub const HANDLER_IDX_F64_GE: usize = 0x66;
 
-const HANDLER_IDX_I32_CLZ: usize = 0x67;
-const HANDLER_IDX_I32_CTZ: usize = 0x68;
-const HANDLER_IDX_I32_POPCNT: usize = 0x69;
-const HANDLER_IDX_I32_ADD: usize = 0x6A;
-const HANDLER_IDX_I32_SUB: usize = 0x6B;
-const HANDLER_IDX_I32_MUL: usize = 0x6C;
-const HANDLER_IDX_I32_DIV_S: usize = 0x6D;
-const HANDLER_IDX_I32_DIV_U: usize = 0x6E;
-const HANDLER_IDX_I32_REM_S: usize = 0x6F;
-const HANDLER_IDX_I32_REM_U: usize = 0x70;
-const HANDLER_IDX_I32_AND: usize = 0x71;
-const HANDLER_IDX_I32_OR: usize = 0x72;
-const HANDLER_IDX_I32_XOR: usize = 0x73;
-const HANDLER_IDX_I32_SHL: usize = 0x74;
-const HANDLER_IDX_I32_SHR_S: usize = 0x75;
-const HANDLER_IDX_I32_SHR_U: usize = 0x76;
-const HANDLER_IDX_I32_ROTL: usize = 0x77;
-const HANDLER_IDX_I32_ROTR: usize = 0x78;
+pub const HANDLER_IDX_I32_CLZ: usize = 0x67;
+pub const HANDLER_IDX_I32_CTZ: usize = 0x68;
+pub const HANDLER_IDX_I32_POPCNT: usize = 0x69;
+pub const HANDLER_IDX_I32_ADD: usize = 0x6A;
+pub const HANDLER_IDX_I32_SUB: usize = 0x6B;
+pub const HANDLER_IDX_I32_MUL: usize = 0x6C;
+pub const HANDLER_IDX_I32_DIV_S: usize = 0x6D;
+pub const HANDLER_IDX_I32_DIV_U: usize = 0x6E;
+pub const HANDLER_IDX_I32_REM_S: usize = 0x6F;
+pub const HANDLER_IDX_I32_REM_U: usize = 0x70;
+pub const HANDLER_IDX_I32_AND: usize = 0x71;
+pub const HANDLER_IDX_I32_OR: usize = 0x72;
+pub const HANDLER_IDX_I32_XOR: usize = 0x73;
+pub const HANDLER_IDX_I32_SHL: usize = 0x74;
+pub const HANDLER_IDX_I32_SHR_S: usize = 0x75;
+pub const HANDLER_IDX_I32_SHR_U: usize = 0x76;
+pub const HANDLER_IDX_I32_ROTL: usize = 0x77;
+pub const HANDLER_IDX_I32_ROTR: usize = 0x78;
 
-const HANDLER_IDX_I64_CLZ: usize = 0x79;
-const HANDLER_IDX_I64_CTZ: usize = 0x7A;
-const HANDLER_IDX_I64_POPCNT: usize = 0x7B;
-const HANDLER_IDX_I64_ADD: usize = 0x7C;
-const HANDLER_IDX_I64_SUB: usize = 0x7D;
-const HANDLER_IDX_I64_MUL: usize = 0x7E;
-const HANDLER_IDX_I64_DIV_S: usize = 0x7F;
-const HANDLER_IDX_I64_DIV_U: usize = 0x80;
-const HANDLER_IDX_I64_REM_S: usize = 0x81;
-const HANDLER_IDX_I64_REM_U: usize = 0x82;
-const HANDLER_IDX_I64_AND: usize = 0x83;
-const HANDLER_IDX_I64_OR: usize = 0x84;
-const HANDLER_IDX_I64_XOR: usize = 0x85;
-const HANDLER_IDX_I64_SHL: usize = 0x86;
-const HANDLER_IDX_I64_SHR_S: usize = 0x87;
-const HANDLER_IDX_I64_SHR_U: usize = 0x88;
-const HANDLER_IDX_I64_ROTL: usize = 0x89;
-const HANDLER_IDX_I64_ROTR: usize = 0x8A;
+pub const HANDLER_IDX_I64_CLZ: usize = 0x79;
+pub const HANDLER_IDX_I64_CTZ: usize = 0x7A;
+pub const HANDLER_IDX_I64_POPCNT: usize = 0x7B;
+pub const HANDLER_IDX_I64_ADD: usize = 0x7C;
+pub const HANDLER_IDX_I64_SUB: usize = 0x7D;
+pub const HANDLER_IDX_I64_MUL: usize = 0x7E;
+pub const HANDLER_IDX_I64_DIV_S: usize = 0x7F;
+pub const HANDLER_IDX_I64_DIV_U: usize = 0x80;
+pub const HANDLER_IDX_I64_REM_S: usize = 0x81;
+pub const HANDLER_IDX_I64_REM_U: usize = 0x82;
+pub const HANDLER_IDX_I64_AND: usize = 0x83;
+pub const HANDLER_IDX_I64_OR: usize = 0x84;
+pub const HANDLER_IDX_I64_XOR: usize = 0x85;
+pub const HANDLER_IDX_I64_SHL: usize = 0x86;
+pub const HANDLER_IDX_I64_SHR_S: usize = 0x87;
+pub const HANDLER_IDX_I64_SHR_U: usize = 0x88;
+pub const HANDLER_IDX_I64_ROTL: usize = 0x89;
+pub const HANDLER_IDX_I64_ROTR: usize = 0x8A;
 
-const HANDLER_IDX_F32_ABS: usize = 0x8B;
-const HANDLER_IDX_F32_NEG: usize = 0x8C;
-const HANDLER_IDX_F32_CEIL: usize = 0x8D;
-const HANDLER_IDX_F32_FLOOR: usize = 0x8E;
-const HANDLER_IDX_F32_TRUNC: usize = 0x8F;
-const HANDLER_IDX_F32_NEAREST: usize = 0x90;
-const HANDLER_IDX_F32_SQRT: usize = 0x91;
-const HANDLER_IDX_F32_ADD: usize = 0x92;
-const HANDLER_IDX_F32_SUB: usize = 0x93;
-const HANDLER_IDX_F32_MUL: usize = 0x94;
-const HANDLER_IDX_F32_DIV: usize = 0x95;
-const HANDLER_IDX_F32_MIN: usize = 0x96;
-const HANDLER_IDX_F32_MAX: usize = 0x97;
-const HANDLER_IDX_F32_COPYSIGN: usize = 0x98;
+pub const HANDLER_IDX_F32_ABS: usize = 0x8B;
+pub const HANDLER_IDX_F32_NEG: usize = 0x8C;
+pub const HANDLER_IDX_F32_CEIL: usize = 0x8D;
+pub const HANDLER_IDX_F32_FLOOR: usize = 0x8E;
+pub const HANDLER_IDX_F32_TRUNC: usize = 0x8F;
+pub const HANDLER_IDX_F32_NEAREST: usize = 0x90;
+pub const HANDLER_IDX_F32_SQRT: usize = 0x91;
+pub const HANDLER_IDX_F32_ADD: usize = 0x92;
+pub const HANDLER_IDX_F32_SUB: usize = 0x93;
+pub const HANDLER_IDX_F32_MUL: usize = 0x94;
+pub const HANDLER_IDX_F32_DIV: usize = 0x95;
+pub const HANDLER_IDX_F32_MIN: usize = 0x96;
+pub const HANDLER_IDX_F32_MAX: usize = 0x97;
+pub const HANDLER_IDX_F32_COPYSIGN: usize = 0x98;
 
-const HANDLER_IDX_F64_ABS: usize = 0x99;
-const HANDLER_IDX_F64_NEG: usize = 0x9A;
-const HANDLER_IDX_F64_CEIL: usize = 0x9B;
-const HANDLER_IDX_F64_FLOOR: usize = 0x9C;
-const HANDLER_IDX_F64_TRUNC: usize = 0x9D;
-const HANDLER_IDX_F64_NEAREST: usize = 0x9E;
-const HANDLER_IDX_F64_SQRT: usize = 0x9F;
-const HANDLER_IDX_F64_ADD: usize = 0xA0;
-const HANDLER_IDX_F64_SUB: usize = 0xA1;
-const HANDLER_IDX_F64_MUL: usize = 0xA2;
-const HANDLER_IDX_F64_DIV: usize = 0xA3;
-const HANDLER_IDX_F64_MIN: usize = 0xA4;
-const HANDLER_IDX_F64_MAX: usize = 0xA5;
-const HANDLER_IDX_F64_COPYSIGN: usize = 0xA6;
+pub const HANDLER_IDX_F64_ABS: usize = 0x99;
+pub const HANDLER_IDX_F64_NEG: usize = 0x9A;
+pub const HANDLER_IDX_F64_CEIL: usize = 0x9B;
+pub const HANDLER_IDX_F64_FLOOR: usize = 0x9C;
+pub const HANDLER_IDX_F64_TRUNC: usize = 0x9D;
+pub const HANDLER_IDX_F64_NEAREST: usize = 0x9E;
+pub const HANDLER_IDX_F64_SQRT: usize = 0x9F;
+pub const HANDLER_IDX_F64_ADD: usize = 0xA0;
+pub const HANDLER_IDX_F64_SUB: usize = 0xA1;
+pub const HANDLER_IDX_F64_MUL: usize = 0xA2;
+pub const HANDLER_IDX_F64_DIV: usize = 0xA3;
+pub const HANDLER_IDX_F64_MIN: usize = 0xA4;
+pub const HANDLER_IDX_F64_MAX: usize = 0xA5;
+pub const HANDLER_IDX_F64_COPYSIGN: usize = 0xA6;
 
-const HANDLER_IDX_I32_WRAP_I64: usize = 0xA7;
-const HANDLER_IDX_I32_TRUNC_F32_S: usize = 0xA8;
-const HANDLER_IDX_I32_TRUNC_F32_U: usize = 0xA9;
-const HANDLER_IDX_I32_TRUNC_F64_S: usize = 0xAA;
-const HANDLER_IDX_I32_TRUNC_F64_U: usize = 0xAB;
-const HANDLER_IDX_I64_EXTEND_I32_S: usize = 0xAC;
-const HANDLER_IDX_I64_EXTEND_I32_U: usize = 0xAD;
-const HANDLER_IDX_I64_TRUNC_F32_S: usize = 0xAE;
-const HANDLER_IDX_I64_TRUNC_F32_U: usize = 0xAF;
-const HANDLER_IDX_I64_TRUNC_F64_S: usize = 0xB0;
-const HANDLER_IDX_I64_TRUNC_F64_U: usize = 0xB1;
-const HANDLER_IDX_F32_CONVERT_I32_S: usize = 0xB2;
-const HANDLER_IDX_F32_CONVERT_I32_U: usize = 0xB3;
-const HANDLER_IDX_F32_CONVERT_I64_S: usize = 0xB4;
-const HANDLER_IDX_F32_CONVERT_I64_U: usize = 0xB5;
-const HANDLER_IDX_F32_DEMOTE_F64: usize = 0xB6;
-const HANDLER_IDX_F64_CONVERT_I32_S: usize = 0xB7;
-const HANDLER_IDX_F64_CONVERT_I32_U: usize = 0xB8;
-const HANDLER_IDX_F64_CONVERT_I64_S: usize = 0xB9;
-const HANDLER_IDX_F64_CONVERT_I64_U: usize = 0xBA;
-const HANDLER_IDX_F64_PROMOTE_F32: usize = 0xBB;
-const HANDLER_IDX_I32_REINTERPRET_F32: usize = 0xBC;
-const HANDLER_IDX_I64_REINTERPRET_F64: usize = 0xBD;
-const HANDLER_IDX_F32_REINTERPRET_I32: usize = 0xBE;
-const HANDLER_IDX_F64_REINTERPRET_I64: usize = 0xBF;
+pub const HANDLER_IDX_I32_WRAP_I64: usize = 0xA7;
+pub const HANDLER_IDX_I32_TRUNC_F32_S: usize = 0xA8;
+pub const HANDLER_IDX_I32_TRUNC_F32_U: usize = 0xA9;
+pub const HANDLER_IDX_I32_TRUNC_F64_S: usize = 0xAA;
+pub const HANDLER_IDX_I32_TRUNC_F64_U: usize = 0xAB;
+pub const HANDLER_IDX_I64_EXTEND_I32_S: usize = 0xAC;
+pub const HANDLER_IDX_I64_EXTEND_I32_U: usize = 0xAD;
+pub const HANDLER_IDX_I64_TRUNC_F32_S: usize = 0xAE;
+pub const HANDLER_IDX_I64_TRUNC_F32_U: usize = 0xAF;
+pub const HANDLER_IDX_I64_TRUNC_F64_S: usize = 0xB0;
+pub const HANDLER_IDX_I64_TRUNC_F64_U: usize = 0xB1;
+pub const HANDLER_IDX_F32_CONVERT_I32_S: usize = 0xB2;
+pub const HANDLER_IDX_F32_CONVERT_I32_U: usize = 0xB3;
+pub const HANDLER_IDX_F32_CONVERT_I64_S: usize = 0xB4;
+pub const HANDLER_IDX_F32_CONVERT_I64_U: usize = 0xB5;
+pub const HANDLER_IDX_F32_DEMOTE_F64: usize = 0xB6;
+pub const HANDLER_IDX_F64_CONVERT_I32_S: usize = 0xB7;
+pub const HANDLER_IDX_F64_CONVERT_I32_U: usize = 0xB8;
+pub const HANDLER_IDX_F64_CONVERT_I64_S: usize = 0xB9;
+pub const HANDLER_IDX_F64_CONVERT_I64_U: usize = 0xBA;
+pub const HANDLER_IDX_F64_PROMOTE_F32: usize = 0xBB;
+pub const HANDLER_IDX_I32_REINTERPRET_F32: usize = 0xBC;
+pub const HANDLER_IDX_I64_REINTERPRET_F64: usize = 0xBD;
+pub const HANDLER_IDX_F32_REINTERPRET_I32: usize = 0xBE;
+pub const HANDLER_IDX_F64_REINTERPRET_I64: usize = 0xBF;
 
-const HANDLER_IDX_I32_EXTEND8_S: usize = 0xC0;
-const HANDLER_IDX_I32_EXTEND16_S: usize = 0xC1;
-const HANDLER_IDX_I64_EXTEND8_S: usize = 0xC2;
-const HANDLER_IDX_I64_EXTEND16_S: usize = 0xC3;
-const HANDLER_IDX_I64_EXTEND32_S: usize = 0xC4;
+pub const HANDLER_IDX_I32_EXTEND8_S: usize = 0xC0;
+pub const HANDLER_IDX_I32_EXTEND16_S: usize = 0xC1;
+pub const HANDLER_IDX_I64_EXTEND8_S: usize = 0xC2;
+pub const HANDLER_IDX_I64_EXTEND16_S: usize = 0xC3;
+pub const HANDLER_IDX_I64_EXTEND32_S: usize = 0xC4;
 
 // TODO: Add remaining indices (Ref types, Table, Bulk Memory, SIMD, TruncSat)
 
-const MAX_HANDLER_INDEX: usize = 0xC5;
+pub const MAX_HANDLER_INDEX: usize = 0xC5;
 
-fn preprocess_instructions(original_instrs: &[Instr]) -> Result<Vec<ProcessedInstr>, RuntimeError> {
-    let mut processed = Vec::with_capacity(original_instrs.len());
-
-    // Stores fixup info: (pc_to_patch, relative_depth, is_if_false_jump, is_else_jump)
-    // Note: relative_depth is usize::MAX for fixups that are completed.
-    let mut fixups: Vec<(usize, usize, bool, bool)> = Vec::new();
-
-    // Phase 1: Map instructions, identify labels, store fixup info
-    for instr in original_instrs.iter() {
-        let current_processed_pc = processed.len();
-        let mut handler_index;
-        let mut operand = Operand::None;
-
-        match instr {
-            Instr::Unreachable => handler_index = HANDLER_IDX_UNREACHABLE,
-            Instr::Nop => handler_index = HANDLER_IDX_NOP,
-
-            Instr::Block(_, _) => {
-                handler_index = HANDLER_IDX_BLOCK;
-            }
-            Instr::Loop(_, _) => {
-                handler_index = HANDLER_IDX_LOOP;
-                operand = Operand::LabelIdx(current_processed_pc);
-            }
-            Instr::If(_, _, _) => {
-                handler_index = HANDLER_IDX_IF;
-                fixups.push((current_processed_pc, 0, true, false));
-                operand = Operand::LabelIdx(usize::MAX);
-            }
-            Instr::ElseMarker => {
-                handler_index = HANDLER_IDX_ELSE;
-                fixups.push((current_processed_pc, 0, false, true));
-                operand = Operand::LabelIdx(usize::MAX);
-            }
-            Instr::EndMarker => {
-                handler_index = HANDLER_IDX_END;
-            }
-            Instr::Br(label_idx) => {
-                handler_index = HANDLER_IDX_BR;
-                fixups.push((current_processed_pc, label_idx.0 as usize, false, false));
-                operand = Operand::LabelIdx(usize::MAX);
-            }
-            Instr::BrIf(label_idx) => {
-                handler_index = HANDLER_IDX_BR_IF;
-                fixups.push((current_processed_pc, label_idx.0 as usize, false, false));
-                operand = Operand::LabelIdx(usize::MAX); 
-            }
-            Instr::BrTable(indices, default) => {
-                handler_index = HANDLER_IDX_BR_TABLE;
-                for label_idx in indices.iter() {
-                    fixups.push((current_processed_pc, label_idx.0 as usize, false, false));
-                }
-                fixups.push((current_processed_pc, default.0 as usize, false, false));
-                operand = Operand::None;
-            }
-            Instr::Return => handler_index = HANDLER_IDX_RETURN,
-            Instr::Call(func_idx) => {
-                handler_index = HANDLER_IDX_CALL;
-                operand = Operand::FuncIdx(func_idx.clone());
-            }
-            Instr::CallIndirect(_table_idx, type_idx) => {
-                handler_index = HANDLER_IDX_CALL_INDIRECT;
-                operand = Operand::TypeIdx(type_idx.clone());
-            }
-            Instr::Drop => handler_index = HANDLER_IDX_DROP,
-            Instr::Select(_) => {
-                handler_index = HANDLER_IDX_SELECT;
-                operand = Operand::None;
-            }
-            Instr::LocalGet(idx) => { handler_index = HANDLER_IDX_LOCAL_GET; operand = Operand::LocalIdx(idx.clone()); }
-            Instr::LocalSet(idx) => { handler_index = HANDLER_IDX_LOCAL_SET; operand = Operand::LocalIdx(idx.clone()); }
-            Instr::LocalTee(idx) => { handler_index = HANDLER_IDX_LOCAL_TEE; operand = Operand::LocalIdx(idx.clone()); }
-            Instr::GlobalGet(idx) => { handler_index = HANDLER_IDX_GLOBAL_GET; operand = Operand::GlobalIdx(idx.clone()); }
-            Instr::GlobalSet(idx) => { handler_index = HANDLER_IDX_GLOBAL_SET; operand = Operand::GlobalIdx(idx.clone()); }
-            Instr::I32Load(arg) => { handler_index = HANDLER_IDX_I32_LOAD; operand = Operand::MemArg(arg.clone()); }
-            Instr::I64Load(arg) => { handler_index = HANDLER_IDX_I64_LOAD; operand = Operand::MemArg(arg.clone()); }
-            Instr::F32Load(arg) => { handler_index = HANDLER_IDX_F32_LOAD; operand = Operand::MemArg(arg.clone()); }
-            Instr::F64Load(arg) => { handler_index = HANDLER_IDX_F64_LOAD; operand = Operand::MemArg(arg.clone()); }
-            Instr::I32Load8S(arg) => { handler_index = HANDLER_IDX_I32_LOAD8_S; operand = Operand::MemArg(arg.clone()); }
-            Instr::I32Load8U(arg) => { handler_index = HANDLER_IDX_I32_LOAD8_U; operand = Operand::MemArg(arg.clone()); }
-            Instr::I32Load16S(arg) => { handler_index = HANDLER_IDX_I32_LOAD16_S; operand = Operand::MemArg(arg.clone()); }
-            Instr::I32Load16U(arg) => { handler_index = HANDLER_IDX_I32_LOAD16_U; operand = Operand::MemArg(arg.clone()); }
-            Instr::I64Load8S(arg) => { handler_index = HANDLER_IDX_I64_LOAD8_S; operand = Operand::MemArg(arg.clone()); }
-            Instr::I64Load8U(arg) => { handler_index = HANDLER_IDX_I64_LOAD8_U; operand = Operand::MemArg(arg.clone()); }
-            Instr::I64Load16S(arg) => { handler_index = HANDLER_IDX_I64_LOAD16_S; operand = Operand::MemArg(arg.clone()); }
-            Instr::I64Load16U(arg) => { handler_index = HANDLER_IDX_I64_LOAD16_U; operand = Operand::MemArg(arg.clone()); }
-            Instr::I64Load32S(arg) => { handler_index = HANDLER_IDX_I64_LOAD32_S; operand = Operand::MemArg(arg.clone()); }
-            Instr::I64Load32U(arg) => { handler_index = HANDLER_IDX_I64_LOAD32_U; operand = Operand::MemArg(arg.clone()); }
-            Instr::I32Store(arg) => { handler_index = HANDLER_IDX_I32_STORE; operand = Operand::MemArg(arg.clone()); }
-            Instr::I64Store(arg) => { handler_index = HANDLER_IDX_I64_STORE; operand = Operand::MemArg(arg.clone()); }
-            Instr::F32Store(arg) => { handler_index = HANDLER_IDX_F32_STORE; operand = Operand::MemArg(arg.clone()); }
-            Instr::F64Store(arg) => { handler_index = HANDLER_IDX_F64_STORE; operand = Operand::MemArg(arg.clone()); }
-            Instr::I32Store8(arg) => { handler_index = HANDLER_IDX_I32_STORE8; operand = Operand::MemArg(arg.clone()); }
-            Instr::I32Store16(arg) => { handler_index = HANDLER_IDX_I32_STORE16; operand = Operand::MemArg(arg.clone()); }
-            Instr::I64Store8(arg) => { handler_index = HANDLER_IDX_I64_STORE8; operand = Operand::MemArg(arg.clone()); }
-            Instr::I64Store16(arg) => { handler_index = HANDLER_IDX_I64_STORE16; operand = Operand::MemArg(arg.clone()); }
-            Instr::I64Store32(arg) => { handler_index = HANDLER_IDX_I64_STORE32; operand = Operand::MemArg(arg.clone()); }
-            Instr::MemorySize => handler_index = HANDLER_IDX_MEMORY_SIZE,
-            Instr::MemoryGrow => handler_index = HANDLER_IDX_MEMORY_GROW,
-            Instr::I32Const(v) => { handler_index = HANDLER_IDX_I32_CONST; operand = Operand::I32(*v); }
-            Instr::I64Const(v) => { handler_index = HANDLER_IDX_I64_CONST; operand = Operand::I64(*v); }
-            Instr::F32Const(v) => { handler_index = HANDLER_IDX_F32_CONST; operand = Operand::F32(*v); }
-            Instr::F64Const(v) => { handler_index = HANDLER_IDX_F64_CONST; operand = Operand::F64(*v); }
-            Instr::I32Eqz => handler_index = HANDLER_IDX_I32_EQZ,
-            Instr::I32Eq => handler_index = HANDLER_IDX_I32_EQ,
-            Instr::I32Ne => handler_index = HANDLER_IDX_I32_NE,
-            Instr::I32LtS => handler_index = HANDLER_IDX_I32_LT_S,
-            Instr::I32LtU => handler_index = HANDLER_IDX_I32_LT_U,
-            Instr::I32GtS => handler_index = HANDLER_IDX_I32_GT_S,
-            Instr::I32GtU => handler_index = HANDLER_IDX_I32_GT_U,
-            Instr::I32LeS => handler_index = HANDLER_IDX_I32_LE_S,
-            Instr::I32LeU => handler_index = HANDLER_IDX_I32_LE_U,
-            Instr::I32GeS => handler_index = HANDLER_IDX_I32_GE_S,
-            Instr::I32GeU => handler_index = HANDLER_IDX_I32_GE_U,
-            Instr::I64Eqz => handler_index = HANDLER_IDX_I64_EQZ,
-            Instr::I64Eq => handler_index = HANDLER_IDX_I64_EQ,
-            Instr::I64Ne => handler_index = HANDLER_IDX_I64_NE,
-            Instr::I64LtS => handler_index = HANDLER_IDX_I64_LT_S,
-            Instr::I64LtU => handler_index = HANDLER_IDX_I64_LT_U,
-            Instr::I64GtS => handler_index = HANDLER_IDX_I64_GT_S,
-            Instr::I64GtU => handler_index = HANDLER_IDX_I64_GT_U,
-            Instr::I64LeS => handler_index = HANDLER_IDX_I64_LE_S,
-            Instr::I64LeU => handler_index = HANDLER_IDX_I64_LE_U,
-            Instr::I64GeS => handler_index = HANDLER_IDX_I64_GE_S,
-            Instr::I64GeU => handler_index = HANDLER_IDX_I64_GE_U,
-            Instr::F32Eq => handler_index = HANDLER_IDX_F32_EQ,
-            Instr::F32Ne => handler_index = HANDLER_IDX_F32_NE,
-            Instr::F32Lt => handler_index = HANDLER_IDX_F32_LT,
-            Instr::F32Gt => handler_index = HANDLER_IDX_F32_GT,
-            Instr::F32Le => handler_index = HANDLER_IDX_F32_LE,
-            Instr::F32Ge => handler_index = HANDLER_IDX_F32_GE,
-            Instr::F64Eq => handler_index = HANDLER_IDX_F64_EQ,
-            Instr::F64Ne => handler_index = HANDLER_IDX_F64_NE,
-            Instr::F64Lt => handler_index = HANDLER_IDX_F64_LT,
-            Instr::F64Gt => handler_index = HANDLER_IDX_F64_GT,
-            Instr::F64Le => handler_index = HANDLER_IDX_F64_LE,
-            Instr::F64Ge => handler_index = HANDLER_IDX_F64_GE,
-            Instr::I32Clz => handler_index = HANDLER_IDX_I32_CLZ,
-            Instr::I32Ctz => handler_index = HANDLER_IDX_I32_CTZ,
-            Instr::I32Popcnt => handler_index = HANDLER_IDX_I32_POPCNT,
-            Instr::I32Add => handler_index = HANDLER_IDX_I32_ADD,
-            Instr::I32Sub => handler_index = HANDLER_IDX_I32_SUB,
-            Instr::I32Mul => handler_index = HANDLER_IDX_I32_MUL,
-            Instr::I32DivS => handler_index = HANDLER_IDX_I32_DIV_S,
-            Instr::I32DivU => handler_index = HANDLER_IDX_I32_DIV_U,
-            Instr::I32RemS => handler_index = HANDLER_IDX_I32_REM_S,
-            Instr::I32RemU => handler_index = HANDLER_IDX_I32_REM_U,
-            Instr::I32And => handler_index = HANDLER_IDX_I32_AND,
-            Instr::I32Or => handler_index = HANDLER_IDX_I32_OR,
-            Instr::I32Xor => handler_index = HANDLER_IDX_I32_XOR,
-            Instr::I32Shl => handler_index = HANDLER_IDX_I32_SHL,
-            Instr::I32ShrS => handler_index = HANDLER_IDX_I32_SHR_S,
-            Instr::I32ShrU => handler_index = HANDLER_IDX_I32_SHR_U,
-            Instr::I32Rotl => handler_index = HANDLER_IDX_I32_ROTL,
-            Instr::I32Rotr => handler_index = HANDLER_IDX_I32_ROTR,
-            Instr::I64Clz => handler_index = HANDLER_IDX_I64_CLZ,
-            Instr::I64Ctz => handler_index = HANDLER_IDX_I64_CTZ,
-            Instr::I64Popcnt => handler_index = HANDLER_IDX_I64_POPCNT,
-            Instr::I64Add => handler_index = HANDLER_IDX_I64_ADD,
-            Instr::I64Sub => handler_index = HANDLER_IDX_I64_SUB,
-            Instr::I64Mul => handler_index = HANDLER_IDX_I64_MUL,
-            Instr::I64DivS => handler_index = HANDLER_IDX_I64_DIV_S,
-            Instr::I64DivU => handler_index = HANDLER_IDX_I64_DIV_U,
-            Instr::I64RemS => handler_index = HANDLER_IDX_I64_REM_S,
-            Instr::I64RemU => handler_index = HANDLER_IDX_I64_REM_U,
-            Instr::I64And => handler_index = HANDLER_IDX_I64_AND,
-            Instr::I64Or => handler_index = HANDLER_IDX_I64_OR,
-            Instr::I64Xor => handler_index = HANDLER_IDX_I64_XOR,
-            Instr::I64Shl => handler_index = HANDLER_IDX_I64_SHL,
-            Instr::I64ShrS => handler_index = HANDLER_IDX_I64_SHR_S,
-            Instr::I64ShrU => handler_index = HANDLER_IDX_I64_SHR_U,
-            Instr::I64Rotl => handler_index = HANDLER_IDX_I64_ROTL,
-            Instr::I64Rotr => handler_index = HANDLER_IDX_I64_ROTR,
-            Instr::F32Abs => handler_index = HANDLER_IDX_F32_ABS,
-            Instr::F32Neg => handler_index = HANDLER_IDX_F32_NEG,
-            Instr::F32Ceil => handler_index = HANDLER_IDX_F32_CEIL,
-            Instr::F32Floor => handler_index = HANDLER_IDX_F32_FLOOR,
-            Instr::F32Trunc => handler_index = HANDLER_IDX_F32_TRUNC,
-            Instr::F32Nearest => handler_index = HANDLER_IDX_F32_NEAREST,
-            Instr::F32Sqrt => handler_index = HANDLER_IDX_F32_SQRT,
-            Instr::F32Add => handler_index = HANDLER_IDX_F32_ADD,
-            Instr::F32Sub => handler_index = HANDLER_IDX_F32_SUB,
-            Instr::F32Mul => handler_index = HANDLER_IDX_F32_MUL,
-            Instr::F32Div => handler_index = HANDLER_IDX_F32_DIV,
-            Instr::F32Min => handler_index = HANDLER_IDX_F32_MIN,
-            Instr::F32Max => handler_index = HANDLER_IDX_F32_MAX,
-            Instr::F32Copysign => handler_index = HANDLER_IDX_F32_COPYSIGN,
-            Instr::F64Abs => handler_index = HANDLER_IDX_F64_ABS,
-            Instr::F64Neg => handler_index = HANDLER_IDX_F64_NEG,
-            Instr::F64Ceil => handler_index = HANDLER_IDX_F64_CEIL,
-            Instr::F64Floor => handler_index = HANDLER_IDX_F64_FLOOR,
-            Instr::F64Trunc => handler_index = HANDLER_IDX_F64_TRUNC,
-            Instr::F64Nearest => handler_index = HANDLER_IDX_F64_NEAREST,
-            Instr::F64Sqrt => handler_index = HANDLER_IDX_F64_SQRT,
-            Instr::F64Add => handler_index = HANDLER_IDX_F64_ADD,
-            Instr::F64Sub => handler_index = HANDLER_IDX_F64_SUB,
-            Instr::F64Mul => handler_index = HANDLER_IDX_F64_MUL,
-            Instr::F64Div => handler_index = HANDLER_IDX_F64_DIV,
-            Instr::F64Min => handler_index = HANDLER_IDX_F64_MIN,
-            Instr::F64Max => handler_index = HANDLER_IDX_F64_MAX,
-            Instr::F64Copysign => handler_index = HANDLER_IDX_F64_COPYSIGN,
-            Instr::I32WrapI64 => handler_index = HANDLER_IDX_I32_WRAP_I64,
-            Instr::I32TruncF32S => handler_index = HANDLER_IDX_I32_TRUNC_F32_S,
-            Instr::I32TruncF32U => handler_index = HANDLER_IDX_I32_TRUNC_F32_U,
-            Instr::I32TruncF64S => handler_index = HANDLER_IDX_I32_TRUNC_F64_S,
-            Instr::I32TruncF64U => handler_index = HANDLER_IDX_I32_TRUNC_F64_U,
-            Instr::I64ExtendI32S => handler_index = HANDLER_IDX_I64_EXTEND_I32_S,
-            Instr::I64ExtendI32U => handler_index = HANDLER_IDX_I64_EXTEND_I32_U,
-            Instr::I64TruncF32S => handler_index = HANDLER_IDX_I64_TRUNC_F32_S,
-            Instr::I64TruncF32U => handler_index = HANDLER_IDX_I64_TRUNC_F32_U,
-            Instr::I64TruncF64S => handler_index = HANDLER_IDX_I64_TRUNC_F64_S,
-            Instr::I64TruncF64U => handler_index = HANDLER_IDX_I64_TRUNC_F64_U,
-            Instr::F32ConvertI32S => handler_index = HANDLER_IDX_F32_CONVERT_I32_S,
-            Instr::F32ConvertI32U => handler_index = HANDLER_IDX_F32_CONVERT_I32_U,
-            Instr::F32ConvertI64S => handler_index = HANDLER_IDX_F32_CONVERT_I64_S,
-            Instr::F32ConvertI64U => handler_index = HANDLER_IDX_F32_CONVERT_I64_U,
-            Instr::F32DemoteF64 => handler_index = HANDLER_IDX_F32_DEMOTE_F64,
-            Instr::F64ConvertI32S => handler_index = HANDLER_IDX_F64_CONVERT_I32_S,
-            Instr::F64ConvertI32U => handler_index = HANDLER_IDX_F64_CONVERT_I32_U,
-            Instr::F64ConvertI64S => handler_index = HANDLER_IDX_F64_CONVERT_I64_S,
-            Instr::F64ConvertI64U => handler_index = HANDLER_IDX_F64_CONVERT_I64_U,
-            Instr::F64PromoteF32 => handler_index = HANDLER_IDX_F64_PROMOTE_F32,
-            Instr::I32ReinterpretF32 => handler_index = HANDLER_IDX_I32_REINTERPRET_F32,
-            Instr::I64ReinterpretF64 => handler_index = HANDLER_IDX_I64_REINTERPRET_F64,
-            Instr::F32ReinterpretI32 => handler_index = HANDLER_IDX_F32_REINTERPRET_I32,
-            Instr::F64ReinterpretI64 => handler_index = HANDLER_IDX_F64_REINTERPRET_I64,
-            Instr::I32Extend8S => handler_index = HANDLER_IDX_I32_EXTEND8_S,
-            Instr::I32Extend16S => handler_index = HANDLER_IDX_I32_EXTEND16_S,
-            Instr::I64Extend8S => handler_index = HANDLER_IDX_I64_EXTEND8_S,
-            Instr::I64Extend16S => handler_index = HANDLER_IDX_I64_EXTEND16_S,
-            Instr::I64Extend32S => handler_index = HANDLER_IDX_I64_EXTEND32_S,
-            _ => {
-                println!("Warning: Unhandled instruction in preprocessing pass 1: {:?}", instr);
-                handler_index = HANDLER_IDX_NOP;
-            }
-        }
-        processed.push(ProcessedInstr { handler_index, operand });
-    }
+fn preprocess_instructions(
+    initial_processed_instrs: &[ProcessedInstr],
+    initial_fixups: &[FixupInfo]
+) -> Result<Vec<ProcessedInstr>, RuntimeError> {
+    let mut processed = initial_processed_instrs.to_vec();
+    let mut fixups = initial_fixups.to_vec();
 
     // Phase 2 (Map Building): Build maps for End and Else targets
     let mut block_end_map: HashMap<usize, usize> = HashMap::new(); // Map block_start_pc -> end_marker_pc + 1
@@ -677,7 +447,7 @@ impl Stacks {
                 if params.len() != type_.params.len() {
                     return Err(RuntimeError::InvalidParameterCount);
                 }
-                let processed_instrs = preprocess_instructions(&code.body.0)?;
+                let processed_instrs = preprocess_instructions(&code.body, &code.fixups)?;
 
                 let mut locals = params;
                 for v in code.locals.iter() {
@@ -777,8 +547,7 @@ impl Stacks {
                                         }
                                     };
 
-                                    // Preprocess the function body (or get from cache later)
-                                    let processed_code = preprocess_instructions(&code.body.0)?;
+                                    let processed_code = preprocess_instructions(&code.body, &code.fixups)?;
 
                                     // Create the new frame stack
                                     let frame = FrameStack{
