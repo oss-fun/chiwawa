@@ -71,15 +71,29 @@ Direct Threaded Code (DTC) は、インタプリタ（特に仮想マシンや�
     type HandlerFn = fn(&mut ExecutionContext, Operand) -> Result<usize, RuntimeError>;
     ```
 
-### 2. 前処理 (`preprocess_instructions`) と分岐解決 (Fixup)
+### 2. 前処理と分岐解決 (Fixup)
 
-*   **目的:** 実行時のコスト（特に分岐解決）を可能な限り削減するため、実行前に `Vec<Instr>` を `Vec<ProcessedInstr>` へ変換する。
-この「前処理コスト」は、関数が頻繁に呼び出される場合に実行時コストの削減によって十分に償却される。
-*  分岐先の解決には依存関係があるため、複数回の走査が必要である。
-    *   Phase 1 で命令を変換しつつ、未解決の分岐情報を `fixups` に記録する。
-    *   Phase 2 で `End` や `Else` の位置情報を `HashMap` に記録する。これは Pass 3/4 で分岐先を計算するために必要。
-    *   Phase 3/4 で `fixups` を処理し、Pass 2 のマップ情報と**制御スタックの再構築**を用いて絶対的な分岐先 PC を計算し、`ProcessedInstr` のオペランドを更新する。`BrTable` は複数のターゲットを持つため、他の分岐命令解決後 (Phase 4) に処理する。
-*   **制御スタック再構築の理由 (Phase 3/4):** Wasm の分岐は相対深度で行われるため、各分岐命令 (`fixup_pc`) が実行される時点での正しいネスト構造を知る必要がある。
+*   **目的:** 実行時のコスト（特に分岐解決）を可能な限り削減するため、Wasm 命令列を DTC 実行に適した形式 (`Vec<ProcessedInstr>`) へ変換する。この変換は複数のフェーズで行われる。
+*   **フェーズ:**
+    *   **Phase 1 (パーサー内: `parser.rs`):**
+        *   Wasm バイトコードの関数ボディをパースする際に、各オペコードを対応する `handler_index` と初期 `Operand` を持つ `ProcessedInstr` に直接変換する。
+        *   分岐命令 (`Br`, `BrIf`, `If`, `Else`) については、オペランドをプレースホルダー (`Operand::LabelIdx(usize::MAX)`) とし、解決に必要な情報 (`pc`, `relative_depth`, フラグ) を `FixupInfo` として収集する。
+        *   パーサーはこの `Vec<ProcessedInstr>` と `Vec<FixupInfo>` を出力する。
+    *   **Phase 2 (実行時前処理: `stack.rs::preprocess_instructions`):**
+        *   Phase 1 で生成された `ProcessedInstr` 列を入力として受け取る。
+        *   命令列を走査し、`End` や `Else` の位置情報を `HashMap` (`block_end_map`, `if_else_map`) に記録する。これは Phase 3/4 で分岐先を計算するために必要。
+    *   **Phase 3 (実行時前処理: `stack.rs::preprocess_instructions`):**
+        *   Phase 1 で生成された `FixupInfo` リストと Phase 2 で作成されたマップ情報を使用する。
+        *   `Br`, `BrIf`, `If`, `Else` に対応する `FixupInfo` を処理する。
+        *   各 Fixup 対象命令 (`fixup_pc`) について、命令列の先頭から `fixup_pc` までをスキャンして**制御スタックを再構築**し、`relative_depth` とマップ情報を用いて絶対的な分岐先 PC を計算する。
+        *   計算した絶対 PC を `ProcessedInstr` の `operand` に書き込む (パッチする)。
+    *   **Phase 4 (実行時前処理: `stack.rs::preprocess_instructions`):**
+        *   `BrTable` 命令に対応する `FixupInfo` を処理する。
+        *   Phase 3 と同様に、制御スタックの再構築とマップ情報を用いて、各ターゲット（およびデフォルト）の絶対分岐先 PC を計算する。
+        *   解決した全ターゲット PC のリストとデフォルト PC を `ProcessedInstr` の `operand` に `Operand::BrTable { ... }` として書き込む。
+*   **制御スタック再構築の理由 (Phase 3/4):** Wasm の分岐 (`relative_depth`) は、その命令が存在する時点での制御フローのネスト構造に依存する。
+そのため、各 Fixup ごとに命令列の先頭から `fixup_pc` までをスキャンし、その時点での制御スタック (`current_control_stack_passX`) を再現する必要がある。
+これにより、`relative_depth` を使って正しいターゲットブロックを特定できる。
 そのため、各 Fixup ごとに命令列の先頭から `fixup_pc` までをスキャンし、その時点での制御スタック (`current_control_stack_passX`) を再現。
 これにより、`relative_depth` を使って正しいターゲットブロックを特定できる。
     ```rust
@@ -94,13 +108,13 @@ Direct Threaded Code (DTC) は、インタプリタ（特に仮想マシンや�
     }
     // この時点で current_control_stack_pass3 は fixup_pc 時点のネスト状態を表す
     ```
-*   **Phase 3: Br, BrIf, If, Else の Fixup**
-    *   `fixups` ベクタ内の `BrTable` 以外の分岐情報を処理。
-    *   各 Fixup 情報 `(fixup_pc, relative_depth, ...)` について：
-        1.  **制御スタック再構築:** `processed` 列を先頭から `fixup_pc` までスキャンし、その時点での `Block`, `Loop`, `If` のネスト状態をスタックに再現。
-        2.  **ターゲットブロック特定:** `relative_depth` を使って、再構築したスタックからジャンプ対象ブロックの開始 PC (`target_start_pc`) を特定。
-        3.  **絶対ターゲット PC 計算:** ターゲットが `Loop` なら `target_start_pc`、`Block`/`If` なら `block_end_map` を使って対応する `End` の次の PC を `target_ip` として計算。
-        4.  **オペランド更新:** 計算した `target_ip` を `processed[fixup_pc]` の `operand` (`Operand::LabelIdx`) に書き込む。`If`/`Else` の場合は `if_else_map` も参照。
+*   **Phase 3: Br, BrIf, If, Else の Fixup (詳細)**
+    *   `preprocess_instructions` 内で、Phase 1 で生成された `fixups` ベクタ内の `BrTable` 以外の分岐情報を処理。
+    *   各 Fixup 情報 `(fixup_pc, relative_depth, is_if_false_jump, is_else_jump)` について：
+        1.  **制御スタック再構築:** `processed` (Phase 1 の結果) を先頭から `fixup_pc` までスキャンし、その時点での `Block`, `Loop`, `If` のネスト状態をスタック (`current_control_stack_pass3`) に再現。
+        2.  **ターゲットブロック特定:** `relative_depth` を使って、再構築したスタックからジャンプ対象ブロックの開始 PC (`target_start_pc`) と種類 (`is_loop`) を特定。
+        3.  **絶対ターゲット PC 計算:** ターゲットが `Loop` なら `target_start_pc`。`Block`/`If` なら Phase 2 で作成した `block_end_map` を使って対応する `End` の次の PC を `target_ip` として計算。
+        4.  **オペランド更新:** 計算した `target_ip` を `processed[fixup_pc]` の `operand` (`Operand::LabelIdx`) に書き込む。`If` (`is_if_false_jump=true`) や `Else` (`is_else_jump=true`) の場合は、`if_else_map` も参照して適切なターゲット (`Else` の開始位置 + 1 または `End` の終了位置 + 1) を計算する。
 
          ```
         | PC (ip) | Handler Index        | 説明                     |
@@ -142,15 +156,15 @@ Direct Threaded Code (DTC) は、インタプリタ（特に仮想マシンや�
         - processed[5].operand = Operand::LabelIdx(7)
         ```
 
-*   **Phase 4: BrTable の Fixup**
-    *   `BrTable` 命令のオペランド (`Operand::None` のままのもの) を処理。
-    *   **理由:** `BrTable` は複数のターゲットを持つため、他の分岐が解決された後 (Phase 3 完了後) に処理することで、各ターゲット解決時の制御スタック再構築が正しく行えることを保証。
+*   **Phase 4: BrTable の Fixup (詳細)**
+    *   `preprocess_instructions` 内で、`BrTable` 命令 (`handler_index == HANDLER_IDX_BR_TABLE`) で、かつオペランドがまだ初期状態 (`Operand::None`) のものを処理。
+    *   **理由:** `BrTable` は複数のターゲットを持つため、他の分岐が解決された後 (Phase 3 完了後) に処理する。
     *   各 `BrTable` 命令 (`pc`) について：
-        1.  **関連 Fixup 特定:** `fixups` から `pc` に対応するエントリを全て見つける。
-        2.  **各ターゲット解決:** 見つけた各 Fixup 情報について、Phase 3 と同様に制御スタック再構築とマップ参照を行い、絶対宛先 PC を計算します（最後の Fixup はデフォルト分岐に対応）。
+        1.  **関連 Fixup 特定:** Phase 1 で生成された `fixups` リストから、この `pc` に関連付けられたエントリを全て見つける。
+        2.  **各ターゲット解決:** 見つけた各 Fixup 情報 (`relative_depth`) について、Phase 3 と同様に、その時点までの制御スタックを再構築 (`current_control_stack_pass4`) し、マップ情報 (`block_end_map`) を参照して絶対宛先 PC を計算する（リストの最後の Fixup はデフォルト分岐に対応）。
         3.  **オペランド更新:** 解決した全ターゲット PC のリストとデフォルト PC を `processed[pc]` の `operand` に `Operand::BrTable { targets: [...], default: ... }` として書き込む。
 
-この複数パスによる Fixup により、実行ループは分岐命令に対して単純に `operand` 内の絶対 PC を返すだけで良い。
+この複数フェーズによる前処理（パーサーでの Phase 1 + `stack.rs` での Phase 2-4）により、最終的に得られる `ProcessedInstr` 列では全ての分岐先が絶対 PC として解決済みとなり、実行ループ (`run_dtc_loop`) は分岐命令に対して単純に `operand` 内の絶対 PC を返すだけで良くなる。
 
 ### 3. ハンドラテーブル (`HANDLER_TABLE`)
 

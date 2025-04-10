@@ -70,15 +70,30 @@ Data structures are optimized for efficient DTC execution.
     type HandlerFn = fn(&mut ExecutionContext, Operand) -> Result<usize, RuntimeError>;
     ```
 
-### 2. Preprocessing (`preprocess_instructions` function) and Branch Resolution (Fixup)
+### 2. Preprocessing and Branch Resolution (Fixup)
 
-*   **Purpose:** To convert `Vec<Instr>` to `Vec<ProcessedInstr>` before execution, in order to reduce runtime costs (especially branch resolution) as much as possible.
-This "preprocessing cost" is amortized when functions are called frequently.
-*  Branch resolution has dependencies, requiring multiple passes.
-    *   Pass 1 converts instructions while recording unresolved branch information in `fixups`.
-    *   Pass 2 records the positions of `End` and `Else` in a `HashMap`. This is necessary for calculating branch targets in Pass 3/4.
-    *   Pass 3/4 processes `fixups`, calculates the absolute target PC using the map information from Pass 2 and **control stack reconstruction**, and updates the `ProcessedInstr` operands. `BrTable` has multiple targets and is processed in Pass 4 after other branch instructions are resolved.
-*   **Reason for Control Stack Reconstruction (Pass 3/4):** Wasm branches use relative depth. To resolve this to an absolute PC, the correct nesting structure at the point of each branch instruction (`fixup_pc`) must be known.
+*   **Purpose:** To convert the Wasm instruction sequence into a format suitable for DTC execution (`Vec<ProcessedInstr>`), minimizing runtime costs, especially for branch resolution. This conversion happens in multiple phases.
+*   **Phases:**
+    *   **Phase 1 (In Parser: `parser.rs`):**
+        *   As the Wasm bytecode function body is parsed, each opcode is directly converted into a `ProcessedInstr` containing the corresponding `handler_index` and an initial `Operand`.
+        *   For branch instructions (`Br`, `BrIf`, `If`, `Else`), the operand is set to a placeholder (`Operand::LabelIdx(usize::MAX)`), and the necessary information for later resolution (`pc`, `relative_depth`, flags) is collected into `FixupInfo`.
+        *   The parser outputs this `Vec<ProcessedInstr>` and `Vec<FixupInfo`.
+    *   **Phase 2 (Runtime Preprocessing: `stack.rs::preprocess_instructions`):**
+        *   Takes the `ProcessedInstr` list generated in Phase 1 as input.
+        *   Scans the instruction list to record the positions of `End` and `Else` instructions in `HashMap`s (`block_end_map`, `if_else_map`). This is needed for calculating branch targets in Phases 3/4.
+    *   **Phase 3 (Runtime Preprocessing: `stack.rs::preprocess_instructions`):**
+        *   Uses the `FixupInfo` list from Phase 1 and the maps created in Phase 2.
+        *   Processes `FixupInfo` entries corresponding to `Br`, `BrIf`, `If`, and `Else`.
+        *   For each fixup target instruction (`fixup_pc`), it **reconstructs the control stack** by scanning the instruction list from the beginning up to `fixup_pc`.
+        *   Calculates the absolute target PC using the `relative_depth` and map information.
+        *   Updates (patches) the `operand` of the corresponding `ProcessedInstr` with the calculated absolute PC.
+    *   **Phase 4 (Runtime Preprocessing: `stack.rs::preprocess_instructions`):**
+        *   Processes `FixupInfo` entries corresponding to `BrTable` instructions.
+        *   Similar to Phase 3, uses control stack reconstruction and map information to calculate the absolute target PCs for each target (including the default).
+        *   Updates the `operand` of the `BrTable` `ProcessedInstr` with the resolved targets and default PC (`Operand::BrTable { ... }`).
+*   **Reason for Control Stack Reconstruction (Phases 3/4):** Wasm branches (`relative_depth`) depend on the control flow nesting structure at the point where the branch instruction occurs.
+Therefore, for each fixup, it's necessary to scan the instruction list from the start up to the `fixup_pc` to reproduce the control stack (`current_control_stack_passX`) at that specific point.
+This allows the correct target block to be identified using `relative_depth`.
 Therefore, for each fixup, the instruction stream is scanned from the beginning up to `fixup_pc` to reproduce the control stack (`current_control_stack_passX`) at that point.
 This allows identifying the correct target block using `relative_depth`.
     ```rust
@@ -93,13 +108,13 @@ This allows identifying the correct target block using `relative_depth`.
     }
     // At this point, current_control_stack_pass3 represents the nesting state at fixup_pc
     ```
-*   **Pass 3: Br, BrIf, If, Else Fixup**
-    *   Processes branch information in the `fixups` vector, excluding `BrTable`.
-    *   For each Fixup info `(fixup_pc, relative_depth, ...)`:
-        1.  **Control Stack Reconstruction:** Scan the `processed` list from the start up to `fixup_pc` and reproduce the nesting state of `Block`, `Loop`, `If` onto a stack.
-        2.  **Identify Target Block:** Use `relative_depth` to identify the target block's start PC (`target_start_pc`) from the reconstructed stack.
-        3.  **Calculate Absolute Target PC:** If the target is `Loop`, use `target_start_pc`; if `Block`/`If`, use `block_end_map` to find the PC after the corresponding `End` (`target_ip`).
-        4.  **Update Operand:** Write the calculated `target_ip` into `processed[fixup_pc]`'s `operand` (`Operand::LabelIdx`). Also consult `if_else_map` for `If`/`Else`.
+*   **Phase 3: Br, BrIf, If, Else Fixup (Details)**
+    *   Within `preprocess_instructions`, processes the non-`BrTable` branch information from the `fixups` vector generated in Phase 1.
+    *   For each Fixup info `(fixup_pc, relative_depth, is_if_false_jump, is_else_jump)`:
+        1.  **Control Stack Reconstruction:** Scan `processed` (from Phase 1) up to `fixup_pc` to reproduce the `Block`, `Loop`, `If` nesting state onto a stack (`current_control_stack_pass3`).
+        2.  **Identify Target Block:** Use `relative_depth` to find the target block's start PC (`target_start_pc`) and type (`is_loop`) from the reconstructed stack.
+        3.  **Calculate Absolute Target PC:** If `is_loop`, the target is `target_start_pc`. If `Block`/`If`, use the `block_end_map` (from Phase 2) to find the PC after the corresponding `End` (`target_ip`).
+        4.  **Update Operand:** Write the calculated `target_ip` into `processed[fixup_pc]`'s `operand` (`Operand::LabelIdx`). For `If` (`is_if_false_jump=true`) or `Else` (`is_else_jump=true`), consult `if_else_map` to calculate the correct target (start of `Else` + 1 or end of `End` + 1).
 
          ```text
         Example Instruction Stream (`processed`):
@@ -143,15 +158,15 @@ This allows identifying the correct target block using `relative_depth`.
         ----------------------------------------------------------
         ```
 
-*   **Pass 4: BrTable Fixup**
-    *   Processes `BrTable` instruction operands (those still `Operand::None`).
-    *   **Reason:** `BrTable` has multiple targets, so processing it after other branches are resolved (Pass 3 completed) ensures correct control stack reconstruction for each target resolution.
+*   **Phase 4: BrTable Fixup (Details)**
+    *   Within `preprocess_instructions`, processes `BrTable` instructions (`handler_index == HANDLER_IDX_BR_TABLE`) whose operands are still in the initial state (`Operand::None`).
+    *   **Reason:** Processed after other branches (Phase 3) because `BrTable` has multiple targets.
     *   For each `BrTable` instruction (`pc`):
-        1.  **Identify Related Fixups:** Find all entries in `fixups` corresponding to `pc`.
-        2.  **Resolve Each Target:** For each found fixup info, perform control stack reconstruction and map lookup similar to Pass 3 to calculate the absolute target PC (the last fixup corresponds to the default branch).
+        1.  **Identify Related Fixups:** Find all entries in the `fixups` list (from Phase 1) associated with this `pc`.
+        2.  **Resolve Each Target:** For each associated Fixup info (`relative_depth`), perform control stack reconstruction up to that point (`current_control_stack_pass4`) and use map information (`block_end_map`) similar to Phase 3 to calculate the absolute target PC. (The last fixup in the list corresponds to the default branch).
         3.  **Update Operand:** Write the list of all resolved target PCs and the default PC into `processed[pc]`'s `operand` as `Operand::BrTable { targets: [...], default: ... }`.
 
-This multi-pass Fixup ensures that the execution loop only needs to use the absolute PC within the `operand` for branch instructions.
+This multi-phase preprocessing (Phase 1 in parser + Phases 2-4 in `stack.rs`) ensures that the final `ProcessedInstr` list has all branch targets resolved to absolute PCs. Consequently, the execution loop (`run_dtc_loop`) can simply use the absolute PC found in the `operand` for any branch instruction.
 
 ### 3. Handler Table (`HANDLER_TABLE`)
 
