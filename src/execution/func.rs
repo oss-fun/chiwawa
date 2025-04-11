@@ -62,7 +62,8 @@ impl FuncAddr {
                         type_: TypeIdx(0),
                         locals: Vec::new(),
                         body: Vec::new(),
-                        fixups: Vec::new()
+                        fixups: Vec::new(),
+                        processed_cache: std::cell::RefCell::new(None), // Initialize cache here too
                     }
                 }
             ))
