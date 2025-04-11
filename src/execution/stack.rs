@@ -9,8 +9,8 @@ use lazy_static::lazy_static;
 use crate::execution::value::Val;
 use crate::execution::module::{ModuleInst, GetInstanceByIdx}; 
 use crate::execution::func::{FuncAddr, FuncInst};
-use std::rc::{Weak}; 
-use crate::structure::types::{ValueType, NumType, VecType}; 
+use std::rc::{Weak, Rc}; // Added Rc
+use crate::structure::types::{ValueType, NumType, VecType};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Operand {
@@ -441,13 +441,27 @@ pub struct Stacks {
 
 impl Stacks {
     pub fn new(funcaddr: &FuncAddr, params: Vec<Val>) -> Result<Stacks, RuntimeError> {
-        let func_inst_ref = funcaddr.borrow();
+        let func_inst_ref = funcaddr.borrow(); // Keep immutable borrow for now
         match &*func_inst_ref {
             FuncInst::RuntimeFunc { type_, module, code } => {
                 if params.len() != type_.params.len() {
                     return Err(RuntimeError::InvalidParameterCount);
                 }
-                let processed_instrs = preprocess_instructions(&code.body, &code.fixups)?;
+
+                // --- Cache Check ---
+                let processed_instrs = {
+                    let mut cache = code.processed_cache.borrow_mut(); // Mutable borrow of the RefCell content
+                    if let Some(cached_code) = &*cache {
+                        cached_code.clone() // Clone from cache
+                    } else {
+                        // Preprocess if not cached
+                        let processed = preprocess_instructions(&code.body, &code.fixups)?;
+                        *cache = Some(processed.clone()); // Store in cache
+                        processed // Return the newly processed code
+                    }
+                };
+                // --- End Cache Check ---
+
 
                 let mut locals = params;
                 for v in code.locals.iter() {
@@ -547,7 +561,19 @@ impl Stacks {
                                         }
                                     };
 
-                                    let processed_code = preprocess_instructions(&code.body, &code.fixups)?;
+                                    // --- Cache Check for Invoke ---
+                                    let processed_code = {
+                                        let mut cache = code.processed_cache.borrow_mut();
+                                        if let Some(cached_code) = &*cache {
+                                            cached_code.clone()
+                                        } else {
+                                            let processed = preprocess_instructions(&code.body, &code.fixups)?;
+                                            *cache = Some(processed.clone());
+                                            processed
+                                        }
+                                    };
+                                    // --- End Cache Check ---
+
 
                                     // Create the new frame stack
                                     let frame = FrameStack{

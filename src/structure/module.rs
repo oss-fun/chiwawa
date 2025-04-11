@@ -1,13 +1,16 @@
 use crate::structure::types::*;
 use crate::structure::instructions::*;
-use crate::execution::stack::*;
+use crate::execution::stack::{ProcessedInstr, FixupInfo}; // Adjusted import
+use std::cell::RefCell; // Added import
 
 #[derive(Clone, Debug)]
 pub struct Func {
     pub type_: TypeIdx,
     pub locals: Vec<(u32,ValueType)>,
-    pub body: Vec<ProcessedInstr>,
+    pub body: Vec<ProcessedInstr>, // Original, unprocessed instructions from parser
     pub fixups: Vec<FixupInfo>,
+    // Cache for the result of preprocess_instructions
+    pub processed_cache: RefCell<Option<Vec<ProcessedInstr>>>,
 }
 
 #[derive(Clone)]
