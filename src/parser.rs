@@ -58,6 +58,7 @@ fn decode_func_section(body: SectionLimited<'_, u32>, module: &mut Module) -> Re
             locals: Vec::new(),
             body: Vec::new(),
             fixups: Vec::new(),
+            processed_cache: std::cell::RefCell::new(None), // Initialize cache
         });
     }
 
