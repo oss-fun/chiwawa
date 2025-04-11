@@ -40,10 +40,6 @@ impl MemAddr {
         let len = <T>::len();
         let raw = &self.0.borrow().data;
     
-        if raw.len() < pos +len {
-            return Err(RuntimeError::InstructionFailed);
-        }
-
         let data = Vec::from(&raw[pos..pos + len]);
         Ok(<T>::from_byte(data))
     }
@@ -51,10 +47,6 @@ impl MemAddr {
         let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap()).ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
         let buf = <T>::to_byte(data);
         let raw = &mut self.0.borrow_mut().data;
-
-        if raw.len() < pos + buf.len(){
-          return Err(RuntimeError::InstructionFailed);
-        }
 
         for (i, x) in buf.into_iter().enumerate(){
             raw[pos + i] = x;
