@@ -1,4 +1,4 @@
-use std::{rc::Rc, cell::RefCell};
+use std::sync::{Arc, RwLock};
 use crate::structure::{types::*,instructions::Memarg};
 use crate::error::RuntimeError;
 use typenum::*;
@@ -6,7 +6,7 @@ use std::io::Cursor;
 use byteorder::*;
 
 #[derive(Clone, Debug)]
-pub struct MemAddr(Rc<RefCell<MemInst>>);
+pub struct MemAddr(Arc<RwLock<MemInst>>);
 #[derive(Debug)]
 pub struct MemInst {
     pub _type_: MemType,
@@ -17,7 +17,7 @@ impl MemAddr {
     pub fn new(type_: &MemType) -> MemAddr{
         let min = (type_.0.min * 65536) as usize;
         let max = type_.0.max.map(|max| max);
-        MemAddr(Rc::new(RefCell::new(
+        MemAddr(Arc::new(RwLock::new(
             MemInst{
                 _type_: MemType(Limits{min: min as u32, max}),
                 data: {
@@ -30,7 +30,7 @@ impl MemAddr {
     }
 
     pub fn init(&self, offset: usize, init: &Vec<u8>){
-        let addr_self = &mut self.0.borrow_mut();
+        let mut addr_self = self.0.write().expect("RwLock poisoned");
         for(index, data) in init.iter().enumerate(){
             addr_self.data[index + offset] = *data;
         }
@@ -38,34 +38,32 @@ impl MemAddr {
     pub fn load<T: ByteMem>(&self, arg: &Memarg, ptr: i32) -> Result<T, RuntimeError>{
         let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap()).ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
         let len = <T>::len();
-        let raw = &self.0.borrow().data;
-    
+        let raw = &self.0.read().expect("RwLock poisoned").data;
         let data = Vec::from(&raw[pos..pos + len]);
         Ok(<T>::from_byte(data))
     }
     pub fn store<T:ByteMem>(&self, arg: &Memarg, ptr: i32, data: T)-> Result<(), RuntimeError>{
         let pos = ptr.checked_add(i32::try_from(arg.offset).ok().unwrap()).ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
         let buf = <T>::to_byte(data);
-        let raw = &mut self.0.borrow_mut().data;
-
+        let mut raw = self.0.write().expect("RwLock poisoned");
         for (i, x) in buf.into_iter().enumerate(){
-            raw[pos + i] = x;
+            raw.data[pos + i] = x;
         }
 
         Ok(())
     }
 
     pub fn mem_size(&self) -> i32{
-        (self.0.borrow().data.len() / 65536) as i32
+        (self.0.read().expect("RwLock poisoned").data.len() / 65536) as i32
     }
-    
+
     pub fn mem_grow(&self, size: i32) -> i32{
         let prev_size = self.mem_size();
         let new = prev_size + size;
         if new > 65536 {
             -1
         } else {
-            self.0.borrow_mut().data.resize(new as usize * 65536, 0);
+            self.0.write().expect("RwLock poisoned").data.resize(new as usize * 65536, 0);
             prev_size
         }
     }

@@ -1,9 +1,9 @@
-use std::{rc::Rc, cell::RefCell};
+use std::sync::{Arc, RwLock};
 use crate::structure::types::*;
 use super::{func::FuncAddr, module::*};
 
 #[derive(Clone, Debug)]
-pub struct TableAddr(Rc<RefCell<TableInst>>);
+pub struct TableAddr(Arc<RwLock<TableInst>>);
 #[derive(Debug)]
 pub struct TableInst {
     pub _type_: TableType,
@@ -12,9 +12,9 @@ pub struct TableInst {
 
 impl TableAddr{
     pub fn new(type_: &TableType) -> TableAddr{
-        TableAddr(Rc::new(RefCell::new(
+        TableAddr(Arc::new(RwLock::new(
             TableInst{
-                _type_:type_.clone(), 
+                _type_:type_.clone(),
                 elem: {
                     let min = type_.0.min as usize;
                     let mut vec = Vec::with_capacity(min);
@@ -25,13 +25,13 @@ impl TableAddr{
         )))
     }
     pub fn init(&self, offset: usize, funcs: &Vec<FuncAddr>, init: &Vec<i32>){
-        let addr_self = &mut self.0.borrow_mut();
+        let mut addr_self = self.0.write().expect("RwLock poisoned");
         for (index, f) in init.iter().enumerate() {
             addr_self.elem[index + offset] = Some(funcs.get_by_idx(FuncIdx(*f as u32)).clone());
         }
     }
     pub fn get(&self, i: usize) -> Option<FuncAddr>{
-        let inst = self.0.borrow();
+        let inst = self.0.read().expect("RwLock poisoned");
         if i < inst.elem.len() as usize {
             inst.elem[i].clone()
         } else {

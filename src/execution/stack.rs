@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use std::ops::{BitAnd, BitOr, BitXor, Add, Sub, Mul, Div};
 use lazy_static::lazy_static;
 use crate::execution::value::Val;
-use crate::execution::module::{ModuleInst, GetInstanceByIdx}; 
+use crate::execution::module::{ModuleInst, GetInstanceByIdx};
 use crate::execution::func::{FuncAddr, FuncInst};
-use std::rc::{Weak}; // Added Rc
+use std::sync::{Weak as SyncWeak}; // Use sync Weak instead of rc Weak
 use crate::structure::types::{ValueType, NumType, VecType};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -441,8 +441,8 @@ pub struct Stacks {
 
 impl Stacks {
     pub fn new(funcaddr: &FuncAddr, params: Vec<Val>) -> Result<Stacks, RuntimeError> {
-        let func_inst_ref = funcaddr.borrow(); // Keep immutable borrow for now
-        match &*func_inst_ref {
+        let func_inst_guard = funcaddr.read_lock().expect("RwLock poisoned");
+        match &*func_inst_guard {
             FuncInst::RuntimeFunc { type_, module, code } => {
                 if params.len() != type_.params.len() {
                     return Err(RuntimeError::InvalidParameterCount);
@@ -450,7 +450,8 @@ impl Stacks {
 
                 // --- Cache Check ---
                 let processed_instrs = {
-                    let mut cache = code.processed_cache.borrow_mut(); // Mutable borrow of the RefCell content
+                    // Use write lock for cache update
+                    let mut cache = code.processed_cache.write().expect("RwLock poisoned");
                     if let Some(cached_code) = &*cache {
                         cached_code.clone() // Clone from cache
                     } else {
@@ -534,7 +535,9 @@ impl Stacks {
 
                     match instr {
                         ModuleLevelInstr::Invoke(func_addr) => {
-                            match &*func_addr.borrow(){
+                            // Use read_lock() method instead of direct field access
+                            let func_inst_guard = func_addr.read_lock().expect("RwLock poisoned");
+                            match &*func_inst_guard { // Match on the guard
                                 FuncInst::RuntimeFunc{type_,module,code} => {
                                     // Prepare locals for the new frame
                                     let params_len = type_.params.len();
@@ -563,7 +566,8 @@ impl Stacks {
 
                                     // --- Cache Check for Invoke ---
                                     let processed_code = {
-                                        let mut cache = code.processed_cache.borrow_mut();
+                                        // Use write lock for cache update
+                                        let mut cache = code.processed_cache.write().expect("RwLock poisoned");
                                         if let Some(cached_code) = &*cache {
                                             cached_code.clone()
                                         } else {
@@ -698,7 +702,7 @@ impl Stacks {
 // This Frame struct might be needed for FrameStack still.
 pub struct Frame{
     pub locals: Vec<Val>,
-    pub module: Weak<ModuleInst>,
+    pub module: SyncWeak<ModuleInst>, // Use sync Weak
     pub n: usize, // Number of expected return values
 }
 
