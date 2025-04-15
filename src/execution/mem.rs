@@ -9,7 +9,7 @@ use byteorder::*;
 pub struct MemAddr(Rc<RefCell<MemInst>>);
 #[derive(Debug)]
 pub struct MemInst {
-    pub type_: MemType,
+    pub _type_: MemType,
     pub data: Vec<u8>,
 }
 
@@ -19,7 +19,7 @@ impl MemAddr {
         let max = type_.0.max.map(|max| max);
         MemAddr(Rc::new(RefCell::new(
             MemInst{
-                type_: MemType(Limits{min: min as u32, max}),
+                _type_: MemType(Limits{min: min as u32, max}),
                 data: {
                     let mut vec = Vec::with_capacity(min);
                     vec.resize(min, 0);

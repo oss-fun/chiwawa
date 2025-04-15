@@ -88,7 +88,7 @@ pub enum ExportDesc {
 }
 
 pub struct Module {
-    name: String,
+    _name: String,
     pub types: Vec<FuncType>,
     pub funcs: Vec<Func>,
     pub tables: Vec<Table>,
@@ -106,7 +106,7 @@ pub struct Module {
 impl Module {
     pub fn new(name: &str) -> Self{
         Module{
-            name: name.to_string(),
+            _name: name.to_string(),
             types: Vec::new(),
             funcs: Vec::new(),
             tables: Vec::new(),
