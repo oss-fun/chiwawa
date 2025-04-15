@@ -7,7 +7,7 @@ use crate::error::RuntimeError;
 pub struct GlobalAddr(Rc<RefCell<GlobalInst>>);
 #[derive(Debug)]
 pub struct GlobalInst {
-    pub type_: GlobalType,
+    pub _type_: GlobalType,
     pub value: Val,
 }
 
@@ -15,7 +15,7 @@ impl GlobalAddr {
     pub fn new(type_: &GlobalType, value: Val) -> GlobalAddr{
         GlobalAddr(Rc::new(RefCell::new(
             GlobalInst{
-                type_: type_.clone(),
+                _type_: type_.clone(),
                 value: value
             }
         )))
