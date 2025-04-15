@@ -1,5 +1,5 @@
 use std::{rc::Rc, cell::*, rc::Weak};
-use crate::structure::{types::*,module::*, instructions::Expr};
+use crate::structure::{types::*,module::*};
 use super::value::Val;
 use super::module::*;
 use crate::error::RuntimeError;
