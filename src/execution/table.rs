@@ -6,7 +6,7 @@ use super::{func::FuncAddr, module::*};
 pub struct TableAddr(Rc<RefCell<TableInst>>);
 #[derive(Debug)]
 pub struct TableInst {
-    pub type_: TableType,
+    pub _type_: TableType,
     pub elem: Vec<Option<FuncAddr>>,
 }
 
@@ -14,7 +14,7 @@ impl TableAddr{
     pub fn new(type_: &TableType) -> TableAddr{
         TableAddr(Rc::new(RefCell::new(
             TableInst{
-                type_:type_.clone(), 
+                _type_:type_.clone(), 
                 elem: {
                     let min = type_.0.min as usize;
                     let mut vec = Vec::with_capacity(min);

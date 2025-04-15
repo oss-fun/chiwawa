@@ -9,7 +9,7 @@ use lazy_static::lazy_static;
 use crate::execution::value::Val;
 use crate::execution::module::{ModuleInst, GetInstanceByIdx}; 
 use crate::execution::func::{FuncAddr, FuncInst};
-use std::rc::{Weak, Rc}; // Added Rc
+use std::rc::{Weak}; // Added Rc
 use crate::structure::types::{ValueType, NumType, VecType};
 
 #[derive(Clone, Debug, PartialEq)]
