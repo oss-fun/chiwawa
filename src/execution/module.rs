@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::{Arc, Weak as SyncWeak};
 use std::collections::HashMap;
 use crate::structure::{types::*, module::*, instructions::*};
 use crate::error::RuntimeError;
@@ -37,7 +37,7 @@ impl GetInstanceByIdx<GlobalIdx> for Vec<GlobalAddr>{}
 pub type ImportObjects = HashMap<String, HashMap<String, Externval>>;
 
 impl ModuleInst {
-    pub fn new(module: &Module, imports: ImportObjects) -> Result<Rc<ModuleInst>, RuntimeError>{
+    pub fn new(module: &Module, imports: ImportObjects) -> Result<Arc<ModuleInst>, RuntimeError>{
         let mut module_inst = ModuleInst {
             types: module.types.clone(),
             func_addrs: Vec::new(),
@@ -141,8 +141,7 @@ impl ModuleInst {
                 }
             )
         }
-
-        let rc_module_inst = Rc::new(module_inst);
+        let arc_module_inst = Arc::new(module_inst);
 
         for (base, func) in module.funcs.iter().enumerate(){
             let index = base + module.imports.iter().map(|i|{
@@ -152,13 +151,13 @@ impl ModuleInst {
                     0
                 }
             }).sum::<usize>();
-         rc_module_inst.func_addrs[index].replace(func.clone(), Rc::downgrade(&rc_module_inst));
+            arc_module_inst.func_addrs[index].replace(func.clone(), Arc::downgrade(&arc_module_inst));
         }
         if let Some(start) = &module.start {
             //Todo: Invoke _start function
-            rc_module_inst.func_addrs.get_by_idx(start.func.clone());
+            arc_module_inst.func_addrs.get_by_idx(start.func.clone());
         }
-        Ok(rc_module_inst)
+        Ok(arc_module_inst)
     }
 
     pub fn get_export_func(&self, name: &str) -> Result<FuncAddr, RuntimeError>{

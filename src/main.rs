@@ -3,11 +3,11 @@ use clap::{Parser};
 use chiwawa::{parser,structure::module::Module,execution::module::*, execution::value::*};
 use std::collections::HashMap;
 use fancy_regex::Regex;
+use std::sync::{Arc, OnceLock};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    path: String,
     #[arg(short, long, default_value = "main")]
     invoke: String,
     #[arg(short, long, value_delimiter = ',', num_args = 0..)]
@@ -34,16 +34,26 @@ fn parse_params(params: Vec<String>) -> Vec<Val> {
     }
     return parsed
 }
+
+static MODULE_INSTANCE: OnceLock<Arc<ModuleInst>> = OnceLock::new();
+
+#[export_name = "wizer.initialize"]
+pub extern "C" fn init() {
+    let mut module = Module::new("test");
+    let _ = parser::parse_bytecode(&mut module, "pi-Leibniz.wasm");
+    let imports: ImportObjects = HashMap::new();
+    let inst = ModuleInst::new(&module, imports).unwrap();
+    let _ = MODULE_INSTANCE.set(inst);
+}
+
 fn main() -> Result <()>{
     let cli = Cli::parse();
     let params: Vec<Val> = match cli.params{
         Some(p) => parse_params(p),
         None => vec![]
     };
-    let mut module = Module::new("test");
-    let _ = parser::parse_bytecode(&mut module, &cli.path);
-    let imports: ImportObjects = HashMap::new();
-    let inst = ModuleInst::new(&module, imports).unwrap();
+
+    let inst = MODULE_INSTANCE.get().unwrap();
     let result = inst.get_export_func(&cli.invoke)?.call(params);
 
     match result {
@@ -66,14 +76,13 @@ mod tests {
     use super::*;
     use chiwawa::{parser, structure::module::Module, execution::value::*, execution::module::*};
     use std::collections::HashMap;
-    use std::rc::Rc; // Import Rc for the return type
-
+    use std::sync::Arc;
     // Helper function to load module and get instance
-    fn load_instance(wasm_path: &str) -> Rc<ModuleInst> { // Changed return type
+    fn load_instance(wasm_path: &str) -> Arc<ModuleInst> {
         let mut module = Module::new("test");
         let _ = parser::parse_bytecode(&mut module, wasm_path);
         let imports: ImportObjects = HashMap::new();
-        ModuleInst::new(&module, imports).unwrap() // This already returns Rc<ModuleInst>
+        ModuleInst::new(&module, imports).unwrap()
     }
 
     // --- i32 tests ---

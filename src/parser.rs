@@ -9,6 +9,7 @@ use crate::structure::instructions::*;
 use crate::error::ParserError;
 use crate::execution::stack::{ProcessedInstr, Operand, FixupInfo};
 use crate::execution::stack::*;
+use std::sync::{RwLock,Arc};
 
 fn match_value_type(t: ValType) -> ValueType {
     match t {
@@ -58,7 +59,7 @@ fn decode_func_section(body: SectionLimited<'_, u32>, module: &mut Module) -> Re
             locals: Vec::new(),
             body: Vec::new(),
             fixups: Vec::new(),
-            processed_cache: std::cell::RefCell::new(None), // Initialize cache
+            processed_cache: Arc::new(RwLock::new(None)),
         });
     }
 
