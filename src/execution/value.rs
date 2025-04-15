@@ -1,5 +1,5 @@
 use crate::structure::types::{ValueType, NumType, VecType};
-use std::{rc::Rc, cell::RefCell};
+use std::sync::{Arc, RwLock};
 use super::{mem::MemAddr, global::GlobalAddr, func::FuncAddr, table::TableAddr};
 
 #[derive(Clone, Debug)]
@@ -71,7 +71,7 @@ pub enum Ref {
 }
 
 #[derive(Clone, Debug)]
-pub struct ExternAddr(Rc<RefCell<Externval>>);
+pub struct ExternAddr(Arc<RwLock<Externval>>);
 
 #[derive(Clone, Debug)]
 pub enum Externval {
