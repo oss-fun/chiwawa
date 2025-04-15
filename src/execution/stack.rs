@@ -9,7 +9,7 @@ use lazy_static::lazy_static;
 use crate::execution::value::Val;
 use crate::execution::module::{ModuleInst, GetInstanceByIdx};
 use crate::execution::func::{FuncAddr, FuncInst};
-use std::sync::{Weak as SyncWeak}; // Use sync Weak instead of rc Weak
+use std::sync::{Weak as SyncWeak};
 use crate::structure::types::{ValueType, NumType, VecType};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -35,8 +35,6 @@ pub struct ProcessedInstr {
     pub operand: Operand,
 }
 
-// Stores fixup info: (pc_to_patch, relative_depth, is_if_false_jump, is_else_jump)
-pub type FixupInfo = (usize, usize, bool, bool);
 
 pub struct ExecutionContext<'a> {
     pub frame: &'a mut crate::execution::stack::Frame,
@@ -251,190 +249,6 @@ pub const HANDLER_IDX_I64_EXTEND32_S: usize = 0xC4;
 
 pub const MAX_HANDLER_INDEX: usize = 0xC5;
 
-fn preprocess_instructions(
-    initial_processed_instrs: &[ProcessedInstr],
-    initial_fixups: &[FixupInfo]
-) -> Result<Vec<ProcessedInstr>, RuntimeError> {
-    let mut processed = initial_processed_instrs.to_vec();
-    let mut fixups = initial_fixups.to_vec();
-
-    // Phase 2 (Map Building): Build maps for End and Else targets
-    let mut block_end_map: HashMap<usize, usize> = HashMap::new(); // Map block_start_pc -> end_marker_pc + 1
-    let mut if_else_map: HashMap<usize, usize> = HashMap::new(); // Map if_start_pc -> else_marker_pc + 1
-    let mut control_stack_for_map_building: Vec<(usize, bool)> = Vec::new(); // (processed_pc_start, is_loop)
-
-    for (pc, instr) in processed.iter().enumerate() {
-         match instr.handler_index {
-            HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_IF => {
-                control_stack_for_map_building.push((pc, instr.handler_index == HANDLER_IDX_LOOP));
-            }
-            HANDLER_IDX_ELSE => {
-                // Find the corresponding If's start_pc on the stack
-                if let Some((if_start_pc, false)) = control_stack_for_map_building.last() {
-                    if_else_map.insert(*if_start_pc, pc + 1); // Map If start to Else+1
-                } else {
-                     return Err(RuntimeError::InvalidWasm("ElseMarker without matching If"));
-                }
-            }
-            HANDLER_IDX_END => {
-                if let Some((start_pc, _)) = control_stack_for_map_building.pop() {
-                    block_end_map.insert(start_pc, pc + 1); // Map Block/Loop/If start to End+1
-                } else {
-                     // Allow EndMarker at the end of the function body
-                     if pc == processed.len() - 1 && control_stack_for_map_building.is_empty() {
-                     } else {
-                         return Err(RuntimeError::InvalidWasm("Unmatched EndMarker"));
-                     }
-                }
-            }
-            _ => {}
-        }
-    }
-    if !control_stack_for_map_building.is_empty() {
-        return Err(RuntimeError::InvalidWasm("Unclosed control block at end of function"));
-    }
-
-    // Phase 3 (Fixup Br, BrIf, If, Else): Resolve branch targets using maps
-    let mut current_control_stack_pass3: Vec<(usize, bool)> = Vec::new(); // Separate stack for this pass
-    for fixup_index in 0..fixups.len() {
-        // Use a mutable borrow to potentially mark fixups as done (if needed later)
-        let (fixup_pc, relative_depth, is_if_false_jump, is_else_jump) = fixups[fixup_index];
-
-        // Skip if already processed (e.g., by BrTable logic in Pass 4) or if it's a BrTable fixup
-        let is_br_table_fixup = processed.get(fixup_pc).map_or(false, |instr| instr.handler_index == HANDLER_IDX_BR_TABLE);
-        if relative_depth == usize::MAX || is_br_table_fixup {
-             continue;
-        }
-
-
-        // Rebuild the control stack state *up to the point of the fixup instruction*
-        current_control_stack_pass3.clear();
-        for (pc, instr) in processed.iter().enumerate().take(fixup_pc + 1) { // Include the instruction needing fixup
-            match instr.handler_index {
-                HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_IF => {
-                    current_control_stack_pass3.push((pc, instr.handler_index == HANDLER_IDX_LOOP));
-                }
-                HANDLER_IDX_END => {
-                    // Only pop if the stack is not empty (handles final function EndMarker)
-                    if !current_control_stack_pass3.is_empty() {
-                        current_control_stack_pass3.pop();
-                    }
-                }
-                _ => {}
-            }
-        }
-
-
-        // Find the target block's start_pc based on relative_depth
-        if current_control_stack_pass3.len() <= relative_depth {
-            println!("Warning: Invalid relative depth {} for branch at pc {}", relative_depth, fixup_pc);
-            fixups[fixup_index].1 = usize::MAX;
-            continue;
-        }
-        // Target block is 'relative_depth' levels up the stack
-        let (target_start_pc, is_loop) = current_control_stack_pass3[current_control_stack_pass3.len() - 1 - relative_depth];
-
-        let target_ip = if is_loop {
-            target_start_pc // Loop branches target the Loop instruction itself
-        } else {
-            // Block/If branches target *after* the corresponding EndMarker
-            *block_end_map.get(&target_start_pc)
-                .ok_or_else(|| {
-                    println!("Error: Could not find EndMarker for block starting at {}", target_start_pc);
-                    RuntimeError::InvalidWasm("Missing EndMarker for branch target")
-                })?
-        };
-
-        // Patch the operand in the 'processed' vector
-        if let Some(instr_to_patch) = processed.get_mut(fixup_pc) {
-            if is_if_false_jump { // This is an If instruction needing its false jump target
-                // Target is ElseMarker+1 if it exists, otherwise EndMarker+1
-                let else_target = *if_else_map.get(&target_start_pc).unwrap_or(&target_ip);
-                instr_to_patch.operand = Operand::LabelIdx(else_target);
-            } else if is_else_jump { // This is an ElseMarker instruction needing its jump-to-end target
-                // Target is the corresponding EndMarker + 1
-                instr_to_patch.operand = Operand::LabelIdx(target_ip);
-            } else { // This is a Br or BrIf instruction
-                // Target is Loop start or EndMarker + 1
-                instr_to_patch.operand = Operand::LabelIdx(target_ip);
-            }
-        } else {
-             println!("Warning: Could not find instruction to patch at pc {}", fixup_pc);
-        }
-        fixups[fixup_index].1 = usize::MAX;
-    }
-
-    // Phase 4 (Fixup BrTable): Resolve BrTable targets
-    let mut current_control_stack_pass4: Vec<(usize, bool)> = Vec::new(); // Separate stack for this pass
-    for (pc, instr) in processed.iter_mut().enumerate() {
-        // Maintain control stack state for Pass 4
-        match instr.handler_index {
-            HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_IF => {
-                current_control_stack_pass4.push((pc, instr.handler_index == HANDLER_IDX_LOOP));
-            }
-            HANDLER_IDX_END => {
-                 if !current_control_stack_pass4.is_empty() {
-                    current_control_stack_pass4.pop();
-                 }
-            }
-            _ => {}
-        }
-
-        // Process BrTable instructions
-        if instr.handler_index == HANDLER_IDX_BR_TABLE && instr.operand == Operand::None {
-            let mut resolved_targets = Vec::new();
-            let mut resolved_default = usize::MAX;
-
-            // Find fixup indices associated *only* with this BrTable pc
-            let mut fixup_indices_for_this_br_table = fixups.iter().enumerate()
-                .filter(|(_, (fp, depth, _, _))| *fp == pc && *depth != usize::MAX) // Filter by pc and not already processed
-                .map(|(idx, _)| idx) // Get the original index in the fixups vector
-                .collect::<Vec<_>>();
-
-            // The last fixup entry corresponds to the default target
-            if let Some(default_fixup_idx) = fixup_indices_for_this_br_table.pop() {
-                 let (_, relative_depth, _, _) = fixups[default_fixup_idx]; // Use original index
-                 if current_control_stack_pass4.len() <= relative_depth {
-                     println!("Warning: Invalid relative depth {} for BrTable default at pc {}", relative_depth, pc);
-                     resolved_default = usize::MAX; // Mark as error
-                 } else {
-                     let (target_start_pc, is_loop) = current_control_stack_pass4[current_control_stack_pass4.len() - 1 - relative_depth];
-                     resolved_default = if is_loop { target_start_pc } else { *block_end_map.get(&target_start_pc).unwrap_or(&usize::MAX) };
-                 }
-                 fixups[default_fixup_idx].1 = usize::MAX; // Mark as done using original index
-            } else {
-                 println!("Warning: Could not find default target fixup for BrTable at pc {}", pc);
-            }
-
-            // Resolve remaining targets (in the order they appeared in the original BrTable instruction)
-            for fixup_idx in fixup_indices_for_this_br_table { // Iterate through original indices
-                 let (_, relative_depth, _, _) = fixups[fixup_idx]; // Use original index
-                 let target_ip = if current_control_stack_pass4.len() <= relative_depth {
-                     println!("Warning: Invalid relative depth {} for BrTable target at pc {}", relative_depth, pc);
-                     usize::MAX // Mark as error
-                 } else {
-                     let (target_start_pc, is_loop) = current_control_stack_pass4[current_control_stack_pass4.len() - 1 - relative_depth];
-                     if is_loop { target_start_pc } else { *block_end_map.get(&target_start_pc).unwrap_or(&usize::MAX) }
-                 };
-                 resolved_targets.push(target_ip);
-                 fixups[fixup_idx].1 = usize::MAX; // Mark as done using original index
-            }
-
-            instr.operand = Operand::BrTable { targets: resolved_targets, default: resolved_default };
-        }
-    }
-
-
-    // Verify all fixups were applied (optional, for debugging)
-    if let Some((pc, depth, _, _)) = fixups.iter().find(|(_, d, _, _)| *d != usize::MAX) {
-         println!("Warning: Unresolved fixup remaining at pc {} with depth {}", pc, depth);
-         // return Err(RuntimeError::InvalidWasm("Unresolved branch target"));
-    }
-
-
-    Ok(processed)
-}
-
 pub struct Stacks {
     pub activation_frame_stack: Vec<FrameStack>,
 }
@@ -447,22 +261,6 @@ impl Stacks {
                 if params.len() != type_.params.len() {
                     return Err(RuntimeError::InvalidParameterCount);
                 }
-
-                // --- Cache Check ---
-                let processed_instrs = {
-                    // Use write lock for cache update
-                    let mut cache = code.processed_cache.write().expect("RwLock poisoned");
-                    if let Some(cached_code) = &*cache {
-                        cached_code.clone() // Clone from cache
-                    } else {
-                        // Preprocess if not cached
-                        let processed = preprocess_instructions(&code.body, &code.fixups)?;
-                        *cache = Some(processed.clone()); // Store in cache
-                        processed // Return the newly processed code
-                    }
-                };
-                // --- End Cache Check ---
-
 
                 let mut locals = params;
                 for v in code.locals.iter() {
@@ -488,7 +286,7 @@ impl Stacks {
                         label: Label {
                             locals_num: type_.results.len(),
                         },
-                        processed_instrs,
+                        processed_instrs: code.body.clone(),
                         value_stack: vec![],
                         ip: 0,
                     }],
@@ -564,22 +362,6 @@ impl Stacks {
                                         }
                                     };
 
-                                    // --- Cache Check for Invoke ---
-                                    let processed_code = {
-                                        // Use write lock for cache update
-                                        let mut cache = code.processed_cache.write().expect("RwLock poisoned");
-                                        if let Some(cached_code) = &*cache {
-                                            cached_code.clone()
-                                        } else {
-                                            let processed = preprocess_instructions(&code.body, &code.fixups)?;
-                                            *cache = Some(processed.clone());
-                                            processed
-                                        }
-                                    };
-                                    // --- End Cache Check ---
-
-
-                                    // Create the new frame stack
                                     let frame = FrameStack{
                                         frame: Frame{
                                             locals,
@@ -591,7 +373,7 @@ impl Stacks {
                                                 label: Label{
                                                     locals_num: type_.results.len(),
                                                 },
-                                                processed_instrs: processed_code,
+                                                processed_instrs: code.body.clone(),
                                                 value_stack: vec![],
                                                 ip: 0, // Initialize IP for new frame
                                             }

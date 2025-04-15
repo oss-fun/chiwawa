@@ -1,15 +1,13 @@
 use std::sync::{Arc, RwLock};
 use crate::structure::types::*;
 use crate::structure::instructions::*;
-use crate::execution::stack::{ProcessedInstr, FixupInfo};
+use crate::execution::stack::{ProcessedInstr};
 
 #[derive(Clone, Debug)]
 pub struct Func {
     pub type_: TypeIdx,
     pub locals: Vec<(u32,ValueType)>,
-    pub body: Vec<ProcessedInstr>, // Original, unprocessed instructions from parser
-    pub fixups: Vec<FixupInfo>,
-    pub processed_cache: Arc<RwLock<Option<Vec<ProcessedInstr>>>>,
+    pub body: Vec<ProcessedInstr>, 
 }
 
 #[derive(Clone)]
