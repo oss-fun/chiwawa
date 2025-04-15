@@ -7,8 +7,10 @@ use crate::structure::module::*;
 use crate::structure::types::*;
 use crate::structure::instructions::*;
 use crate::error::ParserError;
-use crate::execution::stack::{ProcessedInstr, Operand, FixupInfo};
+use crate::execution::stack::{ProcessedInstr, Operand};
 use crate::execution::stack::*;
+use std::collections::HashMap;
+use crate::error::RuntimeError;
 
 fn match_value_type(t: ValType) -> ValueType {
     match t {
@@ -57,8 +59,6 @@ fn decode_func_section(body: SectionLimited<'_, u32>, module: &mut Module) -> Re
             type_: typeidx,
             locals: Vec::new(),
             body: Vec::new(),
-            fixups: Vec::new(),
-            processed_cache: std::cell::RefCell::new(None), // Initialize cache
         });
     }
 
@@ -316,36 +316,216 @@ fn decode_code_section(body: FunctionBody<'_>, module: &mut Module) -> Result<()
     let ops_reader = body.get_operators_reader()?;
     let mut ops_iter = ops_reader.into_iter_with_offsets().peekable();
 
-    // Decode directly into ProcessedInstr and FixupInfo
-    let (processed_instrs, fixups) = decode_processed_instrs_and_fixups(&mut ops_iter)?;
+    let processed_instrs = decode_processed_instrs_and_fixups(&mut ops_iter)?;
     module.funcs[module.code_index].body = processed_instrs;
-    module.funcs[module.code_index].fixups = fixups;
     module.code_index += 1;
     Ok(())
 }
 
-fn decode_processed_instrs_and_fixups(ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>) -> Result<(Vec<ProcessedInstr>, Vec<FixupInfo>), Box<dyn std::error::Error>> {
-    let mut processed_instrs = Vec::new();
-    let mut fixups = Vec::new();
+type FixupInfo = (usize, usize, bool, bool);
+
+fn preprocess_instructions(initial_processed_instrs: &[ProcessedInstr], initial_fixups: &[FixupInfo]) -> Result<Vec<ProcessedInstr>, RuntimeError> {
+    let mut processed = initial_processed_instrs.to_vec();
+    let mut fixups = initial_fixups.to_vec();
+
+    // Phase 2 (Map Building): Build maps for End and Else targets
+    let mut block_end_map: HashMap<usize, usize> = HashMap::new(); // Map block_start_pc -> end_marker_pc + 1
+    let mut if_else_map: HashMap<usize, usize> = HashMap::new(); // Map if_start_pc -> else_marker_pc + 1
+    let mut control_stack_for_map_building: Vec<(usize, bool)> = Vec::new(); // (processed_pc_start, is_loop)
+
+    for (pc, instr) in processed.iter().enumerate() {
+        match instr.handler_index {
+            HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_IF => {
+                control_stack_for_map_building.push((pc, instr.handler_index == HANDLER_IDX_LOOP));
+            }
+            HANDLER_IDX_ELSE => {
+                if let Some((if_start_pc, false)) = control_stack_for_map_building.last() {
+                    if_else_map.insert(*if_start_pc, pc + 1); // Map If start to Else+1
+                } else {
+                    return Err(RuntimeError::InvalidWasm("ElseMarker without matching If"));
+                }
+            }
+            HANDLER_IDX_END => {
+                if let Some((start_pc, _)) = control_stack_for_map_building.pop() {
+                    block_end_map.insert(start_pc, pc + 1); // Map Block/Loop/If start to End+1
+                } else {
+                    // Allow EndMarker at the end of the function body
+                    if pc == processed.len() - 1 && control_stack_for_map_building.is_empty() {
+                    } else {
+                        return Err(RuntimeError::InvalidWasm("Unmatched EndMarker"));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !control_stack_for_map_building.is_empty() {
+        return Err(RuntimeError::InvalidWasm("Unclosed control block at end of function"));
+    }
+
+    // Phase 3 (Fixup Br, BrIf, If, Else): Resolve branch targets using maps
+    let mut current_control_stack_pass3: Vec<(usize, bool)> = Vec::new();
+    for fixup_index in 0..fixups.len() {
+        let (fixup_pc, relative_depth, is_if_false_jump, is_else_jump) = fixups[fixup_index];
+
+        // Skip if already processed (e.g., by BrTable logic in Pass 4) or if it's a BrTable fixup
+        // Add type hint for closure parameter
+        let is_br_table_fixup = processed.get(fixup_pc).map_or(false, |instr: &ProcessedInstr| instr.handler_index == HANDLER_IDX_BR_TABLE);
+        if relative_depth == usize::MAX || is_br_table_fixup {
+              continue;
+        }
+
+        // Rebuild the control stack state *up to the point of the fixup instruction*
+        current_control_stack_pass3.clear();
+        for (pc, instr) in processed.iter().enumerate().take(fixup_pc + 1) {
+            match instr.handler_index {
+                HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_IF => {
+                    current_control_stack_pass3.push((pc, instr.handler_index == HANDLER_IDX_LOOP));
+                }
+                HANDLER_IDX_END => {
+                    // Only pop if the stack is not empty (handles final function EndMarker)
+                    if !current_control_stack_pass3.is_empty() {
+                        current_control_stack_pass3.pop();
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Find the target block's start_pc based on relative_depth
+        if current_control_stack_pass3.len() <= relative_depth {
+            fixups[fixup_index].1 = usize::MAX;
+            continue;
+        }
+
+        // Target block is 'relative_depth' levels up the stack
+        let (target_start_pc, is_loop) = current_control_stack_pass3[current_control_stack_pass3.len() - 1 - relative_depth];
+
+        let target_ip = if is_loop {
+            target_start_pc // Loop branches target the Loop instruction itself
+        } else {
+            // Block/If branches target *after* the corresponding EndMarker
+            *block_end_map.get(&target_start_pc)
+                .ok_or_else(|| {
+                     println!("Error: Could not find EndMarker for block starting at {}", target_start_pc);
+                     // Use RuntimeError with &'static str
+                     RuntimeError::InvalidWasm("Missing EndMarker for branch target")
+                 })?
+        };
+
+        if let Some(instr_to_patch) = processed.get_mut(fixup_pc) {
+            if is_if_false_jump { // This is an If instruction needing its false jump target
+                // Target is ElseMarker+1 if it exists, otherwise EndMarker+1
+                let else_target = *if_else_map.get(&target_start_pc).unwrap_or(&target_ip);
+                instr_to_patch.operand = Operand::LabelIdx(else_target);
+            } else if is_else_jump { // This is an ElseMarker instruction needing its jump-to-end target
+                // Target is the corresponding EndMarker + 1
+                instr_to_patch.operand = Operand::LabelIdx(target_ip);
+            } else { // This is a Br or BrIf instruction
+                // Target is Loop start or EndMarker + 1
+                instr_to_patch.operand = Operand::LabelIdx(target_ip);
+            }
+        } else {
+             return Err(RuntimeError::InvalidWasm("Could not find instruction to patch"));
+        }
+        fixups[fixup_index].1 = usize::MAX; // Mark as processed
+    }
+
+    // Phase 4 (Fixup BrTable): Resolve BrTable targets
+    let mut current_control_stack_pass4: Vec<(usize, bool)> = Vec::new();
+    for (pc, instr) in processed.iter_mut().enumerate() {
+        match instr.handler_index {
+            HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_IF => {
+                current_control_stack_pass4.push((pc, instr.handler_index == HANDLER_IDX_LOOP));
+            }
+            HANDLER_IDX_END => {
+                 if !current_control_stack_pass4.is_empty() {
+                    current_control_stack_pass4.pop();
+                 }
+            }
+            _ => {}
+        }
+
+        // Process BrTable instructions
+        // Check if operand is None, indicating it needs fixup (as set in map_operator...)
+        if instr.handler_index == HANDLER_IDX_BR_TABLE && instr.operand == Operand::None {
+            let mut resolved_targets = Vec::new();
+            let mut resolved_default = usize::MAX;
+
+            // Find fixup indices associated *only* with this BrTable pc
+            // Filter by pc and *not* already processed (depth != usize::MAX)
+            let mut fixup_indices_for_this_br_table = fixups.iter().enumerate()
+                .filter(|(_, (fp, depth, _, _))| *fp == pc && *depth != usize::MAX)
+                .map(|(idx, _)| idx) // Get the original index in the fixups vector
+                .collect::<Vec<_>>();
+
+            // The last fixup entry corresponds to the default target
+            if let Some(default_fixup_idx) = fixup_indices_for_this_br_table.pop() {
+                let (_, relative_depth, _, _) = fixups[default_fixup_idx]; // Use original index
+                if current_control_stack_pass4.len() <= relative_depth {
+                    return Err(RuntimeError::InvalidWasm("Invalid relative depth for BrTable default target"));
+                } else {
+                    let (target_start_pc, is_loop) = current_control_stack_pass4[current_control_stack_pass4.len() - 1 - relative_depth];
+                    resolved_default = if is_loop { target_start_pc } else { *block_end_map.get(&target_start_pc).unwrap_or(&usize::MAX) };
+                    if resolved_default == usize::MAX {
+                        return Err(RuntimeError::InvalidWasm("Missing EndMarker for BrTable default target"));
+                    }
+                }
+                fixups[default_fixup_idx].1 = usize::MAX;
+            } else {
+                return Err(RuntimeError::InvalidWasm("Could not find default target fixup for BrTable"));
+            }
+
+            // Resolve remaining targets (in the order they appeared in the original BrTable instruction)
+            for fixup_idx in fixup_indices_for_this_br_table { // Iterate through original indices
+                let (_, relative_depth, _, _) = fixups[fixup_idx]; // Use original index
+                let target_ip = if current_control_stack_pass4.len() <= relative_depth {
+                    return Err(RuntimeError::InvalidWasm("Invalid relative depth for BrTable target"));
+                } else {
+                    let (target_start_pc, is_loop) = current_control_stack_pass4[current_control_stack_pass4.len() - 1 - relative_depth];
+                    if is_loop { target_start_pc } else { *block_end_map.get(&target_start_pc).unwrap_or(&usize::MAX) }
+                };
+                
+                if target_ip == usize::MAX {
+                    return Err(RuntimeError::InvalidWasm("Missing EndMarker for BrTable target"));
+                }
+                resolved_targets.push(target_ip);
+                fixups[fixup_idx].1 = usize::MAX;
+            }
+            instr.operand = Operand::BrTable { targets: resolved_targets, default: resolved_default };
+        }
+    }
+
+    // Verify all fixups were applied (optional, for debugging)
+    if let Some((pc, depth, _, _)) = fixups.iter().find(|(_, d, _, _)| *d != usize::MAX) {
+          println!("Warning: Unresolved fixup remaining at pc {} with depth {}", pc, depth);
+          return Err(RuntimeError::InvalidWasm("Unresolved branch target"));
+     }
+
+    Ok(processed)
+}
+
+fn decode_processed_instrs_and_fixups(ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>) -> Result<(Vec<ProcessedInstr>), Box<dyn std::error::Error>> {
+    let mut initial_processed_instrs = Vec::new();
+    let mut initial_fixups = Vec::new();
     let mut current_processed_pc = 0;
 
-    // Loop until the iterator is exhausted
     while let Some(res) = ops.next() {
-        let (op, _offset) = res?; // Use offset for error reporting if needed later
+        let (op, _offset) = res?;
 
-        // map_operator_to_processed_instr_and_fixup handles all operators
         let (processed_instr, fixup_info_opt) = map_operator_to_processed_instr_and_fixup(op, current_processed_pc)?;
+        initial_processed_instrs.push(processed_instr);
 
-        processed_instrs.push(processed_instr);
         if let Some(fixup_info) = fixup_info_opt {
-            // For BrTable, multiple fixups might be generated for the same PC.
-            // The current FixupInfo type stores only one. We need to handle this.
-            // For now, we'll just push all generated fixups. stack.rs will need to filter them.
-            fixups.push(fixup_info);
+            initial_fixups.push(fixup_info);
         }
         current_processed_pc += 1;
     }
-    Ok((processed_instrs, fixups))
+
+    let final_processed_instrs = preprocess_instructions(&initial_processed_instrs, &initial_fixups).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+
+    Ok(final_processed_instrs)
 }
 
 
@@ -406,7 +586,7 @@ fn map_operator_to_processed_instr_and_fixup(op: wasmparser::Operator, current_p
         /* Parametric Instructions */
         wasmparser::Operator::Drop => { handler_index = HANDLER_IDX_DROP; }
         wasmparser::Operator::Select => { handler_index = HANDLER_IDX_SELECT; } // Untyped select
-         wasmparser::Operator::TypedSelect { .. } => { handler_index = HANDLER_IDX_SELECT; } // Typed select
+        wasmparser::Operator::TypedSelect { .. } => { handler_index = HANDLER_IDX_SELECT; } // Typed select
 
         /* Variable Instructions */
         wasmparser::Operator::LocalGet {local_index} => { handler_index = HANDLER_IDX_LOCAL_GET; operand = Operand::LocalIdx(LocalIdx(local_index)); }
