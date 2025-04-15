@@ -68,8 +68,6 @@ impl FuncAddr {
                         type_: TypeIdx(0),
                         locals: Vec::new(),
                         body: Vec::new(),
-                        fixups: Vec::new(),
-                        processed_cache: Arc::new(RwLock::new(None)),
                     }
                 }
             ))
