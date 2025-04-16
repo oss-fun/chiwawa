@@ -7,7 +7,8 @@ Chiwawa (Pronunciation of chihuahua) is a self-hosted Wasm runtime that enables 
 
 ```
 cargo build --target wasm32-wasip1 --release
-somethingWasmRuntime target/wasm32-wasip1/release/chiwawa.wasm something.wasm --invoke func-name --params "I64(100)"
+wizer target/wasm32-wasip1/release/chiwawa.wasm -o preinit-chiwawa.wasm --allow-wasi --dir .
+somethingWasmRuntime preinit-chiwawa.wasm --invoke func-name --params "I64(100)"
 ```
 
 
