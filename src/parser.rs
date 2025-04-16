@@ -1376,9 +1376,9 @@ mod tests {
        assert_eq!(func_num, 1);
        
        let func_body = &module.funcs[0].body;
-       let fixups = &module.funcs[0].fixups;
+       // let fixups = &module.funcs[0].fixups; // Removed: fixups field does not exist on Func
        println!("Processed Body: {:?}", func_body);
-       println!("Fixups: {:?}", fixups);
+       // println!("Fixups: {:?}", fixups); // Removed: fixups variable removed
 
        // --- Updated Assertions for ProcessedInstr ---
        // Note: These assertions will fail until stack.rs::preprocess_instructions
