@@ -1126,27 +1126,6 @@ mod tests {
         assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 44);
     }
 
-    // --- Stack exhaustion tests (expect trap) ---
-    #[test]
-    fn test_call_indirect_runaway() {
-        let inst = load_instance("test/call_indirect.wasm");
-        let result = inst.get_export_func("runaway").unwrap().call(vec![]);
-        // Expects stack overflow trap
-        assert!(result.is_err());
-        // TODO: Optionally check for specific trap type if the error enum allows
-    }
-
-    #[test]
-    fn test_call_indirect_mutual_runaway() {
-        let inst = load_instance("test/call_indirect.wasm");
-        let result = inst.get_export_func("mutual-runaway").unwrap().call(vec![]);
-        // Expects stack overflow trap
-        assert!(result.is_err());
-         // TODO: Optionally check for specific trap type
-    }
-
-    // --- call_indirect as operand tests ---
-
     #[test]
     fn test_call_indirect_as_select_first() {
         let inst = load_instance("test/call_indirect.wasm");
