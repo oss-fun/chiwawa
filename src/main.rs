@@ -1114,34 +1114,34 @@ mod tests {
         let inst = load_instance("test/call_indirect.wasm");
         let ret = inst.get_export_func("even").unwrap().call(vec![Val::Num(Num::I32(0))]);
         assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 44);
+        let ret = inst.get_export_func("even").unwrap().call(vec![Val::Num(Num::I32(1))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 99);
+        let ret = inst.get_export_func("even").unwrap().call(vec![Val::Num(Num::I32(100))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 44);
+        let ret = inst.get_export_func("even").unwrap().call(vec![Val::Num(Num::I32(77))]);
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 99);
         let ret = inst.get_export_func("odd").unwrap().call(vec![Val::Num(Num::I32(0))]);
         assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 99);
-        let ret = inst.get_export_func("even").unwrap().call(vec![Val::Num(Num::I32(1))]); // Calls odd(0)
-        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 99);
-        let ret = inst.get_export_func("odd").unwrap().call(vec![Val::Num(Num::I32(1))]); // Calls even(0)
+        let ret = inst.get_export_func("odd").unwrap().call(vec![Val::Num(Num::I32(1))]);
         assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 44);
-        let ret = inst.get_export_func("even").unwrap().call(vec![Val::Num(Num::I32(13))]); // Calls odd(12) -> even(11) ... -> odd(0)
+        let ret = inst.get_export_func("odd").unwrap().call(vec![Val::Num(Num::I32(200))]);
         assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 99);
-        let ret = inst.get_export_func("odd").unwrap().call(vec![Val::Num(Num::I32(12))]); // Calls even(11) -> odd(10) ... -> even(0)
+        let ret = inst.get_export_func("odd").unwrap().call(vec![Val::Num(Num::I32(77))]);
         assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 44);
     }
 
     #[test]
     fn test_call_indirect_as_select_first() {
         let inst = load_instance("test/call_indirect.wasm");
-        // select (call_indirect type$out-i32 (i32.const 0)) (i32.const 2) (i32.const 3)
-        // select (0x132) (2) (3) -> selects 2 because condition is non-zero
         let ret = inst.get_export_func("as-select-first").unwrap().call(vec![]);
-        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 2); // Should select the first value (2) because condition (0x132) is non-zero
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x132);
     }
 
     #[test]
     fn test_call_indirect_as_select_mid() {
         let inst = load_instance("test/call_indirect.wasm");
-         // select (i32.const 2) (call_indirect type$out-i32 (i32.const 0)) (i32.const 3)
-         // select (2) (0x132) (3) -> selects 0x132 because condition (3) is non-zero
         let ret = inst.get_export_func("as-select-mid").unwrap().call(vec![]);
-        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 0x132); // Should select the middle value (0x132) because condition (3) is non-zero
+        assert_eq!(ret.unwrap().pop().unwrap().to_i32(), 2);
     }
 
     #[test]
