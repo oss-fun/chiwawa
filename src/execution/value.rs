@@ -1,7 +1,7 @@
-use crate::structure::types::{ValueType, NumType, VecType};
-use std::sync::{Arc, RwLock};
-use super::{mem::MemAddr, global::GlobalAddr, func::FuncAddr, table::TableAddr};
+use super::{func::FuncAddr, global::GlobalAddr, mem::MemAddr, table::TableAddr};
 use crate::error::RuntimeError;
+use crate::structure::types::{NumType, ValueType, VecType};
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug)]
 pub enum Val {
@@ -38,10 +38,10 @@ impl Val {
     pub fn val_type(&self) -> ValueType {
         match self {
             Val::Num(Num::I32(_)) => ValueType::NumType(NumType::I32),
-            Val::Num(Num::I64(_))  => ValueType::NumType(NumType::I64),
-            Val::Num(Num::F32(_))  => ValueType::NumType(NumType::F32),
-            Val::Num(Num::F64(_))  => ValueType::NumType(NumType::F64),
-            Val::Vec_(Vec_::V128(_))  => ValueType::VecType(VecType::V128),
+            Val::Num(Num::I64(_)) => ValueType::NumType(NumType::I64),
+            Val::Num(Num::F32(_)) => ValueType::NumType(NumType::F32),
+            Val::Num(Num::F64(_)) => ValueType::NumType(NumType::F64),
+            Val::Vec_(Vec_::V128(_)) => ValueType::VecType(VecType::V128),
             Val::Ref(_) => todo!(),
         }
     }

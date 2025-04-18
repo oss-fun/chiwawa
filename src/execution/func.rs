@@ -1,21 +1,24 @@
-use std::sync::{Arc, RwLock, Weak as SyncWeak};
-use crate::structure::{types::*,module::*};
-use super::value::Val;
 use super::module::*;
+use super::value::Val;
 use crate::error::RuntimeError;
 use crate::execution::stack::Stacks;
-use std::{fmt::{self, Debug}, sync::RwLockReadGuard};
+use crate::structure::{module::*, types::*};
+use std::sync::{Arc, RwLock, Weak as SyncWeak};
+use std::{
+    fmt::{self, Debug},
+    sync::RwLockReadGuard,
+};
 
 #[derive(Clone)]
 pub struct FuncAddr(Arc<RwLock<FuncInst>>);
 
 pub enum FuncInst {
-    RuntimeFunc{
+    RuntimeFunc {
         type_: FuncType,
         module: SyncWeak<ModuleInst>,
         code: Func,
     },
-    HostFunc{
+    HostFunc {
         type_: FuncType,
         host_code: Arc<dyn Fn(Vec<Val>) -> Result<Option<Val>, RuntimeError> + Send + Sync>,
     },
@@ -26,20 +29,27 @@ impl Debug for FuncAddr {
         match self.0.try_read() {
             Ok(guard) => write!(f, "FuncAddr({:?})", *guard),
             Err(_) => write!(f, "FuncAddr(<Locked>)"),
-         }
-     }
- }
+        }
+    }
+}
 
 impl Debug for FuncInst {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            FuncInst::RuntimeFunc { type_, module, code } => f
+            FuncInst::RuntimeFunc {
+                type_,
+                module,
+                code,
+            } => f
                 .debug_struct("RuntimeFunc")
                 .field("type_", type_)
                 .field("module", &module.upgrade().is_some())
                 .field("code", code)
                 .finish(),
-            FuncInst::HostFunc { type_, host_code: _ } => f
+            FuncInst::HostFunc {
+                type_,
+                host_code: _,
+            } => f
                 .debug_struct("HostFunc")
                 .field("type_", type_)
                 .field("host_code", &"<host_code>")
@@ -48,38 +58,33 @@ impl Debug for FuncInst {
     }
 }
 
-
 impl FuncAddr {
     pub fn call(&self, params: Vec<Val>) -> Result<Vec<Val>, RuntimeError> {
         let mut dtc_stacks = Stacks::new(self, params)?;
         dtc_stacks.exec_instr()
     }
 
-    pub fn alloc_empty() -> FuncAddr{
-        FuncAddr(
-            Arc::new(RwLock::new(
-                FuncInst::RuntimeFunc{
-                    type_: FuncType{
-                        params: Vec::new(),
-                        results: Vec::new()
-                    },
-                    module: SyncWeak::new(),
-                    code: Func{
-                        type_: TypeIdx(0),
-                        locals: Vec::new(),
-                        body: Vec::new(),
-                    }
-                }
-            ))
-        )
+    pub fn alloc_empty() -> FuncAddr {
+        FuncAddr(Arc::new(RwLock::new(FuncInst::RuntimeFunc {
+            type_: FuncType {
+                params: Vec::new(),
+                results: Vec::new(),
+            },
+            module: SyncWeak::new(),
+            code: Func {
+                type_: TypeIdx(0),
+                locals: Vec::new(),
+                body: Vec::new(),
+            },
+        })))
     }
 
-    pub fn replace(&self, func: Func, module: SyncWeak<ModuleInst>){
+    pub fn replace(&self, func: Func, module: SyncWeak<ModuleInst>) {
         let upgraded_module = module.upgrade().expect("Module weak ref expired");
         let func_type = upgraded_module.types.get_by_idx(func.type_.clone()).clone();
         drop(upgraded_module);
 
-        let new_inst = FuncInst::RuntimeFunc{
+        let new_inst = FuncInst::RuntimeFunc {
             type_: func_type,
             module: module,
             code: func,
@@ -95,20 +100,32 @@ impl FuncAddr {
     }
 
     pub fn get_runtime_func_details(&self) -> Option<(FuncType, SyncWeak<ModuleInst>, Func)> {
-         match &*self.0.read().expect("RwLock poisoned") {
-            FuncInst::RuntimeFunc { type_, module, code } => Some((type_.clone(), module.clone(), code.clone())),
+        match &*self.0.read().expect("RwLock poisoned") {
+            FuncInst::RuntimeFunc {
+                type_,
+                module,
+                code,
+            } => Some((type_.clone(), module.clone(), code.clone())),
             _ => None,
         }
     }
 
-    pub fn get_host_func_details(&self) -> Option<(FuncType, Arc<dyn Fn(Vec<Val>) -> Result<Option<Val>, RuntimeError> + Send + Sync>)> {
-         match &*self.0.read().expect("RwLock poisoned") {
+    pub fn get_host_func_details(
+        &self,
+    ) -> Option<(
+        FuncType,
+        Arc<dyn Fn(Vec<Val>) -> Result<Option<Val>, RuntimeError> + Send + Sync>,
+    )> {
+        match &*self.0.read().expect("RwLock poisoned") {
             FuncInst::HostFunc { type_, host_code } => Some((type_.clone(), host_code.clone())),
-             _ => None,
-         }
-     }
+            _ => None,
+        }
+    }
 
-    pub fn read_lock(&self) -> Result<RwLockReadGuard<FuncInst>, std::sync::PoisonError<RwLockReadGuard<'_, FuncInst>>> {
+    pub fn read_lock(
+        &self,
+    ) -> Result<RwLockReadGuard<FuncInst>, std::sync::PoisonError<RwLockReadGuard<'_, FuncInst>>>
+    {
         self.0.read()
     }
- }
+}

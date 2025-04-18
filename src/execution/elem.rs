@@ -1,6 +1,6 @@
-use std::sync::{Arc, RwLock};
+use super::{func::FuncAddr, module::*, value::Ref};
 use crate::structure::types::*;
-use super::{value::Ref, func::FuncAddr, module::*};
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug)]
 pub struct ElemAddr(Arc<RwLock<ElemInst>>);
@@ -8,17 +8,17 @@ pub struct ElemAddr(Arc<RwLock<ElemInst>>);
 pub struct ElemInst {
     pub _type_: RefType,
     pub _elem: Vec<Ref>,
-    
 }
 
-impl ElemAddr{
-    pub fn new(type_: &RefType, funcs: &Vec<FuncAddr>, init: &Vec<i32>) -> ElemAddr{
-        let elem :Vec<Ref> = init.into_iter().map(|i|Ref::FuncAddr(funcs.get_by_idx(FuncIdx(*i as u32)).clone())).collect();
-        ElemAddr(Arc::new(RwLock::new(
-            ElemInst{
-                _type_: type_.clone(),
-                _elem: elem,
-            }
-        )))
+impl ElemAddr {
+    pub fn new(type_: &RefType, funcs: &Vec<FuncAddr>, init: &Vec<i32>) -> ElemAddr {
+        let elem: Vec<Ref> = init
+            .into_iter()
+            .map(|i| Ref::FuncAddr(funcs.get_by_idx(FuncIdx(*i as u32)).clone()))
+            .collect();
+        ElemAddr(Arc::new(RwLock::new(ElemInst {
+            _type_: type_.clone(),
+            _elem: elem,
+        })))
     }
 }
