@@ -307,11 +307,14 @@ fn decode_data_section(body: SectionLimited<'_, wasmparser::Data<'_>>, module: &
 }
 
 fn decode_code_section(body: FunctionBody<'_>, module: &mut Module) -> Result<(), Box<dyn std::error::Error>> {
+    let mut locals: Vec<(u32, ValueType)> = Vec::new(); // Add type annotation
     for pair in body.get_locals_reader()? {
         let (cnt, ty) = pair?;
         let ty = match_value_type(ty);
-        module.funcs[module.code_index].locals.push((cnt,ty));
+        locals.push((cnt,ty)); // Populate locals
     }
+    // Assign locals to the function struct field
+    module.funcs[module.code_index].locals = locals;
 
     let ops_reader = body.get_operators_reader()?;
     let mut ops_iter = ops_reader.into_iter_with_offsets().peekable();
@@ -322,27 +325,46 @@ fn decode_code_section(body: FunctionBody<'_>, module: &mut Module) -> Result<()
     Ok(())
 }
 
-type FixupInfo = (usize, usize, bool, bool);
+// Represents information needed for branch target fixup.
+// Changed from tuple to struct for clarity and extensibility.
+#[derive(Debug, Clone, Copy)]
+struct FixupInfo {
+    pc: usize, // PC of the instruction needing fixup (Br, BrIf, If, Else)
+    original_wasm_depth: usize, // The original relative depth from Wasm bytecode (LabelIdx)
+    is_if_false_jump: bool, // True if this fixup is for the If instruction's jump-on-false
+    is_else_jump: bool, // True if this fixup is for the Else instruction's jump-to-end
+    // Note: is_br_table_target could be added if needed, but currently handled by checking the handler index
+}
 
+// Phase 1: Map control flow starts to ends, If to Else
+// Phase 2: Resolve Br, BrIf, If, Else jumps using maps and control stack simulation
+// Phase 3: Resolve BrTable jumps similarly
 fn preprocess_instructions(initial_processed_instrs: &[ProcessedInstr], initial_fixups: &[FixupInfo]) -> Result<Vec<ProcessedInstr>, RuntimeError> {
     let mut processed = initial_processed_instrs.to_vec();
-    let mut fixups = initial_fixups.to_vec();
+    let mut fixups = initial_fixups.to_vec(); // Now a Vec<FixupInfo>
+    let mut block_end_map: HashMap<usize, usize> = HashMap::new();
+    let mut if_else_map: HashMap<usize, usize> = HashMap::new();
 
-    // Phase 2 (Map Building): Build maps for End and Else targets
-    let mut block_end_map: HashMap<usize, usize> = HashMap::new(); // Map block_start_pc -> end_marker_pc + 1
-    let mut if_else_map: HashMap<usize, usize> = HashMap::new(); // Map if_start_pc -> else_marker_pc + 1
-    let mut control_stack_for_map_building: Vec<(usize, bool)> = Vec::new(); // (processed_pc_start, is_loop)
-
+    // --- Phase 1: Build block_end_map and if_else_map ---
+    // control_stack: Vec<(pc_of_start, is_if_block)>
+    let mut control_stack_for_map_building: Vec<(usize, bool)> = Vec::new();
     for (pc, instr) in processed.iter().enumerate() {
         match instr.handler_index {
-            HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_IF => {
-                control_stack_for_map_building.push((pc, instr.handler_index == HANDLER_IDX_LOOP));
+            HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP => {
+                control_stack_for_map_building.push((pc, false));
+            }
+            HANDLER_IDX_IF => {
+                control_stack_for_map_building.push((pc, true));
             }
             HANDLER_IDX_ELSE => {
-                if let Some((if_start_pc, false)) = control_stack_for_map_building.last() {
-                    if_else_map.insert(*if_start_pc, pc + 1); // Map If start to Else+1
+                if let Some(&(start_pc, is_if)) = control_stack_for_map_building.last() {
+                    if is_if {
+                        if_else_map.insert(start_pc, pc + 1); // Map If start to Else+1
+                    } else {
+                        return Err(RuntimeError::InvalidWasm("Else without corresponding If"));
+                    }
                 } else {
-                    return Err(RuntimeError::InvalidWasm("ElseMarker without matching If"));
+                    return Err(RuntimeError::InvalidWasm("Else without corresponding If"));
                 }
             }
             HANDLER_IDX_END => {
@@ -364,172 +386,279 @@ fn preprocess_instructions(initial_processed_instrs: &[ProcessedInstr], initial_
         return Err(RuntimeError::InvalidWasm("Unclosed control block at end of function"));
     }
 
-    // Phase 3 (Fixup Br, BrIf, If, Else): Resolve branch targets using maps
-    let mut current_control_stack_pass3: Vec<(usize, bool)> = Vec::new();
-    for fixup_index in 0..fixups.len() {
-        let (fixup_pc, relative_depth, is_if_false_jump, is_else_jump) = fixups[fixup_index];
+    // --- Phase 2: Resolve Br, BrIf, If, Else jumps --- (Needs Arity/Index calculation)
+    // control_stack_pass2: Vec<(block_start_pc, is_loop, block_type_arity)>
+    // We need BlockType info here to determine arity!
+    // This info is NOT currently available here. It needs to be collected during the initial pass
+    // or passed into this function.
+    // TEMPORARY: We will calculate target_label_stack_idx but arity remains 0 for now.
+    let mut current_control_stack_pass2: Vec<(usize, bool, usize)> = Vec::new(); // Added arity (placeholder)
 
-        // Skip if already processed (e.g., by BrTable logic in Pass 4) or if it's a BrTable fixup
-        // Add type hint for closure parameter
-        let is_br_table_fixup = processed.get(fixup_pc).map_or(false, |instr: &ProcessedInstr| instr.handler_index == HANDLER_IDX_BR_TABLE);
-        if relative_depth == usize::MAX || is_br_table_fixup {
+    for fixup_index in 0..fixups.len() {
+        let fixup = fixups[fixup_index]; // Get FixupInfo struct
+
+        // Skip if already processed or if it's a BrTable fixup (handled in Pass 3)
+        let is_br_table_fixup = processed.get(fixup.pc).map_or(false, |instr| instr.handler_index == HANDLER_IDX_BR_TABLE);
+        if fixup.original_wasm_depth == usize::MAX || is_br_table_fixup {
               continue;
         }
 
-        // Rebuild the control stack state *up to the point of the fixup instruction*
-        current_control_stack_pass3.clear();
-        for (pc, instr) in processed.iter().enumerate().take(fixup_pc + 1) {
+        // Rebuild control stack state up to the fixup instruction (including BlockType/Arity)
+        // FIXME: Need to get BlockType info here! For now, pushing placeholder arity 0.
+        current_control_stack_pass2.clear();
+        for (pc, instr) in processed.iter().enumerate().take(fixup.pc + 1) {
             match instr.handler_index {
-                HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_IF => {
-                    current_control_stack_pass3.push((pc, instr.handler_index == HANDLER_IDX_LOOP));
+                HANDLER_IDX_BLOCK | HANDLER_IDX_IF => {
+                     // FIXME: Get actual arity from instr.operand if we store it there, or from lookup
+                    let block_arity = 0; // Placeholder
+                    current_control_stack_pass2.push((pc, false, block_arity));
+                }
+                HANDLER_IDX_LOOP => {
+                     // FIXME: Get actual loop parameter arity
+                    let loop_arity = 0; // Placeholder
+                    current_control_stack_pass2.push((pc, true, loop_arity));
                 }
                 HANDLER_IDX_END => {
-                    // Only pop if the stack is not empty (handles final function EndMarker)
-                    if !current_control_stack_pass3.is_empty() {
-                        current_control_stack_pass3.pop();
+                    if !current_control_stack_pass2.is_empty() {
+                        current_control_stack_pass2.pop();
                     }
                 }
                 _ => {}
             }
         }
 
-        // Find the target block's start_pc based on relative_depth
-        if current_control_stack_pass3.len() <= relative_depth {
-            fixups[fixup_index].1 = usize::MAX;
+        // Find target block info
+        if current_control_stack_pass2.len() <= fixup.original_wasm_depth {
+            // Mark as invalid/processed by setting depth to MAX
+            fixups[fixup_index].original_wasm_depth = usize::MAX;
+            println!("Warning: Invalid branch depth {} at pc {}", fixup.original_wasm_depth, fixup.pc);
+            // Maybe return error instead? Depending on desired strictness.
+            // return Err(RuntimeError::InvalidWasm("Invalid branch depth"));
             continue;
         }
 
-        // Target block is 'relative_depth' levels up the stack
-        let (target_start_pc, is_loop) = current_control_stack_pass3[current_control_stack_pass3.len() - 1 - relative_depth];
+        let target_stack_level = current_control_stack_pass2.len() - 1 - fixup.original_wasm_depth;
+        let (target_start_pc, is_loop, target_arity) = current_control_stack_pass2[target_stack_level];
 
+        // Calculate target IP
         let target_ip = if is_loop {
             target_start_pc // Loop branches target the Loop instruction itself
         } else {
             // Block/If branches target *after* the corresponding EndMarker
             *block_end_map.get(&target_start_pc)
-                .ok_or_else(|| {
-                     println!("Error: Could not find EndMarker for block starting at {}", target_start_pc);
-                     // Use RuntimeError with &'static str
-                     RuntimeError::InvalidWasm("Missing EndMarker for branch target")
-                 })?
+                .ok_or(RuntimeError::InvalidWasm("Missing EndMarker for branch target"))?
         };
 
-        if let Some(instr_to_patch) = processed.get_mut(fixup_pc) {
-            if is_if_false_jump { // This is an If instruction needing its false jump target
-                // Target is ElseMarker+1 if it exists, otherwise EndMarker+1
+        // Calculate target label stack index (relative to FrameStack.label_stack)
+        // This assumes the FrameStack.label_stack depth mirrors control_stack_pass2 depth at runtime
+        let target_label_stack_idx = target_stack_level;
+
+        // Patch the instruction operand
+        if let Some(instr_to_patch) = processed.get_mut(fixup.pc) {
+            if fixup.is_if_false_jump { // If instruction
+                // Target is ElseMarker+1 or EndMarker+1
                 let else_target = *if_else_map.get(&target_start_pc).unwrap_or(&target_ip);
-                instr_to_patch.operand = Operand::LabelIdx(else_target);
-            } else if is_else_jump { // This is an ElseMarker instruction needing its jump-to-end target
-                // Target is the corresponding EndMarker + 1
-                instr_to_patch.operand = Operand::LabelIdx(target_ip);
-            } else { // This is a Br or BrIf instruction
-                // Target is Loop start or EndMarker + 1
-                instr_to_patch.operand = Operand::LabelIdx(target_ip);
+                // Keep If/Else using simple LabelIdx(target_ip) for now
+                // Arity/Index aren't needed for the jump itself.
+                 instr_to_patch.operand = Operand::LabelIdx { target_ip: else_target, arity: 0, target_label_stack_idx: 0 }; // FIXME? Or use simpler operand?
+            } else if fixup.is_else_jump { // Else instruction
+                // Target is EndMarker + 1
+                 instr_to_patch.operand = Operand::LabelIdx { target_ip: target_ip, arity: 0, target_label_stack_idx: 0 }; // FIXME? Or use simpler operand?
+            } else { // Br or BrIf instruction
+                 instr_to_patch.operand = Operand::LabelIdx {
+                    target_ip,
+                    arity: target_arity, // Use calculated arity (currently placeholder 0)
+                    target_label_stack_idx,
+                 };
             }
         } else {
              return Err(RuntimeError::InvalidWasm("Could not find instruction to patch"));
         }
-        fixups[fixup_index].1 = usize::MAX; // Mark as processed
+        // Mark as processed
+        fixups[fixup_index].original_wasm_depth = usize::MAX;
     }
 
-    // Phase 4 (Fixup BrTable): Resolve BrTable targets
-    let mut current_control_stack_pass4: Vec<(usize, bool)> = Vec::new();
+    // --- Phase 3: Resolve BrTable targets --- (Needs Arity/Index calculation)
+    // Reuse control stack simulation logic
+    let mut current_control_stack_pass3: Vec<(usize, bool, usize)> = Vec::new(); // Added arity (placeholder)
     for (pc, instr) in processed.iter_mut().enumerate() {
+        // Simulate control stack changes (FIXME: Need actual arity info)
         match instr.handler_index {
-            HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_IF => {
-                current_control_stack_pass4.push((pc, instr.handler_index == HANDLER_IDX_LOOP));
-            }
-            HANDLER_IDX_END => {
-                 if !current_control_stack_pass4.is_empty() {
-                    current_control_stack_pass4.pop();
-                 }
-            }
-            _ => {}
-        }
+             HANDLER_IDX_BLOCK | HANDLER_IDX_IF => {
+                 let block_arity = 0; // Placeholder
+                 current_control_stack_pass3.push((pc, false, block_arity));
+             }
+             HANDLER_IDX_LOOP => {
+                 let loop_arity = 0; // Placeholder
+                 current_control_stack_pass3.push((pc, true, loop_arity));
+             }
+             HANDLER_IDX_END => {
+                  if !current_control_stack_pass3.is_empty() {
+                     current_control_stack_pass3.pop();
+                  }
+             }
+             _ => {}
+         }
 
-        // Process BrTable instructions
-        // Check if operand is None, indicating it needs fixup (as set in map_operator...)
+        // Process BrTable instructions needing fixup
         if instr.handler_index == HANDLER_IDX_BR_TABLE && instr.operand == Operand::None {
-            let mut resolved_targets = Vec::new();
-            let mut resolved_default = usize::MAX;
+            let mut resolved_targets: Vec<Operand> = Vec::new(); // Store Operand::LabelIdx
+            let mut resolved_default: Option<Box<Operand>> = None; // Store Option<Box<Operand>>
 
             // Find fixup indices associated *only* with this BrTable pc
             // Filter by pc and *not* already processed (depth != usize::MAX)
             let mut fixup_indices_for_this_br_table = fixups.iter().enumerate()
-                .filter(|(_, (fp, depth, _, _))| *fp == pc && *depth != usize::MAX)
+                .filter(|(_, fixup)| fixup.pc == pc && fixup.original_wasm_depth != usize::MAX)
                 .map(|(idx, _)| idx) // Get the original index in the fixups vector
                 .collect::<Vec<_>>();
 
             // The last fixup entry corresponds to the default target
             if let Some(default_fixup_idx) = fixup_indices_for_this_br_table.pop() {
-                let (_, relative_depth, _, _) = fixups[default_fixup_idx]; // Use original index
-                if current_control_stack_pass4.len() <= relative_depth {
+                let fixup = fixups[default_fixup_idx];
+                if current_control_stack_pass3.len() <= fixup.original_wasm_depth {
                     return Err(RuntimeError::InvalidWasm("Invalid relative depth for BrTable default target"));
-                } else {
-                    let (target_start_pc, is_loop) = current_control_stack_pass4[current_control_stack_pass4.len() - 1 - relative_depth];
-                    resolved_default = if is_loop { target_start_pc } else { *block_end_map.get(&target_start_pc).unwrap_or(&usize::MAX) };
-                    if resolved_default == usize::MAX {
-                        return Err(RuntimeError::InvalidWasm("Missing EndMarker for BrTable default target"));
-                    }
                 }
-                fixups[default_fixup_idx].1 = usize::MAX;
+                let target_stack_level = current_control_stack_pass3.len() - 1 - fixup.original_wasm_depth;
+                let (target_start_pc, is_loop, target_arity) = current_control_stack_pass3[target_stack_level];
+                let target_ip = if is_loop { target_start_pc } else { *block_end_map.get(&target_start_pc).unwrap_or(&usize::MAX) };
+                if target_ip == usize::MAX {
+                    return Err(RuntimeError::InvalidWasm("Missing EndMarker for BrTable default target"));
+                }
+                let target_label_stack_idx = target_stack_level;
+                resolved_default = Some(Box::<Operand>::new(Operand::LabelIdx {
+                    target_ip,
+                    arity: target_arity, // Use calculated arity
+                    target_label_stack_idx,
+                })); // Wrap in Box::new()
+                fixups[default_fixup_idx].original_wasm_depth = usize::MAX;
             } else {
                 return Err(RuntimeError::InvalidWasm("Could not find default target fixup for BrTable"));
             }
 
-            // Resolve remaining targets (in the order they appeared in the original BrTable instruction)
-            for fixup_idx in fixup_indices_for_this_br_table { // Iterate through original indices
-                let (_, relative_depth, _, _) = fixups[fixup_idx]; // Use original index
-                let target_ip = if current_control_stack_pass4.len() <= relative_depth {
+            // Resolve remaining targets (in the order they appeared)
+            for fixup_idx in fixup_indices_for_this_br_table {
+                let fixup = fixups[fixup_idx];
+                 if current_control_stack_pass3.len() <= fixup.original_wasm_depth {
                     return Err(RuntimeError::InvalidWasm("Invalid relative depth for BrTable target"));
-                } else {
-                    let (target_start_pc, is_loop) = current_control_stack_pass4[current_control_stack_pass4.len() - 1 - relative_depth];
-                    if is_loop { target_start_pc } else { *block_end_map.get(&target_start_pc).unwrap_or(&usize::MAX) }
-                };
-                
+                }
+                let target_stack_level = current_control_stack_pass3.len() - 1 - fixup.original_wasm_depth;
+                let (target_start_pc, is_loop, target_arity) = current_control_stack_pass3[target_stack_level];
+                let target_ip = if is_loop { target_start_pc } else { *block_end_map.get(&target_start_pc).unwrap_or(&usize::MAX) };
                 if target_ip == usize::MAX {
                     return Err(RuntimeError::InvalidWasm("Missing EndMarker for BrTable target"));
                 }
-                resolved_targets.push(target_ip);
-                fixups[fixup_idx].1 = usize::MAX;
+                let target_label_stack_idx = target_stack_level;
+                resolved_targets.push(Operand::LabelIdx {
+                    target_ip,
+                    arity: target_arity, // Placeholder 0
+                    target_label_stack_idx,
+                });
+                fixups[fixup_idx].original_wasm_depth = usize::MAX;
             }
-            instr.operand = Operand::BrTable { targets: resolved_targets, default: resolved_default };
+
+            // Assign the resolved BrTable operand
+            if let Some(default_operand_boxed) = resolved_default {
+                 instr.operand = Operand::BrTable { targets: resolved_targets, default: default_operand_boxed }; // Use the Box directly
+            } else {
+                 // Should have been caught earlier
+                 return Err(RuntimeError::InvalidWasm("Failed to resolve default target for BrTable"));
+            }
         }
     }
 
-    // Verify all fixups were applied (optional, for debugging)
-    if let Some((pc, depth, _, _)) = fixups.iter().find(|(_, d, _, _)| *d != usize::MAX) {
-          println!("Warning: Unresolved fixup remaining at pc {} with depth {}", pc, depth);
+    // Verify all fixups were applied
+    if let Some(fixup) = fixups.iter().find(|f| f.original_wasm_depth != usize::MAX) {
+          println!("Warning: Unresolved fixup remaining at pc {} with depth {}", fixup.pc, fixup.original_wasm_depth);
           return Err(RuntimeError::InvalidWasm("Unresolved branch target"));
      }
 
     Ok(processed)
 }
 
-fn decode_processed_instrs_and_fixups(ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>) -> Result<(Vec<ProcessedInstr>), Box<dyn std::error::Error>> {
+// Updated to use Peekable and directly call preprocess_instructions
+fn decode_processed_instrs_and_fixups(ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>) -> Result<Vec<ProcessedInstr>, Box<dyn std::error::Error>> {
     let mut initial_processed_instrs = Vec::new();
     let mut initial_fixups = Vec::new();
     let mut current_processed_pc = 0;
+    let mut control_info_stack: Vec<(wasmparser::BlockType, usize)> = Vec::new(); 
 
     while let Some(res) = ops.next() {
-        let (op, _offset) = res?;
+        let (op, _offset) = res?; 
 
-        let (processed_instr, fixup_info_opt) = map_operator_to_processed_instr_and_fixup(op, current_processed_pc)?;
-        initial_processed_instrs.push(processed_instr);
-
-        if let Some(fixup_info) = fixup_info_opt {
-            initial_fixups.push(fixup_info);
+        // Update control_info_stack based on the operator
+        match op {
+            wasmparser::Operator::Block { blockty } => {
+                control_info_stack.push((blockty, current_processed_pc));
+            }
+            wasmparser::Operator::Loop { blockty } => {
+                control_info_stack.push((blockty, current_processed_pc));
+            }
+            wasmparser::Operator::If { blockty } => {
+                control_info_stack.push((blockty, current_processed_pc));
+            }
+            wasmparser::Operator::End => {
+                // Pop only if the stack is not empty (handles case where End might be at top level)
+                if !control_info_stack.is_empty() {
+                    control_info_stack.pop();
+                }
+            }
+            _ => {}
         }
+
+        // Special handling for BrTable fixup generation
+        if let wasmparser::Operator::BrTable { ref targets } = op { // Use ref targets
+            // Create ProcessedInstr directly for BrTable
+            let processed_instr = ProcessedInstr {
+                handler_index: HANDLER_IDX_BR_TABLE,
+                operand: Operand::None, // Operand::None, fixup happens later
+            };
+            initial_processed_instrs.push(processed_instr); 
+
+            // Generate FixupInfo for each target
+            let table_targets = targets.targets().collect::<Result<Vec<_>, _>>()?;
+            for target_depth in table_targets.iter() {
+                let fixup = FixupInfo {
+                    pc: current_processed_pc,
+                    original_wasm_depth: *target_depth as usize,
+                    is_if_false_jump: false,
+                    is_else_jump: false,
+                };
+                initial_fixups.push(fixup);
+            }
+            // Generate FixupInfo for the default target
+            let default_fixup = FixupInfo {
+                pc: current_processed_pc,
+                original_wasm_depth: targets.default() as usize,
+                is_if_false_jump: false,
+                is_else_jump: false,
+            };
+            initial_fixups.push(default_fixup);
+
+        } else {
+            // Handle other operators normally
+            let (processed_instr, fixup_info_opt) = map_operator_to_initial_instr_and_fixup(op, current_processed_pc, &control_info_stack)?;
+            initial_processed_instrs.push(processed_instr);
+            if let Some(fixup_info) = fixup_info_opt {
+                initial_fixups.push(fixup_info);
+            }
+        }
+
         current_processed_pc += 1;
     }
 
-    let final_processed_instrs = preprocess_instructions(&initial_processed_instrs, &initial_fixups).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    // Now preprocess with fixups that contain original depth
+    let final_processed_instrs = preprocess_instructions(&initial_processed_instrs, &initial_fixups)
+                                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
     Ok(final_processed_instrs)
 }
 
 
-fn map_operator_to_processed_instr_and_fixup(op: wasmparser::Operator, current_processed_pc: usize) -> Result<(ProcessedInstr, Option<FixupInfo>), Box<dyn std::error::Error>> {
+fn map_operator_to_initial_instr_and_fixup(
+    op: wasmparser::Operator,
+    current_processed_pc: usize,
+    _control_info_stack: &[(wasmparser::BlockType, usize)], // Keep the parameter definition
+) -> Result<(ProcessedInstr, Option<FixupInfo>), Box<dyn std::error::Error>> {
     let handler_index;
     let mut operand = Operand::None;
     let mut fixup_info = None;
@@ -537,50 +666,55 @@ fn map_operator_to_processed_instr_and_fixup(op: wasmparser::Operator, current_p
     match op {
         wasmparser::Operator::Unreachable => { handler_index = HANDLER_IDX_UNREACHABLE; }
         wasmparser::Operator::Nop => { handler_index = HANDLER_IDX_NOP; }
-        wasmparser::Operator::Block{..} => { handler_index = HANDLER_IDX_BLOCK; }
-        wasmparser::Operator::Loop{..} => {
-            handler_index = HANDLER_IDX_LOOP;
-            operand = Operand::LabelIdx(current_processed_pc);
+        wasmparser::Operator::Block{ blockty: _ } => { 
+            handler_index = HANDLER_IDX_BLOCK; 
+            // Optionally store BlockType info in operand if needed by handle_block?
         }
-        wasmparser::Operator::If{..} => {
+        wasmparser::Operator::Loop{ blockty: _ } => {
+            handler_index = HANDLER_IDX_LOOP;
+            // Operand::LabelIdx needs arity/index later, Loop handler might need start PC?
+            // For now, let preprocess handle LabelIdx creation for branches *targeting* this loop.
+            // operand = Operand::LabelIdx { target_ip: current_processed_pc, arity: 0, target_label_stack_idx: 0 }; // Placeholder?
+        }
+        wasmparser::Operator::If{ blockty: _ } => {
             handler_index = HANDLER_IDX_IF;
-            fixup_info = Some((current_processed_pc, 0, true, false));
-            operand = Operand::LabelIdx(usize::MAX);
+            fixup_info = Some(FixupInfo { pc: current_processed_pc, original_wasm_depth: 0, is_if_false_jump: true, is_else_jump: false });
+            operand = Operand::LabelIdx { target_ip: usize::MAX, arity: 0, target_label_stack_idx: 0 }; // Placeholder
         }
         wasmparser::Operator::Else => {
             handler_index = HANDLER_IDX_ELSE;
-            fixup_info = Some((current_processed_pc, 0, false, true));
-            operand = Operand::LabelIdx(usize::MAX);
+            // Need fixup for the jump-to-end target.
+            // Original depth is 0 because it targets the corresponding End.
+            fixup_info = Some(FixupInfo { pc: current_processed_pc, original_wasm_depth: 0, is_if_false_jump: false, is_else_jump: true });
+            operand = Operand::LabelIdx { target_ip: usize::MAX, arity: 0, target_label_stack_idx: 0 }; // Placeholder
         }
         wasmparser::Operator::End => { handler_index = HANDLER_IDX_END; }
-        wasmparser::Operator::Br{relative_depth} => {
+        wasmparser::Operator::Br { relative_depth } => {
             handler_index = HANDLER_IDX_BR;
-            fixup_info = Some((current_processed_pc, relative_depth as usize, false, false));
-            operand = Operand::LabelIdx(usize::MAX);
+            fixup_info = Some(FixupInfo { pc: current_processed_pc, original_wasm_depth: relative_depth as usize, is_if_false_jump: false, is_else_jump: false });
+            operand = Operand::LabelIdx { target_ip: usize::MAX, arity: 0, target_label_stack_idx: 0 }; // Placeholder
         }
-        wasmparser::Operator::BrIf{relative_depth} => {
+        wasmparser::Operator::BrIf { relative_depth } => {
             handler_index = HANDLER_IDX_BR_IF;
-            fixup_info = Some((current_processed_pc, relative_depth as usize, false, false));
-            operand = Operand::LabelIdx(usize::MAX);
+            fixup_info = Some(FixupInfo { pc: current_processed_pc, original_wasm_depth: relative_depth as usize, is_if_false_jump: false, is_else_jump: false });
+            operand = Operand::LabelIdx { target_ip: usize::MAX, arity: 0, target_label_stack_idx: 0 }; // Placeholder
         }
-        wasmparser::Operator::BrTable{targets: _targets} => { // Prefix unused targets
+        wasmparser::Operator::BrTable { targets: _ } => { // targets are handled in the caller now
             handler_index = HANDLER_IDX_BR_TABLE;
-            // Fixup generation for BrTable will be handled in stack.rs for simplicity here.
-            // Let's store the raw indices in a temporary way, maybe using LabelIdx(u32::MAX) as placeholder?
-            // Or better, let stack.rs re-parse the BrTable info if needed.
-            // For now, keep operand as None, stack.rs will handle it.
-            operand = Operand::None; // Placeholder, stack.rs needs to reconstruct or get raw data
-            // No fixup_info generated here for BrTable targets.
+            // Operand remains None, preprocess_instructions Pass 3 will construct the BrTable operand.
+            // FixupInfo generation is handled by the caller (decode_processed_instrs_and_fixups).
+            operand = Operand::None;
+            fixup_info = None; // No single FixupInfo generated here anymore
         }
         wasmparser::Operator::Return => { handler_index = HANDLER_IDX_RETURN; }
-        wasmparser::Operator::Call{function_index} => {
+        wasmparser::Operator::Call { function_index } => {
             handler_index = HANDLER_IDX_CALL;
             operand = Operand::FuncIdx(FuncIdx(function_index));
         }
-        wasmparser::Operator::CallIndirect{type_index, table_index: _table_index, ..} => { // Prefix unused table_index
+        wasmparser::Operator::CallIndirect { type_index, table_index } => {
             handler_index = HANDLER_IDX_CALL_INDIRECT;
+             if table_index != 0 { return Err(Box::try_from(RuntimeError::InvalidWasm("Only table index 0 is supported")).unwrap()); }
             operand = Operand::TypeIdx(TypeIdx(type_index));
-            // TODO: Include TableIdx if needed by handler (_table_index is available)
         }
 
         /* Parametric Instructions */
