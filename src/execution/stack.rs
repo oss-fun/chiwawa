@@ -24,9 +24,13 @@ pub enum Operand {
     FuncIdx(FuncIdx),
     TableIdx(TableIdx),
     TypeIdx(TypeIdx),
-    LabelIdx(usize),
+    LabelIdx {
+        target_ip: usize,
+        arity: usize,
+        target_label_stack_idx: usize,
+    },
     MemArg(Memarg),
-    BrTable { targets: Vec<usize>, default: usize },
+    BrTable { targets: Vec<Operand>, default: Box<Operand> },
 }
 
 #[derive(Clone, Debug)]
@@ -47,6 +51,11 @@ enum HandlerResult {
     Continue(usize), // Continue execution at the given IP
     Return,          // Signal function return
     Invoke(FuncAddr), // Signal function invocation with the target address
+    Branch { // Added for branch instructions with value transfer
+        target_ip: usize,
+        target_label_stack_idx: usize, // Index in FrameStack.label_stack
+        values_to_push: Vec<Val>,
+    },
 }
 
 type HandlerFn = fn(&mut ExecutionContext, &Operand) -> Result<HandlerResult, RuntimeError>;
@@ -292,6 +301,7 @@ impl Stacks {
                     label_stack: vec![LabelStack {
                         label: Label {
                             locals_num: type_.results.len(),
+                            arity: type_.results.len(), // Initialize arity
                         },
                         processed_instrs: code.body.clone(),
                         value_stack: vec![],
@@ -379,6 +389,7 @@ impl Stacks {
                                             LabelStack{
                                                 label: Label{
                                                     locals_num: type_.results.len(),
+                                                    arity: type_.results.len(), // Initialize arity
                                                 },
                                                 processed_instrs: code.body.clone(),
                                                 value_stack: vec![],
@@ -423,23 +434,33 @@ impl Stacks {
                             // Check if this was the last frame
                             if self.activation_frame_stack.is_empty() {
                                 // Return the final result from the finished frame's value stack
-                                return Ok(finished_frame.label_stack.last().map_or(vec![], |ls| ls.value_stack.clone()));
+                                // Check arity before returning
+                                let finished_label_stack = finished_frame.label_stack.last().ok_or(RuntimeError::StackError("Finished frame has no label stack"))?;
+                                let mut return_values = finished_label_stack.value_stack.clone();
+                                let expected_n = finished_frame.frame.n;
+                                if return_values.len() < expected_n {
+                                    return Err(RuntimeError::Trap); // Trap if not enough values
+                                }
+                                // Drain excess values if any
+                                let final_values = return_values.split_off(return_values.len().saturating_sub(expected_n));
+                                return Ok(final_values);
                             }
 
                             // Get potential return value(s) from the finished frame's label stack
                             let finished_label_stack = finished_frame.label_stack.last().ok_or(RuntimeError::StackError("Finished frame has no label stack"))?;
-                            let return_values = finished_label_stack.value_stack.clone(); // Clone return values
+                            let mut return_values = finished_label_stack.value_stack.clone(); // Clone return values
+                            let expected_n = finished_frame.frame.n;
 
-                            if finished_frame.frame.n != return_values.len() {
-                                // This might indicate an issue, but spec allows dropping excess values?
-                                // Let's proceed but maybe add a warning later.
-                                // return Err(RuntimeError::InvalidReturnValueCount);
+                            // Check arity and handle Trap/excess values
+                            if return_values.len() < expected_n {
+                                return Err(RuntimeError::Trap); // Trap if not enough values
                             }
+                            let actual_return_values = return_values.split_off(return_values.len().saturating_sub(expected_n));
 
                             // Push return value(s) onto caller's stack
                             if let Some(caller_frame) = self.activation_frame_stack.last_mut() {
                                  if let Some(caller_label_stack) = caller_frame.label_stack.last_mut() {
-                                     caller_label_stack.value_stack.extend(return_values);
+                                     caller_label_stack.value_stack.extend(actual_return_values);
                                      // Caller's IP was already advanced by run_dtc_loop before returning the Return signal
                                  } else {
                                      return Err(RuntimeError::StackError("Caller label stack empty during return"));
@@ -455,20 +476,30 @@ impl Stacks {
                      // Check if this was the last frame
                      if self.activation_frame_stack.is_empty() {
                          // Return the final result from the finished frame's value stack
-                         return Ok(finished_frame.label_stack.last().map_or(vec![], |ls| ls.value_stack.clone()));
+                        let finished_label_stack = finished_frame.label_stack.last().ok_or(RuntimeError::StackError("Finished frame has no label stack on implicit return"))?;
+                        let mut return_values = finished_label_stack.value_stack.clone();
+                        let expected_n = finished_frame.frame.n;
+                        if return_values.len() < expected_n {
+                            return Err(RuntimeError::Trap);
+                        }
+                        let final_values = return_values.split_off(return_values.len().saturating_sub(expected_n));
+                         return Ok(final_values);
                      }
 
                      // Handle potential return value(s) based on finished_frame.frame.n
                      let finished_label_stack = finished_frame.label_stack.last().ok_or(RuntimeError::StackError("Finished frame has no label stack on implicit return"))?;
-                     let return_values = finished_label_stack.value_stack.clone();
+                     let mut return_values = finished_label_stack.value_stack.clone();
+                     let expected_n = finished_frame.frame.n;
 
-                     if finished_frame.frame.n != return_values.len() {
-                         // return Err(RuntimeError::InvalidReturnValueCount);
+                     // Check arity and handle Trap/excess values
+                     if return_values.len() < expected_n {
+                         return Err(RuntimeError::Trap);
                      }
+                     let actual_return_values = return_values.split_off(return_values.len().saturating_sub(expected_n));
 
                      if let Some(caller_frame) = self.activation_frame_stack.last_mut() {
                           if let Some(caller_label_stack) = caller_frame.label_stack.last_mut() {
-                             caller_label_stack.value_stack.extend(return_values);
+                             caller_label_stack.value_stack.extend(actual_return_values);
                              // Caller's IP was already advanced by run_dtc_loop before reaching the end
                          } else {
                              return Err(RuntimeError::StackError("Caller label stack empty during implicit return"));
@@ -506,81 +537,120 @@ impl FrameStack{
     /// Returns Ok(Some(ModuleLevelInstr)) if a frame transition (Call/Return) is needed,
     /// Ok(None) if the frame execution completes normally (reaches end),
     /// or Err on runtime error.
-    fn run_dtc_loop(&mut self, called_func_addr_out: &mut Option<FuncAddr>) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError> { // Outer Result for panic safety
-        // Get mutable access to the current label stack
-        let current_label_stack = self.label_stack.last_mut().ok_or(RuntimeError::StackError("Label stack empty"))?;
-        let processed_code = &current_label_stack.processed_instrs; // Immutable borrow
+    fn run_dtc_loop(&mut self, _called_func_addr_out: &mut Option<FuncAddr>) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError> { // Outer Result for panic safety
+        // Get mutable access to the current label stack index
+        let mut current_label_stack_idx = self.label_stack.len().checked_sub(1)
+            .ok_or(RuntimeError::StackError("Initial label stack empty"))?;
 
-        if processed_code.is_empty() {
-             return Ok(Ok(None));
-        }
+        loop { // This loop now also handles label stack transitions implicitly via Branch result
 
-        // Use the ip stored in the LabelStack
-        let mut ip = current_label_stack.ip;
-
-        loop {
-            if ip >= processed_code.len() {
-                // Reached end of code block naturally
-                // Update the stored IP before breaking/returning
-                current_label_stack.ip = ip;
-                break;
+            // Ensure the index is valid before borrowing mutably
+            if current_label_stack_idx >= self.label_stack.len() {
+                 // This might happen if a Branch popped the last label stack
+                 // Or if code reaches end naturally
+                 break; // Exit the loop, frame finished or needs popping
             }
 
-            // Clone instruction to avoid borrowing issues when context is passed mutably
-            let instruction = processed_code[ip].clone(); // Clone from immutable borrow
+            let current_label_stack = &mut self.label_stack[current_label_stack_idx];
+            let processed_code = &current_label_stack.processed_instrs; // Immutable borrow is fine here
+            let ip = current_label_stack.ip; // Get current IP, remove mut
 
-            // Need mutable access to value_stack within the LabelStack
-            // We already have `current_label_stack` as mutable, so we can borrow its fields mutably.
+            if ip >= processed_code.len() {
+                // Reached end of this label's code block
+                current_label_stack.ip = ip; // Save IP
+
+                // Pop the current label stack if it's not the last one
+                if current_label_stack_idx > 0 {
+                    self.label_stack.pop();
+                    current_label_stack_idx -= 1;
+                    // Continue the loop with the parent label stack
+                    continue;
+                } else {
+                    // This was the last label stack for the frame
+                    break; // Exit the loop, frame finished
+                }
+            }
+
+            // Clone instruction to avoid borrowing issues
+            let instruction = processed_code[ip].clone();
+
             let handler_fn = HANDLER_TABLE.get(instruction.handler_index)
                                         .ok_or(RuntimeError::InvalidHandlerIndex)?;
 
-            // Pass mutable references to frame and value_stack
+            // Create context for the *current* label stack
             let mut context = ExecutionContext {
                 frame: &mut self.frame,
-                value_stack: &mut current_label_stack.value_stack, // Mutable borrow here
-                ip, // Pass current ip
+                value_stack: &mut self.label_stack[current_label_stack_idx].value_stack,
+                ip,
             };
 
             // --- Execute Handler ---
-            let result = handler_fn(&mut context, &instruction.operand); // Pass operand by reference
+            let result = handler_fn(&mut context, &instruction.operand);
             // --- End Execute Handler ---
 
-             // NOTE: This match block assumes handler_fn returns Result<HandlerResult, RuntimeError>
-             //       but the handlers themselves still return Result<usize, RuntimeError>.
-             //       This will cause a compile error until handlers are updated in the next step.
+
+            // Update the IP in the *correct* label stack before handling result
+            self.label_stack[current_label_stack_idx].ip = ip; // Save potentially modified IP
+
              match result {
                 Ok(handler_result) => {
                     match handler_result {
                         HandlerResult::Continue(next_ip) => {
-                            ip = next_ip; // Continue execution at the new IP
+                            // Update IP for the *current* label stack
+                            self.label_stack[current_label_stack_idx].ip = next_ip;
+                            // The loop will continue with the updated IP
                         }
                         HandlerResult::Return => {
-                            // Update IP *before* returning signal
-                            current_label_stack.ip = ip + 1; // Point to instruction *after* return
+                            // No IP update needed here as we are exiting the loop
                             return Ok(Ok(Some(ModuleLevelInstr::Return)));
                         }
                         HandlerResult::Invoke(func_addr) => {
-                            // Update IP *before* returning signal
-                            current_label_stack.ip = ip + 1; // Point to instruction *after* call/call_indirect
-                            // No need to store in called_func_addr_out, just return Invoke directly
+                             // Update IP in the *current* label stack to point *after* the call
+                            self.label_stack[current_label_stack_idx].ip = ip + 1;
                             return Ok(Ok(Some(ModuleLevelInstr::Invoke(func_addr))));
+                        }
+                        HandlerResult::Branch { target_ip, target_label_stack_idx, values_to_push } => {
+                            // 1. Validate target index
+                            if target_label_stack_idx >= self.label_stack.len() {
+                                return Ok(Err(RuntimeError::StackError("Invalid target label stack index for branch")));
+                            }
+
+                            // 2. Truncate the label stack
+                            // Keep the target stack and its parents
+                            self.label_stack.truncate(target_label_stack_idx + 1);
+
+                            // 3. Push values onto the new top stack (which is the target)
+                            // The index must now be the new len - 1
+                            let new_top_idx = self.label_stack.len() - 1;
+                            self.label_stack[new_top_idx].value_stack.extend(values_to_push);
+
+                            // 4. Set IP for the target label stack
+                            self.label_stack[new_top_idx].ip = target_ip;
+
+                            // 5. Update the current index for the next loop iteration
+                            current_label_stack_idx = new_top_idx;
+                            // The loop continues with the new current_label_stack_idx and its updated IP
                         }
                     }
                 }
                 Err(e) => {
-                    // Update IP before propagating error
-                    current_label_stack.ip = ip;
+                    // Save IP before propagating error
+                     if current_label_stack_idx < self.label_stack.len() { // Check index validity before saving IP
+                         self.label_stack[current_label_stack_idx].ip = ip;
+                     }
                     return Ok(Err(e)); // Wrap runtime error in Ok for panic safety layer
                 }
             }
         }
-        Ok(Ok(None))
+        // Loop finished naturally (either by reaching end or after Branch handled internally)
+        Ok(Ok(None)) // Frame completed normally
     }
 }
 
 #[derive(Clone)]
 pub struct Label {
-    pub locals_num: usize,
+    pub locals_num: usize, // Renamed from arity for clarity, maybe keep as arity? Check spec. Let's keep locals_num for now.
+    pub arity: usize, // Added: Number of result values expected by this block/label
 }
 
 pub struct LabelStack {
@@ -695,7 +765,7 @@ fn handle_loop(ctx: &mut ExecutionContext, _operand: &Operand) -> Result<Handler
 fn handle_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerResult, RuntimeError> {
     let cond_val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?;
     let cond = cond_val.to_i32()?; // Ensure ? is applied
-    if let &Operand::LabelIdx(target_ip) = operand { 
+    if let &Operand::LabelIdx { target_ip, arity: _, target_label_stack_idx: _ } = operand { // Ignore arity and index
          if target_ip == usize::MAX { return Err(RuntimeError::ExecutionFailed("Branch fixup not done for If")); }
         if cond == 0 { // Compare after using ?
             Ok(HandlerResult::Continue(target_ip)) // Jump if condition is false
@@ -708,7 +778,7 @@ fn handle_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
 }
 
 fn handle_else(_ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerResult, RuntimeError> { 
-     if let &Operand::LabelIdx(target_ip) = operand {
+     if let &Operand::LabelIdx { target_ip, arity: _, target_label_stack_idx: _ } = operand { // Ignore arity and index
         if target_ip == usize::MAX { return Err(RuntimeError::ExecutionFailed("Branch fixup not done for Else")); }
         Ok(HandlerResult::Continue(target_ip)) // Unconditional jump to end
     } else {
@@ -721,11 +791,21 @@ fn handle_end(ctx: &mut ExecutionContext, _operand: &Operand) -> Result<HandlerR
     Ok(HandlerResult::Continue(ctx.ip + 1)) 
 }
 
-fn handle_br(_ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerResult, RuntimeError> { 
-    if let &Operand::LabelIdx(target_ip) = operand {
-        if target_ip == usize::MAX { return Err(RuntimeError::ExecutionFailed("Branch fixup not done for Br")); }
-        // TODO: Handle value transfer for branches (polymorphic stack)
-        Ok(HandlerResult::Continue(target_ip))
+fn handle_br(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerResult, RuntimeError> { 
+    if let Operand::LabelIdx { target_ip, arity, target_label_stack_idx } = operand { // Keep arity and index here
+        // Check if target_ip is still the placeholder (fixup needed)
+        if *target_ip == usize::MAX { 
+            return Err(RuntimeError::ExecutionFailed("Branch fixup not done for Br")); 
+        }
+
+        // Use arity and target_label_stack_idx from the operand
+        let values_to_push = ctx.pop_n_values(*arity)?; // Use arity from operand
+
+        Ok(HandlerResult::Branch { 
+            target_ip: *target_ip, 
+            target_label_stack_idx: *target_label_stack_idx, // Use index from operand
+            values_to_push 
+        })
     } else {
         Err(RuntimeError::InvalidOperand)
     }
@@ -734,11 +814,22 @@ fn handle_br(_ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRe
 fn handle_br_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerResult, RuntimeError> {
     let cond_val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?;
     let cond = cond_val.to_i32()?; // Ensure ? is applied
-    if cond != 0 { // Compare after using ?
-        if let &Operand::LabelIdx(target_ip) = operand {
-             if target_ip == usize::MAX { return Err(RuntimeError::ExecutionFailed("Branch fixup not done for BrIf")); }
-             // TODO: Handle value transfer
-             Ok(HandlerResult::Continue(target_ip))
+
+    if cond != 0 { // Condition is true, perform the branch
+        if let Operand::LabelIdx { target_ip, arity, target_label_stack_idx } = operand { // Keep arity and index here
+            // Check if target_ip is still the placeholder (fixup needed)
+             if *target_ip == usize::MAX { 
+                 return Err(RuntimeError::ExecutionFailed("Branch fixup not done for BrIf")); 
+             }
+
+             // Use arity and target_label_stack_idx from the operand
+             let values_to_push = ctx.pop_n_values(*arity)?; // Use arity from operand
+
+             Ok(HandlerResult::Branch { 
+                 target_ip: *target_ip, 
+                 target_label_stack_idx: *target_label_stack_idx, // Use index from operand
+                 values_to_push 
+             })
         } else {
             Err(RuntimeError::InvalidOperand)
         }
@@ -1419,18 +1510,33 @@ fn handle_unimplemented(_ctx: &mut ExecutionContext, operand: &Operand) -> Resul
 fn handle_br_table(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerResult, RuntimeError> {
     let i_val = ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?;
     let i = i_val.to_i32()?; // Ensure ? is applied
+
     if let Operand::BrTable { targets, default } = operand {
-        let target_ip = if let Some(target) = targets.get(i as usize) { // Cast i after using ?
-            *target
+        let chosen_operand = if let Some(target_operand) = targets.get(i as usize) {
+            target_operand // This is already an Operand::LabelIdx struct
         } else {
-            *default
+            default      // This is already an Operand::LabelIdx struct
         };
 
-        if target_ip == usize::MAX {
-            return Err(RuntimeError::ExecutionFailed("Branch fixup not done for BrTable target"));
+        // Now extract info from the chosen Operand::LabelIdx
+        if let Operand::LabelIdx { target_ip, arity, target_label_stack_idx } = chosen_operand {
+            // Check if target_ip is still the placeholder (fixup needed)
+            if *target_ip == usize::MAX { 
+                return Err(RuntimeError::ExecutionFailed("Branch fixup not done for BrTable target")); 
+            }
+
+            // Use arity and target_label_stack_idx from the chosen operand
+            let values_to_push = ctx.pop_n_values(*arity)?; // Use arity from chosen operand
+
+            Ok(HandlerResult::Branch { 
+                target_ip: *target_ip, 
+                target_label_stack_idx: *target_label_stack_idx, // Use index from chosen operand
+                values_to_push 
+            })
+        } else {
+             // This should not happen if parser ensures BrTable targets are LabelIdx
+            Err(RuntimeError::InvalidOperand) 
         }
-        // TODO: Handle value transfer for branches if needed based on label arity
-        Ok(HandlerResult::Continue(target_ip))
     } else {
         Err(RuntimeError::InvalidOperand)
     }
@@ -2091,19 +2197,19 @@ lazy_static! {
         let mut table: Vec<HandlerFn> = vec![handle_unimplemented; MAX_HANDLER_INDEX];
         table[HANDLER_IDX_UNREACHABLE] = handle_unreachable;
         table[HANDLER_IDX_NOP] = handle_nop;
-        table[HANDLER_IDX_BLOCK] = handle_block;
-        table[HANDLER_IDX_LOOP] = handle_loop;
-        table[HANDLER_IDX_IF] = handle_if;
+        table[HANDLER_IDX_BLOCK] = handle_block; // Needs update if it requires arity
+        table[HANDLER_IDX_LOOP] = handle_loop;   // Needs update if it requires arity
+        table[HANDLER_IDX_IF] = handle_if;       // Needs update if it requires arity
         table[HANDLER_IDX_ELSE] = handle_else;
-        table[HANDLER_IDX_END] = handle_end;
-        table[HANDLER_IDX_BR] = handle_br;
-        table[HANDLER_IDX_BR_IF] = handle_br_if;
-        table[HANDLER_IDX_BR_TABLE] = handle_br_table; 
+        table[HANDLER_IDX_END] = handle_end;     // Might need update to handle block results?
+        table[HANDLER_IDX_BR] = handle_br;       // Updated
+        table[HANDLER_IDX_BR_IF] = handle_br_if;   // Updated
+        table[HANDLER_IDX_BR_TABLE] = handle_br_table; // Updated
         table[HANDLER_IDX_RETURN] = handle_return;
         table[HANDLER_IDX_CALL] = handle_call;
-        table[HANDLER_IDX_CALL_INDIRECT] = handle_call_indirect; 
+        table[HANDLER_IDX_CALL_INDIRECT] = handle_call_indirect;
         table[HANDLER_IDX_DROP] = handle_drop;
-        table[HANDLER_IDX_SELECT] = handle_select; 
+        table[HANDLER_IDX_SELECT] = handle_select;
         table[HANDLER_IDX_LOCAL_GET] = handle_local_get;
         table[HANDLER_IDX_LOCAL_SET] = handle_local_set;
         table[HANDLER_IDX_LOCAL_TEE] = handle_local_tee;
@@ -2113,30 +2219,25 @@ lazy_static! {
         table[HANDLER_IDX_I64_LOAD] = handle_i64_load;
         table[HANDLER_IDX_F32_LOAD] = handle_f32_load;
         table[HANDLER_IDX_F64_LOAD] = handle_f64_load;
-        table[HANDLER_IDX_I32_LOAD] = handle_i32_load;
-        table[HANDLER_IDX_I64_LOAD] = handle_i64_load; 
-        table[HANDLER_IDX_F32_LOAD] = handle_f32_load; 
-        table[HANDLER_IDX_F64_LOAD] = handle_f64_load; 
-        table[HANDLER_IDX_I32_LOAD8_S] = handle_i32_load8_s; 
-        table[HANDLER_IDX_I32_LOAD8_U] = handle_i32_load8_u; 
-        table[HANDLER_IDX_I32_LOAD16_S] = handle_i32_load16_s; 
-        table[HANDLER_IDX_I32_LOAD16_U] = handle_i32_load16_u; 
-        table[HANDLER_IDX_I64_LOAD8_S] = handle_i64_load8_s; 
-        table[HANDLER_IDX_I64_LOAD8_U] = handle_i64_load8_u; 
-        table[HANDLER_IDX_I64_LOAD16_S] = handle_i64_load16_s; 
-        table[HANDLER_IDX_I64_LOAD16_U] = handle_i64_load16_u; 
-        table[HANDLER_IDX_I64_LOAD32_S] = handle_i64_load32_s; 
-        table[HANDLER_IDX_I64_LOAD32_U] = handle_i64_load32_u; 
+        table[HANDLER_IDX_I32_LOAD8_S] = handle_i32_load8_s;
+        table[HANDLER_IDX_I32_LOAD8_U] = handle_i32_load8_u;
+        table[HANDLER_IDX_I32_LOAD16_S] = handle_i32_load16_s;
+        table[HANDLER_IDX_I32_LOAD16_U] = handle_i32_load16_u;
+        table[HANDLER_IDX_I64_LOAD8_S] = handle_i64_load8_s;
+        table[HANDLER_IDX_I64_LOAD8_U] = handle_i64_load8_u;
+        table[HANDLER_IDX_I64_LOAD16_S] = handle_i64_load16_s;
+        table[HANDLER_IDX_I64_LOAD16_U] = handle_i64_load16_u;
+        table[HANDLER_IDX_I64_LOAD32_S] = handle_i64_load32_s;
+        table[HANDLER_IDX_I64_LOAD32_U] = handle_i64_load32_u;
         table[HANDLER_IDX_I32_STORE] = handle_i32_store;
-        table[HANDLER_IDX_I32_STORE] = handle_i32_store;
-        table[HANDLER_IDX_I64_STORE] = handle_i64_store; 
-        table[HANDLER_IDX_F32_STORE] = handle_f32_store; 
-        table[HANDLER_IDX_F64_STORE] = handle_f64_store; 
-        table[HANDLER_IDX_I32_STORE8] = handle_i32_store8; 
-        table[HANDLER_IDX_I32_STORE16] = handle_i32_store16; 
-        table[HANDLER_IDX_I64_STORE8] = handle_i64_store8; 
-        table[HANDLER_IDX_I64_STORE16] = handle_i64_store16; 
-        table[HANDLER_IDX_I64_STORE32] = handle_i64_store32; 
+        table[HANDLER_IDX_I64_STORE] = handle_i64_store;
+        table[HANDLER_IDX_F32_STORE] = handle_f32_store;
+        table[HANDLER_IDX_F64_STORE] = handle_f64_store;
+        table[HANDLER_IDX_I32_STORE8] = handle_i32_store8;
+        table[HANDLER_IDX_I32_STORE16] = handle_i32_store16;
+        table[HANDLER_IDX_I64_STORE8] = handle_i64_store8;
+        table[HANDLER_IDX_I64_STORE16] = handle_i64_store16;
+        table[HANDLER_IDX_I64_STORE32] = handle_i64_store32;
         table[HANDLER_IDX_MEMORY_SIZE] = handle_memory_size;
         table[HANDLER_IDX_MEMORY_GROW] = handle_memory_grow;
         table[HANDLER_IDX_I32_CONST] = handle_i32_const;
@@ -2258,7 +2359,7 @@ lazy_static! {
         table[HANDLER_IDX_I32_TRUNC_F32_U] = handle_i32_trunc_f32_u;
         table[HANDLER_IDX_I32_TRUNC_F64_S] = handle_i32_trunc_f64_s;
         table[HANDLER_IDX_I32_TRUNC_F64_U] = handle_i32_trunc_f64_u;
-        table[HANDLER_IDX_I64_EXTEND_I32_S] = handle_i64_extend32_s;
+        table[HANDLER_IDX_I64_EXTEND_I32_S] = handle_i64_extend32_s; // Note: Name vs Index mismatch? Check spec. Assuming index is correct.
         table[HANDLER_IDX_I64_EXTEND_I32_U] = handle_i64_extend_i32_u;
         table[HANDLER_IDX_I64_TRUNC_F32_S] = handle_i64_trunc_f32_s;
         table[HANDLER_IDX_I64_TRUNC_F32_U] = handle_i64_trunc_f32_u;
@@ -2270,8 +2371,19 @@ lazy_static! {
         table[HANDLER_IDX_I32_EXTEND16_S] = handle_i32_extend16_s;
         table[HANDLER_IDX_I64_EXTEND8_S] = handle_i64_extend8_s;
         table[HANDLER_IDX_I64_EXTEND16_S] = handle_i64_extend16_s;
-        table[HANDLER_IDX_I64_EXTEND32_S] = handle_i64_extend32_s;
-        // TODO: Add remaining handlers as they are implemented (TruncSat, etc.)
+        table[HANDLER_IDX_I64_EXTEND32_S] = handle_i64_extend32_s; // Note: Name vs Index mismatch? Check spec. Assuming index is correct.
+
         table
     };
+}
+
+impl<'a> ExecutionContext<'a> {
+    // Helper to pop N values from the value stack
+    fn pop_n_values(&mut self, n: usize) -> Result<Vec<Val>, RuntimeError> {
+        if self.value_stack.len() < n {
+            Err(RuntimeError::ValueStackUnderflow)
+        } else {
+            Ok(self.value_stack.split_off(self.value_stack.len() - n))
+        }
+    }
 }

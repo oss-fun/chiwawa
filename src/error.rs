@@ -60,6 +60,8 @@ pub enum RuntimeError {
     UninitializedElement,
     #[error("Invalid Constant Expression")]
     InvalidConstantExpression,
+    #[error("Trap")]
+    Trap,
 }
 
 #[derive(Debug, Error)]
