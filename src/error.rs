@@ -58,6 +58,8 @@ pub enum RuntimeError {
     IndirectCallTypeMismatch,
     #[error("Uninitialized Element in Table")]
     UninitializedElement,
+    #[error("Invalid Constant Expression")]
+    InvalidConstantExpression,
 }
 
 #[derive(Debug, Error)]

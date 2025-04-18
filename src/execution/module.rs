@@ -99,10 +99,13 @@ impl ModuleInst {
           module_inst.elem_addrs.push(ElemAddr::new(&elem.type_, &module_inst.func_addrs, &init));
 
             if elem.mode == ElemMode::Active{
-                let offset = match &elem.offset {
-                    Some(x) => module_inst.expr_to_const(x).unwrap().to_i32(),
-                    None => 0,
+                let offset_res = match &elem.offset {
+                    Some(x) => module_inst.expr_to_const(x)
+                                    .ok_or(RuntimeError::InvalidConstantExpression)?
+                                    .to_i32(),
+                    None => Ok(0),
                 };
+                let offset = offset_res?;
     
                 let table_idx = match &elem.table_idx{
                     Some(i) => i.0,
@@ -115,10 +118,13 @@ impl ModuleInst {
         for data in &module.datas{
             let init: Vec<u8> = data.init.iter().map(|x|x.0).collect();
             module_inst.data_addrs.push(DataAddr::new(&init));
-            let offset = match &data.offset {
-                Some(x) => module_inst.expr_to_const(x).unwrap().to_i32(),
-                None => 0,
+            let offset_res = match &data.offset {
+                Some(x) => module_inst.expr_to_const(x)
+                                .ok_or(RuntimeError::InvalidConstantExpression)?
+                                .to_i32(),
+                None => Ok(0),
             };
+            let offset = offset_res?;
 
             let idx = match &data.memory{
                 Some(i) => i.0,

@@ -1,6 +1,7 @@
 use crate::structure::types::{ValueType, NumType, VecType};
 use std::sync::{Arc, RwLock};
 use super::{mem::MemAddr, global::GlobalAddr, func::FuncAddr, table::TableAddr};
+use crate::error::RuntimeError;
 
 #[derive(Clone, Debug)]
 pub enum Val {
@@ -10,32 +11,28 @@ pub enum Val {
 }
 
 impl Val {
-    pub fn to_i32(&self) ->i32{
-        if let Val::Num(Num::I32(num)) = self {
-            *num
-        } else {
-            panic!();
+    pub fn to_i32(&self) -> Result<i32, RuntimeError> {
+        match self {
+            Val::Num(Num::I32(v)) => Ok(*v),
+            _ => Err(RuntimeError::TypeMismatch),
         }
     }
-    pub fn to_i64(&self) ->i64{
-        if let Val::Num(Num::I64(num)) = self {
-            *num
-        } else {
-            panic!();
+    pub fn to_i64(&self) -> Result<i64, RuntimeError> {
+        match self {
+            Val::Num(Num::I64(v)) => Ok(*v),
+            _ => Err(RuntimeError::TypeMismatch),
         }
     }
-    pub fn to_f32(&self) ->f32{
-        if let Val::Num(Num::F32(num)) = self {
-            *num
-        } else {
-            panic!();
+    pub fn to_f32(&self) -> Result<f32, RuntimeError> {
+        match self {
+            Val::Num(Num::F32(v)) => Ok(*v),
+            _ => Err(RuntimeError::TypeMismatch),
         }
     }
-    pub fn to_f64(&self) ->f64{
-        if let Val::Num(Num::F64(num)) = self {
-            *num
-        } else {
-            panic!();
+    pub fn to_f64(&self) -> Result<f64, RuntimeError> {
+        match self {
+            Val::Num(Num::F64(v)) => Ok(*v),
+            _ => Err(RuntimeError::TypeMismatch),
         }
     }
     pub fn val_type(&self) -> ValueType {
