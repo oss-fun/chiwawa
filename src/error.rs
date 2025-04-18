@@ -9,13 +9,13 @@ pub enum RuntimeError {
     #[error("Export Function is not Found")]
     ExportFuncNotFound,
     #[error("Instruction Failed")]
-    InstructionFailed, 
+    InstructionFailed,
     #[error("Divide by Zero")]
     ZeroDivideError,
-    #[error("Invalid Conversion to Integer")] 
+    #[error("Invalid Conversion to Integer")]
     InvalidConversionToInt,
     #[error("Integer Overflow")]
-    IntegerOverflow, 
+    IntegerOverflow,
     #[error("Link Failed")]
     LinkError,
     #[error("Unreachable Code Reached")]
@@ -69,7 +69,7 @@ pub enum ParserError {
     #[error("Invalid Version")]
     VersionError,
     #[error("Unsupported OP Code in Global Section Init Expr at Offset: {offset}")]
-    InitExprUnsupportedOPCodeError{offset: usize},
+    InitExprUnsupportedOPCodeError { offset: usize },
     #[error("Unexpected Else operator found")]
     UnexpectedElse,
     #[error("Unexpected End operator found")]

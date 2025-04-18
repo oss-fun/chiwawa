@@ -1,9 +1,9 @@
 use crate::structure::types::*;
 
-#[derive(Debug,PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Expr(pub Vec<Instr>);
 
-#[derive(Debug,PartialEq,Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Instr {
     /* Numeric Instructions */
     I32Const(i32),
@@ -439,7 +439,7 @@ pub enum Instr {
     EndMarker,
 }
 
-#[derive(Debug,PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Memarg {
     pub offset: u32,
     pub align: u32,

@@ -1,13 +1,13 @@
-use std::sync::{Arc, RwLock};
-use crate::structure::types::*;
+use crate::execution::stack::ProcessedInstr;
 use crate::structure::instructions::*;
-use crate::execution::stack::{ProcessedInstr};
+use crate::structure::types::*;
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug)]
 pub struct Func {
     pub type_: TypeIdx,
-    pub locals: Vec<(u32,ValueType)>,
-    pub body: Vec<ProcessedInstr>, 
+    pub locals: Vec<(u32, ValueType)>,
+    pub body: Vec<ProcessedInstr>,
 }
 
 #[derive(Clone)]
@@ -49,12 +49,12 @@ pub struct Data {
     pub offset: Option<Expr>,
 }
 
-pub enum DataMode{
+pub enum DataMode {
     Passive,
     Active,
 }
 pub struct Start {
-    pub func: FuncIdx
+    pub func: FuncIdx,
 }
 
 pub struct Import {
@@ -101,8 +101,8 @@ pub struct Module {
 }
 
 impl Module {
-    pub fn new(name: &str) -> Self{
-        Module{
+    pub fn new(name: &str) -> Self {
+        Module {
             _name: name.to_string(),
             types: Vec::new(),
             funcs: Vec::new(),

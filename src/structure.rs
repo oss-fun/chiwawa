@@ -1,3 +1,3 @@
-pub mod types;
-pub mod module;
 pub mod instructions;
+pub mod module;
+pub mod types;

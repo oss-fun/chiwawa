@@ -1,7 +1,7 @@
-use std::sync::{Arc, RwLock};
-use crate::structure::types::*;
 use super::value::Val;
 use crate::error::RuntimeError;
+use crate::structure::types::*;
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug)]
 pub struct GlobalAddr(Arc<RwLock<GlobalInst>>);
@@ -12,19 +12,17 @@ pub struct GlobalInst {
 }
 
 impl GlobalAddr {
-    pub fn new(type_: &GlobalType, value: Val) -> GlobalAddr{
-        GlobalAddr(Arc::new(RwLock::new(
-            GlobalInst{
-                _type_: type_.clone(),
-                value: value
-            }
-        )))
+    pub fn new(type_: &GlobalType, value: Val) -> GlobalAddr {
+        GlobalAddr(Arc::new(RwLock::new(GlobalInst {
+            _type_: type_.clone(),
+            value: value,
+        })))
     }
 
     pub fn get(&self) -> Val {
         self.0.read().expect("RwLock poisoned").value.clone()
     }
-    pub fn set(&self, value: Val) -> Result<(), RuntimeError>{
+    pub fn set(&self, value: Val) -> Result<(), RuntimeError> {
         let mut self_inst = self.0.write().expect("RwLock poisoned");
         if self_inst._type_.0 != Mut::Var {
             return Err(RuntimeError::InstructionFailed);
