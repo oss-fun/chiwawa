@@ -1355,4 +1355,333 @@ mod tests {
         let ret = inst.get_export_func("as-convert-operand").unwrap().call(vec![]);
         assert_eq!(ret.unwrap().pop().unwrap().to_i64(), 1);
     }
+
+    #[test]
+    fn test_loop_empty() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("empty").unwrap().call(vec![]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_loop_singular() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("singular").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 7);
+    }
+
+    #[test]
+    fn test_loop_multi() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("multi").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 8);
+    }
+
+    #[test]
+    fn test_loop_nested() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("nested").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 9);
+    }
+
+    #[test]
+    fn test_loop_deep() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("deep").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 150);
+    }
+
+    #[test]
+    fn test_loop_as_select_first() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-select-first").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 1);
+    }
+
+    #[test]
+    fn test_loop_as_select_mid() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-select-mid").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 2);
+    }
+
+    #[test]
+    fn test_loop_as_select_last() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-select-last").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 2);
+    }
+
+    #[test]
+    fn test_loop_as_if_condition() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-if-condition").unwrap().call(vec![]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_loop_as_if_then() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-if-then").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 1);
+    }
+
+    #[test]
+    fn test_loop_as_if_else() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-if-else").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 2);
+    }
+
+    #[test]
+    fn test_loop_as_br_if_first() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-br_if-first").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 1);
+    }
+
+    #[test]
+    fn test_loop_as_br_if_last() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-br_if-last").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 2);
+    }
+
+    #[test]
+    fn test_loop_as_br_table_first() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-br_table-first").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 1);
+    }
+
+    #[test]
+    fn test_loop_as_br_table_last() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-br_table-last").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 2);
+    }
+
+    #[test]
+    fn test_loop_as_call_indirect_first() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-call_indirect-first").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 1);
+    }
+
+    #[test]
+    fn test_loop_as_call_indirect_mid() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-call_indirect-mid").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 2);
+    }
+
+    #[test]
+    fn test_loop_as_call_indirect_last() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-call_indirect-last").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 1);
+    }
+
+    #[test]
+    fn test_loop_as_store_first() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-store-first").unwrap().call(vec![]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_loop_as_store_last() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-store-last").unwrap().call(vec![]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_loop_as_memory_grow_value() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-memory.grow-value").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 1);
+    }
+
+    #[test]
+    fn test_loop_as_call_value() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-call-value").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 1);
+    }
+
+    #[test]
+    fn test_loop_as_return_value() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-return-value").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 1);
+    }
+
+    #[test]
+    fn test_loop_as_drop_operand() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-drop-operand").unwrap().call(vec![]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_loop_as_br_value() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-br-value").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 1);
+    }
+
+    #[test]
+    fn test_loop_as_local_set_value() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-local.set-value").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 1);
+    }
+
+    #[test]
+    fn test_loop_as_local_tee_value() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-local.tee-value").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 1);
+    }
+
+    #[test]
+    fn test_loop_as_global_set_value() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-global.set-value").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 1);
+    }
+
+    #[test]
+    fn test_loop_as_load_operand() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-load-operand").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 1);
+    }
+
+    #[test]
+    fn test_loop_as_unary_operand() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-unary-operand").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 0);
+    }
+
+    #[test]
+    fn test_loop_as_binary_operand() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-binary-operand").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 12);
+    }
+
+    #[test]
+    fn test_loop_as_test_operand() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-test-operand").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 0);
+    }
+
+    #[test]
+    fn test_loop_as_compare_operand() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-compare-operand").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 0);
+    }
+
+    #[test]
+    fn test_loop_as_binary_operands() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-binary-operands").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 12);
+    }
+
+    #[test]
+    fn test_loop_as_compare_operands() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-compare-operands").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 0);
+    }
+
+    #[test]
+    fn test_loop_as_mixed_operands() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-mixed-operands").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 27);
+    }
+
+    #[test]
+    fn test_loop_break_bare() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("break-bare").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 19);
+    }
+
+    #[test]
+    fn test_loop_break_value() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("break-value").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 18);
+    }
+
+    #[test]
+    fn test_loop_break_repeated() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("break-repeated").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 18);
+    }
+
+    #[test]
+    fn test_loop_break_inner() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("break-inner").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 0x1f);
+    }
+
+    #[test]
+    fn test_loop_param() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("param").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 3);
+    }
+
+    #[test]
+    fn test_loop_params() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("params").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 3);
+    }
+
+    #[test]
+    fn test_loop_params_id() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("params-id").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 3);
+    }
+
+    #[test]
+    fn test_loop_param_break() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("param-break").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 13);
+    }
+
+    #[test]
+    fn test_loop_params_break() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("params-break").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 12);
+    }
+
+    #[test]
+    fn test_loop_params_id_break() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("params-id-break").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 3);
+    }
+
+    #[test]
+    fn test_loop_effects() {
+        let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("effects").unwrap().call(vec![]);
+        assert_eq!(result.unwrap().pop().unwrap().to_i32(), 1);
+    }
 }
