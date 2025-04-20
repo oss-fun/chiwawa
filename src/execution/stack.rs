@@ -682,12 +682,14 @@ impl FrameStack {
                             target_label_stack_idx,
                             values_to_push,
                         } => {
-                            // 1. Validate target index
-                            if target_label_stack_idx >= self.label_stack.len() {
-                                return Ok(Err(RuntimeError::StackError(
-                                    "Invalid target label stack index for branch",
-                                )));
-                            }
+                            println!(
+                                "[Exec] Branching! current_ip: {}, target_ip: {}, target_label_stack_idx: {}, current_label_stack_len: {}",
+                                ip, // IP before branch
+                                target_ip,
+                                target_label_stack_idx,
+                                self.label_stack.len()
+                            );
+
 
                             // 2. Truncate the label stack
                             // Keep the target stack and its parents
