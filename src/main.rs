@@ -2904,6 +2904,8 @@ mod tests {
     #[test]
     fn test_loop_as_load_operand() {
         let inst = load_instance("test/loop.wasm");
+        let result = inst.get_export_func("as-store-first").unwrap().call(vec![]);
+        let result = inst.get_export_func("as-store-last").unwrap().call(vec![]);
         let result = inst
             .get_export_func("as-load-operand")
             .unwrap()

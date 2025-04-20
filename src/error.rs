@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone, PartialEq)]
 pub enum RuntimeError {
     #[error("Execution Failed: {0}")]
     ExecutionFailed(&'static str),
@@ -64,7 +64,7 @@ pub enum RuntimeError {
     Trap,
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone, PartialEq)]
 pub enum ParserError {
     #[error("Invalid Version")]
     VersionError,
@@ -75,5 +75,29 @@ pub enum ParserError {
     #[error("Unexpected End operator found")]
     UnexpectedEnd,
     #[error("Invalid Wasm: {0}")]
-    InvalidWasm(&'static str), // Added for general Wasm parsing errors
+    InvalidWasm(&'static str),
+}
+
+#[derive(Debug, Error, Clone, PartialEq)]
+pub enum StackError {
+    #[error("Stack Underflow")]
+    StackUnderflow,
+    #[error("Value Type Mismatch")]
+    ValueTypeMismatch,
+    #[error("Invalid Label Stack Index: {0}")]
+    InvalidLabelStackIndex(usize),
+    #[error("Invalid Frame Stack Index: {0}")]
+    InvalidFrameStackIndex(usize),
+    #[error("Invalid Local Index: {0}")]
+    InvalidLocalIndex(usize),
+    #[error("Invalid Target Label Stack Index for Branch: {0}")]
+    InvalidBranchTargetIndex(usize),
+    #[error("Frame Stack Underflow")]
+    FrameStackUnderflow,
+    #[error("Label Stack Underflow")]
+    LabelStackUnderflow,
+    #[error("Empty Operand Stack during result transfer")]
+    EmptyOperandStackForResult,
+    #[error("Attempted to pop from empty label stack")]
+    PopEmptyLabelStack,
 }
