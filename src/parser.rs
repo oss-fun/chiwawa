@@ -2,67 +2,14 @@ use std::fs::File;
 use std::io::Read;
 use std::iter::Peekable;
 use wasmparser::{
-    ExternalKind, FunctionBody, OperatorsIteratorWithOffsets, Parser, Payload::*, SectionLimited,
-    TypeRef, ValType, BinaryReaderError, BlockType, FuncType,
+    BinaryReaderError, BlockType, ExternalKind, FuncType, FunctionBody,
+    OperatorsIteratorWithOffsets, Parser, Payload::*, SectionLimited, TypeRef, ValType,
 };
 
-use crate::error::ParserError;
-use crate::error::RuntimeError;
+use crate::error::{ParserError, RuntimeError};
 use crate::execution::stack::*;
-use crate::execution::stack::{Operand, ProcessedInstr};
-use crate::structure::instructions::*;
-use crate::structure::module::*;
-use crate::structure::types::*;
+use crate::structure::{instructions::*, module::*, types::*};
 use std::collections::HashMap;
-use crate::execution::stack::{
-    HANDLER_IDX_BLOCK, HANDLER_IDX_BR_TABLE, HANDLER_IDX_END, HANDLER_IDX_IF, HANDLER_IDX_LOOP,
-    HANDLER_IDX_UNREACHABLE, HANDLER_IDX_NOP, HANDLER_IDX_ELSE, HANDLER_IDX_BR, HANDLER_IDX_BR_IF,
-    HANDLER_IDX_RETURN, HANDLER_IDX_CALL, HANDLER_IDX_CALL_INDIRECT, HANDLER_IDX_DROP,
-    HANDLER_IDX_SELECT, HANDLER_IDX_LOCAL_GET, HANDLER_IDX_LOCAL_SET, HANDLER_IDX_LOCAL_TEE,
-    HANDLER_IDX_GLOBAL_GET, HANDLER_IDX_GLOBAL_SET, HANDLER_IDX_I32_LOAD, HANDLER_IDX_I64_LOAD,
-    HANDLER_IDX_F32_LOAD, HANDLER_IDX_F64_LOAD, HANDLER_IDX_I32_LOAD8_S, HANDLER_IDX_I32_LOAD8_U,
-    HANDLER_IDX_I32_LOAD16_S, HANDLER_IDX_I32_LOAD16_U, HANDLER_IDX_I64_LOAD8_S, HANDLER_IDX_I64_LOAD8_U,
-    HANDLER_IDX_I64_LOAD16_S, HANDLER_IDX_I64_LOAD16_U, HANDLER_IDX_I64_LOAD32_S, HANDLER_IDX_I64_LOAD32_U,
-    HANDLER_IDX_I32_STORE, HANDLER_IDX_I64_STORE, HANDLER_IDX_F32_STORE, HANDLER_IDX_F64_STORE,
-    HANDLER_IDX_I32_STORE8, HANDLER_IDX_I32_STORE16, HANDLER_IDX_I64_STORE8, HANDLER_IDX_I64_STORE16,
-    HANDLER_IDX_I64_STORE32, HANDLER_IDX_MEMORY_SIZE, HANDLER_IDX_MEMORY_GROW, HANDLER_IDX_I32_CONST,
-    HANDLER_IDX_I64_CONST, HANDLER_IDX_F32_CONST, HANDLER_IDX_F64_CONST, HANDLER_IDX_I32_CLZ,
-    HANDLER_IDX_I32_CTZ, HANDLER_IDX_I32_POPCNT, HANDLER_IDX_I64_CLZ, HANDLER_IDX_I64_CTZ,
-    HANDLER_IDX_I64_POPCNT, HANDLER_IDX_F32_ABS, HANDLER_IDX_F32_NEG, HANDLER_IDX_F32_SQRT,
-    HANDLER_IDX_F32_CEIL, HANDLER_IDX_F32_FLOOR, HANDLER_IDX_F32_TRUNC, HANDLER_IDX_F32_NEAREST,
-    HANDLER_IDX_F64_ABS, HANDLER_IDX_F64_NEG, HANDLER_IDX_F64_SQRT, HANDLER_IDX_F64_CEIL,
-    HANDLER_IDX_F64_FLOOR, HANDLER_IDX_F64_TRUNC, HANDLER_IDX_F64_NEAREST, HANDLER_IDX_I32_ADD,
-    HANDLER_IDX_I32_SUB, HANDLER_IDX_I32_MUL, HANDLER_IDX_I32_DIV_S, HANDLER_IDX_I32_DIV_U,
-    HANDLER_IDX_I32_REM_S, HANDLER_IDX_I32_REM_U, HANDLER_IDX_I32_AND, HANDLER_IDX_I32_OR,
-    HANDLER_IDX_I32_XOR, HANDLER_IDX_I32_SHL, HANDLER_IDX_I32_SHR_S, HANDLER_IDX_I32_SHR_U,
-    HANDLER_IDX_I32_ROTL, HANDLER_IDX_I32_ROTR, HANDLER_IDX_I64_ADD, HANDLER_IDX_I64_SUB,
-    HANDLER_IDX_I64_MUL, HANDLER_IDX_I64_DIV_S, HANDLER_IDX_I64_DIV_U, HANDLER_IDX_I64_REM_S,
-    HANDLER_IDX_I64_REM_U, HANDLER_IDX_I64_AND, HANDLER_IDX_I64_OR, HANDLER_IDX_I64_XOR,
-    HANDLER_IDX_I64_SHL, HANDLER_IDX_I64_SHR_S, HANDLER_IDX_I64_SHR_U, HANDLER_IDX_I64_ROTL,
-    HANDLER_IDX_I64_ROTR, HANDLER_IDX_F32_ADD, HANDLER_IDX_F32_SUB, HANDLER_IDX_F32_MUL,
-    HANDLER_IDX_F32_DIV, HANDLER_IDX_F32_MIN, HANDLER_IDX_F32_MAX, HANDLER_IDX_F32_COPYSIGN,
-    HANDLER_IDX_F64_ADD, HANDLER_IDX_F64_SUB, HANDLER_IDX_F64_MUL, HANDLER_IDX_F64_DIV,
-    HANDLER_IDX_F64_MIN, HANDLER_IDX_F64_MAX, HANDLER_IDX_F64_COPYSIGN, HANDLER_IDX_I32_EQZ,
-    HANDLER_IDX_I64_EQZ, HANDLER_IDX_I32_EQ, HANDLER_IDX_I32_NE, HANDLER_IDX_I32_LT_S,
-    HANDLER_IDX_I32_LT_U, HANDLER_IDX_I32_GT_S, HANDLER_IDX_I32_GT_U, HANDLER_IDX_I32_LE_S,
-    HANDLER_IDX_I32_LE_U, HANDLER_IDX_I32_GE_S, HANDLER_IDX_I32_GE_U, HANDLER_IDX_I64_EQ,
-    HANDLER_IDX_I64_NE, HANDLER_IDX_I64_LT_S, HANDLER_IDX_I64_LT_U, HANDLER_IDX_I64_GT_S,
-    HANDLER_IDX_I64_GT_U, HANDLER_IDX_I64_LE_S, HANDLER_IDX_I64_LE_U, HANDLER_IDX_I64_GE_S,
-    HANDLER_IDX_I64_GE_U, HANDLER_IDX_F32_EQ, HANDLER_IDX_F32_NE, HANDLER_IDX_F32_LT,
-    HANDLER_IDX_F32_GT, HANDLER_IDX_F32_LE, HANDLER_IDX_F32_GE, HANDLER_IDX_F64_EQ,
-    HANDLER_IDX_F64_NE, HANDLER_IDX_F64_LT, HANDLER_IDX_F64_GT, HANDLER_IDX_F64_LE,
-    HANDLER_IDX_F64_GE, HANDLER_IDX_I32_WRAP_I64, HANDLER_IDX_I64_EXTEND_I32_U,
-    HANDLER_IDX_I64_EXTEND_I32_S, HANDLER_IDX_I32_TRUNC_F32_S, HANDLER_IDX_I32_TRUNC_F32_U,
-    HANDLER_IDX_I32_TRUNC_F64_S, HANDLER_IDX_I32_TRUNC_F64_U, HANDLER_IDX_I64_TRUNC_F32_S,
-    HANDLER_IDX_I64_TRUNC_F32_U, HANDLER_IDX_I64_TRUNC_F64_S, HANDLER_IDX_I64_TRUNC_F64_U,
-    HANDLER_IDX_F32_DEMOTE_F64, HANDLER_IDX_F64_PROMOTE_F32, HANDLER_IDX_F32_CONVERT_I32_S,
-    HANDLER_IDX_F32_CONVERT_I32_U, HANDLER_IDX_F32_CONVERT_I64_S, HANDLER_IDX_F32_CONVERT_I64_U,
-    HANDLER_IDX_F64_CONVERT_I32_S, HANDLER_IDX_F64_CONVERT_I32_U, HANDLER_IDX_F64_CONVERT_I64_S,
-    HANDLER_IDX_F64_CONVERT_I64_U, HANDLER_IDX_I32_REINTERPRET_F32, HANDLER_IDX_I64_REINTERPRET_F64,
-    HANDLER_IDX_F32_REINTERPRET_I32, HANDLER_IDX_F64_REINTERPRET_I64, HANDLER_IDX_I32_EXTEND8_S,
-    HANDLER_IDX_I32_EXTEND16_S, HANDLER_IDX_I64_EXTEND8_S, HANDLER_IDX_I64_EXTEND16_S,
-    HANDLER_IDX_I64_EXTEND32_S,
-};
 
 fn match_value_type(t: ValType) -> ValueType {
     match t {
@@ -99,7 +46,9 @@ fn decode_type_section(
         types_to_vec(functype.params(), &mut params);
         types_to_vec(functype.results(), &mut results);
 
-        module.types.push(crate::structure::types::FuncType { params, results });
+        module
+            .types
+            .push(crate::structure::types::FuncType { params, results });
     }
     Ok(())
 }
@@ -168,9 +117,9 @@ fn decode_import_section(
             TypeRef::Tag(_) => todo!(),
         };
         module.imports.push(Import {
-                module: Name(import.module.to_string()),
-                name: Name(import.name.to_string()),
-                desc,
+            module: Name(import.module.to_string()),
+            name: Name(import.name.to_string()),
+            desc,
         });
     }
     Ok(())
@@ -191,10 +140,10 @@ fn decode_export_section(
             ExternalKind::Tag => todo!(),
         };
         module.exports.push(Export {
-                name: Name(export.name.to_string()),
-                desc,
+            name: Name(export.name.to_string()),
+            desc,
         });
-            }
+    }
     Ok(())
 }
 
@@ -315,7 +264,7 @@ fn decode_elem_section(
 ) -> Result<(), Box<dyn std::error::Error>> {
     for (_index, entry) in body.into_iter().enumerate() {
         let entry = entry?;
-        let _cnt = 0; // Marked as unused
+        let _cnt = 0;
         let (type_, init, idxes) = match entry.items {
             wasmparser::ElementItems::Functions(funcs) => {
                 let mut idxes = Vec::new();
@@ -391,21 +340,22 @@ fn decode_data_section(
 
 fn decode_code_section(
     body: FunctionBody<'_>,
-    module: &mut Module, // module を mutable borrow し続ける
-    func_index: usize,   // 現在処理中の関数のインデックスを受け取る
-) -> Result<(), Box<dyn std::error::Error>> { 
-    let mut locals: Vec<(u32, ValueType)> = Vec::new(); // Add type annotation
+    module: &mut Module,
+    func_index: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut locals: Vec<(u32, ValueType)> = Vec::new();
     for pair in body.get_locals_reader()? {
         let (cnt, ty) = pair?;
         let ty = match_value_type(ty);
-        locals.push((cnt, ty)); // Populate locals
+        locals.push((cnt, ty));
     }
-    // Assign locals to the function struct field
-    // module.funcs[module.code_index].locals = locals;
-    if let Some(func) = module.funcs.get_mut(func_index) { // Use func_index
+
+    if let Some(func) = module.funcs.get_mut(func_index) {
         func.locals = locals;
     } else {
-        return Err(Box::new(RuntimeError::InvalidWasm("Invalid function index during code decoding")) as Box<dyn std::error::Error>);
+        return Err(Box::new(RuntimeError::InvalidWasm(
+            "Invalid function index during code decoding",
+        )) as Box<dyn std::error::Error>);
     }
 
     let ops_reader = body.get_operators_reader()?;
@@ -413,82 +363,64 @@ fn decode_code_section(
 
     // Phase 1: Decode instructions and get necessary info for preprocessing
     let (mut processed_instrs, mut fixups, block_end_map, if_else_map) =
-        decode_processed_instrs_and_fixups(&mut ops_iter)?; // Call updated function
+        decode_processed_instrs_and_fixups(&mut ops_iter)?;
 
-    println!("[Parser-Fixups] Initial Fixups for func {}: {:?}", func_index, fixups); // Print fixups per function
-
-    // Phase 2 & 3: Preprocess instructions for *this function*
-    // ★ preprocess_instructions をここで呼び出す
+    // Phase 2 & 3: Preprocess instructions for this function
     preprocess_instructions(
         &mut processed_instrs,
         &mut fixups,
         &block_end_map,
         &if_else_map,
-        // module_types, // Pass module types if needed later
-    ).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    )
+    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
-
-    // Store the processed instructions in the correct function
-    // module.funcs[module.code_index].body = processed_instrs;
-    if let Some(func) = module.funcs.get_mut(func_index) { // Use func_index again
+    if let Some(func) = module.funcs.get_mut(func_index) {
         func.body = processed_instrs;
-                } else {
-        // This shouldn't happen if the index was valid before
-         return Err(Box::new(RuntimeError::InvalidWasm("Invalid function index when storing body")) as Box<dyn std::error::Error>);
-     }
-
-    // module.code_index += 1; // Incrementing code_index is no longer needed here
+    } else {
+        return Err(Box::new(RuntimeError::InvalidWasm(
+            "Invalid function index when storing body",
+        )) as Box<dyn std::error::Error>);
+    }
 
     Ok(())
 }
 
-// Represents information needed for branch target fixup.
-// Changed from tuple to struct for clarity and extensibility.
 #[derive(Debug, Clone, Copy)]
 struct FixupInfo {
-    pc: usize,                  // PC of the instruction needing fixup (Br, BrIf, If, Else)
-    original_wasm_depth: usize, // The original relative depth from Wasm bytecode (LabelIdx)
-    is_if_false_jump: bool,     // True if this fixup is for the If instruction's jump-on-false
-    is_else_jump: bool,         // True if this fixup is for the Else instruction's jump-to-end
-                                // Note: is_br_table_target could be added if needed, but currently handled by checking the handler index
+    pc: usize,
+    original_wasm_depth: usize,
+    is_if_false_jump: bool,
+    is_else_jump: bool,
 }
 
-// Phase 1: Map control flow starts to ends, If to Else
 // Phase 2: Resolve Br, BrIf, If, Else jumps using maps and control stack simulation
 // Phase 3: Resolve BrTable jumps similarly
 fn preprocess_instructions(
-    processed: &mut Vec<ProcessedInstr>, // Make mutable to patch operands directly
-    fixups: &mut Vec<FixupInfo>,         // Make mutable to mark as processed
-    block_end_map: &HashMap<usize, usize>, // Maps Block/Loop/If start PC -> EndMarker PC + 1
-    if_else_map: &HashMap<usize, usize>,   // Maps If start PC -> ElseMarker PC + 1
-                                         // module_types: &[FuncType], // Needed for get_arity - Add this later
+    processed: &mut Vec<ProcessedInstr>,
+    fixups: &mut Vec<FixupInfo>,
+    block_end_map: &HashMap<usize, usize>,
+    if_else_map: &HashMap<usize, usize>,
 ) -> Result<(), RuntimeError> {
-
     // --- Phase 2: Resolve Br, BrIf, If, Else jumps ---
+
     // Control stack stores: (pc, is_loop, block_type, runtime_label_stack_idx)
-    let mut current_control_stack_pass2: Vec<(usize, bool, wasmparser::BlockType, usize)> = Vec::new();
-    let mut runtime_label_stack_idx_counter: usize = 0; // Simulate runtime label stack depth/index
+    let mut current_control_stack_pass2: Vec<(usize, bool, wasmparser::BlockType, usize)> =
+        Vec::new();
+    let mut runtime_label_stack_idx_counter: usize = 0;
 
     for fixup_index in 0..fixups.len() {
-        // Use a mutable borrow to potentially mark fixup as processed
-        // We need to access the fixup mutably later IF we modify it.
-        // Cloning or indexing immutably first might be easier if borrow checker complains.
         let current_fixup_pc = fixups[fixup_index].pc;
         let current_fixup_depth = fixups[fixup_index].original_wasm_depth;
         let is_if_false_jump = fixups[fixup_index].is_if_false_jump;
         let is_else_jump = fixups[fixup_index].is_else_jump;
 
-
-        // Skip if already processed or if it's a BrTable fixup
         let is_br_table_fixup = processed
             .get(current_fixup_pc)
             .map_or(false, |instr| instr.handler_index == HANDLER_IDX_BR_TABLE);
 
-        // Check depth *before* borrow checker complains about mutable borrow later
         if current_fixup_depth == usize::MAX || is_br_table_fixup {
-              continue;
+            continue;
         }
-
 
         // --- Rebuild control stack state up to the fixup instruction ---
         current_control_stack_pass2.clear();
@@ -496,538 +428,419 @@ fn preprocess_instructions(
         for (pc, instr) in processed.iter().enumerate().take(current_fixup_pc + 1) {
             match instr.handler_index {
                 HANDLER_IDX_BLOCK | HANDLER_IDX_IF => {
-                    // FIXME: Get actual BlockType from instr or lookup map
-                    let block_type = wasmparser::BlockType::Empty; // Placeholder
+                    let block_type = wasmparser::BlockType::Empty;
                     current_control_stack_pass2.push((
                         pc,
                         false,
                         block_type,
                         runtime_label_stack_idx_counter,
                     ));
-                    runtime_label_stack_idx_counter += 1; // Increment *after* pushing
+                    runtime_label_stack_idx_counter += 1;
                 }
                 HANDLER_IDX_LOOP => {
-                     // FIXME: Get actual BlockType from instr or lookup map
-                    let block_type = wasmparser::BlockType::Empty; // Placeholder
+                    let block_type = wasmparser::BlockType::Empty;
                     current_control_stack_pass2.push((
                         pc,
                         true,
                         block_type,
                         runtime_label_stack_idx_counter,
                     ));
-                    runtime_label_stack_idx_counter += 1; // Increment *after* pushing
+                    runtime_label_stack_idx_counter += 1;
                 }
                 HANDLER_IDX_END => {
                     if !current_control_stack_pass2.is_empty() {
                         current_control_stack_pass2.pop();
-                         // Counter should not decrease here, label stack index only grows within a frame
                     }
                 }
                 _ => {}
             }
         }
-        // --- End of control stack simulation ---
 
-        // Find target block info using the simulated stack
         if current_control_stack_pass2.len() <= current_fixup_depth {
-             // Mark as invalid using mutable borrow
-             fixups[fixup_index].original_wasm_depth = usize::MAX;
-             println!(
-                 "Warning: Invalid branch depth {} at pc {}",
-                 current_fixup_depth, current_fixup_pc // Use original depth for warning msg
-             );
-             continue; // Skip processing this invalid fixup
-        }
-
-        let target_stack_level = current_control_stack_pass2.len() - 1 - current_fixup_depth;
-         // Ensure target_stack_level is valid before indexing
-         if target_stack_level >= current_control_stack_pass2.len() {
-              // This case should theoretically be caught by the previous check, but defensive check is good.
-               fixups[fixup_index].original_wasm_depth = usize::MAX;
-               println!(
-                  "Warning: Calculated invalid target stack level {} at pc {}",
-                  target_stack_level, current_fixup_pc
-              );
+            fixups[fixup_index].original_wasm_depth = usize::MAX;
             continue;
         }
 
+        let target_stack_level = current_control_stack_pass2.len() - 1 - current_fixup_depth;
+        if target_stack_level >= current_control_stack_pass2.len() {
+            fixups[fixup_index].original_wasm_depth = usize::MAX;
+            continue;
+        }
 
         let (target_start_pc, is_loop, _target_block_type, target_runtime_idx) =
-            current_control_stack_pass2[target_stack_level]; // Use _target_block_type for now
-
+            current_control_stack_pass2[target_stack_level];
 
         // Calculate target IP
         let target_ip = if is_loop {
-            target_start_pc // Loop branches target the Loop instruction itself
+            target_start_pc
         } else {
-            // Block/If branches target *after* the corresponding EndMarker
             *block_end_map
                 .get(&target_start_pc)
-                .ok_or_else(|| {
-                    let msg = format!(
-                        "Missing EndMarker for branch target (start_pc: {}) at pc {}",
-                         target_start_pc, current_fixup_pc
-                     );
-                     println!("RuntimeError::InvalidWasm: {}", msg);
-                     RuntimeError::InvalidWasm("Missing EndMarker for branch target")
-                 })?
+                .ok_or_else(|| RuntimeError::InvalidWasm("Missing EndMarker for branch target"))?
         };
 
-        // Calculate Arity (FIXME: Needs get_arity and module_types)
-        let target_arity = 0; // Placeholder
-                                // let target_arity = get_arity(target_block_type, module_types); // Use this later
-
-        // Calculate the correct label stack index for the runtime
-        let target_label_stack_idx = target_runtime_idx; // Use the index recorded during simulation
-
-        // Add debug print here
-        println!(
-            "[Parser] pc: {}, depth: {}, target_ip: {}, arity: {}, target_label_stack_idx: {}, runtime_idx_counter: {}, stack_len_sim: {}",
-            current_fixup_pc,
-            fixups[fixup_index].original_wasm_depth, // Use original depth from fixup info before it might be marked invalid
-            target_ip,
-            target_arity, // Placeholder for now
-            target_label_stack_idx,
-            runtime_label_stack_idx_counter, // Value at the time of fixup
-            current_control_stack_pass2.len() // Simulated stack length at fixup PC
-        );
+        let target_arity = 0;
+        let target_label_stack_idx = target_runtime_idx;
 
         // Patch the instruction operand
         if let Some(instr_to_patch) = processed.get_mut(current_fixup_pc) {
-             if is_if_false_jump {
-                 // If instruction's jump-on-false
-                 // Target is ElseMarker+1 or EndMarker+1
+            if is_if_false_jump {
+                // If instruction's jump-on-false
+                // Target is ElseMarker+1 or EndMarker+1
                 let else_target = *if_else_map.get(&target_start_pc).unwrap_or(&target_ip);
-                  // If/Else jumps don't typically unwind the operand stack based on block arity in the same way Br/BrIf do,
-                  // and they don't pop labels directly, they just transfer control.
-                  // We might still need target_label_stack_idx if error handling within execute_if needs it,
-                  // but arity is likely 0 for the jump itself.
-                  // Using simple LabelIdx for now. Revisit if runtime behavior is wrong.
-                 instr_to_patch.operand = Operand::LabelIdx {
-                     target_ip: else_target,
-                     arity: 0, // Arity of jump itself is 0
-                     target_label_stack_idx: 0, // Let runtime handle label stack for If/Else control flow
-                 };
-             } else if is_else_jump {
-                 // Else instruction's jump-to-end
-                 instr_to_patch.operand = Operand::LabelIdx {
-                     target_ip: target_ip,
-                     arity: 0, // Arity of jump itself is 0
-                     target_label_stack_idx: 0, // Let runtime handle label stack for If/Else control flow
-                 };
-             } else { // Br or BrIf instruction
-                 instr_to_patch.operand = Operand::LabelIdx {
-                     target_ip,
-                     arity: target_arity, // Use calculated arity (placeholder 0 for now)
-                     target_label_stack_idx, // Use the calculated runtime index
-                 };
+                instr_to_patch.operand = Operand::LabelIdx {
+                    target_ip: else_target,
+                    arity: 0,
+                    target_label_stack_idx: 0,
+                };
+            } else if is_else_jump {
+                // Else instruction's jump-to-end
+                instr_to_patch.operand = Operand::LabelIdx {
+                    target_ip: target_ip,
+                    arity: 0,
+                    target_label_stack_idx: 0,
+                };
+            } else {
+                // Br or BrIf instruction
+                instr_to_patch.operand = Operand::LabelIdx {
+                    target_ip,
+                    arity: target_arity,
+                    target_label_stack_idx,
+                };
             }
         } else {
-             // This shouldn't happen if fixup.pc is valid
-             let msg = format!(
-                   "Internal Error: Could not find instruction to patch at pc {}", current_fixup_pc
-               );
-               println!("RuntimeError::InvalidWasm: {}", msg);
-               return Err(RuntimeError::InvalidWasm("Internal Error: Could not find instruction to patch"));
+            return Err(RuntimeError::InvalidWasm(
+                "Internal Error: Could not find instruction to patch",
+            ));
         }
-        // Mark as processed using mutable borrow
         fixups[fixup_index].original_wasm_depth = usize::MAX;
     }
 
-
     // --- Phase 3: Resolve BrTable targets ---
-     // Reuse control stack simulation logic, including runtime index tracking
-     let mut current_control_stack_pass3: Vec<(usize, bool, wasmparser::BlockType, usize)> = Vec::new();
-     runtime_label_stack_idx_counter = 0; // Reset counter
+    // Reuse control stack simulation logic, including runtime index tracking
+    let mut current_control_stack_pass3: Vec<(usize, bool, wasmparser::BlockType, usize)> =
+        Vec::new();
+    runtime_label_stack_idx_counter = 0; // Reset counter
 
-      // Iterate using indices to allow mutable access to `processed` inside the loop for patching BrTable
-     for pc in 0..processed.len() {
-          // Simulate stack based on the instruction at pc (immutable borrow first)
-          if let Some(instr) = processed.get(pc) {
-        match instr.handler_index {
-                    HANDLER_IDX_BLOCK | HANDLER_IDX_IF => {
-                        let block_type = wasmparser::BlockType::Empty; // Placeholder
-                        current_control_stack_pass3.push((
-                            pc,
-                            false,
-                            block_type,
-                            runtime_label_stack_idx_counter,
-                        ));
-                        runtime_label_stack_idx_counter += 1;
+    for pc in 0..processed.len() {
+        if let Some(instr) = processed.get(pc) {
+            match instr.handler_index {
+                HANDLER_IDX_BLOCK | HANDLER_IDX_IF => {
+                    let block_type = wasmparser::BlockType::Empty;
+                    current_control_stack_pass3.push((
+                        pc,
+                        false,
+                        block_type,
+                        runtime_label_stack_idx_counter,
+                    ));
+                    runtime_label_stack_idx_counter += 1;
+                }
+                HANDLER_IDX_LOOP => {
+                    let block_type = wasmparser::BlockType::Empty;
+                    current_control_stack_pass3.push((
+                        pc,
+                        true,
+                        block_type,
+                        runtime_label_stack_idx_counter,
+                    ));
+                    runtime_label_stack_idx_counter += 1;
+                }
+                HANDLER_IDX_END => {
+                    if !current_control_stack_pass3.is_empty() {
+                        current_control_stack_pass3.pop();
                     }
-                    HANDLER_IDX_LOOP => {
-                        let block_type = wasmparser::BlockType::Empty; // Placeholder
-                        current_control_stack_pass3.push((
-                            pc,
-                            true,
-                            block_type,
-                            runtime_label_stack_idx_counter,
-                        ));
-                        runtime_label_stack_idx_counter += 1;
+                }
+                _ => {}
             }
-            HANDLER_IDX_END => {
-                        if !current_control_stack_pass3.is_empty() {
-                            current_control_stack_pass3.pop();
-                 }
-            }
-            _ => {}
-        }
 
-               // Check if it's a BrTable needing resolution *after* simulating stack for current pc
-                // Need to clone operand or re-fetch instruction mutably later
-                let needs_br_table_resolution = instr.handler_index == HANDLER_IDX_BR_TABLE && instr.operand == Operand::None;
+            // Check if it's a BrTable needing resolution *after* simulating stack for current pc
+            let needs_br_table_resolution =
+                instr.handler_index == HANDLER_IDX_BR_TABLE && instr.operand == Operand::None;
 
-                if needs_br_table_resolution {
-                    // Find fixup indices associated *only* with this BrTable pc that haven't been processed yet
-                     let mut fixup_indices_for_this_br_table = fixups
-                         .iter() // Keep immutable borrow here first
-                         .enumerate()
-                         .filter(|(_, fixup)| fixup.pc == pc && fixup.original_wasm_depth != usize::MAX)
-                .map(|(idx, _)| idx) // Get the original index in the fixups vector
-                .collect::<Vec<_>>();
+            if needs_br_table_resolution {
+                // Find fixup indices associated *only* with this BrTable pc that haven't been processed yet
+                let mut fixup_indices_for_this_br_table = fixups
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, fixup)| fixup.pc == pc && fixup.original_wasm_depth != usize::MAX)
+                    .map(|(idx, _)| idx)
+                    .collect::<Vec<_>>();
 
-                    if fixup_indices_for_this_br_table.is_empty() {
-                         // This might happen if the only fixup was invalid and marked in Pass 2
-                         println!("Warning: No valid fixups found for BrTable at pc {}", pc);
-                         // Ensure the operand is something valid, like an empty table?
-                         if let Some(instr_to_patch) = processed.get_mut(pc) { // Get mutable borrow to patch
-                              // Use Operand::None as placeholder instead of Invalid
-                              instr_to_patch.operand = Operand::BrTable { targets: vec![], default: Box::new(Operand::None) }; // Use 'default' field
-                         }
-                         continue; // Skip to next instruction in outer loop
-                    }
-
-                    // --- Default Target Resolution ---
-                    let default_fixup_idx = fixup_indices_for_this_br_table.pop().unwrap(); // Safe due to is_empty check
-                    let default_target_operand = { // Use block scope for mutable borrow of fixups[default_fixup_idx]
-                         // Need original depth immutably first
-                         let fixup_depth = fixups[default_fixup_idx].original_wasm_depth;
-                         if current_control_stack_pass3.len() <= fixup_depth {
-                              // Mark as invalid before returning error?
-                              // fixups[default_fixup_idx].original_wasm_depth = usize::MAX;
-                              let msg = format!(
-                                    "Invalid relative depth {} for BrTable default target at pc {}",
-                                    fixup_depth, pc
-                               );
-                               println!("RuntimeError::InvalidWasm: {}", msg);
-                               return Err(RuntimeError::InvalidWasm("Invalid relative depth for BrTable default target"));
-                           }
-                           let target_stack_level = current_control_stack_pass3.len() - 1 - fixup_depth;
-
-                          // Defensive check for calculated level
-                          if target_stack_level >= current_control_stack_pass3.len() {
-                               let msg = format!(
-                                     "Internal Error: Invalid stack level {} calculated for BrTable default target at pc {}",
-                                     target_stack_level, pc
-                                 );
-                                 println!("RuntimeError::InvalidWasm: {}", msg);
-                                 return Err(RuntimeError::InvalidWasm("Internal Error: Invalid stack level calculated for BrTable default target"));
-                           }
-
-
-                         let (target_start_pc, is_loop, _target_block_type, target_runtime_idx) =
-                              current_control_stack_pass3[target_stack_level]; // Use _target_block_type
-
-                         let target_ip = if is_loop { target_start_pc } else {
-                              *block_end_map.get(&target_start_pc).ok_or_else(|| {
-                                  let msg = format!(
-                                      "Missing EndMarker for BrTable default target (start_pc: {}) at pc {}",
-                                      target_start_pc, pc
-                                  );
-                                  println!("RuntimeError::InvalidWasm: {}", msg);
-                                  RuntimeError::InvalidWasm("Missing EndMarker for BrTable default target")
-                              })?
-                         };
-                         // FIXME: Calculate arity using get_arity
-                         let target_arity = 0; // Placeholder
-                         let target_label_stack_idx = target_runtime_idx; // Use calculated runtime index
-
-                         // Mark as processed now using mutable borrow
-                         fixups[default_fixup_idx].original_wasm_depth = usize::MAX;
-
-                         Operand::LabelIdx { target_ip, arity: target_arity, target_label_stack_idx }
-                    }; // End borrow scope for default fixup
-
-
-                    // --- Remaining Targets Resolution ---
-                    let mut resolved_targets: Vec<Operand> = Vec::with_capacity(fixup_indices_for_this_br_table.len());
-                     for fixup_idx in fixup_indices_for_this_br_table { // Iterate through remaining indices
-                           let target_operand = { // Scope for mutable borrow of fixups[fixup_idx]
-                                let fixup_depth = fixups[fixup_idx].original_wasm_depth; // Read depth first
-                                if current_control_stack_pass3.len() <= fixup_depth {
-                                     // Mark as invalid?
-                                     // fixups[fixup_idx].original_wasm_depth = usize::MAX;
-                                     let msg = format!(
-                                          "Invalid relative depth {} for BrTable target at pc {}",
-                                          fixup_depth, pc
-                                     );
-                                     println!("RuntimeError::InvalidWasm: {}", msg);
-                                     return Err(RuntimeError::InvalidWasm("Invalid relative depth for BrTable target"));
-                                }
-                                let target_stack_level = current_control_stack_pass3.len() - 1 - fixup_depth;
-
-                                 // Defensive check
-                                 if target_stack_level >= current_control_stack_pass3.len() {
-                                      let msg = format!(
-                                            "Internal Error: Invalid stack level {} calculated for BrTable target at pc {}",
-                                            target_stack_level, pc
-                                        );
-                                        println!("RuntimeError::InvalidWasm: {}", msg);
-                                        return Err(RuntimeError::InvalidWasm("Internal Error: Invalid stack level calculated for BrTable target"));
-                                   }
-
-                                let (target_start_pc, is_loop, _target_block_type, target_runtime_idx) =
-                                      current_control_stack_pass3[target_stack_level]; // Use _target_block_type
-                                let target_ip = if is_loop { target_start_pc } else {
-                                     *block_end_map.get(&target_start_pc).ok_or_else(|| {
-                                          let msg = format!(
-                                              "Missing EndMarker for BrTable target (start_pc: {}) at pc {}",
-                                              target_start_pc, pc
-                                          );
-                                          println!("RuntimeError::InvalidWasm: {}", msg);
-                                          RuntimeError::InvalidWasm("Missing EndMarker for BrTable target")
-                                      })?
-                                };
-                                // FIXME: Calculate arity using get_arity
-                                let target_arity = 0; // Placeholder
-                                let target_label_stack_idx = target_runtime_idx; // Use calculated runtime index
-
-                                // Mark as processed now using mutable borrow
-                                fixups[fixup_idx].original_wasm_depth = usize::MAX;
-
-                                Operand::LabelIdx { target_ip, arity: target_arity, target_label_stack_idx }
-                           }; // End borrow scope for current fixup
-                           resolved_targets.push(target_operand);
-                     }
-
-
-                    // --- Patch BrTable Instruction ---
-                    // Need mutable borrow of processed again here
+                if fixup_indices_for_this_br_table.is_empty() {
                     if let Some(instr_to_patch) = processed.get_mut(pc) {
-                         instr_to_patch.operand = Operand::BrTable {
-                              targets: resolved_targets,
-                              default: Box::new(default_target_operand), // Use 'default' field name
-                         };
-                    } else {
-                         // Should not happen if pc is valid index from outer loop
-                          let msg = format!(
-                              "Internal Error: Could not find BrTable instruction to patch at pc {}", pc
-                          );
-                          println!("RuntimeError::InvalidWasm: {}", msg);
-                          return Err(RuntimeError::InvalidWasm("Internal Error: Could not find BrTable instruction to patch"));
+                        instr_to_patch.operand = Operand::BrTable {
+                            targets: vec![],
+                            default: Box::new(Operand::None),
+                        };
                     }
-                } // end if needs_br_table_resolution
-          } else {
-              // Should not happen if pc is always < processed.len()
-              let msg = format!(
-                  "Internal Error: Invalid program counter {} during preprocessing", pc
-              );
-              println!("RuntimeError::InvalidWasm: {}", msg);
-              return Err(RuntimeError::InvalidWasm("Internal Error: Invalid program counter during preprocessing"));
-          }
-     } // end loop through processed instructions
+                    continue;
+                }
 
+                // --- Default Target Resolution ---
+                let default_fixup_idx = fixup_indices_for_this_br_table.pop().unwrap();
+                let default_target_operand = {
+                    let fixup_depth = fixups[default_fixup_idx].original_wasm_depth;
+                    if current_control_stack_pass3.len() <= fixup_depth {
+                        return Err(RuntimeError::InvalidWasm(
+                            "Invalid relative depth for BrTable default target",
+                        ));
+                    }
+                    let target_stack_level = current_control_stack_pass3.len() - 1 - fixup_depth;
+
+                    // Defensive check for calculated level
+                    if target_stack_level >= current_control_stack_pass3.len() {
+                        return Err(RuntimeError::InvalidWasm("Internal Error: Invalid stack level calculated for BrTable default target"));
+                    }
+
+                    let (target_start_pc, is_loop, _target_block_type, target_runtime_idx) =
+                        current_control_stack_pass3[target_stack_level];
+
+                    let target_ip = if is_loop {
+                        target_start_pc
+                    } else {
+                        *block_end_map.get(&target_start_pc).ok_or_else(|| {
+                            RuntimeError::InvalidWasm(
+                                "Missing EndMarker for BrTable default target",
+                            )
+                        })?
+                    };
+                    let target_arity = 0;
+                    let target_label_stack_idx = target_runtime_idx;
+
+                    fixups[default_fixup_idx].original_wasm_depth = usize::MAX;
+
+                    Operand::LabelIdx {
+                        target_ip,
+                        arity: target_arity,
+                        target_label_stack_idx,
+                    }
+                };
+
+                // --- Remaining Targets Resolution ---
+                let mut resolved_targets: Vec<Operand> =
+                    Vec::with_capacity(fixup_indices_for_this_br_table.len());
+                for fixup_idx in fixup_indices_for_this_br_table {
+                    let target_operand = {
+                        let fixup_depth = fixups[fixup_idx].original_wasm_depth;
+                        if current_control_stack_pass3.len() <= fixup_depth {
+                            return Err(RuntimeError::InvalidWasm(
+                                "Invalid relative depth for BrTable target",
+                            ));
+                        }
+                        let target_stack_level =
+                            current_control_stack_pass3.len() - 1 - fixup_depth;
+
+                        if target_stack_level >= current_control_stack_pass3.len() {
+                            return Err(RuntimeError::InvalidWasm(
+                                "Internal Error: Invalid stack level calculated for BrTable target",
+                            ));
+                        }
+
+                        let (target_start_pc, is_loop, _target_block_type, target_runtime_idx) =
+                            current_control_stack_pass3[target_stack_level];
+                        let target_ip = if is_loop {
+                            target_start_pc
+                        } else {
+                            *block_end_map.get(&target_start_pc).ok_or_else(|| {
+                                RuntimeError::InvalidWasm("Missing EndMarker for BrTable target")
+                            })?
+                        };
+                        let target_arity = 0;
+                        let target_label_stack_idx = target_runtime_idx;
+
+                        fixups[fixup_idx].original_wasm_depth = usize::MAX;
+
+                        Operand::LabelIdx {
+                            target_ip,
+                            arity: target_arity,
+                            target_label_stack_idx,
+                        }
+                    };
+                    resolved_targets.push(target_operand);
+                }
+
+                // --- Patch BrTable Instruction ---
+                if let Some(instr_to_patch) = processed.get_mut(pc) {
+                    instr_to_patch.operand = Operand::BrTable {
+                        targets: resolved_targets,
+                        default: Box::new(default_target_operand),
+                    };
+                } else {
+                    return Err(RuntimeError::InvalidWasm(
+                        "Internal Error: Could not find BrTable instruction to patch",
+                    ));
+                }
+            }
+        } else {
+            return Err(RuntimeError::InvalidWasm(
+                "Internal Error: Invalid program counter during preprocessing",
+            ));
+        }
+    }
 
     // --- Phase 4: Sanity check - Ensure all fixups were processed ---
     for (idx, fixup) in fixups.iter().enumerate() {
-         // Re-read original_wasm_depth after all potential modifications
-         if fixup.original_wasm_depth != usize::MAX {
-             // This indicates an internal logic error where a fixup wasn't handled
-             // Could be a Br/BrIf/If/Else not handled in Pass 2 or a BrTable not handled in Pass 3.
-             // Or an invalid depth caused it to be skipped but not marked MAX?
-             let msg = format!(
-                 "Internal Error: Unprocessed fixup at index {} for pc {} (original depth {}) after preprocessing.",
-                 idx, fixup.pc, fixup.original_wasm_depth // Use original depth here might be misleading if it was invalid
-             );
-             println!("RuntimeError::InvalidWasm: {}", msg);
-             return Err(RuntimeError::InvalidWasm("Internal Error: Unprocessed fixup after preprocessing"));
-         }
-     }
-
+        if fixup.original_wasm_depth != usize::MAX {
+            return Err(RuntimeError::InvalidWasm(
+                "Internal Error: Unprocessed fixup after preprocessing",
+            ));
+        }
+    }
 
     Ok(())
 }
 
-// Updated to use Peekable and directly call preprocess_instructions
 fn decode_processed_instrs_and_fixups(
     ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>,
-) -> Result<(
-    Vec<ProcessedInstr>,
-    Vec<FixupInfo>,
-    HashMap<usize, usize>, // block_end_map
-    HashMap<usize, usize>, // if_else_map
-), Box<dyn std::error::Error>> { 
+) -> Result<
+    (
+        Vec<ProcessedInstr>,
+        Vec<FixupInfo>,
+        HashMap<usize, usize>,
+        HashMap<usize, usize>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let mut initial_processed_instrs = Vec::new();
     let mut initial_fixups = Vec::new();
     let mut current_processed_pc = 0;
-     let mut control_info_stack: Vec<(wasmparser::BlockType, usize)> = Vec::new();
+    let mut control_info_stack: Vec<(wasmparser::BlockType, usize)> = Vec::new();
 
-     // --- Phase 1: Build initial instructions, fixups, and maps --- (Added back map building)
-     let mut block_end_map: HashMap<usize, usize> = HashMap::new();
-     let mut if_else_map: HashMap<usize, usize> = HashMap::new();
-     // control_stack_for_map_building: Vec<(pc_of_start, is_if_block, Optional<pc_of_else>)
-     let mut control_stack_for_map_building: Vec<(usize, bool, Option<usize>)> = Vec::new();
+    let mut block_end_map: HashMap<usize, usize> = HashMap::new();
+    let mut if_else_map: HashMap<usize, usize> = HashMap::new();
+    let mut control_stack_for_map_building: Vec<(usize, bool, Option<usize>)> = Vec::new();
 
-
-     // Use loop and ops.next() instead of while let Some(res) = ops.peek()
-     loop {
-         // Check if the iterator is finished before trying to get the next item
-         // Use peek here just for the loop termination condition
-         if ops.peek().is_none() {
-             break;
-         }
-
-         // Get the next operator, handling potential errors
-         let (op, _offset) = match ops.next() { // Use next() to consume the item
-             Some(Ok(op_offset)) => op_offset,
-             Some(Err(e)) => return Err(Box::new(e)), // Propagate BinaryReaderError
-             None => break, // Should not happen due to peek, but handle defensively
-         };
-
-         // Map operator before handling stack/maps
-         let (processed_instr_template, fixup_info_opt) = map_operator_to_initial_instr_and_fixup(
-             &op, // Pass a reference to the operator
-             current_processed_pc,
-             &control_info_stack,
-         )?;
-
-         // --- Update Maps and Stacks based on operator --- 
-          match op {
-              wasmparser::Operator::Block { blockty: _ } => {
-                  control_stack_for_map_building.push((current_processed_pc, false, None));
-              }
-              wasmparser::Operator::Loop { blockty: _ } => {
-                  control_stack_for_map_building.push((current_processed_pc, false, None));
-              }
-              wasmparser::Operator::If { blockty: _ } => {
-                   control_stack_for_map_building.push((current_processed_pc, true, None));
-              }
-              wasmparser::Operator::Else => {
-                   if let Some((_, true, else_pc @ None)) = control_stack_for_map_building.last_mut() {
-                        *else_pc = Some(current_processed_pc + 1); // Record Else position + 1 (target)
-                        // Don't map yet, wait for End
-                   } else {
-                        // Use static string for InvalidWasm
-                        return Err(Box::new(RuntimeError::InvalidWasm("Else without corresponding If or If already has Else")) as Box<dyn std::error::Error>);
-                   }
-              }
-              wasmparser::Operator::End => {
-                  if let Some((start_pc, is_if, else_pc_opt)) = control_stack_for_map_building.pop() {
-                      block_end_map.insert(start_pc, current_processed_pc + 1); // Map Block/Loop/If start to End+1
-                      // If it was an If block, map the If start to the Else target (or End+1 if no Else)
-                       if is_if {
-                           let else_target = else_pc_opt.unwrap_or(current_processed_pc + 1);
-                            if_else_map.insert(start_pc, else_target);
-                       }
-                  } else {
-                      // Allow End at the very end of the function body
-                       if ops.peek().is_none() { // Use peek().is_none() instead of clone().count()
-                            // This is the final function end, do nothing
-                       } else {
-                          // Use static string
-                          return Err(Box::new(RuntimeError::InvalidWasm("Unmatched EndMarker")) as Box<dyn std::error::Error>);
-                       }
-                  }
-              }
-               // BrTable stack updates handled within its specific logic below
-               _ => {},
-          }
-
-         // Handle BrTable separately for fixup generation
-         if let wasmparser::Operator::BrTable { ref targets } = op { // Borrow targets
-             // Create ProcessedInstr directly for BrTable
-             let processed_instr = ProcessedInstr {
-                 handler_index: HANDLER_IDX_BR_TABLE,
-                 operand: Operand::None, // Operand::None, fixup happens later
-             };
-        initial_processed_instrs.push(processed_instr);
-
-             // Generate FixupInfo for each target
-             let table_targets = targets.targets().collect::<Result<Vec<_>, _>>()?;
-             for target_depth in table_targets.iter() {
-                 let fixup = FixupInfo {
-                     pc: current_processed_pc,
-                     original_wasm_depth: *target_depth as usize,
-                     is_if_false_jump: false,
-                     is_else_jump: false,
-                 };
-                 initial_fixups.push(fixup);
-             }
-             // Generate FixupInfo for the default target
-             let default_fixup = FixupInfo {
-                 pc: current_processed_pc,
-                 original_wasm_depth: targets.default() as usize,
-                 is_if_false_jump: false,
-                 is_else_jump: false,
-             };
-             initial_fixups.push(default_fixup);
-
-             // Update control_info_stack (needed for map_operator...) - BrTable doesn't push/pop
-
-         } else {
-             // Use the template generated earlier for other operators
-             initial_processed_instrs.push(processed_instr_template);
-        if let Some(fixup_info) = fixup_info_opt {
- // ★★★ 追加: Fixup追加直前のログ ★★★
- println!(
-     "[Decode-FixupAdd] Adding fixup for op @ pc={}: pc={}, depth={}, is_if={}, is_else={}",
-     current_processed_pc, // PC of the operator causing this fixup
-     fixup_info.pc, // PC stored in the fixup (should match above)
-     fixup_info.original_wasm_depth,
-     fixup_info.is_if_false_jump,
-     fixup_info.is_else_jump
- );
- // ★★★★★★★★★★★★★★★★★★★★★★
-            initial_fixups.push(fixup_info);
+    loop {
+        if ops.peek().is_none() {
+            break;
         }
 
-             // Update control_info_stack based on the operator (for map_operator...)
-              match op {
-                  wasmparser::Operator::Block { blockty } => {
-                      control_info_stack.push((blockty, current_processed_pc));
-                  }
-                  wasmparser::Operator::Loop { blockty } => {
-                      control_info_stack.push((blockty, current_processed_pc));
-                  }
-                  wasmparser::Operator::If { blockty } => {
-                      control_info_stack.push((blockty, current_processed_pc));
-                  }
-                  wasmparser::Operator::End => {
-                      // Pop only if the stack is not empty
-                       if !control_info_stack.is_empty() {
-                          control_info_stack.pop();
-                       }
-                  }
-                  _ => {} // Other ops don't affect control_info_stack for map_operator...
-              }
-         }
+        let (op, _offset) = match ops.next() {
+            Some(Ok(op_offset)) => op_offset,
+            Some(Err(e)) => return Err(Box::new(e)),
+            None => break,
+        };
+
+        let (processed_instr_template, fixup_info_opt) = map_operator_to_initial_instr_and_fixup(
+            &op,
+            current_processed_pc,
+            &control_info_stack,
+        )?;
+
+        // --- Update Maps and Stacks based on operator ---
+        match op {
+            wasmparser::Operator::Block { blockty: _ } => {
+                control_stack_for_map_building.push((current_processed_pc, false, None));
+            }
+            wasmparser::Operator::Loop { blockty: _ } => {
+                control_stack_for_map_building.push((current_processed_pc, false, None));
+            }
+            wasmparser::Operator::If { blockty: _ } => {
+                control_stack_for_map_building.push((current_processed_pc, true, None));
+            }
+            wasmparser::Operator::Else => {
+                if let Some((_, true, else_pc @ None)) = control_stack_for_map_building.last_mut() {
+                    *else_pc = Some(current_processed_pc + 1);
+                } else {
+                    return Err(Box::new(RuntimeError::InvalidWasm(
+                        "Else without corresponding If or If already has Else",
+                    )) as Box<dyn std::error::Error>);
+                }
+            }
+            wasmparser::Operator::End => {
+                if let Some((start_pc, is_if, else_pc_opt)) = control_stack_for_map_building.pop() {
+                    block_end_map.insert(start_pc, current_processed_pc + 1);
+                    if is_if {
+                        let else_target = else_pc_opt.unwrap_or(current_processed_pc + 1);
+                        if_else_map.insert(start_pc, else_target);
+                    }
+                } else {
+                    if ops.peek().is_none() {
+                    } else {
+                        return Err(Box::new(RuntimeError::InvalidWasm("Unmatched EndMarker"))
+                            as Box<dyn std::error::Error>);
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        if let wasmparser::Operator::BrTable { ref targets } = op {
+            let processed_instr = ProcessedInstr {
+                handler_index: HANDLER_IDX_BR_TABLE,
+                operand: Operand::None,
+            };
+            initial_processed_instrs.push(processed_instr);
+
+            let table_targets = targets.targets().collect::<Result<Vec<_>, _>>()?;
+            for target_depth in table_targets.iter() {
+                let fixup = FixupInfo {
+                    pc: current_processed_pc,
+                    original_wasm_depth: *target_depth as usize,
+                    is_if_false_jump: false,
+                    is_else_jump: false,
+                };
+                initial_fixups.push(fixup);
+            }
+            let default_fixup = FixupInfo {
+                pc: current_processed_pc,
+                original_wasm_depth: targets.default() as usize,
+                is_if_false_jump: false,
+                is_else_jump: false,
+            };
+            initial_fixups.push(default_fixup);
+        } else {
+            initial_processed_instrs.push(processed_instr_template);
+            if let Some(fixup_info) = fixup_info_opt {
+                initial_fixups.push(fixup_info);
+            }
+
+            match op {
+                wasmparser::Operator::Block { blockty } => {
+                    control_info_stack.push((blockty, current_processed_pc));
+                }
+                wasmparser::Operator::Loop { blockty } => {
+                    control_info_stack.push((blockty, current_processed_pc));
+                }
+                wasmparser::Operator::If { blockty } => {
+                    control_info_stack.push((blockty, current_processed_pc));
+                }
+                wasmparser::Operator::End => {
+                    if !control_info_stack.is_empty() {
+                        control_info_stack.pop();
+                    }
+                }
+                _ => {}
+            }
+        }
 
         current_processed_pc += 1;
-         // ops.next() is implicitly called by the loop structure now
-     }
+    }
 
-     // Check for unclosed blocks after processing all operators
-      if !control_stack_for_map_building.is_empty() {
-          println!("RuntimeError::InvalidWasm: Unclosed control block at end of function"); // Add println
-          return Err(Box::new(RuntimeError::InvalidWasm(
-              "Unclosed control block at end of function"
-          )) as Box<dyn std::error::Error>); // Corrected parenthesis
-      }
+    if !control_stack_for_map_building.is_empty() {
+        return Err(Box::new(RuntimeError::InvalidWasm(
+            "Unclosed control block at end of function",
+        )) as Box<dyn std::error::Error>);
+    }
 
-      // Return the results needed for preprocessing outside this function
-      Ok((initial_processed_instrs, initial_fixups, block_end_map, if_else_map))
-  }
+    Ok((
+        initial_processed_instrs,
+        initial_fixups,
+        block_end_map,
+        if_else_map,
+    ))
+}
 
 fn map_operator_to_initial_instr_and_fixup(
-    op: &wasmparser::Operator, // Change to take a reference
+    op: &wasmparser::Operator,
     current_processed_pc: usize,
-    _control_info_stack: &[(wasmparser::BlockType, usize)], // Keep the parameter definition
+    _control_info_stack: &[(wasmparser::BlockType, usize)],
 ) -> Result<(ProcessedInstr, Option<FixupInfo>), Box<dyn std::error::Error>> {
-    let handler_index;
+    let mut handler_index;
     let mut operand = Operand::None;
     let mut fixup_info = None;
 
-    match *op { // Dereference op for matching
+    match *op {
         wasmparser::Operator::Unreachable => {
             handler_index = HANDLER_IDX_UNREACHABLE;
         }
@@ -1044,28 +857,28 @@ fn map_operator_to_initial_instr_and_fixup(
             handler_index = HANDLER_IDX_IF;
             fixup_info = Some(FixupInfo {
                 pc: current_processed_pc,
-                original_wasm_depth: 0, // Depth for If itself is 0, target resolved later
+                original_wasm_depth: 0,
                 is_if_false_jump: true,
                 is_else_jump: false,
             });
             operand = Operand::LabelIdx {
-                target_ip: usize::MAX, // Placeholder, resolved in preprocess
-                arity: 0, // Placeholder
-                target_label_stack_idx: 0, // Placeholder
+                target_ip: usize::MAX,
+                arity: 0,
+                target_label_stack_idx: 0,
             };
         }
         wasmparser::Operator::Else => {
             handler_index = HANDLER_IDX_ELSE;
             fixup_info = Some(FixupInfo {
                 pc: current_processed_pc,
-                original_wasm_depth: 0, // Depth for Else jump is 0 relative to its If
+                original_wasm_depth: 0,
                 is_if_false_jump: false,
                 is_else_jump: true,
             });
             operand = Operand::LabelIdx {
-                target_ip: usize::MAX, // Placeholder, resolved in preprocess
-                arity: 0, // Placeholder
-                target_label_stack_idx: 0, // Placeholder
+                target_ip: usize::MAX,
+                arity: 0,
+                target_label_stack_idx: 0,
             };
         }
         wasmparser::Operator::End => {
@@ -1080,47 +893,30 @@ fn map_operator_to_initial_instr_and_fixup(
                 is_else_jump: false,
             });
             operand = Operand::LabelIdx {
-                target_ip: usize::MAX, // Placeholder
-                arity: 0, // Placeholder
-                target_label_stack_idx: 0, // Placeholder
+                target_ip: usize::MAX,
+                arity: 0,
+                target_label_stack_idx: 0,
             };
         }
         wasmparser::Operator::BrIf { relative_depth } => {
             handler_index = HANDLER_IDX_BR_IF;
-            // ★★★ 追加 ★★★
-            println!(
-                "[MapOp-BrIf] pc: {}, received_depth: {}",
-                current_processed_pc,
-                relative_depth
-            );
-            // ★★★★★★★★★★
- 
+
             fixup_info = Some(FixupInfo {
                 pc: current_processed_pc,
                 original_wasm_depth: relative_depth as usize,
                 is_if_false_jump: false,
                 is_else_jump: false,
             });
- 
-            // ★★★ 追加 ★★★
-             if let Some(fi) = fixup_info {
-                println!(
-                    "[MapOp-BrIf] generated_fixup: pc={}, depth={}",
-                     fi.pc, fi.original_wasm_depth
-                 );
-             }
-             // ★★★★★★★★★★
- 
             operand = Operand::LabelIdx {
-                target_ip: usize::MAX, // Placeholder
-                arity: 0, // Placeholder
-                target_label_stack_idx: 0, // Placeholder
+                target_ip: usize::MAX,
+                arity: 0,
+                target_label_stack_idx: 0,
             };
         }
         wasmparser::Operator::BrTable { targets: _ } => {
             handler_index = HANDLER_IDX_BR_TABLE;
-            operand = Operand::None; // Resolved in preprocess
-            fixup_info = None; // Generated in the caller loop
+            operand = Operand::None;
+            fixup_info = None;
         }
         wasmparser::Operator::Return => {
             handler_index = HANDLER_IDX_RETURN;
@@ -1129,10 +925,17 @@ fn map_operator_to_initial_instr_and_fixup(
             handler_index = HANDLER_IDX_CALL;
             operand = Operand::FuncIdx(FuncIdx(function_index));
         }
-        wasmparser::Operator::CallIndirect { type_index, table_index, .. } => {
+        wasmparser::Operator::CallIndirect {
+            type_index,
+            table_index,
+            ..
+        } => {
             handler_index = HANDLER_IDX_CALL_INDIRECT;
             if table_index != 0 {
-                return Err(Box::new(RuntimeError::InvalidWasm("Only table index 0 is supported")) as Box<dyn std::error::Error>);
+                return Err(
+                    Box::new(RuntimeError::InvalidWasm("Only table index 0 is supported"))
+                        as Box<dyn std::error::Error>,
+                );
             }
             operand = Operand::TypeIdx(TypeIdx(type_index));
         }
@@ -1685,37 +1488,29 @@ fn map_operator_to_initial_instr_and_fixup(
             handler_index = HANDLER_IDX_I64_TRUNC_F64_U;
         }
         wasmparser::Operator::I32TruncSatF32S => {
-            println!("Warning: Unhandled TruncSat");
             handler_index = HANDLER_IDX_NOP;
-        } // TODO
+        }
         wasmparser::Operator::I32TruncSatF32U => {
-            println!("Warning: Unhandled TruncSat");
             handler_index = HANDLER_IDX_NOP;
-        } // TODO
+        }
         wasmparser::Operator::I32TruncSatF64S => {
-            println!("Warning: Unhandled TruncSat");
             handler_index = HANDLER_IDX_NOP;
-        } // TODO
+        }
         wasmparser::Operator::I32TruncSatF64U => {
-            println!("Warning: Unhandled TruncSat");
             handler_index = HANDLER_IDX_NOP;
-        } // TODO
+        }
         wasmparser::Operator::I64TruncSatF32S => {
-            println!("Warning: Unhandled TruncSat");
             handler_index = HANDLER_IDX_NOP;
-        } // TODO
+        }
         wasmparser::Operator::I64TruncSatF32U => {
-            println!("Warning: Unhandled TruncSat");
             handler_index = HANDLER_IDX_NOP;
-        } // TODO
+        }
         wasmparser::Operator::I64TruncSatF64S => {
-            println!("Warning: Unhandled TruncSat");
             handler_index = HANDLER_IDX_NOP;
-        } // TODO
+        }
         wasmparser::Operator::I64TruncSatF64U => {
-            println!("Warning: Unhandled TruncSat");
             handler_index = HANDLER_IDX_NOP;
-        } // TODO
+        }
         wasmparser::Operator::F32DemoteF64 => {
             handler_index = HANDLER_IDX_F32_DEMOTE_F64;
         }
@@ -1775,71 +1570,61 @@ fn map_operator_to_initial_instr_and_fixup(
         }
 
         /* Reference Instructions */
-          wasmparser::Operator::RefNull { hty: _ } => {
-              // Prefix unused hty
-            handler_index = HANDLER_IDX_NOP; // TODO: Implement RefNull handler
-            operand = Operand::None; // TODO: Store RefType?
-            println!("Warning: Unhandled RefNull");
+        wasmparser::Operator::RefNull { hty: _ } => {
+            handler_index = HANDLER_IDX_NOP;
+            operand = Operand::None;
         }
         wasmparser::Operator::RefIsNull => {
-            handler_index = HANDLER_IDX_NOP; // TODO: Implement RefIsNull handler
-            println!("Warning: Unhandled RefIsNull");
+            handler_index = HANDLER_IDX_NOP;
         }
         wasmparser::Operator::RefFunc { function_index } => {
-            handler_index = HANDLER_IDX_NOP; // TODO: Implement RefFunc handler
+            handler_index = HANDLER_IDX_NOP;
             operand = Operand::FuncIdx(FuncIdx(function_index));
-            println!("Warning: Unhandled RefFunc");
         }
         wasmparser::Operator::RefEq => {
-             handler_index = HANDLER_IDX_NOP; // TODO: Implement RefEq handler
-             println!("Warning: Unhandled RefEq");
+            handler_index = HANDLER_IDX_NOP;
+            println!("Warning: Unhandled RefEq");
         }
 
         /* Table Instructions */
-          wasmparser::Operator::TableGet { table } => {
-              handler_index = HANDLER_IDX_NOP;
-              operand = Operand::TableIdx(TableIdx(table));
-              println!("Warning: Unhandled TableGet");
-          } // TODO
-          wasmparser::Operator::TableSet { table } => {
-              handler_index = HANDLER_IDX_NOP;
-              operand = Operand::TableIdx(TableIdx(table));
-              println!("Warning: Unhandled TableSet");
-          } // TODO
-          wasmparser::Operator::TableSize { table } => {
-              handler_index = HANDLER_IDX_NOP;
-              operand = Operand::TableIdx(TableIdx(table));
-              println!("Warning: Unhandled TableSize");
-          } // TODO
-          wasmparser::Operator::TableGrow { table } => {
-              handler_index = HANDLER_IDX_NOP;
-              operand = Operand::TableIdx(TableIdx(table));
-              println!("Warning: Unhandled TableGrow");
-          } // TODO
-          wasmparser::Operator::TableFill { table } => {
-              handler_index = HANDLER_IDX_NOP;
-              operand = Operand::TableIdx(TableIdx(table));
-              println!("Warning: Unhandled TableFill");
-          } // TODO
-          wasmparser::Operator::TableCopy { dst_table: _, src_table: _, } => {
-              handler_index = HANDLER_IDX_NOP; /* TODO: Operand? */
-              println!("Warning: Unhandled TableCopy");
-          } // TODO
-          wasmparser::Operator::TableInit { elem_index: _, table: _, } => {
-              handler_index = HANDLER_IDX_NOP; /* TODO: Operand? */
-              println!("Warning: Unhandled TableInit");
-          } // TODO
-          wasmparser::Operator::ElemDrop { elem_index: _ } => {
-              handler_index = HANDLER_IDX_NOP; /* TODO: Operand? */
-              println!("Warning: Unhandled ElemDrop");
-          } // TODO
+        wasmparser::Operator::TableGet { table } => {
+            handler_index = HANDLER_IDX_NOP;
+            operand = Operand::TableIdx(TableIdx(table));
+        }
+        wasmparser::Operator::TableSet { table } => {
+            handler_index = HANDLER_IDX_NOP;
+            operand = Operand::TableIdx(TableIdx(table));
+        }
+        wasmparser::Operator::TableSize { table } => {
+            handler_index = HANDLER_IDX_NOP;
+            operand = Operand::TableIdx(TableIdx(table));
+        }
+        wasmparser::Operator::TableGrow { table } => {
+            handler_index = HANDLER_IDX_NOP;
+            operand = Operand::TableIdx(TableIdx(table));
+        }
+        wasmparser::Operator::TableFill { table } => {
+            handler_index = HANDLER_IDX_NOP;
+            operand = Operand::TableIdx(TableIdx(table));
+        }
+        wasmparser::Operator::TableCopy {
+            dst_table: _,
+            src_table: _,
+        } => {
+            handler_index = HANDLER_IDX_NOP;
+        }
+        wasmparser::Operator::TableInit {
+            elem_index: _,
+            table: _,
+        } => {
+            handler_index = HANDLER_IDX_NOP;
+        }
+        wasmparser::Operator::ElemDrop { elem_index: _ } => {
+            handler_index = HANDLER_IDX_NOP;
+        }
 
         _ => {
-            println!(
-                "Warning: Unhandled operator in map_operator_to_initial_instr_and_fixup: {:?}",
-                op
-            );
-            handler_index = HANDLER_IDX_NOP; // Default to NOP for unhandled
+            handler_index = HANDLER_IDX_NOP;
         }
     };
 
@@ -1854,7 +1639,7 @@ pub fn parse_bytecode(
     mut module: &mut Module,
     path: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut current_func_index = module.num_imported_funcs; // Start index after imports
+    let mut current_func_index = module.num_imported_funcs;
 
     let mut buf = Vec::new();
     let parser = Parser::new(0);
@@ -1914,7 +1699,7 @@ pub fn parse_bytecode(
             }
 
             DataCountSection { .. } => { /* ... */ }
-    
+
             DataSection(body) => {
                 decode_data_section(body, &mut module)?;
             }
@@ -1925,11 +1710,8 @@ pub fn parse_bytecode(
                 current_func_index += 1;
             }
 
-            CodeSectionStart { count, .. } => {
-                // Optional: Reserve capacity if needed
-            }
+            CodeSectionStart { count, .. } => {}
             CodeSectionEntry(body) => {
-                // Pass the current function index and increment it
                 decode_code_section(body, &mut module, current_func_index)?;
                 current_func_index += 1;
             }
@@ -1963,8 +1745,8 @@ mod tests {
     use std::io::Read;
     use std::iter::Peekable;
     use wasmparser::{
-        ExternalKind, FunctionBody, OperatorsIteratorWithOffsets, Parser, Payload::*, SectionLimited,
-        TypeRef, ValType,
+        ExternalKind, FunctionBody, OperatorsIteratorWithOffsets, Parser, Payload::*,
+        SectionLimited, TypeRef, ValType,
     };
 
     use crate::error::ParserError;
@@ -1979,7 +1761,7 @@ mod tests {
             (func (result i32 i32))
             (func (param i32 i32) (result i32))
         )"#;
-        
+
         let binary = wat::parse_str(wat).unwrap();
         let parser = wasmparser::Parser::new(0);
         let mut module = Module::new("test");
@@ -1988,7 +1770,7 @@ mod tests {
             match payload.unwrap() {
                 TypeSection(body) => {
                     parser::decode_type_section(body, &mut module).unwrap();
-            }
+                }
                 _ => {}
             }
         }
@@ -2013,7 +1795,7 @@ mod tests {
             (func (param i32 i32 i64))
             (func (result i32 i32)) 
             (func (param i32 i32) (result i32))
-        )"#; 
+        )"#;
         /*
         Type Idx
         0: (param i32)
@@ -2030,7 +1812,7 @@ mod tests {
             match payload.unwrap() {
                 FunctionSection(body) => {
                     parser::decode_func_section(body, &mut module).unwrap();
-            }
+                }
                 _ => {}
             }
         }
@@ -2051,7 +1833,7 @@ mod tests {
             (import "module1" "func1" (func (param i32))) 
             (import "module2" "func1" (func (param i32 i32) (result i32)))
             (import "module2" "func2" (func (param i32 i64) (result f32))) 
-        )"#; 
+        )"#;
 
         let binary = wat::parse_str(wat).unwrap();
         let parser = wasmparser::Parser::new(0);
@@ -2061,13 +1843,13 @@ mod tests {
             match payload.unwrap() {
                 ImportSection(body) => {
                     parser::decode_import_section(body, &mut module).unwrap();
-            }
+                }
                 _ => {}
             }
         }
         let imports_num = module.imports.len();
         assert_eq!(imports_num, 3);
-        
+
         let module_names = ["module1", "module2", "module2"];
         let names = ["func1", "func1", "func2"];
         for i in 0..imports_num {
@@ -2091,7 +1873,7 @@ mod tests {
             (func $sub (export "sub") (param $a i32) (param $b i32) (result i32)
                 (i32.sub (local.get $a) (local.get $b))
             )
-        )"#; 
+        )"#;
 
         let binary = wat::parse_str(wat).unwrap();
         let parser = wasmparser::Parser::new(0);
@@ -2101,7 +1883,7 @@ mod tests {
             match payload.unwrap() {
                 ExportSection(body) => {
                     parser::decode_export_section(body, &mut module).unwrap();
-            }
+                }
                 _ => {}
             }
         }
@@ -2129,7 +1911,7 @@ mod tests {
             (memory (export "memory") 2 3)
             (memory (export "mem") 1)
 
-        )"#; 
+        )"#;
 
         let binary = wat::parse_str(wat).unwrap();
         let parser = wasmparser::Parser::new(0);
@@ -2139,7 +1921,7 @@ mod tests {
             match payload.unwrap() {
                 MemorySection(body) => {
                     parser::decode_mem_section(body, &mut module).unwrap();
-            }
+                }
                 _ => {}
             }
         }
@@ -2167,7 +1949,7 @@ mod tests {
             (table 2 externref)
             (table 3 funcref)
 
-        )"#; 
+        )"#;
 
         let binary = wat::parse_str(wat).unwrap();
         let parser = wasmparser::Parser::new(0);
@@ -2177,7 +1959,7 @@ mod tests {
             match payload.unwrap() {
                 TableSection(body) => {
                     parser::decode_table_section(body, &mut module).unwrap();
-            }
+                }
                 _ => {}
             }
         }
@@ -2207,7 +1989,7 @@ mod tests {
         (module
             (global $f32 f32)
             (global $f64 (mut i64)(i64.const 2024))
-        )"#; 
+        )"#;
 
         let binary = wat::parse_str(wat).unwrap();
         let parser = wasmparser::Parser::new(0);
@@ -2217,7 +1999,7 @@ mod tests {
             match payload.unwrap() {
                 GlobalSection(body) => {
                     parser::decode_global_section(body, &mut module).unwrap();
-            }
+                }
                 _ => {}
             }
         }
@@ -2254,7 +2036,7 @@ mod tests {
                 i32.const 3
             )
             (elem $t0(i32.const 0) $f1 $f2)
-        )"#; 
+        )"#;
 
         let binary = wat::parse_str(wat).unwrap();
         let parser = wasmparser::Parser::new(0);
@@ -2267,7 +2049,7 @@ mod tests {
                 }
                 ElementSection(body) => {
                     parser::decode_elem_section(body, &mut module).unwrap();
-            }
+                }
                 _ => {}
             }
         }
@@ -2293,12 +2075,12 @@ mod tests {
                 (data (i32.const 0x020)
                     "\01\03\05\07\09\0B\0D\0F"
                 )
-        )"#; 
+        )"#;
 
         let binary = wat::parse_str(wat).unwrap();
         let parser = wasmparser::Parser::new(0);
         let mut module = Module::new("test");
-    
+
         for payload in parser.parse_all(&binary) {
             match payload.unwrap() {
                 MemorySection(body) => {
@@ -2306,7 +2088,7 @@ mod tests {
                 }
                 DataSection(body) => {
                     parser::decode_data_section(body, &mut module).unwrap();
-            }
+                }
                 _ => {}
             }
         }
@@ -2354,12 +2136,12 @@ mod tests {
                 )
                 )
             )
-        )"#; 
+        )"#;
 
         let binary = wat::parse_str(wat).unwrap();
         let parser = wasmparser::Parser::new(0);
         let mut module = Module::new("test");
-        let mut current_func_index = module.num_imported_funcs; // 事前にコピー
+        let mut current_func_index = module.num_imported_funcs;
         for payload in parser.parse_all(&binary) {
             match payload.unwrap() {
                 FunctionSection(body) => {
@@ -2367,36 +2149,19 @@ mod tests {
                 }
                 CodeSectionEntry(body) => {
                     parser::decode_code_section(body, &mut module, current_func_index).unwrap();
-                    current_func_index += 1; // インデックスもここで更新
-            }
+                    current_func_index += 1;
+                }
                 _ => {}
             }
         }
         let func_num = module.funcs.len();
         assert_eq!(func_num, 1);
-        
-        let func_body = &module.funcs[0].body;
-        println!("{:?}", func_body);
-        // Expected value for flat instruction list with markers
-        // This test will fail until stack.rs preprocesses the body
-        /*
-        let expected = Expr(vec![
-            Instr::I32Const(0),
-            Instr::If(BlockType(None, Some(ValueType::NumType(NumType::I32))), vec![], vec![]),
-            Instr::I32Const(1),
-            Instr::ElseMarker,
-            Instr::I32Const(2),
-            Instr::EndMarker,
-            Instr::EndMarker, // Function body EndMarker
-        ]);
-        assert_eq!(expected, *func_body);
-        */
-   }
+    }
 
-   #[test]
+    #[test]
     fn decode_code_section_loop() {
-       //Test Code: https://developer.mozilla.org/en-US/docs/WebAssembly/Reference/Control_flow/loop
-       let wat = r#"
+        //Test Code: https://developer.mozilla.org/en-US/docs/WebAssembly/Reference/Control_flow/loop
+        let wat = r#"
        (module
             (func
                 (local $i i32)
@@ -2413,58 +2178,26 @@ mod tests {
                     br_if $my_loop
                 )
             )
-       )"#; 
+       )"#;
 
-       let binary = wat::parse_str(wat).unwrap();
-       let parser = wasmparser::Parser::new(0);
-       let mut module = Module::new("test");
-        let mut current_func_index = module.num_imported_funcs; // 事前にコピー
-   
+        let binary = wat::parse_str(wat).unwrap();
+        let parser = wasmparser::Parser::new(0);
+        let mut module = Module::new("test");
+        let mut current_func_index = module.num_imported_funcs;
+
         for payload in parser.parse_all(&binary) {
-           match payload.unwrap() {
-               FunctionSection(body) => {
-                   parser::decode_func_section(body, &mut module).unwrap();
+            match payload.unwrap() {
+                FunctionSection(body) => {
+                    parser::decode_func_section(body, &mut module).unwrap();
                 }
-               CodeSectionEntry(body) => {
+                CodeSectionEntry(body) => {
                     parser::decode_code_section(body, &mut module, current_func_index).unwrap();
-                    current_func_index += 1; // インデックスもここで更新
-           }
+                    current_func_index += 1;
+                }
                 _ => {}
             }
         }
-       let func_num = module.funcs.len();
-       assert_eq!(func_num, 1);
-       
-       let func_body = &module.funcs[0].body;
-       // let fixups = &module.funcs[0].fixups; // Removed: fixups field does not exist on Func
-       println!("Processed Body: {:?}", func_body);
-       // println!("Fixups: {:?}", fixups); // Removed: fixups variable removed
-
-       // --- Updated Assertions for ProcessedInstr ---
-       // Note: These assertions will fail until stack.rs::preprocess_instructions
-       // is updated to handle the new input format (ProcessedInstr + FixupInfo)
-       // and perform the fixups. The parser now only does Phase 1.
-       /*
-       let expected_processed = vec![
-           ProcessedInstr { handler_index: HANDLER_IDX_LOOP, operand: Operand::LabelIdx(0) }, // Points to itself
-           ProcessedInstr { handler_index: HANDLER_IDX_LOCAL_GET, operand: Operand::LocalIdx(LocalIdx(0)) },
-           ProcessedInstr { handler_index: HANDLER_IDX_I32_CONST, operand: Operand::I32(1) },
-           ProcessedInstr { handler_index: HANDLER_IDX_I32_ADD, operand: Operand::None },
-           ProcessedInstr { handler_index: HANDLER_IDX_LOCAL_SET, operand: Operand::LocalIdx(LocalIdx(0)) },
-           ProcessedInstr { handler_index: HANDLER_IDX_LOCAL_GET, operand: Operand::LocalIdx(LocalIdx(0)) },
-           ProcessedInstr { handler_index: HANDLER_IDX_I32_CONST, operand: Operand::I32(10) },
-           ProcessedInstr { handler_index: HANDLER_IDX_I32_LT_S, operand: Operand::None },
-           ProcessedInstr { handler_index: HANDLER_IDX_BR_IF, operand: Operand::LabelIdx(0) }, // Expect patched index to loop start
-           ProcessedInstr { handler_index: HANDLER_IDX_END, operand: Operand::None },
-           ProcessedInstr { handler_index: HANDLER_IDX_END, operand: Operand::None },
-       ];
-        assert_eq!(expected_processed.len(), func_body.len());
-        for (i, instr) in func_body.iter().enumerate() {
-             assert_eq!(instr.handler_index, expected_processed[i].handler_index);
-             // TODO: Add more robust operand comparison, especially for patched LabelIdx
-             // assert_eq!(instr.operand, expected_processed[i].operand);
-        }
-        */
-       // --- End Updated Assertions ---
-  }
+        let func_num = module.funcs.len();
+        assert_eq!(func_num, 1);
+    }
 }
