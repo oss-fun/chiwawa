@@ -432,36 +432,34 @@ impl Stacks {
                             }
                         }
                         ModuleLevelInstr::Return => {
-                            let finished_frame = self.activation_frame_stack.pop().unwrap();
+                            let mut finished_frame = self.activation_frame_stack.pop().unwrap();
 
                             if self.activation_frame_stack.is_empty() {
-                                let finished_label_stack = finished_frame
+                                let finished_label_stack: &mut LabelStack = finished_frame
                                     .label_stack
-                                    .last()
+                                    .last_mut()
                                     .ok_or(RuntimeError::StackError(
                                         "Finished frame has no label stack",
                                     ))?;
-                                let mut return_values = finished_label_stack.value_stack.clone();
                                 let expected_n = finished_frame.frame.n;
-                                if return_values.len() < expected_n {
+                                if finished_label_stack.value_stack.len() < expected_n {
                                     return Err(RuntimeError::Trap);
                                 }
-                                let final_values = return_values
-                                    .split_off(return_values.len().saturating_sub(expected_n));
+                                let final_values = finished_label_stack.value_stack
+                                    .split_off(finished_label_stack.value_stack.len().saturating_sub(expected_n));
                                 return Ok(final_values);
                             }
 
-                            let finished_label_stack = finished_frame.label_stack.last().ok_or(
+                            let finished_label_stack: &mut LabelStack = finished_frame.label_stack.last_mut().ok_or(
                                 RuntimeError::StackError("Finished frame has no label stack"),
                             )?;
-                            let mut return_values = finished_label_stack.value_stack.clone();
                             let expected_n = finished_frame.frame.n;
 
-                            if return_values.len() < expected_n {
+                            if finished_label_stack.value_stack.len() < expected_n {
                                 return Err(RuntimeError::Trap);
                             }
-                            let actual_return_values = return_values
-                                .split_off(return_values.len().saturating_sub(expected_n));
+                            let actual_return_values = finished_label_stack.value_stack
+                                .split_off(finished_label_stack.value_stack.len().saturating_sub(expected_n));
 
                             if let Some(caller_frame) = self.activation_frame_stack.last_mut() {
                                 if let Some(caller_label_stack) =
@@ -478,41 +476,39 @@ impl Stacks {
                     }
                 }
                 Ok(None) => {
-                    let finished_frame = self.activation_frame_stack.pop().unwrap();
+                    let mut finished_frame = self.activation_frame_stack.pop().unwrap();
 
                     if self.activation_frame_stack.is_empty() {
-                        let finished_label_stack =
+                        let finished_label_stack: &mut LabelStack =
                             finished_frame
                                 .label_stack
-                                .last()
+                                .last_mut()
                                 .ok_or(RuntimeError::StackError(
                                     "Finished frame has no label stack on implicit return",
                                 ))?;
-                        let mut return_values = finished_label_stack.value_stack.clone();
                         let expected_n = finished_frame.frame.n;
-                        if return_values.len() < expected_n {
+                        if finished_label_stack.value_stack.len() < expected_n {
                             return Err(RuntimeError::Trap);
                         }
                         let final_values =
-                            return_values.split_off(return_values.len().saturating_sub(expected_n));
+                            finished_label_stack.value_stack.split_off(finished_label_stack.value_stack.len().saturating_sub(expected_n));
                         return Ok(final_values);
                     }
 
-                    let finished_label_stack =
+                    let finished_label_stack: &mut LabelStack =
                         finished_frame
                             .label_stack
-                            .last()
+                            .last_mut()
                             .ok_or(RuntimeError::StackError(
                                 "Finished frame has no label stack on implicit return",
                             ))?;
-                    let mut return_values = finished_label_stack.value_stack.clone();
                     let expected_n = finished_frame.frame.n;
 
-                    if return_values.len() < expected_n {
+                    if finished_label_stack.value_stack.len() < expected_n {
                         return Err(RuntimeError::Trap);
                     }
                     let actual_return_values =
-                        return_values.split_off(return_values.len().saturating_sub(expected_n));
+                        finished_label_stack.value_stack.split_off(finished_label_stack.value_stack.len().saturating_sub(expected_n));
 
                     if let Some(caller_frame) = self.activation_frame_stack.last_mut() {
                         if let Some(caller_label_stack) = caller_frame.label_stack.last_mut() {
