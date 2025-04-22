@@ -577,19 +577,19 @@ impl FrameStack {
                 }
             }
 
-            let instruction = processed_code[ip].clone();
+            let instruction_ref = &processed_code[ip];
 
             let handler_fn = HANDLER_TABLE
-                .get(instruction.handler_index)
+                .get(instruction_ref.handler_index)
                 .ok_or(RuntimeError::InvalidHandlerIndex)?;
 
             let mut context = ExecutionContext {
                 frame: &mut self.frame,
-                value_stack: &mut self.label_stack[current_label_stack_idx].value_stack,
+                value_stack: &mut current_label_stack.value_stack,
                 ip,
             };
 
-            let result = handler_fn(&mut context, &instruction.operand);
+            let result = handler_fn(&mut context, &instruction_ref.operand);
 
             self.label_stack[current_label_stack_idx].ip = ip;
 
