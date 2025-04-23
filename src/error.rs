@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone, PartialEq)]
 pub enum RuntimeError {
     #[error("Execution Failed: {0}")]
     ExecutionFailed(&'static str),
@@ -9,13 +9,13 @@ pub enum RuntimeError {
     #[error("Export Function is not Found")]
     ExportFuncNotFound,
     #[error("Instruction Failed")]
-    InstructionFailed, 
+    InstructionFailed,
     #[error("Divide by Zero")]
     ZeroDivideError,
-    #[error("Invalid Conversion to Integer")] 
+    #[error("Invalid Conversion to Integer")]
     InvalidConversionToInt,
     #[error("Integer Overflow")]
-    IntegerOverflow, 
+    IntegerOverflow,
     #[error("Link Failed")]
     LinkError,
     #[error("Unreachable Code Reached")]
@@ -58,18 +58,46 @@ pub enum RuntimeError {
     IndirectCallTypeMismatch,
     #[error("Uninitialized Element in Table")]
     UninitializedElement,
+    #[error("Invalid Constant Expression")]
+    InvalidConstantExpression,
+    #[error("Trap")]
+    Trap,
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone, PartialEq)]
 pub enum ParserError {
     #[error("Invalid Version")]
     VersionError,
     #[error("Unsupported OP Code in Global Section Init Expr at Offset: {offset}")]
-    InitExprUnsupportedOPCodeError{offset: usize},
+    InitExprUnsupportedOPCodeError { offset: usize },
     #[error("Unexpected Else operator found")]
     UnexpectedElse,
     #[error("Unexpected End operator found")]
     UnexpectedEnd,
     #[error("Invalid Wasm: {0}")]
-    InvalidWasm(&'static str), // Added for general Wasm parsing errors
+    InvalidWasm(&'static str),
+}
+
+#[derive(Debug, Error, Clone, PartialEq)]
+pub enum StackError {
+    #[error("Stack Underflow")]
+    StackUnderflow,
+    #[error("Value Type Mismatch")]
+    ValueTypeMismatch,
+    #[error("Invalid Label Stack Index: {0}")]
+    InvalidLabelStackIndex(usize),
+    #[error("Invalid Frame Stack Index: {0}")]
+    InvalidFrameStackIndex(usize),
+    #[error("Invalid Local Index: {0}")]
+    InvalidLocalIndex(usize),
+    #[error("Invalid Target Label Stack Index for Branch: {0}")]
+    InvalidBranchTargetIndex(usize),
+    #[error("Frame Stack Underflow")]
+    FrameStackUnderflow,
+    #[error("Label Stack Underflow")]
+    LabelStackUnderflow,
+    #[error("Empty Operand Stack during result transfer")]
+    EmptyOperandStackForResult,
+    #[error("Attempted to pop from empty label stack")]
+    PopEmptyLabelStack,
 }
