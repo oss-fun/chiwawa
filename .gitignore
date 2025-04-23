@@ -1,4 +1,6 @@
 /target
 *.so
 *.wasm
+!test/*.wasm
 *.wat
+!test/*.wat
