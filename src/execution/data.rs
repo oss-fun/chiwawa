@@ -8,11 +8,9 @@ pub struct DataInst {
 }
 
 impl DataAddr {
-    pub fn new(data: &Vec<u8>) -> DataAddr{
-        DataAddr(
-            Arc::new(RwLock::new(DataInst{
-               _data: data.clone(),
-            }))
-        )
+    pub fn new(data: &Vec<u8>) -> DataAddr {
+        DataAddr(Arc::new(RwLock::new(DataInst {
+            _data: data.clone(),
+        })))
     }
 }

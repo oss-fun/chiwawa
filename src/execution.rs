@@ -1,11 +1,11 @@
-pub mod value;
-pub mod module;
+mod data;
+mod elem;
+mod export;
 pub mod func;
+mod global;
+mod mem;
+pub mod module;
 pub mod stack;
 mod store;
 mod table;
-mod mem;
-mod global;
-mod elem;
-mod data;
-mod export;
+pub mod value;

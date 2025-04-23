@@ -1,4 +1,7 @@
-use super::{func::FuncInst, table::TableInst, mem::MemInst, global::GlobalInst, elem::ElemInst, data::DataInst};
+use super::{
+    data::DataInst, elem::ElemInst, func::FuncInst, global::GlobalInst, mem::MemInst,
+    table::TableInst,
+};
 
 struct Store {
     pub funcs: Vec<FuncInst>,
