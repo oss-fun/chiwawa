@@ -1,7 +1,6 @@
 use crate::execution::stack::ProcessedInstr;
 use crate::structure::instructions::*;
 use crate::structure::types::*;
-use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug)]
 pub struct Func {

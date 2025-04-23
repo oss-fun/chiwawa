@@ -2011,7 +2011,7 @@ fn handle_i64_trunc_f64_u(
 
 fn handle_unimplemented(
     _ctx: &mut ExecutionContext,
-    operand: &Operand,
+    _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     Err(RuntimeError::UnimplementedInstruction)
 }

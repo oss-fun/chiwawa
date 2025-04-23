@@ -6,7 +6,7 @@ use super::{
 use crate::error::RuntimeError;
 use crate::structure::{instructions::*, module::*, types::*};
 use std::collections::HashMap;
-use std::sync::{Arc, Weak as SyncWeak};
+use std::sync::Arc;
 
 pub struct Results(Option<Vec<Val>>);
 
