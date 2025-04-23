@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::Read;
 use std::iter::Peekable;
 use wasmparser::{
-    BinaryReaderError, BlockType, ExternalKind, FuncType, FunctionBody,
+    ExternalKind, FunctionBody,
     OperatorsIteratorWithOffsets, Parser, Payload::*, SectionLimited, TypeRef, ValType,
 };
 
@@ -406,7 +406,7 @@ fn preprocess_instructions(
     // Control stack stores: (pc, is_loop, block_type, runtime_label_stack_idx)
     let mut current_control_stack_pass2: Vec<(usize, bool, wasmparser::BlockType, usize)> =
         Vec::new();
-    let mut runtime_label_stack_idx_counter: usize = 0;
+    let mut runtime_label_stack_idx_counter;
 
     for fixup_index in 0..fixups.len() {
         let current_fixup_pc = fixups[fixup_index].pc;
@@ -424,7 +424,7 @@ fn preprocess_instructions(
 
         // --- Rebuild control stack state up to the fixup instruction ---
         current_control_stack_pass2.clear();
-        runtime_label_stack_idx_counter = 0;
+        let mut runtime_label_stack_idx_counter = 0;
         for (pc, instr) in processed.iter().enumerate().take(current_fixup_pc + 1) {
             match instr.handler_index {
                 HANDLER_IDX_BLOCK | HANDLER_IDX_IF => {
@@ -679,7 +679,7 @@ fn preprocess_instructions(
     }
 
     // --- Phase 4: Sanity check - Ensure all fixups were processed ---
-    for (idx, fixup) in fixups.iter().enumerate() {
+    for (_idx, fixup) in fixups.iter().enumerate() {
         if fixup.original_wasm_depth != usize::MAX {
             return Err(RuntimeError::InvalidWasm(
                 "Internal Error: Unprocessed fixup after preprocessing",
@@ -836,7 +836,7 @@ fn map_operator_to_initial_instr_and_fixup(
     current_processed_pc: usize,
     _control_info_stack: &[(wasmparser::BlockType, usize)],
 ) -> Result<(ProcessedInstr, Option<FixupInfo>), Box<dyn std::error::Error>> {
-    let mut handler_index;
+    let handler_index;
     let mut operand = Operand::None;
     let mut fixup_info = None;
 
@@ -1705,12 +1705,6 @@ pub fn parse_bytecode(
             }
 
             CodeSectionStart { .. } => { /* ... */ }
-            CodeSectionEntry(body) => {
-                decode_code_section(body, &mut module, current_func_index)?;
-                current_func_index += 1;
-            }
-
-            CodeSectionStart { count, .. } => {}
             CodeSectionEntry(body) => {
                 decode_code_section(body, &mut module, current_func_index)?;
                 current_func_index += 1;
