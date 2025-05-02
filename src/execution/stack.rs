@@ -4,11 +4,12 @@ use crate::execution::{func::*, module::*};
 use crate::structure::types::LabelIdx as StructureLabelIdx;
 use crate::structure::{instructions::*, types::*};
 use lazy_static::lazy_static;
+use serde::{Serialize, Deserialize};
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
-use std::sync::Weak as SyncWeak;
+use std::sync::{Arc, Weak as SyncWeak};
 use std::arch::asm;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Operand {
     None,
     I32(i32),
@@ -28,11 +29,11 @@ pub enum Operand {
     MemArg(Memarg),
     BrTable {
         targets: Vec<Operand>,
-        default: Box<Operand>,
+        default: Box<Operand>
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProcessedInstr {
     pub handler_index: usize,
     pub operand: Operand,
@@ -263,6 +264,7 @@ pub const HANDLER_IDX_I64_EXTEND32_S: usize = 0xC4;
 
 pub const MAX_HANDLER_INDEX: usize = 0xC5;
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stacks {
     pub activation_frame_stack: Vec<FrameStack>,
 }
@@ -530,12 +532,15 @@ impl Stacks {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Frame {
     pub locals: Vec<Val>,
+    #[serde(skip)] // Skip SyncWeak for now
     pub module: SyncWeak<ModuleInst>,
     pub n: usize,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FrameStack {
     pub frame: Frame,
     pub label_stack: Vec<LabelStack>,
@@ -637,20 +642,22 @@ impl FrameStack {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Label {
     pub locals_num: usize,
     pub arity: usize,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LabelStack {
     pub label: Label,
+    #[serde(skip)] // Skip processed_instrs, assume reconstructable
     pub processed_instrs: Vec<ProcessedInstr>,
     pub value_stack: Vec<Val>,
     pub ip: usize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum FrameLevelInstr {
     Label(Label, Vec<Instr>),
     Br(StructureLabelIdx),
@@ -659,7 +666,7 @@ pub enum FrameLevelInstr {
     Return,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum AdminInstr {
     Trap,
     Instr(Instr),
