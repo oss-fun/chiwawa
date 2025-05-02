@@ -1,9 +1,10 @@
 use super::{func::FuncAddr, global::GlobalAddr, mem::MemAddr, table::TableAddr};
 use crate::error::RuntimeError;
 use crate::structure::types::{NumType, ValueType, VecType};
+use serde::{Serialize, Deserialize, ser::SerializeStructVariant, de::EnumAccess};
 use std::sync::{Arc, RwLock};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Val {
     Num(Num),
     Vec_(Vec_),
@@ -47,7 +48,7 @@ impl Val {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Num {
     I32(i32),
     I64(i64),
@@ -55,26 +56,32 @@ pub enum Num {
     F64(f64),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Vec_ {
     V128(i128),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Ref {
     RefNull,
+    #[serde(skip)]
     FuncAddr(FuncAddr),
+    #[serde(skip)]
     RefExtern(ExternAddr),
 }
 
 #[derive(Clone, Debug)]
 pub struct ExternAddr(Arc<RwLock<Externval>>);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Externval {
+    #[serde(skip)]
     Func(FuncAddr),
+    #[serde(skip)]
     Table(TableAddr),
+    #[serde(skip)]
     Mem(MemAddr),
+    #[serde(skip)]
     Global(GlobalAddr),
 }
 

@@ -1,11 +1,12 @@
 use super::value::Val;
 use crate::error::RuntimeError;
 use crate::structure::types::*;
+use serde::{Serialize, Deserialize};
 use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug)]
 pub struct GlobalAddr(Arc<RwLock<GlobalInst>>);
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GlobalInst {
     pub _type_: GlobalType,
     pub value: Val,

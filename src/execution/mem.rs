@@ -1,13 +1,14 @@
 use crate::error::RuntimeError;
 use crate::structure::{instructions::Memarg, types::*};
 use byteorder::*;
+use serde::{Serialize, Deserialize};
 use std::io::Cursor;
 use std::sync::{Arc, RwLock};
 use typenum::*;
 
 #[derive(Clone, Debug)]
 pub struct MemAddr(Arc<RwLock<MemInst>>);
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MemInst {
     pub _type_: MemType,
     pub data: Vec<u8>,
