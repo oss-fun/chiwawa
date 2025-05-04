@@ -1,7 +1,6 @@
 use super::module::*;
 use super::value::Val;
 use crate::error::RuntimeError;
-use crate::execution::stack::Stacks;
 use crate::structure::{module::*, types::*};
 use std::sync::{Arc, RwLock, Weak as SyncWeak};
 use std::{
@@ -59,11 +58,6 @@ impl Debug for FuncInst {
 }
 
 impl FuncAddr {
-    pub fn call(&self, params: Vec<Val>) -> Result<Vec<Val>, RuntimeError> {
-        let mut dtc_stacks = Stacks::new(self, params)?;
-        dtc_stacks.exec_instr()
-    }
-
     pub fn alloc_empty() -> FuncAddr {
         FuncAddr(Arc::new(RwLock::new(FuncInst::RuntimeFunc {
             type_: FuncType {
@@ -127,5 +121,9 @@ impl FuncAddr {
     ) -> Result<RwLockReadGuard<FuncInst>, std::sync::PoisonError<RwLockReadGuard<'_, FuncInst>>>
     {
         self.0.read()
+    }
+
+    pub fn get_arc(&self) -> &Arc<RwLock<FuncInst>> {
+        &self.0
     }
 }

@@ -34,4 +34,15 @@ impl GlobalAddr {
         }
         Err(RuntimeError::InstructionFailed)
     }
+
+    pub fn set_value_unchecked(&self, value: Val) -> Result<(), RuntimeError> {
+        let mut self_inst = self.0.write()
+             .map_err(|_| RuntimeError::ExecutionFailed("Global RwLock poisoned"))?;
+        if self_inst.value.val_type() == value.val_type() {
+             self_inst.value = value;
+             Ok(())
+        } else {
+             Err(RuntimeError::InstructionFailed)
+        }
+    }
 }
