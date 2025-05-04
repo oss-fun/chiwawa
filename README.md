@@ -11,6 +11,13 @@ wizer target/wasm32-wasip1/release/chiwawa.wasm -o preinit-chiwawa.wasm --allow-
 somethingWasmRuntime preinit-chiwawa.wasm --invoke func-name --params "I64(100)"
 ```
 
+## Checkpoint and Restore
+
+```
+somethingWasmRuntime preinit-chiwawa.wasm --invoke func-name --params "I64(100)"
+touch  ./checkpoint.trigger # Trigger of Checkpointing
+somethingWasmRuntime preinit-chiwawa.wasm --invoke func-name --restore checkpoint.trigger
+```
 
 ## References
 I referred to these repositories. I appreciate our ancestor's wisdom!
