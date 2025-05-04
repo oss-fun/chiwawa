@@ -4,11 +4,14 @@ use crate::execution::{func::*, module::*};
 use crate::structure::types::LabelIdx as StructureLabelIdx;
 use crate::structure::{instructions::*, types::*};
 use lazy_static::lazy_static;
-use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
-use std::sync::Weak as SyncWeak;
+use serde::{Deserialize, Serialize};
 use std::arch::asm;
+use std::fs;
+use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
+use std::path::Path;
+use std::sync::Weak as SyncWeak;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Operand {
     None,
     I32(i32),
@@ -32,7 +35,7 @@ pub enum Operand {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProcessedInstr {
     pub handler_index: usize,
     pub operand: Operand,
@@ -263,6 +266,7 @@ pub const HANDLER_IDX_I64_EXTEND32_S: usize = 0xC4;
 
 pub const MAX_HANDLER_INDEX: usize = 0xC5;
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stacks {
     pub activation_frame_stack: Vec<FrameStack>,
 }
@@ -310,6 +314,7 @@ impl Stacks {
                         ip: 0,
                     }],
                     void: type_.results.is_empty(),
+                    instruction_count: 0,
                 };
 
                 Ok(Stacks {
@@ -323,227 +328,27 @@ impl Stacks {
             }
         }
     }
-
-    /*
-    This Function Only Handle Instruction Spanning FrameStack.
-    i.e., Invoke Wasm Function, Return Function and Call Host-function.
-    */
-    pub fn exec_instr(&mut self) -> Result<Vec<Val>, RuntimeError> {
-        while !self.activation_frame_stack.is_empty() {
-            let frame_stack_idx = self.activation_frame_stack.len() - 1;
-            let mut called_func_addr: Option<FuncAddr> = None;
-
-            let module_level_instr_result = {
-                let current_frame_stack = &mut self.activation_frame_stack[frame_stack_idx];
-                current_frame_stack.run_dtc_loop(&mut called_func_addr)?
-            };
-
-            match module_level_instr_result {
-                Ok(Some(instr)) => {
-                    let current_frame_stack = self.activation_frame_stack.last_mut().unwrap();
-
-                    if current_frame_stack.label_stack.is_empty() {
-                        return Err(RuntimeError::StackError(
-                            "Label stack empty during frame transition",
-                        ));
-                    }
-                    let cur_label_stack = current_frame_stack.label_stack.last_mut().unwrap();
-
-                    match instr {
-                        ModuleLevelInstr::Invoke(func_addr) => {
-                            let func_inst_guard = func_addr.read_lock().expect("RwLock poisoned");
-                            match &*func_inst_guard {
-                                FuncInst::RuntimeFunc {
-                                    type_,
-                                    module,
-                                    code,
-                                } => {
-                                    let params_len = type_.params.len();
-                                    if cur_label_stack.value_stack.len() < params_len {
-                                        return Err(RuntimeError::ValueStackUnderflow);
-                                    }
-                                    let params = cur_label_stack
-                                        .value_stack
-                                        .split_off(cur_label_stack.value_stack.len() - params_len);
-
-                                    let mut locals = params;
-                                    for v in code.locals.iter() {
-                                        for _ in 0..(v.0) {
-                                            locals.push(match v.1 {
-                                                ValueType::NumType(NumType::I32) => {
-                                                    Val::Num(Num::I32(0))
-                                                }
-                                                ValueType::NumType(NumType::I64) => {
-                                                    Val::Num(Num::I64(0))
-                                                }
-                                                ValueType::NumType(NumType::F32) => {
-                                                    Val::Num(Num::F32(0.0))
-                                                }
-                                                ValueType::NumType(NumType::F64) => {
-                                                    Val::Num(Num::F64(0.0))
-                                                }
-                                                ValueType::VecType(VecType::V128) => {
-                                                    Val::Vec_(Vec_::V128(0))
-                                                }
-                                                ValueType::RefType(_) => {
-                                                    todo!("RefType local init in Invoke")
-                                                }
-                                            });
-                                        }
-                                    }
-
-                                    let frame = FrameStack {
-                                        frame: Frame {
-                                            locals,
-                                            module: module.clone(),
-                                            n: type_.results.len(),
-                                        },
-                                        label_stack: vec![LabelStack {
-                                            label: Label {
-                                                locals_num: type_.results.len(),
-                                                arity: type_.results.len(),
-                                            },
-                                            processed_instrs: code.body.clone(),
-                                            value_stack: vec![],
-                                            ip: 0,
-                                        }],
-                                        void: type_.results.is_empty(),
-                                    };
-                                    self.activation_frame_stack.push(frame);
-                                }
-                                FuncInst::HostFunc { type_, host_code } => {
-                                    let params_len = type_.params.len();
-                                    if cur_label_stack.value_stack.len() < params_len {
-                                        return Err(RuntimeError::ValueStackUnderflow);
-                                    }
-                                    let params = cur_label_stack
-                                        .value_stack
-                                        .split_off(cur_label_stack.value_stack.len() - params_len);
-                                    match host_code(params) {
-                                        Ok(Some(result_val)) => {
-                                            cur_label_stack.value_stack.push(result_val);
-                                            cur_label_stack.ip += 1;
-                                        }
-                                        Ok(None) => {
-                                            cur_label_stack.ip += 1;
-                                        }
-                                        Err(e) => return Err(e),
-                                    }
-                                }
-                            }
-                        }
-                        ModuleLevelInstr::Return => {
-                            let mut finished_frame = self.activation_frame_stack.pop().unwrap();
-
-                            if self.activation_frame_stack.is_empty() {
-                                let finished_label_stack: &mut LabelStack = finished_frame
-                                    .label_stack
-                                    .last_mut()
-                                    .ok_or(RuntimeError::StackError(
-                                        "Finished frame has no label stack",
-                                    ))?;
-                                let expected_n = finished_frame.frame.n;
-                                if finished_label_stack.value_stack.len() < expected_n {
-                                    return Err(RuntimeError::Trap);
-                                }
-                                let final_values = finished_label_stack.value_stack
-                                    .split_off(finished_label_stack.value_stack.len().saturating_sub(expected_n));
-                                return Ok(final_values);
-                            }
-
-                            let finished_label_stack: &mut LabelStack = finished_frame.label_stack.last_mut().ok_or(
-                                RuntimeError::StackError("Finished frame has no label stack"),
-                            )?;
-                            let expected_n = finished_frame.frame.n;
-
-                            if finished_label_stack.value_stack.len() < expected_n {
-                                return Err(RuntimeError::Trap);
-                            }
-                            let actual_return_values = finished_label_stack.value_stack
-                                .split_off(finished_label_stack.value_stack.len().saturating_sub(expected_n));
-
-                            if let Some(caller_frame) = self.activation_frame_stack.last_mut() {
-                                if let Some(caller_label_stack) =
-                                    caller_frame.label_stack.last_mut()
-                                {
-                                    caller_label_stack.value_stack.extend(actual_return_values);
-                                } else {
-                                    return Err(RuntimeError::StackError(
-                                        "Caller label stack empty during return",
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(None) => {
-                    let mut finished_frame = self.activation_frame_stack.pop().unwrap();
-
-                    if self.activation_frame_stack.is_empty() {
-                        let finished_label_stack: &mut LabelStack =
-                            finished_frame
-                                .label_stack
-                                .last_mut()
-                                .ok_or(RuntimeError::StackError(
-                                    "Finished frame has no label stack on implicit return",
-                                ))?;
-                        let expected_n = finished_frame.frame.n;
-                        if finished_label_stack.value_stack.len() < expected_n {
-                            return Err(RuntimeError::Trap);
-                        }
-                        let final_values =
-                            finished_label_stack.value_stack.split_off(finished_label_stack.value_stack.len().saturating_sub(expected_n));
-                        return Ok(final_values);
-                    }
-
-                    let finished_label_stack: &mut LabelStack =
-                        finished_frame
-                            .label_stack
-                            .last_mut()
-                            .ok_or(RuntimeError::StackError(
-                                "Finished frame has no label stack on implicit return",
-                            ))?;
-                    let expected_n = finished_frame.frame.n;
-
-                    if finished_label_stack.value_stack.len() < expected_n {
-                        return Err(RuntimeError::Trap);
-                    }
-                    let actual_return_values =
-                        finished_label_stack.value_stack.split_off(finished_label_stack.value_stack.len().saturating_sub(expected_n));
-
-                    if let Some(caller_frame) = self.activation_frame_stack.last_mut() {
-                        if let Some(caller_label_stack) = caller_frame.label_stack.last_mut() {
-                            caller_label_stack.value_stack.extend(actual_return_values);
-                        } else {
-                            return Err(RuntimeError::StackError(
-                                "Caller label stack empty during implicit return",
-                            ));
-                        }
-                    }
-                }
-                Err(e) => {
-                    return Err(e);
-                }
-            }
-        }
-        Ok(vec![])
-    }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Frame {
     pub locals: Vec<Val>,
+    #[serde(skip)]
     pub module: SyncWeak<ModuleInst>,
     pub n: usize,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FrameStack {
     pub frame: Frame,
     pub label_stack: Vec<LabelStack>,
     pub void: bool,
+    #[serde(default)]
+    pub instruction_count: u64,
 }
 
 impl FrameStack {
-    fn run_dtc_loop(
+    pub fn run_dtc_loop(
         &mut self,
         _called_func_addr_out: &mut Option<FuncAddr>,
     ) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError> {
@@ -553,7 +358,23 @@ impl FrameStack {
             .checked_sub(1)
             .ok_or(RuntimeError::StackError("Initial label stack empty"))?;
 
+        const CHECKPOINT_TRIGGER_FILE: &str = "./checkpoint.trigger";
+        const CHECKPOINT_CHECK_INTERVAL: u64 = 100;
+
         loop {
+            self.instruction_count += 1;
+            if self.instruction_count % CHECKPOINT_CHECK_INTERVAL == 0 {
+                let trigger_path = Path::new(CHECKPOINT_TRIGGER_FILE);
+                if trigger_path.exists() {
+                    println!(
+                        "Checkpoint trigger file found after {} instructions! Requesting checkpoint...",
+                        self.instruction_count
+                    );
+                    let _ = fs::remove_file(trigger_path);
+                    return Ok(Err(RuntimeError::CheckpointRequested));
+                }
+            }
+
             if current_label_stack_idx >= self.label_stack.len() {
                 break;
             }
@@ -588,7 +409,7 @@ impl FrameStack {
 
             let result = handler_fn(&mut context, &instruction_ref.operand);
 
-            self.label_stack[current_label_stack_idx].ip = ip;
+            self.label_stack[current_label_stack_idx].ip = context.ip;
 
             match result {
                 Ok(handler_result) => {
@@ -637,12 +458,13 @@ impl FrameStack {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Label {
     pub locals_num: usize,
     pub arity: usize,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LabelStack {
     pub label: Label,
     pub processed_instrs: Vec<ProcessedInstr>,
@@ -650,7 +472,7 @@ pub struct LabelStack {
     pub ip: usize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum FrameLevelInstr {
     Label(Label, Vec<Instr>),
     Br(StructureLabelIdx),
@@ -659,7 +481,7 @@ pub enum FrameLevelInstr {
     Return,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum AdminInstr {
     Trap,
     Instr(Instr),
@@ -1205,12 +1027,11 @@ fn handle_i32_div_s(
     ctx: &mut ExecutionContext,
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    
     let rhs = ctx.value_stack.pop().unwrap().to_i32()?;
     let lhs = ctx.value_stack.pop().unwrap().to_i32()?;
 
     let mut result: i32;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "local.get {1}",
@@ -1232,7 +1053,7 @@ fn handle_i32_div_u(
     let lhs = ctx.value_stack.pop().unwrap().to_i32()? as u32;
 
     let mut result: i32;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "local.get {1}",
@@ -1253,7 +1074,7 @@ fn handle_i32_rem_s(
     let rhs = ctx.value_stack.pop().unwrap().to_i32()?;
     let lhs = ctx.value_stack.pop().unwrap().to_i32()?;
     let mut result: i32;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "local.get {1}",
@@ -1275,7 +1096,7 @@ fn handle_i32_rem_u(
     let lhs = ctx.value_stack.pop().unwrap().to_i32()? as u32;
 
     let mut result: i32;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "local.get {1}",
@@ -1410,7 +1231,7 @@ fn handle_i64_div_s(
     let rhs = ctx.value_stack.pop().unwrap().to_i64()?;
     let lhs = ctx.value_stack.pop().unwrap().to_i64()?;
     let mut result: i64;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "local.get {1}",
@@ -1431,7 +1252,7 @@ fn handle_i64_div_u(
     let rhs = ctx.value_stack.pop().unwrap().to_i64()? as u64;
     let lhs = ctx.value_stack.pop().unwrap().to_i64()? as u64;
     let mut result: i64;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "local.get {1}",
@@ -1452,7 +1273,7 @@ fn handle_i64_rem_s(
     let rhs = ctx.value_stack.pop().unwrap().to_i64()?;
     let lhs = ctx.value_stack.pop().unwrap().to_i64()?;
     let mut result: i64;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "local.get {1}",
@@ -1473,7 +1294,7 @@ fn handle_i64_rem_u(
     let rhs = ctx.value_stack.pop().unwrap().to_i64()? as u64;
     let lhs = ctx.value_stack.pop().unwrap().to_i64()? as u64;
     let mut result: i64;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "local.get {1}",
@@ -1608,7 +1429,7 @@ fn handle_f32_nearest(
     let x = ctx.value_stack.pop().unwrap().to_f32()?;
 
     let mut result: f32;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "f32.nearest",
@@ -1735,7 +1556,7 @@ fn handle_f64_nearest(
 ) -> Result<HandlerResult, RuntimeError> {
     let x = ctx.value_stack.pop().unwrap().to_f64()?;
     let mut result: f64;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "f64.nearest",
@@ -1844,7 +1665,7 @@ fn handle_i32_trunc_f32_s(
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f32()?;
     let mut result: i32;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "i32.trunc_f32_s",
@@ -1863,7 +1684,7 @@ fn handle_i32_trunc_f32_u(
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f32()?;
     let mut result: i32;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "i32.trunc_f32_u",
@@ -1882,7 +1703,7 @@ fn handle_i32_trunc_f64_s(
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f64()?;
     let mut result: i32;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "i32.trunc_f64_s",
@@ -1919,7 +1740,7 @@ fn handle_i64_trunc_f32_s(
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f32()?;
     let mut result: i64;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "i64.trunc_f32_s",
@@ -1938,7 +1759,7 @@ fn handle_i64_trunc_f32_u(
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f32()?;
     let mut result: i64;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "i64.trunc_f32_u",
@@ -1957,7 +1778,7 @@ fn handle_i64_trunc_f64_s(
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f64()?;
     let mut result: i64;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "i64.trunc_f64_s",
@@ -1976,7 +1797,7 @@ fn handle_i64_trunc_f64_u(
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f64()?;
     let mut result: i64;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "i64.trunc_f64_u",

@@ -1,13 +1,14 @@
 use crate::error::RuntimeError;
 use crate::structure::{instructions::Memarg, types::*};
 use byteorder::*;
+use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use std::sync::{Arc, RwLock};
 use typenum::*;
 
 #[derive(Clone, Debug)]
 pub struct MemAddr(Arc<RwLock<MemInst>>);
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MemInst {
     pub _type_: MemType,
     pub data: Vec<u8>,
@@ -75,6 +76,23 @@ impl MemAddr {
                 .resize(new as usize * 65536, 0);
             prev_size
         }
+    }
+
+    pub fn get_data(&self) -> Result<Vec<u8>, RuntimeError> {
+        let guard = self
+            .0
+            .read()
+            .map_err(|_| RuntimeError::ExecutionFailed("Memory RwLock poisoned"))?;
+        Ok(guard.data.clone())
+    }
+
+    pub fn set_data(&self, data: Vec<u8>) -> Result<(), RuntimeError> {
+        let mut guard = self
+            .0
+            .write()
+            .map_err(|_| RuntimeError::ExecutionFailed("Memory RwLock poisoned"))?;
+        guard.data = data;
+        Ok(())
     }
 }
 

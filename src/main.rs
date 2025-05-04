@@ -1,5 +1,12 @@
 use anyhow::Result;
-use chiwawa::{execution::module::*, execution::value::*, parser, structure::module::Module};
+use chiwawa::{
+    execution::module::*,
+    execution::runtime::Runtime,
+    execution::value::*,
+    execution::{migration, stack::Stacks},
+    parser,
+    structure::module::Module,
+};
 use clap::Parser;
 use fancy_regex::Regex;
 use std::collections::HashMap;
@@ -8,6 +15,8 @@ use std::sync::{Arc, OnceLock};
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
+    #[arg(long)]
+    restore: Option<String>,
     #[arg(short, long, default_value = "main")]
     invoke: String,
     #[arg(short, long, value_delimiter = ',', num_args = 0..)]
@@ -76,14 +85,52 @@ pub extern "C" fn init() {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let params: Vec<Val> = match cli.params {
-        Some(p) => parse_params(p),
-        None => vec![],
-    };
 
-    let inst = MODULE_INSTANCE.get().unwrap();
-    let result = inst.get_export_func(&cli.invoke)?.call(params);
+    if let Some(restore_path) = cli.restore {
+        println!("Restoring from checkpoint: {}", restore_path);
 
+        let module_inst = MODULE_INSTANCE.get().ok_or_else(|| {
+            anyhow::anyhow!("Module instance not initialized by Wizer during restore")
+        })?;
+
+        let restored_stacks: Stacks =
+            match migration::restore(Arc::clone(module_inst), &restore_path) {
+                Ok(stacks) => stacks,
+                Err(e) => {
+                    eprintln!("Failed to restore state: {:?}", e);
+                    return Err(anyhow::anyhow!("Restore failed: {:?}", e));
+                }
+            };
+        println!("State restored into module instance. Stacks obtained.");
+
+        let mut runtime = Runtime::new_restored(Arc::clone(module_inst), restored_stacks);
+        println!("Runtime reconstructed. Resuming execution...");
+
+        let result = runtime.run();
+        handle_result(result);
+    } else {
+        let module_inst = MODULE_INSTANCE
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("Module instance not initialized by Wizer"))?;
+
+        let func_addr = module_inst.get_export_func(&cli.invoke)?;
+        let params = parse_params(cli.params.unwrap_or_default());
+
+        match Runtime::new(Arc::clone(module_inst), &func_addr, params) {
+            Ok(mut runtime) => {
+                let result = runtime.run();
+                handle_result(result);
+            }
+            Err(e) => {
+                eprintln!("Runtime initialization failed: {:?}", e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_result(result: Result<Vec<Val>, chiwawa::error::RuntimeError>) {
     match result {
         Ok(mut values) => {
             if let Some(val) = values.pop() {
@@ -92,11 +139,13 @@ fn main() -> Result<()> {
                 println!("Result: (no values returned)");
             }
         }
+        Err(chiwawa::error::RuntimeError::CheckpointRequested) => {
+            println!("Execution stopped for checkpoint.");
+        }
         Err(e) => {
-            eprintln!("Error: {:?}", e);
+            eprintln!("Execution Error: {:?}", e);
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]

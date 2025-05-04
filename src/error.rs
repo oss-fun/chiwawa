@@ -62,6 +62,20 @@ pub enum RuntimeError {
     InvalidConstantExpression,
     #[error("Trap")]
     Trap,
+
+    // Migration Errors
+    #[error("Serialization Error: {0}")]
+    SerializationError(String),
+    #[error("Deserialization Error: {0}")]
+    DeserializationError(String),
+    #[error("Checkpoint Save Error: {0}")]
+    CheckpointSaveError(String),
+    #[error("Checkpoint Load Error: {0}")]
+    CheckpointLoadError(String),
+    #[error("Checkpoint Requested")]
+    CheckpointRequested,
+    #[error("Restore Error: {0}")]
+    RestoreError(String),
 }
 
 #[derive(Debug, Error, Clone, PartialEq)]
