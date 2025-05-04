@@ -1,5 +1,5 @@
 use crate::structure::types::*;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Expr(pub Vec<Instr>);

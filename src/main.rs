@@ -1,5 +1,12 @@
 use anyhow::Result;
-use chiwawa::{execution::{migration, stack::Stacks}, execution::module::*, execution::value::*, parser, structure::module::Module, execution::runtime::Runtime};
+use chiwawa::{
+    execution::module::*,
+    execution::runtime::Runtime,
+    execution::value::*,
+    execution::{migration, stack::Stacks},
+    parser,
+    structure::module::Module,
+};
 use clap::Parser;
 use fancy_regex::Regex;
 use std::collections::HashMap;
@@ -86,13 +93,14 @@ fn main() -> Result<()> {
             anyhow::anyhow!("Module instance not initialized by Wizer during restore")
         })?;
 
-        let restored_stacks: Stacks = match migration::restore(Arc::clone(module_inst), &restore_path) {
-            Ok(stacks) => stacks,
-            Err(e) => {
-                eprintln!("Failed to restore state: {:?}", e);
-                return Err(anyhow::anyhow!("Restore failed: {:?}", e));
-            }
-        };
+        let restored_stacks: Stacks =
+            match migration::restore(Arc::clone(module_inst), &restore_path) {
+                Ok(stacks) => stacks,
+                Err(e) => {
+                    eprintln!("Failed to restore state: {:?}", e);
+                    return Err(anyhow::anyhow!("Restore failed: {:?}", e));
+                }
+            };
         println!("State restored into module instance. Stacks obtained.");
 
         let mut runtime = Runtime::new_restored(Arc::clone(module_inst), restored_stacks);
@@ -100,11 +108,10 @@ fn main() -> Result<()> {
 
         let result = runtime.run();
         handle_result(result);
-
     } else {
-        let module_inst = MODULE_INSTANCE.get().ok_or_else(|| {
-            anyhow::anyhow!("Module instance not initialized by Wizer")
-        })?;
+        let module_inst = MODULE_INSTANCE
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("Module instance not initialized by Wizer"))?;
 
         let func_addr = module_inst.get_export_func(&cli.invoke)?;
         let params = parse_params(cli.params.unwrap_or_default());
@@ -124,7 +131,7 @@ fn main() -> Result<()> {
 }
 
 fn handle_result(result: Result<Vec<Val>, chiwawa::error::RuntimeError>) {
-     match result {
+    match result {
         Ok(mut values) => {
             if let Some(val) = values.pop() {
                 println!("Result: {:?}", val);

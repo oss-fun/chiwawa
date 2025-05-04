@@ -2,8 +2,8 @@ use std::fs::File;
 use std::io::Read;
 use std::iter::Peekable;
 use wasmparser::{
-    ExternalKind, FunctionBody,
-    OperatorsIteratorWithOffsets, Parser, Payload::*, SectionLimited, TypeRef, ValType,
+    ExternalKind, FunctionBody, OperatorsIteratorWithOffsets, Parser, Payload::*, SectionLimited,
+    TypeRef, ValType,
 };
 
 use crate::error::{ParserError, RuntimeError};

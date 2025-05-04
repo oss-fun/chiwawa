@@ -4,12 +4,12 @@ use crate::execution::{func::*, module::*};
 use crate::structure::types::LabelIdx as StructureLabelIdx;
 use crate::structure::{instructions::*, types::*};
 use lazy_static::lazy_static;
-use serde::{Serialize, Deserialize};
-use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
-use std::sync::{Weak as SyncWeak};
+use serde::{Deserialize, Serialize};
 use std::arch::asm;
-use std::path::Path;
 use std::fs;
+use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
+use std::path::Path;
+use std::sync::Weak as SyncWeak;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Operand {
@@ -31,7 +31,7 @@ pub enum Operand {
     MemArg(Memarg),
     BrTable {
         targets: Vec<Operand>,
-        default: Box<Operand>
+        default: Box<Operand>,
     },
 }
 
@@ -1027,12 +1027,11 @@ fn handle_i32_div_s(
     ctx: &mut ExecutionContext,
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    
     let rhs = ctx.value_stack.pop().unwrap().to_i32()?;
     let lhs = ctx.value_stack.pop().unwrap().to_i32()?;
 
     let mut result: i32;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "local.get {1}",
@@ -1054,7 +1053,7 @@ fn handle_i32_div_u(
     let lhs = ctx.value_stack.pop().unwrap().to_i32()? as u32;
 
     let mut result: i32;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "local.get {1}",
@@ -1075,7 +1074,7 @@ fn handle_i32_rem_s(
     let rhs = ctx.value_stack.pop().unwrap().to_i32()?;
     let lhs = ctx.value_stack.pop().unwrap().to_i32()?;
     let mut result: i32;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "local.get {1}",
@@ -1097,7 +1096,7 @@ fn handle_i32_rem_u(
     let lhs = ctx.value_stack.pop().unwrap().to_i32()? as u32;
 
     let mut result: i32;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "local.get {1}",
@@ -1232,7 +1231,7 @@ fn handle_i64_div_s(
     let rhs = ctx.value_stack.pop().unwrap().to_i64()?;
     let lhs = ctx.value_stack.pop().unwrap().to_i64()?;
     let mut result: i64;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "local.get {1}",
@@ -1253,7 +1252,7 @@ fn handle_i64_div_u(
     let rhs = ctx.value_stack.pop().unwrap().to_i64()? as u64;
     let lhs = ctx.value_stack.pop().unwrap().to_i64()? as u64;
     let mut result: i64;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "local.get {1}",
@@ -1274,7 +1273,7 @@ fn handle_i64_rem_s(
     let rhs = ctx.value_stack.pop().unwrap().to_i64()?;
     let lhs = ctx.value_stack.pop().unwrap().to_i64()?;
     let mut result: i64;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "local.get {1}",
@@ -1295,7 +1294,7 @@ fn handle_i64_rem_u(
     let rhs = ctx.value_stack.pop().unwrap().to_i64()? as u64;
     let lhs = ctx.value_stack.pop().unwrap().to_i64()? as u64;
     let mut result: i64;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "local.get {1}",
@@ -1430,7 +1429,7 @@ fn handle_f32_nearest(
     let x = ctx.value_stack.pop().unwrap().to_f32()?;
 
     let mut result: f32;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "f32.nearest",
@@ -1557,7 +1556,7 @@ fn handle_f64_nearest(
 ) -> Result<HandlerResult, RuntimeError> {
     let x = ctx.value_stack.pop().unwrap().to_f64()?;
     let mut result: f64;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "f64.nearest",
@@ -1666,7 +1665,7 @@ fn handle_i32_trunc_f32_s(
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f32()?;
     let mut result: i32;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "i32.trunc_f32_s",
@@ -1685,7 +1684,7 @@ fn handle_i32_trunc_f32_u(
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f32()?;
     let mut result: i32;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "i32.trunc_f32_u",
@@ -1704,7 +1703,7 @@ fn handle_i32_trunc_f64_s(
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f64()?;
     let mut result: i32;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "i32.trunc_f64_s",
@@ -1741,7 +1740,7 @@ fn handle_i64_trunc_f32_s(
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f32()?;
     let mut result: i64;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "i64.trunc_f32_s",
@@ -1760,7 +1759,7 @@ fn handle_i64_trunc_f32_u(
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f32()?;
     let mut result: i64;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "i64.trunc_f32_u",
@@ -1779,7 +1778,7 @@ fn handle_i64_trunc_f64_s(
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f64()?;
     let mut result: i64;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "i64.trunc_f64_s",
@@ -1798,7 +1797,7 @@ fn handle_i64_trunc_f64_u(
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f64()?;
     let mut result: i64;
-    unsafe{
+    unsafe {
         asm!(
             "local.get {0}",
             "i64.trunc_f64_u",

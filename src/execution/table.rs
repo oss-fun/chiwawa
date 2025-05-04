@@ -1,7 +1,7 @@
 use super::{func::FuncAddr, module::*};
-use crate::structure::types::*;
 use crate::error::RuntimeError;
-use std::sync::{Arc, RwLock, RwLockReadGuard, PoisonError};
+use crate::structure::types::*;
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard};
 
 #[derive(Clone, Debug)]
 pub struct TableAddr(Arc<RwLock<TableInst>>);
@@ -38,9 +38,10 @@ impl TableAddr {
         }
     }
 
-
     pub fn set_elements(&self, elems: Vec<Option<FuncAddr>>) -> Result<(), RuntimeError> {
-        let mut guard = self.0.write()
+        let mut guard = self
+            .0
+            .write()
             .map_err(|_| RuntimeError::ExecutionFailed("Table RwLock poisoned"))?;
         guard.elem = elems;
         Ok(())

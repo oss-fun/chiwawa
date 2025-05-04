@@ -1,13 +1,13 @@
-use crate::execution::stack::Stacks;
-use crate::execution::mem::MemAddr;
-use crate::execution::global::GlobalAddr;
-use crate::execution::value::Val;
-use crate::execution::table::TableAddr;
-use crate::execution::module::ModuleInst;
 use crate::error::RuntimeError;
-use serde::{Serialize, Deserialize};
+use crate::execution::global::GlobalAddr;
+use crate::execution::mem::MemAddr;
+use crate::execution::module::ModuleInst;
+use crate::execution::stack::Stacks;
+use crate::execution::table::TableAddr;
+use crate::execution::value::Val;
+use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{Write, Read};
+use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ pub fn checkpoint<P: AsRef<Path>>(
     mem_addrs: &[MemAddr],
     global_addrs: &[GlobalAddr],
     table_addrs: &[TableAddr],
-    output_path: P
+    output_path: P,
 ) -> Result<(), RuntimeError> {
     println!("Checkpointing state to {:?}...", output_path.as_ref());
 
@@ -77,10 +77,10 @@ pub fn checkpoint<P: AsRef<Path>>(
     };
 
     // 5. Serialize and write
-    let encoded: Vec<u8> = bincode::serialize(&state)
-        .map_err(|e| RuntimeError::SerializationError(e.to_string()))?;
-    let mut file = File::create(output_path)
-        .map_err(|e| RuntimeError::CheckpointSaveError(e.to_string()))?;
+    let encoded: Vec<u8> =
+        bincode::serialize(&state).map_err(|e| RuntimeError::SerializationError(e.to_string()))?;
+    let mut file =
+        File::create(output_path).map_err(|e| RuntimeError::CheckpointSaveError(e.to_string()))?;
     file.write_all(&encoded)
         .map_err(|e| RuntimeError::CheckpointSaveError(e.to_string()))?;
 
@@ -90,13 +90,13 @@ pub fn checkpoint<P: AsRef<Path>>(
 
 pub fn restore<P: AsRef<Path>>(
     module_inst: Arc<ModuleInst>,
-    input_path: P
+    input_path: P,
 ) -> Result<Stacks, RuntimeError> {
     println!("Restoring state from {:?}...", input_path.as_ref());
 
     // 1. Read from file
-    let mut file = File::open(input_path)
-        .map_err(|e| RuntimeError::CheckpointLoadError(e.to_string()))?;
+    let mut file =
+        File::open(input_path).map_err(|e| RuntimeError::CheckpointLoadError(e.to_string()))?;
     let mut encoded = Vec::new();
     file.read_to_end(&mut encoded)
         .map_err(|e| RuntimeError::CheckpointLoadError(e.to_string()))?;
@@ -132,20 +132,30 @@ pub fn restore<P: AsRef<Path>>(
     if module_inst.table_addrs.len() == state.tables_data.len() {
         for (table_idx, table_indices) in state.tables_data.iter().enumerate() {
             let table_addr = &module_inst.table_addrs[table_idx];
-            let restored_elements = table_indices.iter().map(|maybe_index| {
-                maybe_index.map(|index| {
-                    module_inst.func_addrs
-                        .get(index as usize)
-                        .cloned()
-                        .ok_or_else(|| RuntimeError::RestoreError(format!("Invalid function index {} found in table data", index)))
+            let restored_elements = table_indices
+                .iter()
+                .map(|maybe_index| {
+                    maybe_index
+                        .map(|index| {
+                            module_inst
+                                .func_addrs
+                                .get(index as usize)
+                                .cloned()
+                                .ok_or_else(|| {
+                                    RuntimeError::RestoreError(format!(
+                                        "Invalid function index {} found in table data",
+                                        index
+                                    ))
+                                })
+                        })
+                        .transpose()
                 })
-                .transpose()
-            }).collect::<Result<Vec<Option<_>>, _>>()?;
+                .collect::<Result<Vec<Option<_>>, _>>()?;
             table_addr.set_elements(restored_elements)?;
         }
         println!("Table state restored into module instance.");
     } else {
-         eprintln!(
+        eprintln!(
             "Warning: Mismatch in table count between module ({}) and checkpoint ({}). Tables not restored.",
             module_inst.table_addrs.len(),
             state.tables_data.len()
@@ -154,7 +164,7 @@ pub fn restore<P: AsRef<Path>>(
 
     // 6. Reconstruct skipped fields in Stacks (Frame::module)
     for frame_stack in state.stacks.activation_frame_stack.iter_mut() {
-         frame_stack.frame.module = Arc::downgrade(&module_inst);
+        frame_stack.frame.module = Arc::downgrade(&module_inst);
     }
     println!("Frame module references restored.");
 
