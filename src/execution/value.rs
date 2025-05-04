@@ -1,7 +1,7 @@
 use super::{func::FuncAddr, global::GlobalAddr, mem::MemAddr, table::TableAddr};
 use crate::error::RuntimeError;
 use crate::structure::types::{NumType, ValueType, VecType};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -1,12 +1,12 @@
-use crate::execution::func::{FuncAddr, FuncInst};
-use crate::execution::module::ModuleInst;
-use crate::execution::stack::{Stacks, FrameStack, LabelStack, ModuleLevelInstr, Frame, Label};
-use crate::execution::value::{Val, Num, Vec_};
 use crate::error::RuntimeError;
+use crate::execution::func::{FuncAddr, FuncInst};
 use crate::execution::migration;
-use crate::structure::types::{ValueType, NumType, VecType};
-use std::sync::Arc;
+use crate::execution::module::ModuleInst;
+use crate::execution::stack::{Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, Stacks};
+use crate::execution::value::{Num, Val, Vec_};
+use crate::structure::types::{NumType, ValueType, VecType};
 use std::path::Path;
+use std::sync::Arc;
 
 pub struct Runtime {
     module_inst: Arc<ModuleInst>,
@@ -17,7 +17,7 @@ impl Runtime {
     pub fn new(
         module_inst: Arc<ModuleInst>,
         func_addr: &FuncAddr,
-        params: Vec<Val>
+        params: Vec<Val>,
     ) -> Result<Self, RuntimeError> {
         let stacks = Stacks::new(func_addr, params)?;
 
@@ -27,10 +27,7 @@ impl Runtime {
         })
     }
 
-    pub fn new_restored(
-        module_inst: Arc<ModuleInst>,
-        stacks: Stacks
-    ) -> Self {
+    pub fn new_restored(module_inst: Arc<ModuleInst>, stacks: Stacks) -> Self {
         Runtime {
             module_inst,
             stacks,
@@ -61,7 +58,7 @@ impl Runtime {
                         mem_addrs,
                         global_addrs,
                         table_addrs,
-                        checkpoint_path
+                        checkpoint_path,
                     ) {
                         Ok(_) => {
                             println!("Checkpoint successful (Runtime).");
@@ -76,23 +73,35 @@ impl Runtime {
                 Err(e) => {
                     return Err(e);
                 }
-                
+
                 Ok(instr_option) => {
-                    let current_frame_stack_mut = self.stacks.activation_frame_stack.last_mut().unwrap();
+                    let current_frame_stack_mut =
+                        self.stacks.activation_frame_stack.last_mut().unwrap();
 
                     if current_frame_stack_mut.label_stack.is_empty() {
-                        return Err(RuntimeError::StackError("Label stack empty during frame transition"));
+                        return Err(RuntimeError::StackError(
+                            "Label stack empty during frame transition",
+                        ));
                     }
-                    let cur_label_stack_mut = current_frame_stack_mut.label_stack.last_mut().unwrap();
+                    let cur_label_stack_mut =
+                        current_frame_stack_mut.label_stack.last_mut().unwrap();
 
                     match instr_option {
                         Some(ModuleLevelInstr::Invoke(func_addr)) => {
                             let func_inst_guard = func_addr.read_lock().expect("RwLock poisoned");
                             match &*func_inst_guard {
-                                FuncInst::RuntimeFunc { type_, module: func_module_weak, code } => {
+                                FuncInst::RuntimeFunc {
+                                    type_,
+                                    module: func_module_weak,
+                                    code,
+                                } => {
                                     let params_len = type_.params.len();
-                                    if cur_label_stack_mut.value_stack.len() < params_len { return Err(RuntimeError::ValueStackUnderflow); }
-                                    let params = cur_label_stack_mut.value_stack.split_off(cur_label_stack_mut.value_stack.len() - params_len);
+                                    if cur_label_stack_mut.value_stack.len() < params_len {
+                                        return Err(RuntimeError::ValueStackUnderflow);
+                                    }
+                                    let params = cur_label_stack_mut.value_stack.split_off(
+                                        cur_label_stack_mut.value_stack.len() - params_len,
+                                    );
 
                                     let mut locals = params;
                                     for v in code.locals.iter() {
@@ -102,9 +111,16 @@ impl Runtime {
                                     }
 
                                     let new_frame = FrameStack {
-                                        frame: Frame { locals, module: func_module_weak.clone(), n: type_.results.len() },
+                                        frame: Frame {
+                                            locals,
+                                            module: func_module_weak.clone(),
+                                            n: type_.results.len(),
+                                        },
                                         label_stack: vec![LabelStack {
-                                            label: Label { locals_num: type_.results.len(), arity: type_.results.len() },
+                                            label: Label {
+                                                locals_num: type_.results.len(),
+                                                arity: type_.results.len(),
+                                            },
                                             processed_instrs: code.body.clone(),
                                             value_stack: vec![],
                                             ip: 0,
@@ -115,49 +131,87 @@ impl Runtime {
                                     self.stacks.activation_frame_stack.push(new_frame);
                                 }
                                 FuncInst::HostFunc { type_, host_code } => {
-                                     let params_len = type_.params.len();
-                                     if cur_label_stack_mut.value_stack.len() < params_len { return Err(RuntimeError::ValueStackUnderflow); }
-                                     let params = cur_label_stack_mut.value_stack.split_off(cur_label_stack_mut.value_stack.len() - params_len);
-                                     match host_code(params) {
-                                         Ok(results) => {
-                                             cur_label_stack_mut.value_stack.extend(results);
-                                             cur_label_stack_mut.ip += 1;
-                                         }
-                                         Err(e) => return Err(e),
-                                     }
+                                    let params_len = type_.params.len();
+                                    if cur_label_stack_mut.value_stack.len() < params_len {
+                                        return Err(RuntimeError::ValueStackUnderflow);
+                                    }
+                                    let params = cur_label_stack_mut.value_stack.split_off(
+                                        cur_label_stack_mut.value_stack.len() - params_len,
+                                    );
+                                    match host_code(params) {
+                                        Ok(results) => {
+                                            cur_label_stack_mut.value_stack.extend(results);
+                                            cur_label_stack_mut.ip += 1;
+                                        }
+                                        Err(e) => return Err(e),
+                                    }
                                 }
                             }
                         }
                         Some(ModuleLevelInstr::Return) => {
-                             let finished_frame = self.stacks.activation_frame_stack.pop().unwrap();
-                             let finished_label_stack = finished_frame.label_stack.last().ok_or(RuntimeError::StackError("Finished frame has no label stack"))?;
-                             let expected_n = finished_frame.frame.n;
-
-                             if finished_label_stack.value_stack.len() < expected_n { return Err(RuntimeError::Trap); }
-                             let values_to_pass = finished_label_stack.value_stack.iter().rev().take(expected_n).cloned().collect::<Vec<_>>().into_iter().rev().collect();
-
-                            if self.stacks.activation_frame_stack.is_empty() {
-                                 return Ok(values_to_pass);
-                             } else {
-                                 let caller_frame = self.stacks.activation_frame_stack.last_mut().unwrap();
-                                 let caller_label_stack = caller_frame.label_stack.last_mut().ok_or(RuntimeError::StackError("Caller label stack empty"))?;
-                                 caller_label_stack.value_stack.extend(values_to_pass);
-                                 caller_label_stack.ip += 1;
-                             }
-                        }
-                        None => {
                             let finished_frame = self.stacks.activation_frame_stack.pop().unwrap();
-                            let finished_label_stack = finished_frame.label_stack.last().ok_or(RuntimeError::StackError("Finished frame has no label stack"))?;
+                            let finished_label_stack = finished_frame.label_stack.last().ok_or(
+                                RuntimeError::StackError("Finished frame has no label stack"),
+                            )?;
                             let expected_n = finished_frame.frame.n;
 
-                            if finished_label_stack.value_stack.len() < expected_n { return Err(RuntimeError::Trap); }
-                            let values_to_pass = finished_label_stack.value_stack.iter().rev().take(expected_n).cloned().collect::<Vec<_>>().into_iter().rev().collect();
+                            if finished_label_stack.value_stack.len() < expected_n {
+                                return Err(RuntimeError::Trap);
+                            }
+                            let values_to_pass = finished_label_stack
+                                .value_stack
+                                .iter()
+                                .rev()
+                                .take(expected_n)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .into_iter()
+                                .rev()
+                                .collect();
 
                             if self.stacks.activation_frame_stack.is_empty() {
                                 return Ok(values_to_pass);
                             } else {
-                                let caller_frame = self.stacks.activation_frame_stack.last_mut().unwrap();
-                                let caller_label_stack = caller_frame.label_stack.last_mut().ok_or(RuntimeError::StackError("Caller label stack empty"))?;
+                                let caller_frame =
+                                    self.stacks.activation_frame_stack.last_mut().unwrap();
+                                let caller_label_stack = caller_frame
+                                    .label_stack
+                                    .last_mut()
+                                    .ok_or(RuntimeError::StackError("Caller label stack empty"))?;
+                                caller_label_stack.value_stack.extend(values_to_pass);
+                                caller_label_stack.ip += 1;
+                            }
+                        }
+                        None => {
+                            let finished_frame = self.stacks.activation_frame_stack.pop().unwrap();
+                            let finished_label_stack = finished_frame.label_stack.last().ok_or(
+                                RuntimeError::StackError("Finished frame has no label stack"),
+                            )?;
+                            let expected_n = finished_frame.frame.n;
+
+                            if finished_label_stack.value_stack.len() < expected_n {
+                                return Err(RuntimeError::Trap);
+                            }
+                            let values_to_pass = finished_label_stack
+                                .value_stack
+                                .iter()
+                                .rev()
+                                .take(expected_n)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .into_iter()
+                                .rev()
+                                .collect();
+
+                            if self.stacks.activation_frame_stack.is_empty() {
+                                return Ok(values_to_pass);
+                            } else {
+                                let caller_frame =
+                                    self.stacks.activation_frame_stack.last_mut().unwrap();
+                                let caller_label_stack = caller_frame
+                                    .label_stack
+                                    .last_mut()
+                                    .ok_or(RuntimeError::StackError("Caller label stack empty"))?;
                                 caller_label_stack.value_stack.extend(values_to_pass);
                             }
                         }
@@ -180,4 +234,4 @@ impl Val {
             ValueType::RefType(_) => todo!("Default value for RefType"),
         }
     }
-} 
+}

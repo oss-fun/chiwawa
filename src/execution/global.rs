@@ -1,7 +1,7 @@
 use super::value::Val;
 use crate::error::RuntimeError;
 use crate::structure::types::*;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug)]
@@ -36,13 +36,15 @@ impl GlobalAddr {
     }
 
     pub fn set_value_unchecked(&self, value: Val) -> Result<(), RuntimeError> {
-        let mut self_inst = self.0.write()
-             .map_err(|_| RuntimeError::ExecutionFailed("Global RwLock poisoned"))?;
+        let mut self_inst = self
+            .0
+            .write()
+            .map_err(|_| RuntimeError::ExecutionFailed("Global RwLock poisoned"))?;
         if self_inst.value.val_type() == value.val_type() {
-             self_inst.value = value;
-             Ok(())
+            self_inst.value = value;
+            Ok(())
         } else {
-             Err(RuntimeError::InstructionFailed)
+            Err(RuntimeError::InstructionFailed)
         }
     }
 }
