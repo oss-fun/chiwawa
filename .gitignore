@@ -4,3 +4,4 @@
 !test/*.wasm
 *.wat
 !test/*.wat
+*.bin

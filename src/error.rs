@@ -72,6 +72,10 @@ pub enum RuntimeError {
     CheckpointSaveError(String),
     #[error("Checkpoint Load Error: {0}")]
     CheckpointLoadError(String),
+    #[error("Checkpoint Requested")]
+    CheckpointRequested,
+    #[error("Restore Error: {0}")]
+    RestoreError(String),
 }
 
 #[derive(Debug, Error, Clone, PartialEq)]

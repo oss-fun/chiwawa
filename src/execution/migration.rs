@@ -1,51 +1,84 @@
 use crate::execution::stack::Stacks;
-use crate::execution::mem::MemInst; // Assuming direct access for now
-use crate::execution::global::GlobalInst; // Assuming direct access for now
+use crate::execution::mem::MemAddr;
+use crate::execution::global::GlobalAddr;
+use crate::execution::value::Val;
+use crate::execution::table::TableAddr;
+use crate::execution::module::ModuleInst;
 use crate::error::RuntimeError;
 use serde::{Serialize, Deserialize};
 use std::fs::File;
 use std::io::{Write, Read};
 use std::path::Path;
+use std::sync::Arc;
 
-/// Represents the serializable state of the Wasm runtime.
-/// We will need to refine this structure.
 #[derive(Serialize, Deserialize, Debug)]
-struct SerializableState {
-    stacks: Stacks,
-    // TODO: How to handle memory? Need MemInst content.
-    // memory: MemInst, // This likely needs custom handling via Addr
-    // TODO: How to handle globals? Need GlobalInst contents.
-    // globals: Vec<GlobalInst>, // This likely needs custom handling via Addr
-    // TODO: Add other necessary states like tables?
+pub struct SerializableState {
+    pub stacks: Stacks,
+    pub memory_data: Vec<u8>,
+    pub global_values: Vec<Val>,
+    pub tables_data: Vec<Vec<Option<u32>>>,
 }
 
-/// Performs a checkpoint, serializing the current execution state to a file.
-///
-/// TODO: This function needs access to the current Stacks, Memory, Globals, etc.
-/// TODO: Implement proper handling for Addr types and skipped fields.
 pub fn checkpoint<P: AsRef<Path>>(
+    module_inst: &ModuleInst,
     stacks: &Stacks,
-    // mem_addr: &MemAddr, // Need a way to get MemInst content
-    // global_addrs: &[GlobalAddr], // Need a way to get GlobalInst contents
+    mem_addrs: &[MemAddr],
+    global_addrs: &[GlobalAddr],
+    table_addrs: &[TableAddr],
     output_path: P
 ) -> Result<(), RuntimeError> {
     println!("Checkpointing state to {:?}...", output_path.as_ref());
 
-    // 1. Gather the state to serialize
-    //    - Clone the Stacks (as it's already Serialize)
-    //    - Read the data from MemInst via MemAddr (Requires custom logic or direct access assumption)
-    //    - Read the values from GlobalInsts via GlobalAddrs (Requires custom logic or direct access assumption)
-    let state = SerializableState {
-        stacks: stacks.clone(), // Clone Stacks (assuming derive works for owned parts)
-        // memory: mem_addr.read_lock().expect("Lock poisoned").clone(), // Placeholder - Needs real implementation
-        // globals: global_addrs.iter().map(|addr| addr.read_lock().expect("Lock poisoned").clone()).collect(), // Placeholder
+    // 1. Gather Memory state
+    let memory_data = if let Some(mem_addr) = mem_addrs.get(0) {
+        mem_addr.get_data()?
+    } else {
+        Vec::new()
     };
 
-    // 2. Serialize the state using bincode
+    // 2. Gather Global state
+    let global_values = global_addrs
+        .iter()
+        .map(|global_addr| Ok(global_addr.get()))
+        .collect::<Result<Vec<Val>, RuntimeError>>()?;
+
+    // 3. Gather Table state (using Arc::ptr_eq)
+    let tables_data = table_addrs
+        .iter()
+        .map(|table_addr| -> Result<Vec<Option<u32>>, RuntimeError> {
+            let table_inst = table_addr.read_lock()
+                .map_err(|_| RuntimeError::SerializationError("Table RwLock poisoned".to_string()))?;
+            let mut table_indices = Vec::with_capacity(table_inst.elem.len());
+            for maybe_func_addr in table_inst.elem.iter() {
+                if let Some(target_func_addr) = maybe_func_addr {
+                    let found_index = module_inst.func_addrs.iter().position(|module_func_addr| {
+                        Arc::ptr_eq(target_func_addr.get_arc(), module_func_addr.get_arc())
+                    });
+                    if let Some(index) = found_index {
+                        table_indices.push(Some(index as u32));
+                    } else {
+                        eprintln!("Warning: FuncAddr in table not found in module func_addrs during checkpoint.");
+                        table_indices.push(None);
+                    }
+                } else {
+                    table_indices.push(None);
+                }
+            }
+            Ok(table_indices)
+        })
+        .collect::<Result<Vec<Vec<Option<u32>>>, _>>()?;
+
+    // 4. Assemble state
+    let state = SerializableState {
+        stacks: stacks.clone(),
+        memory_data,
+        global_values,
+        tables_data,
+    };
+
+    // 5. Serialize and write
     let encoded: Vec<u8> = bincode::serialize(&state)
         .map_err(|e| RuntimeError::SerializationError(e.to_string()))?;
-
-    // 3. Write to file
     let mut file = File::create(output_path)
         .map_err(|e| RuntimeError::CheckpointSaveError(e.to_string()))?;
     file.write_all(&encoded)
@@ -55,13 +88,10 @@ pub fn checkpoint<P: AsRef<Path>>(
     Ok(())
 }
 
-/// Restores the execution state from a checkpoint file.
-///
-/// TODO: This function needs to return the restored Stacks, Memory, Globals, etc.
-/// TODO: Implement proper handling for Addr types and skipped fields during deserialization.
 pub fn restore<P: AsRef<Path>>(
+    module_inst: Arc<ModuleInst>,
     input_path: P
-) -> Result<Stacks /*, Restored MemInst, Restored GlobalInsts, etc. */, RuntimeError> {
+) -> Result<Stacks, RuntimeError> {
     println!("Restoring state from {:?}...", input_path.as_ref());
 
     // 1. Read from file
@@ -72,17 +102,62 @@ pub fn restore<P: AsRef<Path>>(
         .map_err(|e| RuntimeError::CheckpointLoadError(e.to_string()))?;
 
     // 2. Deserialize the state using bincode
-    let state: SerializableState = bincode::deserialize(&encoded[..])
+    let mut state: SerializableState = bincode::deserialize(&encoded[..])
         .map_err(|e| RuntimeError::DeserializationError(e.to_string()))?;
 
-    // 3. Reconstruct the runtime state
-    //    - Stacks can be taken directly from `state.stacks` for now.
-    //    - Memory instance needs to be created/updated with `state.memory`. (Requires custom logic)
-    //    - Global instances need to be created/updated with `state.globals`. (Requires custom logic)
-    //    - Skipped fields (`Frame::module`, `LabelStack::processed_instrs`) need reconstruction.
+    // 3. Restore memory state into module_inst
+    // Assuming only one memory instance for now
+    if let Some(mem_addr) = module_inst.mem_addrs.get(0) {
+        mem_addr.set_data(state.memory_data)?;
+        println!("Memory state restored into module instance.");
+    } else if !state.memory_data.is_empty() {
+        eprintln!("Warning: Checkpoint contains memory data, but module has no memory instance.");
+    }
 
-    println!("Restore successful (basic state).");
-    Ok(state.stacks) // Return only stacks for now
+    // 4. Restore global state into module_inst
+    if module_inst.global_addrs.len() == state.global_values.len() {
+        for (global_addr, value) in module_inst.global_addrs.iter().zip(state.global_values) {
+            global_addr.set_value_unchecked(value)?;
+        }
+        println!("Global state restored into module instance.");
+    } else {
+        eprintln!(
+            "Warning: Mismatch in global variable count between module ({}) and checkpoint ({}). Globals not restored.",
+            module_inst.global_addrs.len(),
+            state.global_values.len()
+        );
+    }
+
+    // 5. Restore table state into module_inst
+    if module_inst.table_addrs.len() == state.tables_data.len() {
+        for (table_idx, table_indices) in state.tables_data.iter().enumerate() {
+            let table_addr = &module_inst.table_addrs[table_idx];
+            let restored_elements = table_indices.iter().map(|maybe_index| {
+                maybe_index.map(|index| {
+                    module_inst.func_addrs
+                        .get(index as usize)
+                        .cloned()
+                        .ok_or_else(|| RuntimeError::RestoreError(format!("Invalid function index {} found in table data", index)))
+                })
+                .transpose()
+            }).collect::<Result<Vec<Option<_>>, _>>()?;
+            table_addr.set_elements(restored_elements)?;
+        }
+        println!("Table state restored into module instance.");
+    } else {
+         eprintln!(
+            "Warning: Mismatch in table count between module ({}) and checkpoint ({}). Tables not restored.",
+            module_inst.table_addrs.len(),
+            state.tables_data.len()
+        );
+    }
+
+    // 6. Reconstruct skipped fields in Stacks (Frame::module)
+    for frame_stack in state.stacks.activation_frame_stack.iter_mut() {
+         frame_stack.frame.module = Arc::downgrade(&module_inst);
+    }
+    println!("Frame module references restored.");
+
+    println!("Restore successful (state applied to module). Returning Stacks.");
+    Ok(state.stacks)
 }
-
-// TODO: Add relevant RuntimeError variants for Serialization/Deserialization/Checkpoint/Restore errors. 

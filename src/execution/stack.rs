@@ -6,8 +6,10 @@ use crate::structure::{instructions::*, types::*};
 use lazy_static::lazy_static;
 use serde::{Serialize, Deserialize};
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
-use std::sync::{Arc, Weak as SyncWeak};
+use std::sync::{Weak as SyncWeak};
 use std::arch::asm;
+use std::path::Path;
+use std::fs;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Operand {
@@ -312,6 +314,7 @@ impl Stacks {
                         ip: 0,
                     }],
                     void: type_.results.is_empty(),
+                    instruction_count: 0,
                 };
 
                 Ok(Stacks {
@@ -325,217 +328,12 @@ impl Stacks {
             }
         }
     }
-
-    /*
-    This Function Only Handle Instruction Spanning FrameStack.
-    i.e., Invoke Wasm Function, Return Function and Call Host-function.
-    */
-    pub fn exec_instr(&mut self) -> Result<Vec<Val>, RuntimeError> {
-        while !self.activation_frame_stack.is_empty() {
-            let frame_stack_idx = self.activation_frame_stack.len() - 1;
-            let mut called_func_addr: Option<FuncAddr> = None;
-
-            let module_level_instr_result = {
-                let current_frame_stack = &mut self.activation_frame_stack[frame_stack_idx];
-                current_frame_stack.run_dtc_loop(&mut called_func_addr)?
-            };
-
-            match module_level_instr_result {
-                Ok(Some(instr)) => {
-                    let current_frame_stack = self.activation_frame_stack.last_mut().unwrap();
-
-                    if current_frame_stack.label_stack.is_empty() {
-                        return Err(RuntimeError::StackError(
-                            "Label stack empty during frame transition",
-                        ));
-                    }
-                    let cur_label_stack = current_frame_stack.label_stack.last_mut().unwrap();
-
-                    match instr {
-                        ModuleLevelInstr::Invoke(func_addr) => {
-                            let func_inst_guard = func_addr.read_lock().expect("RwLock poisoned");
-                            match &*func_inst_guard {
-                                FuncInst::RuntimeFunc {
-                                    type_,
-                                    module,
-                                    code,
-                                } => {
-                                    let params_len = type_.params.len();
-                                    if cur_label_stack.value_stack.len() < params_len {
-                                        return Err(RuntimeError::ValueStackUnderflow);
-                                    }
-                                    let params = cur_label_stack
-                                        .value_stack
-                                        .split_off(cur_label_stack.value_stack.len() - params_len);
-
-                                    let mut locals = params;
-                                    for v in code.locals.iter() {
-                                        for _ in 0..(v.0) {
-                                            locals.push(match v.1 {
-                                                ValueType::NumType(NumType::I32) => {
-                                                    Val::Num(Num::I32(0))
-                                                }
-                                                ValueType::NumType(NumType::I64) => {
-                                                    Val::Num(Num::I64(0))
-                                                }
-                                                ValueType::NumType(NumType::F32) => {
-                                                    Val::Num(Num::F32(0.0))
-                                                }
-                                                ValueType::NumType(NumType::F64) => {
-                                                    Val::Num(Num::F64(0.0))
-                                                }
-                                                ValueType::VecType(VecType::V128) => {
-                                                    Val::Vec_(Vec_::V128(0))
-                                                }
-                                                ValueType::RefType(_) => {
-                                                    todo!("RefType local init in Invoke")
-                                                }
-                                            });
-                                        }
-                                    }
-
-                                    let frame = FrameStack {
-                                        frame: Frame {
-                                            locals,
-                                            module: module.clone(),
-                                            n: type_.results.len(),
-                                        },
-                                        label_stack: vec![LabelStack {
-                                            label: Label {
-                                                locals_num: type_.results.len(),
-                                                arity: type_.results.len(),
-                                            },
-                                            processed_instrs: code.body.clone(),
-                                            value_stack: vec![],
-                                            ip: 0,
-                                        }],
-                                        void: type_.results.is_empty(),
-                                    };
-                                    self.activation_frame_stack.push(frame);
-                                }
-                                FuncInst::HostFunc { type_, host_code } => {
-                                    let params_len = type_.params.len();
-                                    if cur_label_stack.value_stack.len() < params_len {
-                                        return Err(RuntimeError::ValueStackUnderflow);
-                                    }
-                                    let params = cur_label_stack
-                                        .value_stack
-                                        .split_off(cur_label_stack.value_stack.len() - params_len);
-                                    match host_code(params) {
-                                        Ok(Some(result_val)) => {
-                                            cur_label_stack.value_stack.push(result_val);
-                                            cur_label_stack.ip += 1;
-                                        }
-                                        Ok(None) => {
-                                            cur_label_stack.ip += 1;
-                                        }
-                                        Err(e) => return Err(e),
-                                    }
-                                }
-                            }
-                        }
-                        ModuleLevelInstr::Return => {
-                            let mut finished_frame = self.activation_frame_stack.pop().unwrap();
-
-                            if self.activation_frame_stack.is_empty() {
-                                let finished_label_stack: &mut LabelStack = finished_frame
-                                    .label_stack
-                                    .last_mut()
-                                    .ok_or(RuntimeError::StackError(
-                                        "Finished frame has no label stack",
-                                    ))?;
-                                let expected_n = finished_frame.frame.n;
-                                if finished_label_stack.value_stack.len() < expected_n {
-                                    return Err(RuntimeError::Trap);
-                                }
-                                let final_values = finished_label_stack.value_stack
-                                    .split_off(finished_label_stack.value_stack.len().saturating_sub(expected_n));
-                                return Ok(final_values);
-                            }
-
-                            let finished_label_stack: &mut LabelStack = finished_frame.label_stack.last_mut().ok_or(
-                                RuntimeError::StackError("Finished frame has no label stack"),
-                            )?;
-                            let expected_n = finished_frame.frame.n;
-
-                            if finished_label_stack.value_stack.len() < expected_n {
-                                return Err(RuntimeError::Trap);
-                            }
-                            let actual_return_values = finished_label_stack.value_stack
-                                .split_off(finished_label_stack.value_stack.len().saturating_sub(expected_n));
-
-                            if let Some(caller_frame) = self.activation_frame_stack.last_mut() {
-                                if let Some(caller_label_stack) =
-                                    caller_frame.label_stack.last_mut()
-                                {
-                                    caller_label_stack.value_stack.extend(actual_return_values);
-                                } else {
-                                    return Err(RuntimeError::StackError(
-                                        "Caller label stack empty during return",
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(None) => {
-                    let mut finished_frame = self.activation_frame_stack.pop().unwrap();
-
-                    if self.activation_frame_stack.is_empty() {
-                        let finished_label_stack: &mut LabelStack =
-                            finished_frame
-                                .label_stack
-                                .last_mut()
-                                .ok_or(RuntimeError::StackError(
-                                    "Finished frame has no label stack on implicit return",
-                                ))?;
-                        let expected_n = finished_frame.frame.n;
-                        if finished_label_stack.value_stack.len() < expected_n {
-                            return Err(RuntimeError::Trap);
-                        }
-                        let final_values =
-                            finished_label_stack.value_stack.split_off(finished_label_stack.value_stack.len().saturating_sub(expected_n));
-                        return Ok(final_values);
-                    }
-
-                    let finished_label_stack: &mut LabelStack =
-                        finished_frame
-                            .label_stack
-                            .last_mut()
-                            .ok_or(RuntimeError::StackError(
-                                "Finished frame has no label stack on implicit return",
-                            ))?;
-                    let expected_n = finished_frame.frame.n;
-
-                    if finished_label_stack.value_stack.len() < expected_n {
-                        return Err(RuntimeError::Trap);
-                    }
-                    let actual_return_values =
-                        finished_label_stack.value_stack.split_off(finished_label_stack.value_stack.len().saturating_sub(expected_n));
-
-                    if let Some(caller_frame) = self.activation_frame_stack.last_mut() {
-                        if let Some(caller_label_stack) = caller_frame.label_stack.last_mut() {
-                            caller_label_stack.value_stack.extend(actual_return_values);
-                        } else {
-                            return Err(RuntimeError::StackError(
-                                "Caller label stack empty during implicit return",
-                            ));
-                        }
-                    }
-                }
-                Err(e) => {
-                    return Err(e);
-                }
-            }
-        }
-        Ok(vec![])
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Frame {
     pub locals: Vec<Val>,
-    #[serde(skip)] // Skip SyncWeak for now
+    #[serde(skip)]
     pub module: SyncWeak<ModuleInst>,
     pub n: usize,
 }
@@ -545,10 +343,12 @@ pub struct FrameStack {
     pub frame: Frame,
     pub label_stack: Vec<LabelStack>,
     pub void: bool,
+    #[serde(default)]
+    pub instruction_count: u64,
 }
 
 impl FrameStack {
-    fn run_dtc_loop(
+    pub fn run_dtc_loop(
         &mut self,
         _called_func_addr_out: &mut Option<FuncAddr>,
     ) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError> {
@@ -558,7 +358,23 @@ impl FrameStack {
             .checked_sub(1)
             .ok_or(RuntimeError::StackError("Initial label stack empty"))?;
 
+        const CHECKPOINT_TRIGGER_FILE: &str = "./checkpoint.trigger";
+        const CHECKPOINT_CHECK_INTERVAL: u64 = 100;
+
         loop {
+            self.instruction_count += 1;
+            if self.instruction_count % CHECKPOINT_CHECK_INTERVAL == 0 {
+                let trigger_path = Path::new(CHECKPOINT_TRIGGER_FILE);
+                if trigger_path.exists() {
+                    println!(
+                        "Checkpoint trigger file found after {} instructions! Requesting checkpoint...",
+                        self.instruction_count
+                    );
+                    let _ = fs::remove_file(trigger_path);
+                    return Ok(Err(RuntimeError::CheckpointRequested));
+                }
+            }
+
             if current_label_stack_idx >= self.label_stack.len() {
                 break;
             }
@@ -593,7 +409,7 @@ impl FrameStack {
 
             let result = handler_fn(&mut context, &instruction_ref.operand);
 
-            self.label_stack[current_label_stack_idx].ip = ip;
+            self.label_stack[current_label_stack_idx].ip = context.ip;
 
             match result {
                 Ok(handler_result) => {
@@ -651,7 +467,6 @@ pub struct Label {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LabelStack {
     pub label: Label,
-    #[serde(skip)] // Skip processed_instrs, assume reconstructable
     pub processed_instrs: Vec<ProcessedInstr>,
     pub value_stack: Vec<Val>,
     pub ip: usize,
