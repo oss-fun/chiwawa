@@ -83,9 +83,8 @@ fn decode_import_section(
                         module.num_imported_funcs += 1;
                         ImportDesc::WasiFunc(wasi_func_type)
                     } else {
-                        return Err(Box::new(ParserError::UnsupportedWasiFunction(
-                            import.name.to_string(),
-                        )));
+                        module.num_imported_funcs += 1;
+                        ImportDesc::Func(TypeIdx(type_index))
                     }
                 } else {
                     module.num_imported_funcs += 1;
