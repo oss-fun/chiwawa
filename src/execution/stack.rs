@@ -1030,18 +1030,30 @@ fn handle_i32_div_s(
     let rhs = ctx.value_stack.pop().unwrap().to_i32()?;
     let lhs = ctx.value_stack.pop().unwrap().to_i32()?;
 
-    let mut result: i32;
-    unsafe {
-        asm!(
-            "local.get {0}",
-            "local.get {1}",
-            "i32.div_s",
-            "local.set {2}",
-            in(local) lhs,
-            in(local) rhs,
-            out(local) result,
-        );
-    }
+    #[cfg(target_arch = "wasm32")]
+    let result = {
+        let mut result: i32;
+        unsafe {
+            asm!(
+                "local.get {0}",
+                "local.get {1}",
+                "i32.div_s",
+                "local.set {2}",
+                in(local) lhs,
+                in(local) rhs,
+                out(local) result,
+            );
+        }
+        result
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = if lhs == i32::MIN && rhs == -1 {
+        0  // WebAssembly仕様: i32::MIN % -1 = 0
+    } else {
+        lhs / rhs
+    };
+
     ctx.value_stack.push(Val::Num(Num::I32(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
@@ -1052,18 +1064,26 @@ fn handle_i32_div_u(
     let rhs = ctx.value_stack.pop().unwrap().to_i32()? as u32;
     let lhs = ctx.value_stack.pop().unwrap().to_i32()? as u32;
 
-    let mut result: i32;
-    unsafe {
-        asm!(
-            "local.get {0}",
-            "local.get {1}",
-            "i32.div_u",
-            "local.set {2}",
-            in(local) lhs,
-            in(local) rhs,
-            out(local) result,
-        );
-    }
+    #[cfg(target_arch = "wasm32")]
+    let result = {
+        let mut result: i32;
+        unsafe {
+            asm!(
+                "local.get {0}",
+                "local.get {1}",
+                "i32.div_u",
+                "local.set {2}",
+                in(local) lhs,
+                in(local) rhs,
+                out(local) result,
+            );
+        }
+        result
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = (lhs / rhs) as i32;
+
     ctx.value_stack.push(Val::Num(Num::I32(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
@@ -1073,18 +1093,31 @@ fn handle_i32_rem_s(
 ) -> Result<HandlerResult, RuntimeError> {
     let rhs = ctx.value_stack.pop().unwrap().to_i32()?;
     let lhs = ctx.value_stack.pop().unwrap().to_i32()?;
-    let mut result: i32;
-    unsafe {
-        asm!(
-            "local.get {0}",
-            "local.get {1}",
-            "i32.rem_s",
-            "local.set {2}",
-            in(local) lhs,
-            in(local) rhs,
-            out(local) result,
-        );
-    }
+    
+    #[cfg(target_arch = "wasm32")]
+    let result = {
+        let mut result: i32;
+        unsafe {
+            asm!(
+                "local.get {0}",
+                "local.get {1}",
+                "i32.rem_s",
+                "local.set {2}",
+                in(local) lhs,
+                in(local) rhs,
+                out(local) result,
+            );
+        }
+        result
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = if lhs == i32::MIN && rhs == -1 {
+        0  // WebAssembly仕様: i32::MIN % -1 = 0
+    } else {
+        lhs % rhs
+    };
+
     ctx.value_stack.push(Val::Num(Num::I32(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
@@ -1095,18 +1128,26 @@ fn handle_i32_rem_u(
     let rhs = ctx.value_stack.pop().unwrap().to_i32()? as u32;
     let lhs = ctx.value_stack.pop().unwrap().to_i32()? as u32;
 
-    let mut result: i32;
-    unsafe {
-        asm!(
-            "local.get {0}",
-            "local.get {1}",
-            "i32.rem_u",
-            "local.set {2}",
-            in(local) lhs,
-            in(local) rhs,
-            out(local) result,
-        );
-    }
+    #[cfg(target_arch = "wasm32")]
+    let result = {
+        let mut result: i32;
+        unsafe {
+            asm!(
+                "local.get {0}",
+                "local.get {1}",
+                "i32.rem_u",
+                "local.set {2}",
+                in(local) lhs,
+                in(local) rhs,
+                out(local) result,
+            );
+        }
+        result
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = (lhs % rhs) as i32;
+
     ctx.value_stack.push(Val::Num(Num::I32(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
@@ -1230,18 +1271,27 @@ fn handle_i64_div_s(
 ) -> Result<HandlerResult, RuntimeError> {
     let rhs = ctx.value_stack.pop().unwrap().to_i64()?;
     let lhs = ctx.value_stack.pop().unwrap().to_i64()?;
-    let mut result: i64;
-    unsafe {
-        asm!(
-            "local.get {0}",
-            "local.get {1}",
-            "i64.div_s",
-            "local.set {2}",
-            in(local) lhs,
-            in(local) rhs,
-            out(local) result,
-        );
-    }
+    
+    #[cfg(target_arch = "wasm32")]
+    let result = {
+        let mut result: i64;
+        unsafe {
+            asm!(
+                "local.get {0}",
+                "local.get {1}",
+                "i64.div_s",
+                "local.set {2}",
+                in(local) lhs,
+                in(local) rhs,
+                out(local) result,
+            );
+        }
+        result
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = lhs / rhs;
+
     ctx.value_stack.push(Val::Num(Num::I64(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
@@ -1251,18 +1301,27 @@ fn handle_i64_div_u(
 ) -> Result<HandlerResult, RuntimeError> {
     let rhs = ctx.value_stack.pop().unwrap().to_i64()? as u64;
     let lhs = ctx.value_stack.pop().unwrap().to_i64()? as u64;
-    let mut result: i64;
-    unsafe {
-        asm!(
-            "local.get {0}",
-            "local.get {1}",
-            "i64.div_u",
-            "local.set {2}",
-            in(local) lhs,
-            in(local) rhs,
-            out(local) result,
-        );
-    }
+    
+    #[cfg(target_arch = "wasm32")]
+    let result = {
+        let mut result: i64;
+        unsafe {
+            asm!(
+                "local.get {0}",
+                "local.get {1}",
+                "i64.div_u",
+                "local.set {2}",
+                in(local) lhs,
+                in(local) rhs,
+                out(local) result,
+            );
+        }
+        result
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = (lhs / rhs) as i64;
+
     ctx.value_stack.push(Val::Num(Num::I64(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
@@ -1272,18 +1331,27 @@ fn handle_i64_rem_s(
 ) -> Result<HandlerResult, RuntimeError> {
     let rhs = ctx.value_stack.pop().unwrap().to_i64()?;
     let lhs = ctx.value_stack.pop().unwrap().to_i64()?;
-    let mut result: i64;
-    unsafe {
-        asm!(
-            "local.get {0}",
-            "local.get {1}",
-            "i64.rem_s",
-            "local.set {2}",
-            in(local) lhs,
-            in(local) rhs,
-            out(local) result,
-        );
-    }
+    
+    #[cfg(target_arch = "wasm32")]
+    let result = {
+        let mut result: i64;
+        unsafe {
+            asm!(
+                "local.get {0}",
+                "local.get {1}",
+                "i64.rem_s",
+                "local.set {2}",
+                in(local) lhs,
+                in(local) rhs,
+                out(local) result,
+            );
+        }
+        result
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = lhs % rhs;
+
     ctx.value_stack.push(Val::Num(Num::I64(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
@@ -1293,18 +1361,27 @@ fn handle_i64_rem_u(
 ) -> Result<HandlerResult, RuntimeError> {
     let rhs = ctx.value_stack.pop().unwrap().to_i64()? as u64;
     let lhs = ctx.value_stack.pop().unwrap().to_i64()? as u64;
-    let mut result: i64;
-    unsafe {
-        asm!(
-            "local.get {0}",
-            "local.get {1}",
-            "i64.rem_u",
-            "local.set {2}",
-            in(local) lhs,
-            in(local) rhs,
-            out(local) result,
-        );
-    }
+    
+    #[cfg(target_arch = "wasm32")]
+    let result = {
+        let mut result: i64;
+        unsafe {
+            asm!(
+                "local.get {0}",
+                "local.get {1}",
+                "i64.rem_u",
+                "local.set {2}",
+                in(local) lhs,
+                in(local) rhs,
+                out(local) result,
+            );
+        }
+        result
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = (lhs % rhs) as i64;
+
     ctx.value_stack.push(Val::Num(Num::I64(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
@@ -1428,16 +1505,24 @@ fn handle_f32_nearest(
 ) -> Result<HandlerResult, RuntimeError> {
     let x = ctx.value_stack.pop().unwrap().to_f32()?;
 
-    let mut result: f32;
-    unsafe {
-        asm!(
-            "local.get {0}",
-            "f32.nearest",
-            "local.set {1}",
-            in(local) x,
-            out(local) result,
-        );
-    }
+    #[cfg(target_arch = "wasm32")]
+    let result = {
+        let mut result: f32;
+        unsafe {
+            asm!(
+                "local.get {0}",
+                "f32.nearest",
+                "local.set {1}",
+                in(local) x,
+                out(local) result,
+            );
+        }
+        result
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = x.round();
+
     ctx.value_stack.push(Val::Num(Num::F32(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
@@ -1555,16 +1640,25 @@ fn handle_f64_nearest(
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     let x = ctx.value_stack.pop().unwrap().to_f64()?;
-    let mut result: f64;
-    unsafe {
-        asm!(
-            "local.get {0}",
-            "f64.nearest",
-            "local.set {1}",
-            in(local) x,
-            out(local) result,
-        );
-    }
+    
+    #[cfg(target_arch = "wasm32")]
+    let result = {
+        let mut result: f64;
+        unsafe {
+            asm!(
+                "local.get {0}",
+                "f64.nearest",
+                "local.set {1}",
+                in(local) x,
+                out(local) result,
+            );
+        }
+        result
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = x.round();
+
     ctx.value_stack.push(Val::Num(Num::F64(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
@@ -1664,16 +1758,25 @@ fn handle_i32_trunc_f32_s(
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f32()?;
-    let mut result: i32;
-    unsafe {
-        asm!(
-            "local.get {0}",
-            "i32.trunc_f32_s",
-            "local.set {1}",
-            in(local) val,
-            out(local) result,
-        );
-    }
+    
+    #[cfg(target_arch = "wasm32")]
+    let result = {
+        let mut result: i32;
+        unsafe {
+            asm!(
+                "local.get {0}",
+                "i32.trunc_f32_s",
+                "local.set {1}",
+                in(local) val,
+                out(local) result,
+            );
+        }
+        result
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = val.trunc() as i32;
+
     ctx.value_stack.push(Val::Num(Num::I32(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
@@ -1683,16 +1786,25 @@ fn handle_i32_trunc_f32_u(
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f32()?;
-    let mut result: i32;
-    unsafe {
-        asm!(
-            "local.get {0}",
-            "i32.trunc_f32_u",
-            "local.set {1}",
-            in(local) val,
-            out(local) result,
-        );
-    }
+    
+    #[cfg(target_arch = "wasm32")]
+    let result = {
+        let mut result: i32;
+        unsafe {
+            asm!(
+                "local.get {0}",
+                "i32.trunc_f32_u",
+                "local.set {1}",
+                in(local) val,
+                out(local) result,
+            );
+        }
+        result
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = val.trunc() as u32 as i32;
+
     ctx.value_stack.push(Val::Num(Num::I32(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
@@ -1702,16 +1814,25 @@ fn handle_i32_trunc_f64_s(
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f64()?;
-    let mut result: i32;
-    unsafe {
-        asm!(
-            "local.get {0}",
-            "i32.trunc_f64_s",
-            "local.set {1}",
-            in(local) val,
-            out(local) result,
-        );
-    }
+    
+    #[cfg(target_arch = "wasm32")]
+    let result = {
+        let mut result: i32;
+        unsafe {
+            asm!(
+                "local.get {0}",
+                "i32.trunc_f64_s",
+                "local.set {1}",
+                in(local) val,
+                out(local) result,
+            );
+        }
+        result
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = val.trunc() as i32;
+
     ctx.value_stack.push(Val::Num(Num::I32(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
@@ -1739,16 +1860,25 @@ fn handle_i64_trunc_f32_s(
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f32()?;
-    let mut result: i64;
-    unsafe {
-        asm!(
-            "local.get {0}",
-            "i64.trunc_f32_s",
-            "local.set {1}",
-            in(local) val,
-            out(local) result,
-        );
-    }
+    
+    #[cfg(target_arch = "wasm32")]
+    let result = {
+        let mut result: i64;
+        unsafe {
+            asm!(
+                "local.get {0}",
+                "i64.trunc_f32_s",
+                "local.set {1}",
+                in(local) val,
+                out(local) result,
+            );
+        }
+        result
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = val.trunc() as i64;
+
     ctx.value_stack.push(Val::Num(Num::I64(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
@@ -1758,16 +1888,25 @@ fn handle_i64_trunc_f32_u(
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f32()?;
-    let mut result: i64;
-    unsafe {
-        asm!(
-            "local.get {0}",
-            "i64.trunc_f32_u",
-            "local.set {1}",
-            in(local) val,
-            out(local) result,
-        );
-    }
+    
+    #[cfg(target_arch = "wasm32")]
+    let result = {
+        let mut result: i64;
+        unsafe {
+            asm!(
+                "local.get {0}",
+                "i64.trunc_f32_u",
+                "local.set {1}",
+                in(local) val,
+                out(local) result,
+            );
+        }
+        result
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = val.trunc() as u64 as i64;
+
     ctx.value_stack.push(Val::Num(Num::I64(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
@@ -1777,16 +1916,25 @@ fn handle_i64_trunc_f64_s(
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f64()?;
-    let mut result: i64;
-    unsafe {
-        asm!(
-            "local.get {0}",
-            "i64.trunc_f64_s",
-            "local.set {1}",
-            in(local) val,
-            out(local) result,
-        );
-    }
+    
+    #[cfg(target_arch = "wasm32")]
+    let result = {
+        let mut result: i64;
+        unsafe {
+            asm!(
+                "local.get {0}",
+                "i64.trunc_f64_s",
+                "local.set {1}",
+                in(local) val,
+                out(local) result,
+            );
+        }
+        result
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = val.trunc() as i64;
+
     ctx.value_stack.push(Val::Num(Num::I64(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
@@ -1796,16 +1944,25 @@ fn handle_i64_trunc_f64_u(
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f64()?;
-    let mut result: i64;
-    unsafe {
-        asm!(
-            "local.get {0}",
-            "i64.trunc_f64_u",
-            "local.set {1}",
-            in(local) val,
-            out(local) result,
-        );
-    }
+    
+    #[cfg(target_arch = "wasm32")]
+    let result = {
+        let mut result: i64;
+        unsafe {
+            asm!(
+                "local.get {0}",
+                "i64.trunc_f64_u",
+                "local.set {1}",
+                in(local) val,
+                out(local) result,
+            );
+        }
+        result
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = val.trunc() as u64 as i64;
+
     ctx.value_stack.push(Val::Num(Num::I64(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
