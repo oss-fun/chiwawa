@@ -80,6 +80,7 @@ fn decode_import_section(
             TypeRef::Func(type_index) => {
                 if import.module == "wasi_snapshot_preview1" {
                     if let Some(wasi_func_type) = parse_wasi_function(&import.name) {
+                        module.num_imported_funcs += 1;
                         ImportDesc::WasiFunc(wasi_func_type)
                     } else {
                         return Err(Box::new(ParserError::UnsupportedWasiFunction(
