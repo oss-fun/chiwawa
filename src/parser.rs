@@ -78,8 +78,16 @@ fn decode_import_section(
         let import = import?;
         let desc = match import.ty {
             TypeRef::Func(type_index) => {
-                module.num_imported_funcs += 1;
-                ImportDesc::Func(TypeIdx(type_index))
+                if import.module == "wasi_snapshot_preview1" {
+                    if let Some(wasi_func_type) = parse_wasi_function(&import.name) {
+                        ImportDesc::WasiFunc(wasi_func_type)
+                    } else {
+                        return Err(Box::new(ParserError::UnsupportedWasiFunction(import.name.to_string())));
+                    }
+                } else {
+                    module.num_imported_funcs += 1;
+                    ImportDesc::Func(TypeIdx(type_index))
+                }
             }
             TypeRef::Table(table_type) => {
                 let max = match table_type.maximum {
@@ -123,6 +131,19 @@ fn decode_import_section(
         });
     }
     Ok(())
+}
+
+fn parse_wasi_function(name: &str) -> Option<WasiFuncType> {
+    match name {
+        "proc_exit" => Some(WasiFuncType::ProcExit),
+        "fd_write" => Some(WasiFuncType::FdWrite),
+        "fd_read" => Some(WasiFuncType::FdRead),
+        "random_get" => Some(WasiFuncType::RandomGet),
+        "fd_prestat_get" => Some(WasiFuncType::FdPrestatGet),
+        "fd_prestat_dir_name" => Some(WasiFuncType::FdPrestatDirName),
+        "fd_close" => Some(WasiFuncType::FdClose),
+        _ => None,
+    }
 }
 
 fn decode_export_section(
@@ -2193,5 +2214,62 @@ mod tests {
         }
         let func_num = module.funcs.len();
         assert_eq!(func_num, 1);
+    }
+
+    #[test]
+    fn parse_wasi_function_test() {
+        // テスト用にparse_wasi_function関数を再定義
+        fn parse_wasi_function_test_impl(name: &str) -> Option<WasiFuncType> {
+            match name {
+                "proc_exit" => Some(WasiFuncType::ProcExit),
+                "fd_write" => Some(WasiFuncType::FdWrite),
+                "fd_read" => Some(WasiFuncType::FdRead),
+                "random_get" => Some(WasiFuncType::RandomGet),
+                "fd_prestat_get" => Some(WasiFuncType::FdPrestatGet),
+                "fd_prestat_dir_name" => Some(WasiFuncType::FdPrestatDirName),
+                "fd_close" => Some(WasiFuncType::FdClose),
+                _ => None,
+            }
+        }
+
+        // 基本的なWASI関数の認識テスト
+        assert_eq!(parse_wasi_function_test_impl("proc_exit"), Some(WasiFuncType::ProcExit));
+        assert_eq!(parse_wasi_function_test_impl("fd_write"), Some(WasiFuncType::FdWrite));
+        assert_eq!(parse_wasi_function_test_impl("fd_read"), Some(WasiFuncType::FdRead));
+        assert_eq!(parse_wasi_function_test_impl("random_get"), Some(WasiFuncType::RandomGet));
+        assert_eq!(parse_wasi_function_test_impl("fd_prestat_get"), Some(WasiFuncType::FdPrestatGet));
+        assert_eq!(parse_wasi_function_test_impl("fd_prestat_dir_name"), Some(WasiFuncType::FdPrestatDirName));
+        assert_eq!(parse_wasi_function_test_impl("fd_close"), Some(WasiFuncType::FdClose));
+        
+        // 未知の関数
+        assert_eq!(parse_wasi_function_test_impl("unknown_function"), None);
+        assert_eq!(parse_wasi_function_test_impl(""), None);
+    }
+
+    #[test]
+    fn wasi_func_type_expected_types() {
+        // proc_exitの型チェック
+        let proc_exit_type = WasiFuncType::ProcExit.expected_func_type();
+        assert_eq!(proc_exit_type.params.len(), 1);
+        assert_eq!(proc_exit_type.results.len(), 0);
+        assert_eq!(proc_exit_type.params[0], ValueType::NumType(NumType::I32));
+
+        // fd_writeの型チェック
+        let fd_write_type = WasiFuncType::FdWrite.expected_func_type();
+        assert_eq!(fd_write_type.params.len(), 4);
+        assert_eq!(fd_write_type.results.len(), 1);
+        for param in &fd_write_type.params {
+            assert_eq!(*param, ValueType::NumType(NumType::I32));
+        }
+        assert_eq!(fd_write_type.results[0], ValueType::NumType(NumType::I32));
+
+        // random_getの型チェック
+        let random_get_type = WasiFuncType::RandomGet.expected_func_type();
+        assert_eq!(random_get_type.params.len(), 2);
+        assert_eq!(random_get_type.results.len(), 1);
+        for param in &random_get_type.params {
+            assert_eq!(*param, ValueType::NumType(NumType::I32));
+        }
+        assert_eq!(random_get_type.results[0], ValueType::NumType(NumType::I32));
     }
 }

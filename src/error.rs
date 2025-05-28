@@ -90,6 +90,14 @@ pub enum ParserError {
     UnexpectedEnd,
     #[error("Invalid Wasm: {0}")]
     InvalidWasm(&'static str),
+    #[error("Unsupported WASI function: {0}")]
+    UnsupportedWasiFunction(String),
+    #[error("WASI function type mismatch: {function} expected {expected:?} but got {actual:?}")]
+    WasiFunctionTypeMismatch {
+        function: String,
+        expected: String,
+        actual: String,
+    },
 }
 
 #[derive(Debug, Error, Clone, PartialEq)]
