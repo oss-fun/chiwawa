@@ -20,10 +20,10 @@ mod tests {
         // parse_bytecodeを使用してテストする
         let temp_file = "temp_decode_type_section.wasm";
         std::fs::write(temp_file, &binary).unwrap();
-        
+
         let result = parser::parse_bytecode(&mut module, temp_file);
         assert!(result.is_ok());
-        
+
         std::fs::remove_file(temp_file).unwrap();
 
         let len = module.types.len();
@@ -54,10 +54,10 @@ mod tests {
 
         let temp_file = "temp_decode_func_section.wasm";
         std::fs::write(temp_file, &binary).unwrap();
-        
+
         let result = parser::parse_bytecode(&mut module, temp_file);
         assert!(result.is_ok());
-        
+
         std::fs::remove_file(temp_file).unwrap();
 
         let funcs_num = module.funcs.len();
@@ -84,10 +84,10 @@ mod tests {
 
         let temp_file = "temp_decode_import_section.wasm";
         std::fs::write(temp_file, &binary).unwrap();
-        
+
         let result = parser::parse_bytecode(&mut module, temp_file);
         assert!(result.is_ok());
-        
+
         std::fs::remove_file(temp_file).unwrap();
 
         let imports_num = module.imports.len();
@@ -123,10 +123,10 @@ mod tests {
 
         let temp_file = "temp_decode_export_section.wasm";
         std::fs::write(temp_file, &binary).unwrap();
-        
+
         let result = parser::parse_bytecode(&mut module, temp_file);
         assert!(result.is_ok());
-        
+
         std::fs::remove_file(temp_file).unwrap();
 
         let exports_num = module.exports.len();
@@ -152,10 +152,10 @@ mod tests {
 
         let temp_file = "temp_decode_mem_section.wasm";
         std::fs::write(temp_file, &binary).unwrap();
-        
+
         let result = parser::parse_bytecode(&mut module, temp_file);
         assert!(result.is_ok());
-        
+
         std::fs::remove_file(temp_file).unwrap();
 
         let memory_num = module.mems.len();
@@ -188,10 +188,10 @@ mod tests {
 
         let temp_file = "temp_decode_table_section.wasm";
         std::fs::write(temp_file, &binary).unwrap();
-        
+
         let result = parser::parse_bytecode(&mut module, temp_file);
         assert!(result.is_ok());
-        
+
         std::fs::remove_file(temp_file).unwrap();
 
         let table_num = module.tables.len();
@@ -227,10 +227,10 @@ mod tests {
 
         let temp_file = "temp_decode_global_section.wasm";
         std::fs::write(temp_file, &binary).unwrap();
-        
+
         let result = parser::parse_bytecode(&mut module, temp_file);
         assert!(result.is_ok());
-        
+
         std::fs::remove_file(temp_file).unwrap();
 
         let global_num = module.globals.len();
@@ -273,10 +273,10 @@ mod tests {
 
         let temp_file = "temp_decode_elem_section.wasm";
         std::fs::write(temp_file, &binary).unwrap();
-        
+
         let result = parser::parse_bytecode(&mut module, temp_file);
         assert!(result.is_ok());
-        
+
         std::fs::remove_file(temp_file).unwrap();
 
         let elem_num = module.elems.len();
@@ -308,10 +308,10 @@ mod tests {
 
         let temp_file = "temp_decode_data_section.wasm";
         std::fs::write(temp_file, &binary).unwrap();
-        
+
         let result = parser::parse_bytecode(&mut module, temp_file);
         assert!(result.is_ok());
-        
+
         std::fs::remove_file(temp_file).unwrap();
 
         let data_num = module.datas.len();
@@ -365,10 +365,10 @@ mod tests {
 
         let temp_file = "temp_decode_code_section_if_else.wasm";
         std::fs::write(temp_file, &binary).unwrap();
-        
+
         let result = parser::parse_bytecode(&mut module, temp_file);
         assert!(result.is_ok());
-        
+
         std::fs::remove_file(temp_file).unwrap();
 
         let func_num = module.funcs.len();
@@ -396,12 +396,13 @@ mod tests {
 
         let temp_file = "temp_decode_code_section_loop.wasm";
         std::fs::write(temp_file, &binary).unwrap();
-        
+
         let result = parser::parse_bytecode(&mut module, temp_file);
         assert!(result.is_ok());
-        
+
         std::fs::remove_file(temp_file).unwrap();
 
         let func_num = module.funcs.len();
         assert_eq!(func_num, 1);
     }
+}

@@ -1,4 +1,7 @@
-use chiwawa::{execution::module::*, execution::value::*, execution::runtime::Runtime, parser, structure::module::Module};
+use chiwawa::{
+    execution::module::*, execution::runtime::Runtime, execution::value::*, parser,
+    structure::module::Module,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -15,7 +18,11 @@ mod tests {
     }
 
     // Helper function to call a function using Runtime
-    fn call_function(inst: &Arc<ModuleInst>, func_name: &str, params: Vec<Val>) -> Result<Vec<Val>, chiwawa::error::RuntimeError> {
+    fn call_function(
+        inst: &Arc<ModuleInst>,
+        func_name: &str,
+        params: Vec<Val>,
+    ) -> Result<Vec<Val>, chiwawa::error::RuntimeError> {
         let func_addr = inst.get_export_func(func_name)?;
         let mut runtime = Runtime::new(Arc::clone(inst), &func_addr, params)?;
         runtime.run()
@@ -23,14 +30,14 @@ mod tests {
 
     #[test]
     fn test_call_type_i32() {
-        let inst = load_instance("test/call.wasm");
+        let inst = load_instance("tests/wasm/call.wasm");
         let ret = call_function(&inst, "type-i32", vec![]);
         assert_eq!(ret.unwrap().last().unwrap().to_i32().unwrap(), 0x132);
     }
 
     #[test]
     fn test_call_fac() {
-        let inst = load_instance("test/call.wasm");
+        let inst = load_instance("tests/wasm/call.wasm");
         let ret = call_function(&inst, "fac", vec![Val::Num(Num::I64(0))]);
         assert_eq!(ret.unwrap().last().unwrap().to_i64().unwrap(), 1);
         let ret = call_function(&inst, "fac", vec![Val::Num(Num::I64(1))]);

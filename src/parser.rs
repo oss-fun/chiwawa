@@ -82,7 +82,9 @@ fn decode_import_section(
                     if let Some(wasi_func_type) = parse_wasi_function(&import.name) {
                         ImportDesc::WasiFunc(wasi_func_type)
                     } else {
-                        return Err(Box::new(ParserError::UnsupportedWasiFunction(import.name.to_string())));
+                        return Err(Box::new(ParserError::UnsupportedWasiFunction(
+                            import.name.to_string(),
+                        )));
                     }
                 } else {
                     module.num_imported_funcs += 1;

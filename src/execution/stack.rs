@@ -1049,7 +1049,7 @@ fn handle_i32_div_s(
 
     #[cfg(not(target_arch = "wasm32"))]
     let result = if lhs == i32::MIN && rhs == -1 {
-        0  // WebAssembly仕様: i32::MIN % -1 = 0
+        0 // WebAssembly仕様: i32::MIN % -1 = 0
     } else {
         lhs / rhs
     };
@@ -1093,7 +1093,7 @@ fn handle_i32_rem_s(
 ) -> Result<HandlerResult, RuntimeError> {
     let rhs = ctx.value_stack.pop().unwrap().to_i32()?;
     let lhs = ctx.value_stack.pop().unwrap().to_i32()?;
-    
+
     #[cfg(target_arch = "wasm32")]
     let result = {
         let mut result: i32;
@@ -1113,7 +1113,7 @@ fn handle_i32_rem_s(
 
     #[cfg(not(target_arch = "wasm32"))]
     let result = if lhs == i32::MIN && rhs == -1 {
-        0  // WebAssembly仕様: i32::MIN % -1 = 0
+        0 // WebAssembly仕様: i32::MIN % -1 = 0
     } else {
         lhs % rhs
     };
@@ -1271,7 +1271,7 @@ fn handle_i64_div_s(
 ) -> Result<HandlerResult, RuntimeError> {
     let rhs = ctx.value_stack.pop().unwrap().to_i64()?;
     let lhs = ctx.value_stack.pop().unwrap().to_i64()?;
-    
+
     #[cfg(target_arch = "wasm32")]
     let result = {
         let mut result: i64;
@@ -1301,7 +1301,7 @@ fn handle_i64_div_u(
 ) -> Result<HandlerResult, RuntimeError> {
     let rhs = ctx.value_stack.pop().unwrap().to_i64()? as u64;
     let lhs = ctx.value_stack.pop().unwrap().to_i64()? as u64;
-    
+
     #[cfg(target_arch = "wasm32")]
     let result = {
         let mut result: i64;
@@ -1331,7 +1331,7 @@ fn handle_i64_rem_s(
 ) -> Result<HandlerResult, RuntimeError> {
     let rhs = ctx.value_stack.pop().unwrap().to_i64()?;
     let lhs = ctx.value_stack.pop().unwrap().to_i64()?;
-    
+
     #[cfg(target_arch = "wasm32")]
     let result = {
         let mut result: i64;
@@ -1361,7 +1361,7 @@ fn handle_i64_rem_u(
 ) -> Result<HandlerResult, RuntimeError> {
     let rhs = ctx.value_stack.pop().unwrap().to_i64()? as u64;
     let lhs = ctx.value_stack.pop().unwrap().to_i64()? as u64;
-    
+
     #[cfg(target_arch = "wasm32")]
     let result = {
         let mut result: i64;
@@ -1640,7 +1640,7 @@ fn handle_f64_nearest(
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     let x = ctx.value_stack.pop().unwrap().to_f64()?;
-    
+
     #[cfg(target_arch = "wasm32")]
     let result = {
         let mut result: f64;
@@ -1758,7 +1758,7 @@ fn handle_i32_trunc_f32_s(
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f32()?;
-    
+
     #[cfg(target_arch = "wasm32")]
     let result = {
         let mut result: i32;
@@ -1786,7 +1786,7 @@ fn handle_i32_trunc_f32_u(
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f32()?;
-    
+
     #[cfg(target_arch = "wasm32")]
     let result = {
         let mut result: i32;
@@ -1814,7 +1814,7 @@ fn handle_i32_trunc_f64_s(
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f64()?;
-    
+
     #[cfg(target_arch = "wasm32")]
     let result = {
         let mut result: i32;
@@ -1860,7 +1860,7 @@ fn handle_i64_trunc_f32_s(
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f32()?;
-    
+
     #[cfg(target_arch = "wasm32")]
     let result = {
         let mut result: i64;
@@ -1888,7 +1888,7 @@ fn handle_i64_trunc_f32_u(
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f32()?;
-    
+
     #[cfg(target_arch = "wasm32")]
     let result = {
         let mut result: i64;
@@ -1916,7 +1916,7 @@ fn handle_i64_trunc_f64_s(
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f64()?;
-    
+
     #[cfg(target_arch = "wasm32")]
     let result = {
         let mut result: i64;
@@ -1944,7 +1944,7 @@ fn handle_i64_trunc_f64_u(
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     let val = ctx.value_stack.pop().unwrap().to_f64()?;
-    
+
     #[cfg(target_arch = "wasm32")]
     let result = {
         let mut result: i64;

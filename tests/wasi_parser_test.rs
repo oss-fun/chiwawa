@@ -1,4 +1,4 @@
-use chiwawa::structure::module::{WasiFuncType, ImportDesc};
+use chiwawa::structure::module::{ImportDesc, WasiFuncType};
 
 #[test]
 fn test_wasi_func_type_expected_types() {
@@ -61,7 +61,7 @@ fn test_wasi_func_type_variants() {
 fn test_import_desc_wasi_func() {
     // ImportDesc::WasiFuncが正しく動作することをテスト
     let wasi_func = ImportDesc::WasiFunc(WasiFuncType::FdWrite);
-    
+
     match wasi_func {
         ImportDesc::WasiFunc(func_type) => {
             assert!(matches!(func_type, WasiFuncType::FdWrite));
@@ -71,4 +71,4 @@ fn test_import_desc_wasi_func() {
         }
         _ => panic!("Expected WasiFunc variant"),
     }
-} 
+}
