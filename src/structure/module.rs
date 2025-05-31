@@ -80,6 +80,8 @@ pub enum WasiFuncType {
     FdPrestatGet,
     FdPrestatDirName,
     FdClose,
+    EnvironGet,
+    EnvironSizesGet,
 }
 
 impl WasiFuncType {
@@ -132,6 +134,20 @@ impl WasiFuncType {
             },
             WasiFuncType::FdClose => FuncType {
                 params: vec![ValueType::NumType(NumType::I32)],
+                results: vec![ValueType::NumType(NumType::I32)],
+            },
+            WasiFuncType::EnvironGet => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I32),
+                ],
+                results: vec![ValueType::NumType(NumType::I32)],
+            },
+            WasiFuncType::EnvironSizesGet => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I32),
+                ],
                 results: vec![ValueType::NumType(NumType::I32)],
             },
         }

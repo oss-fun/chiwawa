@@ -144,6 +144,8 @@ fn parse_wasi_function(name: &str) -> Option<WasiFuncType> {
         "fd_prestat_get" => Some(WasiFuncType::FdPrestatGet),
         "fd_prestat_dir_name" => Some(WasiFuncType::FdPrestatDirName),
         "fd_close" => Some(WasiFuncType::FdClose),
+        "environ_get" => Some(WasiFuncType::EnvironGet),
+        "environ_sizes_get" => Some(WasiFuncType::EnvironSizesGet),
         _ => None,
     }
 }

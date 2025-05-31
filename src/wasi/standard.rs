@@ -148,4 +148,27 @@ impl StandardWasiImpl {
         
         Ok(0) // Success
     }
+
+    /// environ_get - Get environment variables
+    pub fn environ_get(&self, memory: &MemAddr, environ_ptr: Ptr, environ_buf_ptr: Ptr) -> WasiResult<i32> {
+        // For simplicity, we return an empty environment
+        // In a real implementation, you would populate this with actual environment variables
+        
+        // Write 0 (null pointer) to indicate no environment variables
+        memory.store::<i32>(&Memarg { offset: 0, align: 4 }, environ_ptr as i32, 0)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0) // Success
+    }
+
+    /// environ_sizes_get - Get environment variable sizes
+    pub fn environ_sizes_get(&self, memory: &MemAddr, environ_count_ptr: Ptr, environ_buf_size_ptr: Ptr) -> WasiResult<i32> {
+        // Return 0 environment variables and 0 buffer size
+        memory.store::<i32>(&Memarg { offset: 0, align: 4 }, environ_count_ptr as i32, 0)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+        memory.store::<i32>(&Memarg { offset: 0, align: 4 }, environ_buf_size_ptr as i32, 0)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+        
+        Ok(0) // Success
+    }
 } 
