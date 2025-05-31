@@ -326,6 +326,10 @@ impl Stacks {
                 // or rely on FuncAddr::call to handle it directly.
                 Err(RuntimeError::UnimplementedHostFunction)
             }
+            FuncInst::WasiFunc { .. } => {
+                // WASI functions are handled directly in Runtime, not through Stacks
+                Err(RuntimeError::UnimplementedHostFunction)
+            }
         }
     }
 }

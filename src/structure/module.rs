@@ -136,6 +136,10 @@ impl WasiFuncType {
             },
         }
     }
+
+    pub fn to_func_type(&self) -> FuncType {
+        self.expected_func_type()
+    }
 }
 
 pub struct Export {

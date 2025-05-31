@@ -1,6 +1,7 @@
 use super::{func::FuncAddr, global::GlobalAddr, mem::MemAddr, table::TableAddr};
 use crate::error::RuntimeError;
 use crate::structure::types::{NumType, ValueType, VecType};
+use crate::structure::module::WasiFuncType;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 
@@ -73,6 +74,18 @@ pub enum Ref {
 #[derive(Clone, Debug)]
 pub struct ExternAddr(Arc<RwLock<Externval>>);
 
+/// WASI function address
+#[derive(Clone, Debug)]
+pub struct WasiFuncAddr {
+    pub func_type: WasiFuncType,
+}
+
+impl WasiFuncAddr {
+    pub fn new(func_type: WasiFuncType) -> Self {
+        Self { func_type }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Externval {
     #[serde(skip)]
@@ -83,11 +96,21 @@ pub enum Externval {
     Mem(MemAddr),
     #[serde(skip)]
     Global(GlobalAddr),
+    #[serde(skip)]
+    WasiFunc(WasiFuncAddr),
 }
 
 impl Externval {
     pub fn as_func(self) -> Option<FuncAddr> {
         if let Externval::Func(x) = self {
+            Some(x)
+        } else {
+            None
+        }
+    }
+    
+    pub fn as_wasi_func(self) -> Option<WasiFuncAddr> {
+        if let Externval::WasiFunc(x) = self {
             Some(x)
         } else {
             None

@@ -5,6 +5,7 @@ use super::{
 };
 use crate::error::RuntimeError;
 use crate::structure::{instructions::*, module::*, types::*};
+use crate::wasi::standard::StandardWasiImpl;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -19,6 +20,8 @@ pub struct ModuleInst {
     pub elem_addrs: Vec<ElemAddr>,
     pub data_addrs: Vec<DataAddr>,
     pub exports: Vec<ExportInst>,
+    pub wasi_func_addrs: Vec<WasiFuncAddr>,
+    pub wasi_impl: Option<Arc<StandardWasiImpl>>,
 }
 
 pub trait GetInstanceByIdx<Idx>
@@ -50,19 +53,30 @@ impl ModuleInst {
             elem_addrs: Vec::new(),
             data_addrs: Vec::new(),
             exports: Vec::new(),
+            wasi_func_addrs: Vec::new(),
+            wasi_impl: None,
         };
 
-        /*Import is not supported*/
+        // Check if we need WASI support
+        let needs_wasi = module.imports.iter().any(|import| {
+            matches!(import.desc, ImportDesc::WasiFunc(_))
+        });
+        
+        if needs_wasi {
+            module_inst.wasi_impl = Some(Arc::new(StandardWasiImpl::new()));
+        }
+
+        /*Import processing*/
         if module.imports.len() != 0 {
             println!("len{}", module.imports.len());
             for import in &module.imports {
-                let val = imports
-                    .get(&import.module.0)
-                    .and_then(|module| module.get(&import.name.0))
-                    .cloned()
-                    .ok_or_else(|| RuntimeError::LinkError)?;
                 match &import.desc {
                     ImportDesc::Func(idx) => {
+                        let val = imports
+                            .get(&import.module.0)
+                            .and_then(|module| module.get(&import.name.0))
+                            .cloned()
+                            .ok_or_else(|| RuntimeError::LinkError)?;
                         module_inst.func_addrs.push(
                             val.as_func()
                                 .filter(|func| {
@@ -71,6 +85,15 @@ impl ModuleInst {
                                 })
                                 .ok_or_else(|| RuntimeError::LinkError)?,
                         );
+                    }
+                    ImportDesc::WasiFunc(wasi_func_type) => {
+                        // Create WASI function address
+                        let wasi_func_addr = WasiFuncAddr::new(wasi_func_type.clone());
+                        module_inst.wasi_func_addrs.push(wasi_func_addr.clone());
+                        
+                        // Add to func_addrs as well for unified indexing
+                        // We'll create a special FuncAddr that points to WASI function
+                        module_inst.func_addrs.push(FuncAddr::alloc_wasi(wasi_func_addr));
                     }
                     _ => todo!(),
                 }
