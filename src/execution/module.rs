@@ -205,10 +205,10 @@ impl ModuleInst {
                     .imports
                     .iter()
                     .map(|i| {
-                        if let ImportDesc::Func(_) = i.desc {
-                            1
-                        } else {
-                            0
+                        match i.desc {
+                            ImportDesc::Func(_) => 1,
+                            ImportDesc::WasiFunc(_) => 1,
+                            _ => 0,
                         }
                     })
                     .sum::<usize>();
