@@ -15,9 +15,11 @@ use std::sync::{Arc, OnceLock};
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
+    /// WebAssembly file to execute
+    wasm_file: String,
     #[arg(long)]
     restore: Option<String>,
-    #[arg(short, long, default_value = "main")]
+    #[arg(short, long, default_value = "_start")]
     invoke: String,
     #[arg(short, long, value_delimiter = ',', num_args = 0..)]
     params: Option<Vec<String>>,
@@ -77,7 +79,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let mut module = Module::new("test");
-    let _ = parser::parse_bytecode(&mut module, "pi-Leibniz.wasm");
+    let _ = parser::parse_bytecode(&mut module, &cli.wasm_file);
     let imports: ImportObjects = HashMap::new();
     let inst = ModuleInst::new(&module, imports).unwrap();
 
