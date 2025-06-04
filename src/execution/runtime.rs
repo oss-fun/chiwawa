@@ -217,7 +217,6 @@ impl Runtime {
                                     .last_mut()
                                     .ok_or(RuntimeError::StackError("Caller label stack empty"))?;
                                 caller_label_stack.value_stack.extend(values_to_pass);
-                                caller_label_stack.ip += 1;
                             }
                         }
                         None => {
