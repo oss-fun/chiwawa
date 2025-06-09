@@ -62,12 +62,100 @@ pub struct Import {
     pub desc: ImportDesc,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum ImportDesc {
     Func(TypeIdx),
     Table(TableType),
     Mem(MemType),
     Global(GlobalType),
+    WasiFunc(WasiFuncType),
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub enum WasiFuncType {
+    ProcExit,
+    FdWrite,
+    FdRead,
+    RandomGet,
+    FdPrestatGet,
+    FdPrestatDirName,
+    FdClose,
+    EnvironGet,
+    EnvironSizesGet,
+}
+
+impl WasiFuncType {
+    /// WASI関数の期待される関数型を返す
+    pub fn expected_func_type(&self) -> FuncType {
+        match self {
+            WasiFuncType::ProcExit => FuncType {
+                params: vec![ValueType::NumType(NumType::I32)],
+                results: vec![],
+            },
+            WasiFuncType::FdWrite => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I32),
+                ],
+                results: vec![ValueType::NumType(NumType::I32)],
+            },
+            WasiFuncType::FdRead => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I32),
+                ],
+                results: vec![ValueType::NumType(NumType::I32)],
+            },
+            WasiFuncType::RandomGet => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I32),
+                ],
+                results: vec![ValueType::NumType(NumType::I32)],
+            },
+            WasiFuncType::FdPrestatGet => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I32),
+                ],
+                results: vec![ValueType::NumType(NumType::I32)],
+            },
+            WasiFuncType::FdPrestatDirName => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I32),
+                ],
+                results: vec![ValueType::NumType(NumType::I32)],
+            },
+            WasiFuncType::FdClose => FuncType {
+                params: vec![ValueType::NumType(NumType::I32)],
+                results: vec![ValueType::NumType(NumType::I32)],
+            },
+            WasiFuncType::EnvironGet => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I32),
+                ],
+                results: vec![ValueType::NumType(NumType::I32)],
+            },
+            WasiFuncType::EnvironSizesGet => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I32),
+                ],
+                results: vec![ValueType::NumType(NumType::I32)],
+            },
+        }
+    }
+
+    pub fn to_func_type(&self) -> FuncType {
+        self.expected_func_type()
+    }
 }
 
 pub struct Export {

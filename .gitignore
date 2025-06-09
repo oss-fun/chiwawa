@@ -1,7 +1,8 @@
 /target
 *.so
 *.wasm
-!test/*.wasm
+!tests/wasm/*.wasm
 *.wat
-!test/*.wat
+!tests/wasm/*.wat
 *.bin
+/.cursor

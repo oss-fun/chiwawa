@@ -1,5 +1,5 @@
 use super::module::*;
-use super::value::Val;
+use super::value::{Val, WasiFuncAddr};
 use crate::error::RuntimeError;
 use crate::structure::{module::*, types::*};
 use std::sync::{Arc, RwLock, Weak as SyncWeak};
@@ -20,6 +20,10 @@ pub enum FuncInst {
     HostFunc {
         type_: FuncType,
         host_code: Arc<dyn Fn(Vec<Val>) -> Result<Option<Val>, RuntimeError> + Send + Sync>,
+    },
+    WasiFunc {
+        type_: FuncType,
+        wasi_func_addr: WasiFuncAddr,
     },
 }
 
@@ -53,6 +57,14 @@ impl Debug for FuncInst {
                 .field("type_", type_)
                 .field("host_code", &"<host_code>")
                 .finish(),
+            FuncInst::WasiFunc {
+                type_,
+                wasi_func_addr,
+            } => f
+                .debug_struct("WasiFunc")
+                .field("type_", type_)
+                .field("wasi_func_addr", wasi_func_addr)
+                .finish(),
         }
     }
 }
@@ -70,6 +82,14 @@ impl FuncAddr {
                 locals: Vec::new(),
                 body: Vec::new(),
             },
+        })))
+    }
+    
+    pub fn alloc_wasi(wasi_func_addr: WasiFuncAddr) -> FuncAddr {
+        let func_type = wasi_func_addr.func_type.to_func_type();
+        FuncAddr(Arc::new(RwLock::new(FuncInst::WasiFunc {
+            type_: func_type,
+            wasi_func_addr,
         })))
     }
 
@@ -90,6 +110,7 @@ impl FuncAddr {
         match &*self.0.read().expect("RwLock poisoned") {
             FuncInst::RuntimeFunc { type_, .. } => type_.clone(),
             FuncInst::HostFunc { type_, .. } => type_.clone(),
+            FuncInst::WasiFunc { type_, .. } => type_.clone(),
         }
     }
 
@@ -112,6 +133,13 @@ impl FuncAddr {
     )> {
         match &*self.0.read().expect("RwLock poisoned") {
             FuncInst::HostFunc { type_, host_code } => Some((type_.clone(), host_code.clone())),
+            _ => None,
+        }
+    }
+    
+    pub fn get_wasi_func_details(&self) -> Option<(FuncType, WasiFuncAddr)> {
+        match &*self.0.read().expect("RwLock poisoned") {
+            FuncInst::WasiFunc { type_, wasi_func_addr } => Some((type_.clone(), wasi_func_addr.clone())),
             _ => None,
         }
     }

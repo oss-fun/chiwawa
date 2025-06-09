@@ -3,7 +3,7 @@ mod elem;
 mod export;
 pub mod func;
 mod global;
-mod mem;
+pub mod mem;
 pub mod migration;
 pub mod module;
 pub mod runtime;
