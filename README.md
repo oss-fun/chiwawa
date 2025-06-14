@@ -7,16 +7,15 @@ Chiwawa (Pronunciation of chihuahua) is a self-hosted Wasm runtime that enables 
 
 ```
 cargo build --target wasm32-wasip1 --release
-wizer target/wasm32-wasip1/release/chiwawa.wasm -o preinit-chiwawa.wasm --allow-wasi --dir .
-somethingWasmRuntime preinit-chiwawa.wasm --invoke func-name --params "I64(100)"
+somethingWasmRuntime target/rwasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --params "I64(100)"
 ```
 
 ## Checkpoint and Restore
 
 ```
-somethingWasmRuntime preinit-chiwawa.wasm --invoke func-name --params "I64(100)"
+somethingWasmRuntime target/rwasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --params "I64(100)"
 touch  ./checkpoint.trigger # Trigger of Checkpointing
-somethingWasmRuntime preinit-chiwawa.wasm --invoke func-name --restore checkpoint.trigger
+somethingWasmRuntime target/rwasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --restore checkpoint.trigger
 ```
 
 ## References
