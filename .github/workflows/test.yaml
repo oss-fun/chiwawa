@@ -15,10 +15,6 @@ jobs:
 
     runs-on: ubuntu-latest
 
-    defaults:
-      run:
-        working-directory: test_rust
-
     steps:
     - name: Checkout
       uses: actions/checkout@v4
