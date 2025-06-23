@@ -12,10 +12,14 @@ env:
 
 jobs:
   test:
-
     runs-on: ubuntu-latest
 
     steps:
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        target: wasm32-wasip1
+
     - name: Checkout
       uses: actions/checkout@v4
 
