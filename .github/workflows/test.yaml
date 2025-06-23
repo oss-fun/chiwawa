@@ -18,6 +18,7 @@ jobs:
       uses: dtolnay/rust-toolchain@nightly
       with:
         target: wasm32-wasip1
+        components: rustfmt
 
     - name: Checkout
       uses: actions/checkout@v4
