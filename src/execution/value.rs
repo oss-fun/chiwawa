@@ -1,7 +1,7 @@
 use super::{func::FuncAddr, global::GlobalAddr, mem::MemAddr, table::TableAddr};
 use crate::error::RuntimeError;
-use crate::structure::types::{NumType, ValueType, VecType};
 use crate::structure::module::WasiFuncType;
+use crate::structure::types::{NumType, ValueType, VecType};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 
@@ -108,7 +108,7 @@ impl Externval {
             None
         }
     }
-    
+
     pub fn as_wasi_func(self) -> Option<WasiFuncAddr> {
         if let Externval::WasiFunc(x) = self {
             Some(x)

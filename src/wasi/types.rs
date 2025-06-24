@@ -22,4 +22,4 @@ pub type FileSize = u64;
 pub type Timestamp = u64;
 
 /// WASI exit code type
-pub type ExitCode = i32; 
+pub type ExitCode = i32;

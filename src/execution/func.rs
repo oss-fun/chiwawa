@@ -84,7 +84,7 @@ impl FuncAddr {
             },
         })))
     }
-    
+
     pub fn alloc_wasi(wasi_func_addr: WasiFuncAddr) -> FuncAddr {
         let func_type = wasi_func_addr.func_type.to_func_type();
         FuncAddr(Arc::new(RwLock::new(FuncInst::WasiFunc {
@@ -136,10 +136,13 @@ impl FuncAddr {
             _ => None,
         }
     }
-    
+
     pub fn get_wasi_func_details(&self) -> Option<(FuncType, WasiFuncAddr)> {
         match &*self.0.read().expect("RwLock poisoned") {
-            FuncInst::WasiFunc { type_, wasi_func_addr } => Some((type_.clone(), wasi_func_addr.clone())),
+            FuncInst::WasiFunc {
+                type_,
+                wasi_func_addr,
+            } => Some((type_.clone(), wasi_func_addr.clone())),
             _ => None,
         }
     }

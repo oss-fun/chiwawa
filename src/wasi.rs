@@ -1,8 +1,8 @@
-pub mod error;
-pub mod types;
-pub mod standard;
 pub mod context;
+pub mod error;
+pub mod standard;
+pub mod types;
 
+pub use context::{FileDescriptor, StderrWrapper, StdinWrapper, StdoutWrapper, WasiContext};
 pub use error::*;
 pub use types::*;
-pub use context::{WasiContext, FileDescriptor, StdinWrapper, StdoutWrapper, StderrWrapper}; 

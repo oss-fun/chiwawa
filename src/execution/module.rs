@@ -58,10 +58,11 @@ impl ModuleInst {
         };
 
         // Check if we need WASI support
-        let needs_wasi = module.imports.iter().any(|import| {
-            matches!(import.desc, ImportDesc::WasiFunc(_))
-        });
-        
+        let needs_wasi = module
+            .imports
+            .iter()
+            .any(|import| matches!(import.desc, ImportDesc::WasiFunc(_)));
+
         if needs_wasi {
             module_inst.wasi_impl = Some(Arc::new(StandardWasiImpl::new()));
         }
@@ -90,10 +91,12 @@ impl ModuleInst {
                         // Create WASI function address
                         let wasi_func_addr = WasiFuncAddr::new(wasi_func_type.clone());
                         module_inst.wasi_func_addrs.push(wasi_func_addr.clone());
-                        
+
                         // Add to func_addrs as well for unified indexing
                         // We'll create a special FuncAddr that points to WASI function
-                        module_inst.func_addrs.push(FuncAddr::alloc_wasi(wasi_func_addr));
+                        module_inst
+                            .func_addrs
+                            .push(FuncAddr::alloc_wasi(wasi_func_addr));
                     }
                     _ => todo!(),
                 }
@@ -204,12 +207,10 @@ impl ModuleInst {
                 + module
                     .imports
                     .iter()
-                    .map(|i| {
-                        match i.desc {
-                            ImportDesc::Func(_) => 1,
-                            ImportDesc::WasiFunc(_) => 1,
-                            _ => 0,
-                        }
+                    .map(|i| match i.desc {
+                        ImportDesc::Func(_) => 1,
+                        ImportDesc::WasiFunc(_) => 1,
+                        _ => 0,
                     })
                     .sum::<usize>();
             arc_module_inst.func_addrs[index]

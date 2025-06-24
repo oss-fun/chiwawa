@@ -14,15 +14,18 @@ impl WasiContext {
             file_descriptors: HashMap::new(),
             next_fd: 3, // Start from 3, as 0, 1, 2 are reserved
         };
-        
+
         // Initialize standard file descriptors
-        ctx.file_descriptors.insert(0, Box::new(StdinWrapper::new()));
-        ctx.file_descriptors.insert(1, Box::new(StdoutWrapper::new()));
-        ctx.file_descriptors.insert(2, Box::new(StderrWrapper::new()));
-        
+        ctx.file_descriptors
+            .insert(0, Box::new(StdinWrapper::new()));
+        ctx.file_descriptors
+            .insert(1, Box::new(StdoutWrapper::new()));
+        ctx.file_descriptors
+            .insert(2, Box::new(StderrWrapper::new()));
+
         ctx
     }
-    
+
     pub fn get_fd(&mut self, fd: i32) -> WasiResult<&mut Box<dyn FileDescriptor>> {
         self.file_descriptors
             .get_mut(&fd)
@@ -45,9 +48,7 @@ pub struct StdinWrapper {
 
 impl StdinWrapper {
     pub fn new() -> Self {
-        Self {
-            stdin: io::stdin(),
-        }
+        Self { stdin: io::stdin() }
     }
 }
 
@@ -55,15 +56,15 @@ impl FileDescriptor for StdinWrapper {
     fn read(&mut self, buf: &mut [u8]) -> WasiResult<usize> {
         self.stdin.read(buf).map_err(|_| WasiError::IoError)
     }
-    
+
     fn write(&mut self, _buf: &[u8]) -> WasiResult<usize> {
         Err(WasiError::BadFileDescriptor)
     }
-    
+
     fn seek(&mut self, _offset: i64, _whence: i32) -> WasiResult<i64> {
         Err(WasiError::InvalidSeek)
     }
-    
+
     fn close(&mut self) -> WasiResult<()> {
         Ok(())
     }
@@ -86,15 +87,15 @@ impl FileDescriptor for StdoutWrapper {
     fn read(&mut self, _buf: &mut [u8]) -> WasiResult<usize> {
         Err(WasiError::BadFileDescriptor)
     }
-    
+
     fn write(&mut self, buf: &[u8]) -> WasiResult<usize> {
         self.stdout.write(buf).map_err(|_| WasiError::IoError)
     }
-    
+
     fn seek(&mut self, _offset: i64, _whence: i32) -> WasiResult<i64> {
         Err(WasiError::InvalidSeek)
     }
-    
+
     fn close(&mut self) -> WasiResult<()> {
         Ok(())
     }
@@ -117,16 +118,16 @@ impl FileDescriptor for StderrWrapper {
     fn read(&mut self, _buf: &mut [u8]) -> WasiResult<usize> {
         Err(WasiError::BadFileDescriptor)
     }
-    
+
     fn write(&mut self, buf: &[u8]) -> WasiResult<usize> {
         self.stderr.write(buf).map_err(|_| WasiError::IoError)
     }
-    
+
     fn seek(&mut self, _offset: i64, _whence: i32) -> WasiResult<i64> {
         Err(WasiError::InvalidSeek)
     }
-    
+
     fn close(&mut self) -> WasiResult<()> {
         Ok(())
     }
-} 
+}

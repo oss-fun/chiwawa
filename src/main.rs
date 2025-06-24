@@ -74,7 +74,6 @@ fn parse_params(params: Vec<String>) -> Vec<Val> {
     return parsed;
 }
 
-
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -86,14 +85,13 @@ fn main() -> Result<()> {
     if let Some(restore_path) = cli.restore {
         println!("Restoring from checkpoint: {}", restore_path);
 
-        let restored_stacks: Stacks =
-            match migration::restore(Arc::clone(&inst), &restore_path) {
-                Ok(stacks) => stacks,
-                Err(e) => {
-                    eprintln!("Failed to restore state: {:?}", e);
-                    return Err(anyhow::anyhow!("Restore failed: {:?}", e));
-                }
-            };
+        let restored_stacks: Stacks = match migration::restore(Arc::clone(&inst), &restore_path) {
+            Ok(stacks) => stacks,
+            Err(e) => {
+                eprintln!("Failed to restore state: {:?}", e);
+                return Err(anyhow::anyhow!("Restore failed: {:?}", e));
+            }
+        };
         println!("State restored into module instance. Stacks obtained.");
 
         let mut runtime = Runtime::new_restored(Arc::clone(&inst), restored_stacks);
@@ -102,7 +100,6 @@ fn main() -> Result<()> {
         let result = runtime.run();
         handle_result(result);
     } else {
-
         let func_addr = inst.get_export_func(&cli.invoke)?;
         let params = parse_params(cli.params.unwrap_or_default());
 

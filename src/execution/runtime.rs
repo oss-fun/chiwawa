@@ -4,8 +4,8 @@ use crate::execution::migration;
 use crate::execution::module::ModuleInst;
 use crate::execution::stack::{Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, Stacks};
 use crate::execution::value::{Num, Val, Vec_};
-use crate::structure::types::{NumType, ValueType, VecType};
 use crate::structure::module::WasiFuncType;
+use crate::structure::types::{NumType, ValueType, VecType};
 use crate::wasi::{WasiError, WasiResult};
 use std::path::Path;
 use std::sync::Arc;
@@ -148,7 +148,10 @@ impl Runtime {
                                         Err(e) => return Err(e),
                                     }
                                 }
-                                FuncInst::WasiFunc { type_, wasi_func_addr } => {
+                                FuncInst::WasiFunc {
+                                    type_,
+                                    wasi_func_addr,
+                                } => {
                                     let params_len = type_.params.len();
                                     if cur_label_stack_mut.value_stack.len() < params_len {
                                         return Err(RuntimeError::ValueStackUnderflow);
@@ -156,31 +159,45 @@ impl Runtime {
                                     let params = cur_label_stack_mut.value_stack.split_off(
                                         cur_label_stack_mut.value_stack.len() - params_len,
                                     );
-                                    
+
                                     let wasi_func_type = wasi_func_addr.func_type.clone();
                                     drop(func_inst_guard); // Release the lock before calling WASI function
-                                    
+
                                     // Call WASI function
                                     match self.call_wasi_function(&wasi_func_type, params) {
                                         Ok(result) => {
                                             if let Some(val) = result {
-                                                let current_frame_stack_mut =
-                                                    self.stacks.activation_frame_stack.last_mut().unwrap();
-                                                let cur_label_stack_mut =
-                                                    current_frame_stack_mut.label_stack.last_mut().unwrap();
+                                                let current_frame_stack_mut = self
+                                                    .stacks
+                                                    .activation_frame_stack
+                                                    .last_mut()
+                                                    .unwrap();
+                                                let cur_label_stack_mut = current_frame_stack_mut
+                                                    .label_stack
+                                                    .last_mut()
+                                                    .unwrap();
                                                 cur_label_stack_mut.value_stack.push(val);
                                             }
-                                            let current_frame_stack_mut =
-                                                self.stacks.activation_frame_stack.last_mut().unwrap();
-                                            let cur_label_stack_mut =
-                                                current_frame_stack_mut.label_stack.last_mut().unwrap();
+                                            let current_frame_stack_mut = self
+                                                .stacks
+                                                .activation_frame_stack
+                                                .last_mut()
+                                                .unwrap();
+                                            let cur_label_stack_mut = current_frame_stack_mut
+                                                .label_stack
+                                                .last_mut()
+                                                .unwrap();
                                             cur_label_stack_mut.ip += 1;
                                         }
                                         Err(WasiError::ProcessExit(_code)) => {
-                                            return Err(RuntimeError::ExecutionFailed("Process exit"));
+                                            return Err(RuntimeError::ExecutionFailed(
+                                                "Process exit",
+                                            ));
                                         }
                                         Err(_e) => {
-                                            return Err(RuntimeError::ExecutionFailed("WASI function failed"));
+                                            return Err(RuntimeError::ExecutionFailed(
+                                                "WASI function failed",
+                                            ));
                                         }
                                     }
                                 }
@@ -259,17 +276,24 @@ impl Runtime {
         Ok(vec![])
     }
 
-    fn call_wasi_function(&self, func_type: &WasiFuncType, params: Vec<Val>) -> WasiResult<Option<Val>> {
-        let wasi_impl = self.module_inst.wasi_impl.as_ref()
+    fn call_wasi_function(
+        &self,
+        func_type: &WasiFuncType,
+        params: Vec<Val>,
+    ) -> WasiResult<Option<Val>> {
+        let wasi_impl = self
+            .module_inst
+            .wasi_impl
+            .as_ref()
             .ok_or(WasiError::NotImplemented)?;
-        
+
         // Get memory address for WASI functions that need it
         let memory = if self.module_inst.mem_addrs.is_empty() {
             return Err(WasiError::MemoryAccessError);
         } else {
             &self.module_inst.mem_addrs[0]
         };
-        
+
         match func_type {
             WasiFuncType::FdWrite => {
                 if params.len() != 4 {
@@ -278,8 +302,9 @@ impl Runtime {
                 let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
                 let iovs_ptr = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
                 let iovs_len = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
-                let nwritten_ptr = params[3].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
-                
+                let nwritten_ptr =
+                    params[3].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
                 let result = wasi_impl.fd_write(memory, fd, iovs_ptr, iovs_len, nwritten_ptr)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
@@ -291,7 +316,7 @@ impl Runtime {
                 let iovs_ptr = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
                 let iovs_len = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
                 let nread_ptr = params[3].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
-                
+
                 let result = wasi_impl.fd_read(memory, fd, iovs_ptr, iovs_len, nread_ptr)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
@@ -309,7 +334,7 @@ impl Runtime {
                 }
                 let buf_ptr = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
                 let buf_len = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
-                
+
                 let result = wasi_impl.random_get(memory, buf_ptr, buf_len)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
@@ -318,7 +343,7 @@ impl Runtime {
                     return Err(WasiError::InvalidArgument);
                 }
                 let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
-                
+
                 let result = wasi_impl.fd_close(fd)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
@@ -326,8 +351,10 @@ impl Runtime {
                 if params.len() != 2 {
                     return Err(WasiError::InvalidArgument);
                 }
-                let environ_ptr = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
-                let environ_buf_ptr = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let environ_ptr =
+                    params[0].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let environ_buf_ptr =
+                    params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
 
                 let result = wasi_impl.environ_get(memory, environ_ptr, environ_buf_ptr)?;
                 Ok(Some(Val::Num(Num::I32(result))))
@@ -336,10 +363,13 @@ impl Runtime {
                 if params.len() != 2 {
                     return Err(WasiError::InvalidArgument);
                 }
-                let environ_count_ptr = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
-                let environ_buf_size_ptr = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let environ_count_ptr =
+                    params[0].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let environ_buf_size_ptr =
+                    params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
 
-                let result = wasi_impl.environ_sizes_get(memory, environ_count_ptr, environ_buf_size_ptr)?;
+                let result =
+                    wasi_impl.environ_sizes_get(memory, environ_count_ptr, environ_buf_size_ptr)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
             _ => Err(WasiError::NotImplemented),
