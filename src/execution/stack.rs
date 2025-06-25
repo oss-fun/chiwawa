@@ -1804,7 +1804,7 @@ fn handle_f32_min(
     let result = if lhs.is_nan() || rhs.is_nan() {
         f32::NAN
     } else if lhs == 0.0 && rhs == 0.0 && (lhs.is_sign_negative() || rhs.is_sign_negative()) {
-        -0.0  // min(±0, ±0) where at least one is negative
+        -0.0 // min(±0, ±0) where at least one is negative
     } else {
         lhs.min(rhs)
     };
@@ -1828,7 +1828,7 @@ fn handle_f32_max(
     let result = if lhs.is_nan() || rhs.is_nan() {
         f32::NAN
     } else if lhs == 0.0 && rhs == 0.0 && (lhs.is_sign_positive() || rhs.is_sign_positive()) {
-        0.0  // max(±0, ±0) where at least one is positive
+        0.0 // max(±0, ±0) where at least one is positive
     } else {
         lhs.max(rhs)
     };
