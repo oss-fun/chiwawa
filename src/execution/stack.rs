@@ -1745,7 +1745,7 @@ fn handle_f32_nearest(
     };
 
     #[cfg(not(target_arch = "wasm32"))]
-    let result = x.round_ties_even();
+    let result = x.round();
 
     ctx.value_stack.push(Val::Num(Num::F32(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
@@ -1801,13 +1801,7 @@ fn handle_f32_min(
         .ok_or(RuntimeError::ValueStackUnderflow)?;
     let rhs = rhs_val.to_f32()?;
     let lhs = lhs_val.to_f32()?;
-    let result = if lhs.is_nan() || rhs.is_nan() {
-        f32::NAN
-    } else if lhs == 0.0 && rhs == 0.0 && (lhs.is_sign_negative() || rhs.is_sign_negative()) {
-        -0.0  // min(±0, ±0) where at least one is negative
-    } else {
-        lhs.min(rhs)
-    };
+    let result = lhs.min(rhs);
     ctx.value_stack.push(Val::Num(Num::F32(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
@@ -1825,13 +1819,7 @@ fn handle_f32_max(
         .ok_or(RuntimeError::ValueStackUnderflow)?;
     let rhs = rhs_val.to_f32()?;
     let lhs = lhs_val.to_f32()?;
-    let result = if lhs.is_nan() || rhs.is_nan() {
-        f32::NAN
-    } else if lhs == 0.0 && rhs == 0.0 && (lhs.is_sign_positive() || rhs.is_sign_positive()) {
-        0.0  // max(±0, ±0) where at least one is positive
-    } else {
-        lhs.max(rhs)
-    };
+    let result = lhs.max(rhs);
     ctx.value_stack.push(Val::Num(Num::F32(result)));
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
