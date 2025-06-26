@@ -3,7 +3,7 @@ use super::*;
 use crate::execution::mem::MemAddr;
 use crate::structure::instructions::Memarg;
 use getrandom::getrandom;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
 
 /// Standard WASI implementation
@@ -119,14 +119,141 @@ impl StandardWasiImpl {
 
     pub fn fd_read(
         &self,
-        _memory: &MemAddr,
-        _fd: Fd,
-        _iovs_ptr: Ptr,
-        _iovs_len: Size,
-        _nread_ptr: Ptr,
+        memory: &MemAddr,
+        fd: Fd,
+        iovs_ptr: Ptr,
+        iovs_len: Size,
+        nread_ptr: Ptr,
     ) -> WasiResult<i32> {
-        eprintln!("WASI fd_read called - exiting for debugging");
-        std::process::exit(1);
+        match fd {
+            0 => {
+                // stdin - proceed with reading
+            }
+            1 | 2 => {
+                // stdout and stderr - not readable
+                return Err(super::error::WasiError::BadFileDescriptor);
+            }
+            _ => {
+                // Other file descriptors - not implemented yet
+                return Err(super::error::WasiError::NotImplemented);
+            }
+        }
+
+        // Collect all iovec information first
+        let mut iovecs = Vec::new();
+        let mut total_buf_size = 0u32;
+
+        for i in 0..iovs_len {
+            // Each iovec is 8 bytes: buf_ptr (4 bytes) + buf_len (4 bytes)
+            let iovec_offset = iovs_ptr + (i * 8);
+
+            // Read buf_ptr (first 4 bytes of iovec)
+            let buf_ptr_memarg = Memarg {
+                offset: 0,
+                align: 4,
+            };
+            let buf_ptr: u32 = memory
+                .load(&buf_ptr_memarg, iovec_offset as i32)
+                .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+
+            // Read buf_len (next 4 bytes of iovec)
+            let buf_len_memarg = Memarg {
+                offset: 0,
+                align: 4,
+            };
+            let buf_len: u32 = memory
+                .load(&buf_len_memarg, (iovec_offset + 4) as i32)
+                .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+
+            if buf_len > 0 {
+                iovecs.push((buf_ptr, buf_len));
+                total_buf_size += buf_len;
+            }
+        }
+
+        if total_buf_size == 0 {
+            let nread_memarg = Memarg {
+                offset: 0,
+                align: 4,
+            };
+            memory
+                .store(&nread_memarg, nread_ptr as i32, 0u32)
+                .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            return Ok(0);
+        }
+
+        // Read data from stdin in one operation (like POSIX readv)
+        let mut input_buffer = vec![0u8; total_buf_size as usize];
+        let bytes_read = io::stdin()
+            .read(&mut input_buffer)
+            .map_err(|_| super::error::WasiError::IoError)?;
+
+        let mut total_written = 0u32;
+        let mut data_offset = 0usize;
+
+        for (buf_ptr, buf_len) in iovecs {
+            if data_offset >= bytes_read {
+                break;
+            }
+
+            let bytes_to_write = std::cmp::min(buf_len as usize, bytes_read - data_offset);
+
+            let data_slice = &input_buffer[data_offset..data_offset + bytes_to_write];
+
+            // Write all bytes at once using multiple store operations in chunks
+            const CHUNK_SIZE: usize = 4;
+            let mut written_in_chunk = 0;
+
+            while written_in_chunk + CHUNK_SIZE <= bytes_to_write {
+                let chunk_data = u32::from_le_bytes([
+                    data_slice[written_in_chunk],
+                    data_slice[written_in_chunk + 1],
+                    data_slice[written_in_chunk + 2],
+                    data_slice[written_in_chunk + 3],
+                ]);
+
+                let u32_memarg = Memarg {
+                    offset: 0,
+                    align: 4,
+                };
+                memory
+                    .store(
+                        &u32_memarg,
+                        (buf_ptr + written_in_chunk as u32) as i32,
+                        chunk_data,
+                    )
+                    .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+
+                written_in_chunk += CHUNK_SIZE;
+            }
+
+            // Write remaining bytes individually
+            let byte_memarg = Memarg {
+                offset: 0,
+                align: 1,
+            };
+            for j in written_in_chunk..bytes_to_write {
+                memory
+                    .store(&byte_memarg, (buf_ptr + j as u32) as i32, data_slice[j])
+                    .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            }
+
+            total_written += bytes_to_write as u32;
+            data_offset += bytes_to_write;
+        }
+
+        let total_read = total_written;
+
+        // Write the total number of bytes read to nread_ptr
+        let nread_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&nread_memarg, nread_ptr as i32, total_read)
+            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+
+        Ok(0)
     }
 
     pub fn proc_exit(&self, exit_code: ExitCode) -> WasiResult<i32> {
