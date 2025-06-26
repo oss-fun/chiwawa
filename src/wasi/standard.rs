@@ -2,6 +2,7 @@ use super::context::*;
 use super::*;
 use crate::execution::mem::MemAddr;
 use crate::structure::instructions::Memarg;
+use getrandom::getrandom;
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 
@@ -132,9 +133,28 @@ impl StandardWasiImpl {
         std::process::exit(exit_code);
     }
 
-    pub fn random_get(&self, _memory: &MemAddr, _buf_ptr: Ptr, _buf_len: Size) -> WasiResult<i32> {
-        eprintln!("WASI random_get called - exiting for debugging");
-        std::process::exit(1);
+    pub fn random_get(&self, memory: &MemAddr, buf_ptr: Ptr, buf_len: Size) -> WasiResult<i32> {
+        if buf_len == 0 {
+            return Ok(0);
+        }
+
+        // Generate random bytes
+        let mut random_bytes = vec![0u8; buf_len as usize];
+        getrandom(&mut random_bytes).map_err(|_| WasiError::IoError)?;
+
+        // Write random bytes to WebAssembly memory
+        let byte_memarg = Memarg {
+            offset: 0,
+            align: 1,
+        };
+
+        for (i, &byte) in random_bytes.iter().enumerate() {
+            memory
+                .store(&byte_memarg, (buf_ptr + i as u32) as i32, byte)
+                .map_err(|_| WasiError::MemoryAccessError)?;
+        }
+
+        Ok(0)
     }
 
     pub fn fd_close(&self, _fd: Fd) -> WasiResult<i32> {
