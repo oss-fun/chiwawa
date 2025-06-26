@@ -291,21 +291,104 @@ impl StandardWasiImpl {
 
     pub fn environ_get(
         &self,
-        _memory: &MemAddr,
-        _environ_ptr: Ptr,
-        _environ_buf_ptr: Ptr,
+        memory: &MemAddr,
+        environ_ptr: Ptr,
+        environ_buf_ptr: Ptr,
     ) -> WasiResult<i32> {
-        eprintln!("WASI environ_get called - exiting for debugging");
-        std::process::exit(1);
+        // Collect all environment variables
+        let env_vars: Vec<String> = std::env::vars()
+            .map(|(key, value)| format!("{}={}", key, value))
+            .collect();
+
+        let mut buf_offset = 0u32;
+        let ptr_size = 4u32; // 32-bit pointers
+
+        for (i, env_var) in env_vars.iter().enumerate() {
+            let env_bytes = env_var.as_bytes();
+
+            // Write pointer to environ_ptr array
+            let ptr_addr = environ_ptr + (i as u32 * ptr_size);
+            let string_addr = environ_buf_ptr + buf_offset;
+
+            let ptr_memarg = Memarg {
+                offset: 0,
+                align: 4,
+            };
+            memory
+                .store(&ptr_memarg, ptr_addr as i32, string_addr)
+                .map_err(|_| WasiError::MemoryAccessError)?;
+
+            // Write environment variable string to buffer
+            let byte_memarg = Memarg {
+                offset: 0,
+                align: 1,
+            };
+
+            for (j, &byte) in env_bytes.iter().enumerate() {
+                memory
+                    .store(&byte_memarg, (string_addr + j as u32) as i32, byte)
+                    .map_err(|_| WasiError::MemoryAccessError)?;
+            }
+
+            // Write null terminator
+            memory
+                .store(
+                    &byte_memarg,
+                    (string_addr + env_bytes.len() as u32) as i32,
+                    0u8,
+                )
+                .map_err(|_| WasiError::MemoryAccessError)?;
+
+            buf_offset += env_bytes.len() as u32 + 1; // +1 for null terminator
+        }
+
+        // Write null pointer at the end of environ_ptr array
+        let final_ptr_addr = environ_ptr + (env_vars.len() as u32 * ptr_size);
+        let ptr_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&ptr_memarg, final_ptr_addr as i32, 0u32)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
     }
 
     pub fn environ_sizes_get(
         &self,
-        _memory: &MemAddr,
-        _environ_count_ptr: Ptr,
-        _environ_buf_size_ptr: Ptr,
+        memory: &MemAddr,
+        environ_count_ptr: Ptr,
+        environ_buf_size_ptr: Ptr,
     ) -> WasiResult<i32> {
-        eprintln!("WASI environ_sizes_get called - exiting for debugging");
-        std::process::exit(1);
+        let env_vars: Vec<String> = std::env::vars()
+            .map(|(key, value)| format!("{}={}", key, value))
+            .collect();
+
+        let environ_count = env_vars.len() as u32;
+        let environ_buf_size: u32 = env_vars
+            .iter()
+            .map(|env_var| env_var.len() as u32 + 1) // +1 for null terminator
+            .sum();
+
+        // Write environment variable count
+        let count_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&count_memarg, environ_count_ptr as i32, environ_count)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        // Write total buffer size needed
+        let size_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&size_memarg, environ_buf_size_ptr as i32, environ_buf_size)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
     }
 }
