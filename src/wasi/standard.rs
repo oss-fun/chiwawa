@@ -129,11 +129,7 @@ impl StandardWasiImpl {
     }
 
     pub fn proc_exit(&self, exit_code: ExitCode) -> WasiResult<i32> {
-        eprintln!(
-            "WASI proc_exit called with code {} - exiting for debugging",
-            exit_code
-        );
-        std::process::exit(1);
+        std::process::exit(exit_code);
     }
 
     pub fn random_get(&self, _memory: &MemAddr, _buf_ptr: Ptr, _buf_len: Size) -> WasiResult<i32> {
