@@ -284,9 +284,20 @@ impl StandardWasiImpl {
         Ok(0)
     }
 
-    pub fn fd_close(&self, _fd: Fd) -> WasiResult<i32> {
-        eprintln!("WASI fd_close called - exiting for debugging");
-        std::process::exit(1);
+    pub fn fd_close(&self, fd: Fd) -> WasiResult<i32> {
+        match fd {
+            0 | 1 | 2 => {
+                // Standard file descriptors (stdin, stdout, stderr)
+                // These are always open and cannot be closed in this simple implementation
+                // Return success to maintain compatibility
+                Ok(0)
+            }
+            _ => {
+                // Other file descriptors - not implemented yet
+                // In a full implementation, this would close files opened with path_open
+                Err(WasiError::BadFileDescriptor)
+            }
+        }
     }
 
     pub fn environ_get(
