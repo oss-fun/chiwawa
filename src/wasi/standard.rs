@@ -2,7 +2,8 @@ use super::context::*;
 use super::*;
 use crate::execution::mem::MemAddr;
 use crate::structure::instructions::Memarg;
-use std::io::{self, Write};
+use getrandom::getrandom;
+use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
 
 /// Standard WASI implementation
@@ -118,51 +119,287 @@ impl StandardWasiImpl {
 
     pub fn fd_read(
         &self,
-        _memory: &MemAddr,
-        _fd: Fd,
-        _iovs_ptr: Ptr,
-        _iovs_len: Size,
-        _nread_ptr: Ptr,
+        memory: &MemAddr,
+        fd: Fd,
+        iovs_ptr: Ptr,
+        iovs_len: Size,
+        nread_ptr: Ptr,
     ) -> WasiResult<i32> {
-        eprintln!("WASI fd_read called - exiting for debugging");
-        std::process::exit(1);
+        match fd {
+            0 => {
+                // stdin - proceed with reading
+            }
+            1 | 2 => {
+                // stdout and stderr - not readable
+                return Err(super::error::WasiError::BadFileDescriptor);
+            }
+            _ => {
+                // Other file descriptors - not implemented yet
+                return Err(super::error::WasiError::NotImplemented);
+            }
+        }
+
+        // Collect all iovec information first
+        let mut iovecs = Vec::new();
+        let mut total_buf_size = 0u32;
+
+        for i in 0..iovs_len {
+            // Each iovec is 8 bytes: buf_ptr (4 bytes) + buf_len (4 bytes)
+            let iovec_offset = iovs_ptr + (i * 8);
+
+            // Read buf_ptr (first 4 bytes of iovec)
+            let buf_ptr_memarg = Memarg {
+                offset: 0,
+                align: 4,
+            };
+            let buf_ptr: u32 = memory
+                .load(&buf_ptr_memarg, iovec_offset as i32)
+                .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+
+            // Read buf_len (next 4 bytes of iovec)
+            let buf_len_memarg = Memarg {
+                offset: 0,
+                align: 4,
+            };
+            let buf_len: u32 = memory
+                .load(&buf_len_memarg, (iovec_offset + 4) as i32)
+                .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+
+            if buf_len > 0 {
+                iovecs.push((buf_ptr, buf_len));
+                total_buf_size += buf_len;
+            }
+        }
+
+        if total_buf_size == 0 {
+            let nread_memarg = Memarg {
+                offset: 0,
+                align: 4,
+            };
+            memory
+                .store(&nread_memarg, nread_ptr as i32, 0u32)
+                .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            return Ok(0);
+        }
+
+        // Read data from stdin in one operation (like POSIX readv)
+        let mut input_buffer = vec![0u8; total_buf_size as usize];
+        let bytes_read = io::stdin()
+            .read(&mut input_buffer)
+            .map_err(|_| super::error::WasiError::IoError)?;
+
+        let mut total_written = 0u32;
+        let mut data_offset = 0usize;
+
+        for (buf_ptr, buf_len) in iovecs {
+            if data_offset >= bytes_read {
+                break;
+            }
+
+            let bytes_to_write = std::cmp::min(buf_len as usize, bytes_read - data_offset);
+
+            let data_slice = &input_buffer[data_offset..data_offset + bytes_to_write];
+
+            // Write all bytes at once using multiple store operations in chunks
+            const CHUNK_SIZE: usize = 4;
+            let mut written_in_chunk = 0;
+
+            while written_in_chunk + CHUNK_SIZE <= bytes_to_write {
+                let chunk_data = u32::from_le_bytes([
+                    data_slice[written_in_chunk],
+                    data_slice[written_in_chunk + 1],
+                    data_slice[written_in_chunk + 2],
+                    data_slice[written_in_chunk + 3],
+                ]);
+
+                let u32_memarg = Memarg {
+                    offset: 0,
+                    align: 4,
+                };
+                memory
+                    .store(
+                        &u32_memarg,
+                        (buf_ptr + written_in_chunk as u32) as i32,
+                        chunk_data,
+                    )
+                    .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+
+                written_in_chunk += CHUNK_SIZE;
+            }
+
+            // Write remaining bytes individually
+            let byte_memarg = Memarg {
+                offset: 0,
+                align: 1,
+            };
+            for j in written_in_chunk..bytes_to_write {
+                memory
+                    .store(&byte_memarg, (buf_ptr + j as u32) as i32, data_slice[j])
+                    .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            }
+
+            total_written += bytes_to_write as u32;
+            data_offset += bytes_to_write;
+        }
+
+        let total_read = total_written;
+
+        // Write the total number of bytes read to nread_ptr
+        let nread_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&nread_memarg, nread_ptr as i32, total_read)
+            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+
+        Ok(0)
     }
 
     pub fn proc_exit(&self, exit_code: ExitCode) -> WasiResult<i32> {
-        eprintln!(
-            "WASI proc_exit called with code {} - exiting for debugging",
-            exit_code
-        );
-        std::process::exit(1);
+        std::process::exit(exit_code);
     }
 
-    pub fn random_get(&self, _memory: &MemAddr, _buf_ptr: Ptr, _buf_len: Size) -> WasiResult<i32> {
-        eprintln!("WASI random_get called - exiting for debugging");
-        std::process::exit(1);
+    pub fn random_get(&self, memory: &MemAddr, buf_ptr: Ptr, buf_len: Size) -> WasiResult<i32> {
+        if buf_len == 0 {
+            return Ok(0);
+        }
+
+        // Generate random bytes
+        let mut random_bytes = vec![0u8; buf_len as usize];
+        getrandom(&mut random_bytes).map_err(|_| WasiError::IoError)?;
+
+        // Write random bytes to WebAssembly memory
+        let byte_memarg = Memarg {
+            offset: 0,
+            align: 1,
+        };
+
+        for (i, &byte) in random_bytes.iter().enumerate() {
+            memory
+                .store(&byte_memarg, (buf_ptr + i as u32) as i32, byte)
+                .map_err(|_| WasiError::MemoryAccessError)?;
+        }
+
+        Ok(0)
     }
 
-    pub fn fd_close(&self, _fd: Fd) -> WasiResult<i32> {
-        eprintln!("WASI fd_close called - exiting for debugging");
-        std::process::exit(1);
+    pub fn fd_close(&self, fd: Fd) -> WasiResult<i32> {
+        match fd {
+            0 | 1 | 2 => {
+                // Standard file descriptors (stdin, stdout, stderr)
+                // These are always open and cannot be closed in this simple implementation
+                // Return success to maintain compatibility
+                Ok(0)
+            }
+            _ => {
+                // Other file descriptors - not implemented yet
+                // In a full implementation, this would close files opened with path_open
+                Err(WasiError::BadFileDescriptor)
+            }
+        }
     }
 
     pub fn environ_get(
         &self,
-        _memory: &MemAddr,
-        _environ_ptr: Ptr,
-        _environ_buf_ptr: Ptr,
+        memory: &MemAddr,
+        environ_ptr: Ptr,
+        environ_buf_ptr: Ptr,
     ) -> WasiResult<i32> {
-        eprintln!("WASI environ_get called - exiting for debugging");
-        std::process::exit(1);
+        // Collect all environment variables
+        let env_vars: Vec<String> = std::env::vars()
+            .map(|(key, value)| format!("{}={}", key, value))
+            .collect();
+
+        let mut buf_offset = 0u32;
+        let ptr_size = 4u32; // 32-bit pointers
+
+        for (i, env_var) in env_vars.iter().enumerate() {
+            let env_bytes = env_var.as_bytes();
+
+            // Write pointer to environ_ptr array
+            let ptr_addr = environ_ptr + (i as u32 * ptr_size);
+            let string_addr = environ_buf_ptr + buf_offset;
+
+            let ptr_memarg = Memarg {
+                offset: 0,
+                align: 4,
+            };
+            memory
+                .store(&ptr_memarg, ptr_addr as i32, string_addr)
+                .map_err(|_| WasiError::MemoryAccessError)?;
+
+            // Write environment variable string to buffer
+            let byte_memarg = Memarg {
+                offset: 0,
+                align: 1,
+            };
+
+            for (j, &byte) in env_bytes.iter().enumerate() {
+                memory
+                    .store(&byte_memarg, (string_addr + j as u32) as i32, byte)
+                    .map_err(|_| WasiError::MemoryAccessError)?;
+            }
+
+            // Write null terminator
+            memory
+                .store(
+                    &byte_memarg,
+                    (string_addr + env_bytes.len() as u32) as i32,
+                    0u8,
+                )
+                .map_err(|_| WasiError::MemoryAccessError)?;
+
+            buf_offset += env_bytes.len() as u32 + 1; // +1 for null terminator
+        }
+
+        // Write null pointer at the end of environ_ptr array
+        let final_ptr_addr = environ_ptr + (env_vars.len() as u32 * ptr_size);
+        let ptr_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&ptr_memarg, final_ptr_addr as i32, 0u32)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
     }
 
     pub fn environ_sizes_get(
         &self,
-        _memory: &MemAddr,
-        _environ_count_ptr: Ptr,
-        _environ_buf_size_ptr: Ptr,
+        memory: &MemAddr,
+        environ_count_ptr: Ptr,
+        environ_buf_size_ptr: Ptr,
     ) -> WasiResult<i32> {
-        eprintln!("WASI environ_sizes_get called - exiting for debugging");
-        std::process::exit(1);
+        let env_vars: Vec<String> = std::env::vars()
+            .map(|(key, value)| format!("{}={}", key, value))
+            .collect();
+
+        let environ_count = env_vars.len() as u32;
+        let environ_buf_size: u32 = env_vars
+            .iter()
+            .map(|env_var| env_var.len() as u32 + 1) // +1 for null terminator
+            .sum();
+
+        // Write environment variable count
+        let count_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&count_memarg, environ_count_ptr as i32, environ_count)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        // Write total buffer size needed
+        let size_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&size_memarg, environ_buf_size_ptr as i32, environ_buf_size)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
     }
 }
