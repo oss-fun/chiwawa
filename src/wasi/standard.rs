@@ -402,4 +402,95 @@ impl StandardWasiImpl {
 
         Ok(0)
     }
+
+    pub fn args_get(&self, memory: &MemAddr, argv_ptr: Ptr, argv_buf_ptr: Ptr) -> WasiResult<i32> {
+        let args: Vec<String> = std::env::args().collect();
+
+        let mut buf_offset = 0u32;
+        let ptr_size = 4u32; // 32-bit pointers
+
+        // Write argument strings to buffer and pointers to pointer array
+        for (i, arg) in args.iter().enumerate() {
+            let arg_bytes = arg.as_bytes();
+
+            // Write pointer to argv_ptr array
+            let ptr_addr = argv_ptr + (i as u32 * ptr_size);
+            let string_addr = argv_buf_ptr + buf_offset;
+
+            let ptr_memarg = Memarg {
+                offset: 0,
+                align: 4,
+            };
+            memory
+                .store(&ptr_memarg, ptr_addr as i32, string_addr)
+                .map_err(|_| WasiError::MemoryAccessError)?;
+
+            // Write argument string to buffer
+            let byte_memarg = Memarg {
+                offset: 0,
+                align: 1,
+            };
+
+            for (j, &byte) in arg_bytes.iter().enumerate() {
+                memory
+                    .store(&byte_memarg, (string_addr + j as u32) as i32, byte)
+                    .map_err(|_| WasiError::MemoryAccessError)?;
+            }
+
+            // Write null terminator
+            memory
+                .store(
+                    &byte_memarg,
+                    (string_addr + arg_bytes.len() as u32) as i32,
+                    0u8,
+                )
+                .map_err(|_| WasiError::MemoryAccessError)?;
+
+            buf_offset += arg_bytes.len() as u32 + 1;
+        }
+
+        // Write null pointer at the end of argv_ptr array
+        let final_ptr_addr = argv_ptr + (args.len() as u32 * ptr_size);
+        let ptr_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&ptr_memarg, final_ptr_addr as i32, 0u32)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
+    }
+
+    pub fn args_sizes_get(
+        &self,
+        memory: &MemAddr,
+        argc_ptr: Ptr,
+        argv_buf_size_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        let args: Vec<String> = std::env::args().collect();
+
+        let argc = args.len() as u32;
+        let argv_buf_size: u32 = args.iter().map(|arg| arg.len() as u32 + 1).sum();
+
+        // Write argument count
+        let count_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&count_memarg, argc_ptr as i32, argc)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        // Write total buffer size needed
+        let size_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&size_memarg, argv_buf_size_ptr as i32, argv_buf_size)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
+    }
 }

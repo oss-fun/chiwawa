@@ -372,6 +372,28 @@ impl Runtime {
                     wasi_impl.environ_sizes_get(memory, environ_count_ptr, environ_buf_size_ptr)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
+            WasiFuncType::ArgsGet => {
+                if params.len() != 2 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let argv_ptr = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let argv_buf_ptr =
+                    params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result = wasi_impl.args_get(memory, argv_ptr, argv_buf_ptr)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::ArgsSizesGet => {
+                if params.len() != 2 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let argc_ptr = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let argv_buf_size_ptr =
+                    params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result = wasi_impl.args_sizes_get(memory, argc_ptr, argv_buf_size_ptr)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
             _ => Err(WasiError::NotImplemented),
         }
     }
