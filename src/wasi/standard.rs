@@ -493,4 +493,82 @@ impl StandardWasiImpl {
 
         Ok(0)
     }
+
+    pub fn clock_time_get(
+        &self,
+        memory: &MemAddr,
+        clock_id: i32,
+        _precision: i64,
+        time_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        // WASI clock IDs (from WASI specification)
+        // 0: CLOCK_REALTIME - Wall clock time
+        // 1: CLOCK_MONOTONIC - Monotonic time since some unspecified starting point
+        // 2: CLOCK_PROCESS_CPUTIME_ID - CPU time consumed by this process
+        // 3: CLOCK_THREAD_CPUTIME_ID - CPU time consumed by this thread
+
+        let time_ns = match clock_id {
+            0 | 1 => {
+                // Use system time for both realtime and monotonic (simplified)
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let duration = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| WasiError::IoError)?;
+
+                // Convert to nanoseconds
+                duration.as_secs() * 1_000_000_000 + duration.subsec_nanos() as u64
+            }
+            2 | 3 => {
+                // Process/thread CPU time - not implemented in WASI
+                return Err(WasiError::NotImplemented);
+            }
+            _ => {
+                return Err(WasiError::InvalidArgument);
+            }
+        };
+
+        // Write timestamp (64-bit nanoseconds) to memory
+        let time_memarg = Memarg {
+            offset: 0,
+            align: 8,
+        };
+        memory
+            .store(&time_memarg, time_ptr as i32, time_ns as i64)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
+    }
+
+    pub fn clock_res_get(
+        &self,
+        memory: &MemAddr,
+        clock_id: i32,
+        resolution_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        // Clock resolution in nanoseconds
+        let resolution_ns = match clock_id {
+            0 | 1 => {
+                // System clock resolution - typically 1 microsecond
+                1_000u64 // 1 microsecond in nanoseconds
+            }
+            2 | 3 => {
+                // Process/thread CPU time resolution - not implemented in WASI
+                return Err(WasiError::NotImplemented);
+            }
+            _ => {
+                return Err(WasiError::InvalidArgument);
+            }
+        };
+
+        // Write resolution (64-bit nanoseconds) to memory
+        let res_memarg = Memarg {
+            offset: 0,
+            align: 8,
+        };
+        memory
+            .store(&res_memarg, resolution_ptr as i32, resolution_ns as i64)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
+    }
 }

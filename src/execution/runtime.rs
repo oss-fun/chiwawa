@@ -394,6 +394,28 @@ impl Runtime {
                 let result = wasi_impl.args_sizes_get(memory, argc_ptr, argv_buf_size_ptr)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
+            WasiFuncType::ClockTimeGet => {
+                if params.len() != 3 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let clock_id = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+                let precision = params[1].to_i64().map_err(|_| WasiError::InvalidArgument)?;
+                let time_ptr = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result = wasi_impl.clock_time_get(memory, clock_id, precision, time_ptr)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::ClockResGet => {
+                if params.len() != 2 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let clock_id = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+                let resolution_ptr =
+                    params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result = wasi_impl.clock_res_get(memory, clock_id, resolution_ptr)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
             _ => Err(WasiError::NotImplemented),
         }
     }
