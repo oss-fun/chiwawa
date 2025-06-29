@@ -3,18 +3,29 @@ use super::*;
 use crate::execution::mem::MemAddr;
 use crate::structure::instructions::Memarg;
 use getrandom::getrandom;
+use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
 
 /// Standard WASI implementation
 pub struct StandardWasiImpl {
     context: Arc<Mutex<WasiContext>>,
+    preopen_dirs: HashMap<Fd, String>,
 }
 
 impl StandardWasiImpl {
-    pub fn new() -> Self {
+    pub fn new(preopen_paths: Vec<String>) -> Self {
+        let mut preopen_dirs = HashMap::new();
+
+        // Assign FDs starting from 3 (after stdin=0, stdout=1, stderr=2)
+        for (index, path) in preopen_paths.iter().enumerate() {
+            let fd = 3 + index as Fd;
+            preopen_dirs.insert(fd, path.clone());
+        }
+
         Self {
             context: Arc::new(Mutex::new(WasiContext::new())),
+            preopen_dirs,
         }
     }
 
@@ -569,6 +580,75 @@ impl StandardWasiImpl {
             .store(&res_memarg, resolution_ptr as i32, resolution_ns as i64)
             .map_err(|_| WasiError::MemoryAccessError)?;
 
+        Ok(0)
+    }
+
+    /// Get directory name for a preopen directory FD from our mapping
+    fn get_preopen_dir_name(&self, fd: Fd) -> Result<String, WasiError> {
+        if let Some(path) = self.preopen_dirs.get(&fd) {
+            Ok(path.clone())
+        } else {
+            Err(WasiError::BadFileDescriptor)
+        }
+    }
+
+    pub fn fd_prestat_get(&self, memory: &MemAddr, fd: Fd, prestat_ptr: Ptr) -> WasiResult<i32> {
+        // Get the directory name to determine name length
+        let dir_name = self.get_preopen_dir_name(fd)?;
+        let name_len = dir_name.len() as u32;
+
+        // Write prestat structure to memory
+        // prestat structure: tag (u8) + padding (3 bytes) + union (depends on tag)
+        // For PREOPENTYPE_DIR (tag=0): u32 name_len
+
+        let tag_memarg = Memarg {
+            offset: 0,
+            align: 1,
+        };
+        // Write tag = 0 (PREOPENTYPE_DIR)
+        memory
+            .store(&tag_memarg, prestat_ptr as i32, 0u8)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        let name_len_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        // Write name length at offset 4 (after tag + 3 bytes padding)
+        memory
+            .store(&name_len_memarg, (prestat_ptr + 4) as i32, name_len)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
+    }
+
+    pub fn fd_prestat_dir_name(
+        &self,
+        memory: &MemAddr,
+        fd: Fd,
+        path_ptr: Ptr,
+        path_len: Size,
+    ) -> WasiResult<i32> {
+        // Get the directory name
+        let dir_name = self.get_preopen_dir_name(fd)?;
+        let dir_bytes = dir_name.as_bytes();
+
+        // Check if provided buffer is large enough
+        if path_len < dir_bytes.len() as u32 {
+            return Err(WasiError::InvalidArgument);
+        }
+
+        let byte_memarg = Memarg {
+            offset: 0,
+            align: 1,
+        };
+
+        // Write directory name to memory
+        for (i, &byte) in dir_bytes.iter().enumerate() {
+            memory
+                .store(&byte_memarg, (path_ptr + i as u32) as i32, byte)
+                .map_err(|_| WasiError::MemoryAccessError)?;
+        }
         Ok(0)
     }
 }

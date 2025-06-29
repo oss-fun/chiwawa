@@ -43,7 +43,11 @@ impl GetInstanceByIdx<GlobalIdx> for Vec<GlobalAddr> {}
 pub type ImportObjects = HashMap<String, HashMap<String, Externval>>;
 
 impl ModuleInst {
-    pub fn new(module: &Module, imports: ImportObjects) -> Result<Arc<ModuleInst>, RuntimeError> {
+    pub fn new(
+        module: &Module,
+        imports: ImportObjects,
+        preopen_dirs: Vec<String>,
+    ) -> Result<Arc<ModuleInst>, RuntimeError> {
         let mut module_inst = ModuleInst {
             types: module.types.clone(),
             func_addrs: Vec::new(),
@@ -64,7 +68,7 @@ impl ModuleInst {
             .any(|import| matches!(import.desc, ImportDesc::WasiFunc(_)));
 
         if needs_wasi {
-            module_inst.wasi_impl = Some(Arc::new(StandardWasiImpl::new()));
+            module_inst.wasi_impl = Some(Arc::new(StandardWasiImpl::new(preopen_dirs)));
         }
 
         /*Import processing*/

@@ -416,6 +416,28 @@ impl Runtime {
                 let result = wasi_impl.clock_res_get(memory, clock_id, resolution_ptr)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
+            WasiFuncType::FdPrestatGet => {
+                if params.len() != 2 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+                let prestat_ptr =
+                    params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result = wasi_impl.fd_prestat_get(memory, fd, prestat_ptr)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::FdPrestatDirName => {
+                if params.len() != 3 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+                let path_ptr = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let path_len = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result = wasi_impl.fd_prestat_dir_name(memory, fd, path_ptr, path_len)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
             _ => Err(WasiError::NotImplemented),
         }
     }
