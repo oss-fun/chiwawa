@@ -150,6 +150,7 @@ fn parse_wasi_function(name: &str) -> Option<WasiFuncType> {
         "args_sizes_get" => Some(WasiFuncType::ArgsSizesGet),
         "clock_time_get" => Some(WasiFuncType::ClockTimeGet),
         "clock_res_get" => Some(WasiFuncType::ClockResGet),
+        "sched_yield" => Some(WasiFuncType::SchedYield),
         _ => None,
     }
 }

@@ -86,6 +86,7 @@ pub enum WasiFuncType {
     ArgsSizesGet,
     ClockTimeGet,
     ClockResGet,
+    SchedYield,
 }
 
 impl WasiFuncType {
@@ -181,6 +182,10 @@ impl WasiFuncType {
                     ValueType::NumType(NumType::I32),
                     ValueType::NumType(NumType::I32),
                 ],
+                results: vec![ValueType::NumType(NumType::I32)],
+            },
+            WasiFuncType::SchedYield => FuncType {
+                params: vec![],
                 results: vec![ValueType::NumType(NumType::I32)],
             },
         }

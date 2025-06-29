@@ -438,6 +438,14 @@ impl Runtime {
                 let result = wasi_impl.fd_prestat_dir_name(memory, fd, path_ptr, path_len)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
+            WasiFuncType::SchedYield => {
+                if params.len() != 0 {
+                    return Err(WasiError::InvalidArgument);
+                }
+
+                let result = wasi_impl.sched_yield()?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
             _ => Err(WasiError::NotImplemented),
         }
     }

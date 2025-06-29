@@ -651,4 +651,9 @@ impl StandardWasiImpl {
         }
         Ok(0)
     }
+
+    pub fn sched_yield(&self) -> WasiResult<i32> {
+        std::thread::yield_now();
+        Ok(0)
+    }
 }
