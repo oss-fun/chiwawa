@@ -87,6 +87,7 @@ pub enum WasiFuncType {
     ClockTimeGet,
     ClockResGet,
     SchedYield,
+    FdFdstatGet,
 }
 
 impl WasiFuncType {
@@ -186,6 +187,13 @@ impl WasiFuncType {
             },
             WasiFuncType::SchedYield => FuncType {
                 params: vec![],
+                results: vec![ValueType::NumType(NumType::I32)],
+            },
+            WasiFuncType::FdFdstatGet => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I32),
+                ],
                 results: vec![ValueType::NumType(NumType::I32)],
             },
         }

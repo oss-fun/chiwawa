@@ -656,4 +656,106 @@ impl StandardWasiImpl {
         std::thread::yield_now();
         Ok(0)
     }
+
+    pub fn fd_fdstat_get(&self, memory: &MemAddr, fd: Fd, stat_ptr: Ptr) -> WasiResult<i32> {
+        // File types (WASI spec)
+        const FILETYPE_REGULAR_FILE: u8 = 4;
+        const FILETYPE_CHARACTER_DEVICE: u8 = 2;
+        const FILETYPE_UNKNOWN: u8 = 0;
+
+        // FD flags (simplified)
+        const NO_FLAGS: u16 = 0;
+        const FDFLAGS_APPEND: u16 = 0x0001;
+        const FDFLAGS_DSYNC: u16 = 0x0002;
+        const FDFLAGS_NONBLOCK: u16 = 0x0004;
+        const FDFLAGS_SYNC: u16 = 0x0010;
+
+        // Rights (simplified set of common rights)
+        const NO_INHERITING_RIGHTS: u64 = 0;
+        const RIGHTS_FD_READ: u64 = 0x0000000000000002;
+        const RIGHTS_FD_WRITE: u64 = 0x0000000000000040;
+
+        let (filetype, flags, rights_base, rights_inheriting) = match fd {
+            0 => {
+                // stdin - character device, readable
+                (
+                    FILETYPE_CHARACTER_DEVICE,
+                    NO_FLAGS,
+                    RIGHTS_FD_READ,
+                    NO_INHERITING_RIGHTS,
+                )
+            }
+            1 | 2 => {
+                // stdout/stderr - character device, writable
+                (
+                    FILETYPE_CHARACTER_DEVICE,
+                    NO_FLAGS,
+                    RIGHTS_FD_WRITE,
+                    NO_INHERITING_RIGHTS,
+                )
+            }
+            _ => {
+                if self.preopen_dirs.contains_key(&fd) {
+                    (
+                        FILETYPE_REGULAR_FILE,
+                        NO_FLAGS,
+                        RIGHTS_FD_READ | RIGHTS_FD_WRITE,
+                        RIGHTS_FD_READ | RIGHTS_FD_WRITE,
+                    )
+                } else {
+                    return Err(WasiError::BadFileDescriptor);
+                }
+            }
+        };
+
+        // Write fdstat structure to memory
+        // Structure layout: filetype(u8) + flags(u16) + rights_base(u64) + rights_inheriting(u64)
+        // Total size: 1 + 2 + 8 + 8 = 19 bytes, but with alignment it's typically 24 bytes
+
+        // Write filetype (u8)
+        let filetype_memarg = Memarg {
+            offset: 0,
+            align: 1,
+        };
+        memory
+            .store(&filetype_memarg, stat_ptr as i32, filetype)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        // Write flags (u16) at offset 2 (with padding)
+        let flags_memarg = Memarg {
+            offset: 0,
+            align: 2,
+        };
+        memory
+            .store(&flags_memarg, (stat_ptr + 2) as i32, flags)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        // Write rights_base (u64) at offset 8
+        let rights_base_memarg = Memarg {
+            offset: 0,
+            align: 8,
+        };
+        memory
+            .store(
+                &rights_base_memarg,
+                (stat_ptr + 8) as i32,
+                rights_base as i64,
+            )
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        // Write rights_inheriting (u64) at offset 16
+        let rights_inheriting_memarg = Memarg {
+            offset: 0,
+            align: 8,
+        };
+        memory
+            .store(
+                &rights_inheriting_memarg,
+                (stat_ptr + 16) as i32,
+                rights_inheriting as i64,
+            )
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
+    }
 }
