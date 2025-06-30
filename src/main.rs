@@ -23,6 +23,9 @@ struct Cli {
     invoke: String,
     #[arg(short, long, value_delimiter = ',', num_args = 0..)]
     params: Option<Vec<String>>,
+    /// Preopen directories for WASI (format: "/path/to/dir")
+    #[arg(long, value_delimiter = ',', num_args = 0..)]
+    preopen: Option<Vec<String>>,
 }
 
 fn parse_params(params: Vec<String>) -> Vec<Val> {
@@ -80,7 +83,8 @@ fn main() -> Result<()> {
     let mut module = Module::new("test");
     let _ = parser::parse_bytecode(&mut module, &cli.wasm_file);
     let imports: ImportObjects = HashMap::new();
-    let inst = ModuleInst::new(&module, imports).unwrap();
+    let preopen_dirs = cli.preopen.unwrap_or_default();
+    let inst = ModuleInst::new(&module, imports, preopen_dirs).unwrap();
 
     if let Some(restore_path) = cli.restore {
         println!("Restoring from checkpoint: {}", restore_path);

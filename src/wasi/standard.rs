@@ -3,18 +3,29 @@ use super::*;
 use crate::execution::mem::MemAddr;
 use crate::structure::instructions::Memarg;
 use getrandom::getrandom;
+use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
 
 /// Standard WASI implementation
 pub struct StandardWasiImpl {
     context: Arc<Mutex<WasiContext>>,
+    preopen_dirs: HashMap<Fd, String>,
 }
 
 impl StandardWasiImpl {
-    pub fn new() -> Self {
+    pub fn new(preopen_paths: Vec<String>) -> Self {
+        let mut preopen_dirs = HashMap::new();
+
+        // Assign FDs starting from 3 (after stdin=0, stdout=1, stderr=2)
+        for (index, path) in preopen_paths.iter().enumerate() {
+            let fd = 3 + index as Fd;
+            preopen_dirs.insert(fd, path.clone());
+        }
+
         Self {
             context: Arc::new(Mutex::new(WasiContext::new())),
+            preopen_dirs,
         }
     }
 
@@ -398,6 +409,351 @@ impl StandardWasiImpl {
         };
         memory
             .store(&size_memarg, environ_buf_size_ptr as i32, environ_buf_size)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
+    }
+
+    pub fn args_get(&self, memory: &MemAddr, argv_ptr: Ptr, argv_buf_ptr: Ptr) -> WasiResult<i32> {
+        let args: Vec<String> = std::env::args().collect();
+
+        let mut buf_offset = 0u32;
+        let ptr_size = 4u32; // 32-bit pointers
+
+        // Write argument strings to buffer and pointers to pointer array
+        for (i, arg) in args.iter().enumerate() {
+            let arg_bytes = arg.as_bytes();
+
+            // Write pointer to argv_ptr array
+            let ptr_addr = argv_ptr + (i as u32 * ptr_size);
+            let string_addr = argv_buf_ptr + buf_offset;
+
+            let ptr_memarg = Memarg {
+                offset: 0,
+                align: 4,
+            };
+            memory
+                .store(&ptr_memarg, ptr_addr as i32, string_addr)
+                .map_err(|_| WasiError::MemoryAccessError)?;
+
+            // Write argument string to buffer
+            let byte_memarg = Memarg {
+                offset: 0,
+                align: 1,
+            };
+
+            for (j, &byte) in arg_bytes.iter().enumerate() {
+                memory
+                    .store(&byte_memarg, (string_addr + j as u32) as i32, byte)
+                    .map_err(|_| WasiError::MemoryAccessError)?;
+            }
+
+            // Write null terminator
+            memory
+                .store(
+                    &byte_memarg,
+                    (string_addr + arg_bytes.len() as u32) as i32,
+                    0u8,
+                )
+                .map_err(|_| WasiError::MemoryAccessError)?;
+
+            buf_offset += arg_bytes.len() as u32 + 1;
+        }
+
+        // Write null pointer at the end of argv_ptr array
+        let final_ptr_addr = argv_ptr + (args.len() as u32 * ptr_size);
+        let ptr_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&ptr_memarg, final_ptr_addr as i32, 0u32)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
+    }
+
+    pub fn args_sizes_get(
+        &self,
+        memory: &MemAddr,
+        argc_ptr: Ptr,
+        argv_buf_size_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        let args: Vec<String> = std::env::args().collect();
+
+        let argc = args.len() as u32;
+        let argv_buf_size: u32 = args.iter().map(|arg| arg.len() as u32 + 1).sum();
+
+        // Write argument count
+        let count_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&count_memarg, argc_ptr as i32, argc)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        // Write total buffer size needed
+        let size_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&size_memarg, argv_buf_size_ptr as i32, argv_buf_size)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
+    }
+
+    pub fn clock_time_get(
+        &self,
+        memory: &MemAddr,
+        clock_id: i32,
+        _precision: i64,
+        time_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        // WASI clock IDs (from WASI specification)
+        // 0: CLOCK_REALTIME - Wall clock time
+        // 1: CLOCK_MONOTONIC - Monotonic time since some unspecified starting point
+        // 2: CLOCK_PROCESS_CPUTIME_ID - CPU time consumed by this process
+        // 3: CLOCK_THREAD_CPUTIME_ID - CPU time consumed by this thread
+
+        let time_ns = match clock_id {
+            0 | 1 => {
+                // Use system time for both realtime and monotonic (simplified)
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let duration = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| WasiError::IoError)?;
+
+                // Convert to nanoseconds
+                duration.as_secs() * 1_000_000_000 + duration.subsec_nanos() as u64
+            }
+            2 | 3 => {
+                // Process/thread CPU time - not implemented in WASI
+                return Err(WasiError::NotImplemented);
+            }
+            _ => {
+                return Err(WasiError::InvalidArgument);
+            }
+        };
+
+        // Write timestamp (64-bit nanoseconds) to memory
+        let time_memarg = Memarg {
+            offset: 0,
+            align: 8,
+        };
+        memory
+            .store(&time_memarg, time_ptr as i32, time_ns as i64)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
+    }
+
+    pub fn clock_res_get(
+        &self,
+        memory: &MemAddr,
+        clock_id: i32,
+        resolution_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        // Clock resolution in nanoseconds
+        let resolution_ns = match clock_id {
+            0 | 1 => {
+                // System clock resolution - typically 1 microsecond
+                1_000u64 // 1 microsecond in nanoseconds
+            }
+            2 | 3 => {
+                // Process/thread CPU time resolution - not implemented in WASI
+                return Err(WasiError::NotImplemented);
+            }
+            _ => {
+                return Err(WasiError::InvalidArgument);
+            }
+        };
+
+        // Write resolution (64-bit nanoseconds) to memory
+        let res_memarg = Memarg {
+            offset: 0,
+            align: 8,
+        };
+        memory
+            .store(&res_memarg, resolution_ptr as i32, resolution_ns as i64)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
+    }
+
+    /// Get directory name for a preopen directory FD from our mapping
+    fn get_preopen_dir_name(&self, fd: Fd) -> Result<String, WasiError> {
+        if let Some(path) = self.preopen_dirs.get(&fd) {
+            Ok(path.clone())
+        } else {
+            Err(WasiError::BadFileDescriptor)
+        }
+    }
+
+    pub fn fd_prestat_get(&self, memory: &MemAddr, fd: Fd, prestat_ptr: Ptr) -> WasiResult<i32> {
+        // Get the directory name to determine name length
+        let dir_name = self.get_preopen_dir_name(fd)?;
+        let name_len = dir_name.len() as u32;
+
+        // Write prestat structure to memory
+        // prestat structure: tag (u8) + padding (3 bytes) + union (depends on tag)
+        // For PREOPENTYPE_DIR (tag=0): u32 name_len
+
+        let tag_memarg = Memarg {
+            offset: 0,
+            align: 1,
+        };
+        // Write tag = 0 (PREOPENTYPE_DIR)
+        memory
+            .store(&tag_memarg, prestat_ptr as i32, 0u8)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        let name_len_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        // Write name length at offset 4 (after tag + 3 bytes padding)
+        memory
+            .store(&name_len_memarg, (prestat_ptr + 4) as i32, name_len)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
+    }
+
+    pub fn fd_prestat_dir_name(
+        &self,
+        memory: &MemAddr,
+        fd: Fd,
+        path_ptr: Ptr,
+        path_len: Size,
+    ) -> WasiResult<i32> {
+        // Get the directory name
+        let dir_name = self.get_preopen_dir_name(fd)?;
+        let dir_bytes = dir_name.as_bytes();
+
+        // Check if provided buffer is large enough
+        if path_len < dir_bytes.len() as u32 {
+            return Err(WasiError::InvalidArgument);
+        }
+
+        let byte_memarg = Memarg {
+            offset: 0,
+            align: 1,
+        };
+
+        // Write directory name to memory
+        for (i, &byte) in dir_bytes.iter().enumerate() {
+            memory
+                .store(&byte_memarg, (path_ptr + i as u32) as i32, byte)
+                .map_err(|_| WasiError::MemoryAccessError)?;
+        }
+        Ok(0)
+    }
+
+    pub fn sched_yield(&self) -> WasiResult<i32> {
+        std::thread::yield_now();
+        Ok(0)
+    }
+
+    pub fn fd_fdstat_get(&self, memory: &MemAddr, fd: Fd, stat_ptr: Ptr) -> WasiResult<i32> {
+        // File types (WASI spec)
+        const FILETYPE_REGULAR_FILE: u8 = 4;
+        const FILETYPE_CHARACTER_DEVICE: u8 = 2;
+        const FILETYPE_UNKNOWN: u8 = 0;
+
+        // FD flags (simplified)
+        const NO_FLAGS: u16 = 0;
+        const FDFLAGS_APPEND: u16 = 0x0001;
+        const FDFLAGS_DSYNC: u16 = 0x0002;
+        const FDFLAGS_NONBLOCK: u16 = 0x0004;
+        const FDFLAGS_SYNC: u16 = 0x0010;
+
+        // Rights (simplified set of common rights)
+        const NO_INHERITING_RIGHTS: u64 = 0;
+        const RIGHTS_FD_READ: u64 = 0x0000000000000002;
+        const RIGHTS_FD_WRITE: u64 = 0x0000000000000040;
+
+        let (filetype, flags, rights_base, rights_inheriting) = match fd {
+            0 => {
+                // stdin - character device, readable
+                (
+                    FILETYPE_CHARACTER_DEVICE,
+                    NO_FLAGS,
+                    RIGHTS_FD_READ,
+                    NO_INHERITING_RIGHTS,
+                )
+            }
+            1 | 2 => {
+                // stdout/stderr - character device, writable
+                (
+                    FILETYPE_CHARACTER_DEVICE,
+                    NO_FLAGS,
+                    RIGHTS_FD_WRITE,
+                    NO_INHERITING_RIGHTS,
+                )
+            }
+            _ => {
+                if self.preopen_dirs.contains_key(&fd) {
+                    (
+                        FILETYPE_REGULAR_FILE,
+                        NO_FLAGS,
+                        RIGHTS_FD_READ | RIGHTS_FD_WRITE,
+                        RIGHTS_FD_READ | RIGHTS_FD_WRITE,
+                    )
+                } else {
+                    return Err(WasiError::BadFileDescriptor);
+                }
+            }
+        };
+
+        // Write fdstat structure to memory
+        // Structure layout: filetype(u8) + flags(u16) + rights_base(u64) + rights_inheriting(u64)
+        // Total size: 1 + 2 + 8 + 8 = 19 bytes, but with alignment it's typically 24 bytes
+
+        // Write filetype (u8)
+        let filetype_memarg = Memarg {
+            offset: 0,
+            align: 1,
+        };
+        memory
+            .store(&filetype_memarg, stat_ptr as i32, filetype)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        // Write flags (u16) at offset 2 (with padding)
+        let flags_memarg = Memarg {
+            offset: 0,
+            align: 2,
+        };
+        memory
+            .store(&flags_memarg, (stat_ptr + 2) as i32, flags)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        // Write rights_base (u64) at offset 8
+        let rights_base_memarg = Memarg {
+            offset: 0,
+            align: 8,
+        };
+        memory
+            .store(
+                &rights_base_memarg,
+                (stat_ptr + 8) as i32,
+                rights_base as i64,
+            )
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        // Write rights_inheriting (u64) at offset 16
+        let rights_inheriting_memarg = Memarg {
+            offset: 0,
+            align: 8,
+        };
+        memory
+            .store(
+                &rights_inheriting_memarg,
+                (stat_ptr + 16) as i32,
+                rights_inheriting as i64,
+            )
             .map_err(|_| WasiError::MemoryAccessError)?;
 
         Ok(0)
