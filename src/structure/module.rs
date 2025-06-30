@@ -82,6 +82,11 @@ pub enum WasiFuncType {
     FdClose,
     EnvironGet,
     EnvironSizesGet,
+    ArgsGet,
+    ArgsSizesGet,
+    ClockTimeGet,
+    ClockResGet,
+    SchedYield,
 }
 
 impl WasiFuncType {
@@ -148,6 +153,39 @@ impl WasiFuncType {
                     ValueType::NumType(NumType::I32),
                     ValueType::NumType(NumType::I32),
                 ],
+                results: vec![ValueType::NumType(NumType::I32)],
+            },
+            WasiFuncType::ArgsGet => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I32),
+                ],
+                results: vec![ValueType::NumType(NumType::I32)],
+            },
+            WasiFuncType::ArgsSizesGet => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I32),
+                ],
+                results: vec![ValueType::NumType(NumType::I32)],
+            },
+            WasiFuncType::ClockTimeGet => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I64),
+                    ValueType::NumType(NumType::I32),
+                ],
+                results: vec![ValueType::NumType(NumType::I32)],
+            },
+            WasiFuncType::ClockResGet => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32),
+                    ValueType::NumType(NumType::I32),
+                ],
+                results: vec![ValueType::NumType(NumType::I32)],
+            },
+            WasiFuncType::SchedYield => FuncType {
+                params: vec![],
                 results: vec![ValueType::NumType(NumType::I32)],
             },
         }
