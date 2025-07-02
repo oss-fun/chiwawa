@@ -4,13 +4,28 @@ use crate::execution::mem::MemAddr;
 use crate::structure::instructions::Memarg;
 use getrandom::getrandom;
 use std::collections::HashMap;
-use std::io::{self, Read, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+/// Opened file information
+#[derive(Debug)]
+pub struct OpenFile {
+    pub file: Option<File>, // None for directories
+    pub path: PathBuf,
+    pub flags: u32,
+    pub rights_base: u64,
+    pub rights_inheriting: u64,
+    pub is_directory: bool,
+}
 
 /// Standard WASI implementation
 pub struct StandardWasiImpl {
     context: Arc<Mutex<WasiContext>>,
     preopen_dirs: HashMap<Fd, String>,
+    opened_files: Arc<Mutex<HashMap<Fd, OpenFile>>>,
+    next_fd: Arc<Mutex<Fd>>,
 }
 
 impl StandardWasiImpl {
@@ -23,9 +38,14 @@ impl StandardWasiImpl {
             preopen_dirs.insert(fd, path.clone());
         }
 
+        // Next available FD starts after preopen directories
+        let next_fd = 3 + preopen_paths.len() as Fd;
+
         Self {
             context: Arc::new(Mutex::new(WasiContext::new())),
             preopen_dirs,
+            opened_files: Arc::new(Mutex::new(HashMap::new())),
+            next_fd: Arc::new(Mutex::new(next_fd)),
         }
     }
 
@@ -754,6 +774,165 @@ impl StandardWasiImpl {
                 (stat_ptr + 16) as i32,
                 rights_inheriting as i64,
             )
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
+    }
+
+    pub fn path_open(
+        &self,
+        memory: &MemAddr,
+        fd: Fd,
+        dirflags: u32,
+        path_ptr: Ptr,
+        path_len: Size,
+        oflags: u32,
+        fs_rights_base: u64,
+        fs_rights_inheriting: u64,
+        fdflags: u32,
+        opened_fd_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        // WASI dirflags constants
+        const LOOKUPFLAGS_SYMLINK_FOLLOW: u32 = 0x0001;
+        
+        // WASI oflags constants
+        const OFLAGS_CREAT: u32 = 0x0001;
+        const OFLAGS_DIRECTORY: u32 = 0x0002;
+        const OFLAGS_EXCL: u32 = 0x0004;
+        const OFLAGS_TRUNC: u32 = 0x0008;
+
+        // Read path string from memory
+        let mut path_bytes = vec![0u8; path_len as usize];
+        for i in 0..path_len {
+            let byte: u8 = memory
+                .load(
+                    &Memarg {
+                        offset: 0,
+                        align: 1,
+                    },
+                    (path_ptr + i) as i32,
+                )
+                .map_err(|_| WasiError::MemoryAccessError)?;
+            path_bytes[i as usize] = byte;
+        }
+        let path_str = String::from_utf8(path_bytes).map_err(|_| WasiError::InvalidArgument)?;
+
+        // Resolve base directory
+        let base_dir = if let Some(preopen_path) = self.preopen_dirs.get(&fd) {
+            PathBuf::from(preopen_path)
+        } else {
+            return Err(WasiError::BadFileDescriptor);
+        };
+
+        // Construct full path
+        let mut full_path = base_dir.join(&path_str);
+
+        // Handle symbolic link resolution based on dirflags
+        let follow_symlinks = dirflags & LOOKUPFLAGS_SYMLINK_FOLLOW != 0;
+        
+        if follow_symlinks {
+            full_path = full_path.canonicalize().map_err(|e| match e.kind() {
+                io::ErrorKind::NotFound => WasiError::NoSuchFileOrDirectory,
+                io::ErrorKind::PermissionDenied => WasiError::NotPermitted,
+                _ => WasiError::Io,
+            })?;
+        } else {
+            if full_path.is_symlink() {
+                if !full_path.exists() {
+                    return Err(WasiError::NoSuchFileOrDirectory);
+                }
+            }
+        }
+
+        // Validate path is within base directory
+        if !full_path.starts_with(&base_dir) {
+            return Err(WasiError::NotPermitted);
+        }
+
+        let is_directory_request = oflags & OFLAGS_DIRECTORY != 0;
+
+        // Validate path exists
+        if !follow_symlinks && !full_path.exists() {
+            return Err(WasiError::NoSuchFileOrDirectory);
+        }
+
+        // Validate it's actually a directory
+        if is_directory_request {
+            if !full_path.is_dir() {
+                return Err(WasiError::NotDirectory);
+            }
+        }
+
+        let (file_handle, is_directory) = if is_directory_request {
+            (None, true)
+        } else {
+            let mut open_options = OpenOptions::new();
+
+            // Read/write permissions based on rights
+            const RIGHTS_FD_READ: u64 = 0x0000000000000002;
+            const RIGHTS_FD_WRITE: u64 = 0x0000000000000040;
+
+            if fs_rights_base & RIGHTS_FD_READ != 0 {
+                open_options.read(true);
+            }
+            if fs_rights_base & RIGHTS_FD_WRITE != 0 {
+                open_options.write(true);
+            }
+
+            if oflags & OFLAGS_CREAT != 0 {
+                open_options.create(true);
+            }
+            if oflags & OFLAGS_EXCL != 0 {
+                open_options.create_new(true);
+            }
+            if oflags & OFLAGS_TRUNC != 0 {
+                open_options.truncate(true);
+            }
+
+            // Append mode based on fdflags
+            const FDFLAGS_APPEND: u32 = 0x0001;
+            if fdflags & FDFLAGS_APPEND != 0 {
+                open_options.append(true);
+            }
+
+            // Open the file
+            let file = open_options.open(&full_path).map_err(|e| match e.kind() {
+                io::ErrorKind::NotFound => WasiError::NoSuchFileOrDirectory,
+                io::ErrorKind::PermissionDenied => WasiError::NotPermitted,
+                io::ErrorKind::AlreadyExists => WasiError::Exist,
+                _ => WasiError::Io,
+            })?;
+
+            (Some(file), false)
+        };
+
+        // Allocate new file descriptor
+        let mut next_fd_guard = self.next_fd.lock().unwrap();
+        let new_fd = *next_fd_guard;
+        *next_fd_guard += 1;
+        drop(next_fd_guard);
+
+        // Store opened file
+        let open_file = OpenFile {
+            file: file_handle,
+            path: full_path,
+            flags: fdflags,
+            rights_base: fs_rights_base,
+            rights_inheriting: fs_rights_inheriting,
+            is_directory,
+        };
+
+        let mut opened_files = self.opened_files.lock().unwrap();
+        opened_files.insert(new_fd, open_file);
+        drop(opened_files);
+
+        // Write result FD to memory
+        let fd_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&fd_memarg, opened_fd_ptr as i32, new_fd)
             .map_err(|_| WasiError::MemoryAccessError)?;
 
         Ok(0)

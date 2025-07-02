@@ -88,6 +88,7 @@ pub enum WasiFuncType {
     ClockResGet,
     SchedYield,
     FdFdstatGet,
+    PathOpen,
 }
 
 impl WasiFuncType {
@@ -193,6 +194,20 @@ impl WasiFuncType {
                 params: vec![
                     ValueType::NumType(NumType::I32),
                     ValueType::NumType(NumType::I32),
+                ],
+                results: vec![ValueType::NumType(NumType::I32)],
+            },
+            WasiFuncType::PathOpen => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd (base directory)
+                    ValueType::NumType(NumType::I32), // dirflags
+                    ValueType::NumType(NumType::I32), // path ptr
+                    ValueType::NumType(NumType::I32), // path len
+                    ValueType::NumType(NumType::I32), // oflags
+                    ValueType::NumType(NumType::I64), // fs_rights_base
+                    ValueType::NumType(NumType::I64), // fs_rights_inheriting
+                    ValueType::NumType(NumType::I32), // fdflags
+                    ValueType::NumType(NumType::I32), // opened_fd ptr
                 ],
                 results: vec![ValueType::NumType(NumType::I32)],
             },

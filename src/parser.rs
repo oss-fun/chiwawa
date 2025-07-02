@@ -152,6 +152,7 @@ fn parse_wasi_function(name: &str) -> Option<WasiFuncType> {
         "clock_res_get" => Some(WasiFuncType::ClockResGet),
         "sched_yield" => Some(WasiFuncType::SchedYield),
         "fd_fdstat_get" => Some(WasiFuncType::FdFdstatGet),
+        "path_open" => Some(WasiFuncType::PathOpen),
         _ => None,
     }
 }
