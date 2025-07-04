@@ -794,7 +794,7 @@ impl StandardWasiImpl {
     ) -> WasiResult<i32> {
         // WASI dirflags constants
         const LOOKUPFLAGS_SYMLINK_FOLLOW: u32 = 0x0001;
-        
+
         // WASI oflags constants
         const OFLAGS_CREAT: u32 = 0x0001;
         const OFLAGS_DIRECTORY: u32 = 0x0002;
@@ -829,7 +829,7 @@ impl StandardWasiImpl {
 
         // Handle symbolic link resolution based on dirflags
         let follow_symlinks = dirflags & LOOKUPFLAGS_SYMLINK_FOLLOW != 0;
-        
+
         if follow_symlinks {
             full_path = full_path.canonicalize().map_err(|e| match e.kind() {
                 io::ErrorKind::NotFound => WasiError::NoSuchFileOrDirectory,
