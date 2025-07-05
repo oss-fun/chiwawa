@@ -487,6 +487,17 @@ impl Runtime {
                 )?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
+            WasiFuncType::FdSeek => {
+                if params.len() != 3 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+                let offset = params[1].to_i64().map_err(|_| WasiError::InvalidArgument)?;
+                let whence = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result = wasi_impl.fd_seek(fd, offset, whence)?;
+                Ok(Some(Val::Num(Num::I64(result as i64))))
+            }
             _ => Err(WasiError::NotImplemented),
         }
     }

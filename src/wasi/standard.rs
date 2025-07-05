@@ -18,6 +18,7 @@ pub struct OpenFile {
     pub rights_base: u64,
     pub rights_inheriting: u64,
     pub is_directory: bool,
+    pub seek_position: u64, // Current seek position
 }
 
 /// Standard WASI implementation
@@ -920,6 +921,7 @@ impl StandardWasiImpl {
             rights_base: fs_rights_base,
             rights_inheriting: fs_rights_inheriting,
             is_directory,
+            seek_position: 0, // Start at beginning of file
         };
 
         let mut opened_files = self.opened_files.lock().unwrap();
@@ -936,5 +938,70 @@ impl StandardWasiImpl {
             .map_err(|_| WasiError::MemoryAccessError)?;
 
         Ok(0)
+    }
+
+    pub fn fd_seek(&self, fd: Fd, offset: i64, whence: u32) -> WasiResult<u64> {
+        // WASI whence constants
+        const WHENCE_SET: u32 = 0; // Seek from beginning of file
+        const WHENCE_CUR: u32 = 1; // Seek from current position
+        const WHENCE_END: u32 = 2; // Seek from end of file
+
+        // Check if fd is a standard stream (not seekable)
+        if fd <= 2 {
+            return Err(WasiError::InvalidArgument);
+        }
+
+        // Get the opened file
+        let mut opened_files = self.opened_files.lock().unwrap();
+        let open_file = opened_files
+            .get_mut(&fd)
+            .ok_or(WasiError::BadFileDescriptor)?;
+
+        // Check if it's a directory (not seekable)
+        if open_file.is_directory {
+            return Err(WasiError::InvalidArgument);
+        }
+
+        // Get the file handle
+        let file = open_file
+            .file
+            .as_mut()
+            .ok_or(WasiError::BadFileDescriptor)?;
+
+        // Calculate new position based on whence
+        let new_position = match whence {
+            WHENCE_SET => {
+                // Seek from beginning
+                if offset < 0 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                offset as u64
+            }
+            WHENCE_CUR => {
+                // Seek from current position
+                let current_pos = open_file.seek_position;
+                current_pos
+                    .checked_add_signed(offset)
+                    .ok_or(WasiError::InvalidArgument)?
+            }
+            WHENCE_END => {
+                // Seek from end of file
+                let file_size = file.metadata().map_err(|_| WasiError::Io)?.len();
+                file_size
+                    .checked_add_signed(offset)
+                    .ok_or(WasiError::InvalidArgument)?
+            }
+            _ => return Err(WasiError::InvalidArgument),
+        };
+
+        // Perform the seek operation
+        file.seek(SeekFrom::Start(new_position))
+            .map_err(|_| WasiError::Io)?;
+
+        // Update our tracked position
+        open_file.seek_position = new_position;
+
+        // Return the new position
+        Ok(new_position)
     }
 }

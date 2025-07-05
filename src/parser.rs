@@ -153,6 +153,7 @@ fn parse_wasi_function(name: &str) -> Option<WasiFuncType> {
         "sched_yield" => Some(WasiFuncType::SchedYield),
         "fd_fdstat_get" => Some(WasiFuncType::FdFdstatGet),
         "path_open" => Some(WasiFuncType::PathOpen),
+        "fd_seek" => Some(WasiFuncType::FdSeek),
         _ => None,
     }
 }
