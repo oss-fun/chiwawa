@@ -785,13 +785,11 @@ impl StandardWasiImpl {
         memory: &MemAddr,
         fd: Fd,
         dirflags: u32,
-        path_ptr: Ptr,
-        path_len: Size,
+        path: Ptr,
         oflags: u32,
         fs_rights_base: u64,
         fs_rights_inheriting: u64,
         fdflags: u32,
-        opened_fd_ptr: Ptr,
     ) -> WasiResult<i32> {
         // WASI dirflags constants
         const LOOKUPFLAGS_SYMLINK_FOLLOW: u32 = 0x0001;
@@ -802,19 +800,30 @@ impl StandardWasiImpl {
         const OFLAGS_EXCL: u32 = 0x0004;
         const OFLAGS_TRUNC: u32 = 0x0008;
 
-        // Read path string from memory
-        let mut path_bytes = vec![0u8; path_len as usize];
-        for i in 0..path_len {
+        // Read null-terminated path string from memory
+        let mut path_bytes = Vec::new();
+        let mut i = 0;
+        loop {
             let byte: u8 = memory
                 .load(
                     &Memarg {
                         offset: 0,
                         align: 1,
                     },
-                    (path_ptr + i) as i32,
+                    (path + i) as i32,
                 )
                 .map_err(|_| WasiError::MemoryAccessError)?;
-            path_bytes[i as usize] = byte;
+
+            if byte == 0 {
+                break; // Null terminator found
+            }
+            path_bytes.push(byte);
+            i += 1;
+
+            // Safety limit to prevent infinite loop
+            if i > 4096 {
+                return Err(WasiError::InvalidArgument);
+            }
         }
         let path_str = String::from_utf8(path_bytes).map_err(|_| WasiError::InvalidArgument)?;
 
@@ -928,16 +937,8 @@ impl StandardWasiImpl {
         opened_files.insert(new_fd, open_file);
         drop(opened_files);
 
-        // Write result FD to memory
-        let fd_memarg = Memarg {
-            offset: 0,
-            align: 4,
-        };
-        memory
-            .store(&fd_memarg, opened_fd_ptr as i32, new_fd)
-            .map_err(|_| WasiError::MemoryAccessError)?;
-
-        Ok(0)
+        // Return the new file descriptor directly
+        Ok(new_fd)
     }
 
     pub fn fd_seek(&self, fd: Fd, offset: i64, whence: u32) -> WasiResult<u64> {
