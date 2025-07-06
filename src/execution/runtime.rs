@@ -457,28 +457,33 @@ impl Runtime {
                 Ok(Some(Val::Num(Num::I32(result))))
             }
             WasiFuncType::PathOpen => {
-                if params.len() != 7 {
+                if params.len() != 9 {
                     return Err(WasiError::InvalidArgument);
                 }
                 let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
                 let dirflags = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
-                let path = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
-                let oflags = params[3].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let path_ptr = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let path_len = params[3].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let oflags = params[4].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
                 let fs_rights_base =
-                    params[4].to_i64().map_err(|_| WasiError::InvalidArgument)? as u64;
-                let fs_rights_inheriting =
                     params[5].to_i64().map_err(|_| WasiError::InvalidArgument)? as u64;
-                let fdflags = params[6].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let fs_rights_inheriting =
+                    params[6].to_i64().map_err(|_| WasiError::InvalidArgument)? as u64;
+                let fdflags = params[7].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let opened_fd_ptr =
+                    params[8].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
 
                 let result = wasi_impl.path_open(
                     memory,
                     fd,
                     dirflags,
-                    path,
+                    path_ptr,
+                    path_len,
                     oflags,
                     fs_rights_base,
                     fs_rights_inheriting,
                     fdflags,
+                    opened_fd_ptr,
                 )?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
