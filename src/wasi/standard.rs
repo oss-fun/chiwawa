@@ -58,10 +58,27 @@ impl StandardWasiImpl {
         iovs_len: Size,
         nwritten_ptr: Ptr,
     ) -> WasiResult<i32> {
-        // Validate file descriptor (only support stdout=1 and stderr=2 for now)
-        if fd != 1 && fd != 2 {
-            return Err(super::error::WasiError::BadFileDescriptor);
-        }
+        let is_stdout_stderr = match fd {
+            0 => {
+                return Err(super::error::WasiError::BadFileDescriptor);
+            }
+            1 | 2 => true,
+            _ => {
+                if self.preopen_dirs.contains_key(&fd) {
+                    return Err(super::error::WasiError::BadFileDescriptor);
+                }
+
+                let opened_files = self.opened_files.lock().unwrap();
+                if let Some(open_file) = opened_files.get(&fd) {
+                    if open_file.is_directory {
+                        return Err(super::error::WasiError::BadFileDescriptor);
+                    }
+                    false
+                } else {
+                    return Err(super::error::WasiError::BadFileDescriptor);
+                }
+            }
+        };
 
         let mut total_written = 0u32;
 
@@ -107,34 +124,63 @@ impl StandardWasiImpl {
             }
 
             // Write to appropriate file descriptor
-            let bytes_written = match fd {
-                1 => {
-                    // stdout
-                    io::stdout()
+            let bytes_written = if is_stdout_stderr {
+                match fd {
+                    1 => io::stdout()
                         .write(&data)
-                        .map_err(|_| super::error::WasiError::IoError)?
-                }
-                2 => {
-                    // stderr
-                    io::stderr()
+                        .map_err(|_| super::error::WasiError::IoError)?,
+                    2 => io::stderr()
                         .write(&data)
-                        .map_err(|_| super::error::WasiError::IoError)?
+                        .map_err(|_| super::error::WasiError::IoError)?,
+                    _ => unreachable!(),
                 }
-                _ => unreachable!(),
+            } else {
+                let mut opened_files = self.opened_files.lock().unwrap();
+                if let Some(open_file) = opened_files.get_mut(&fd) {
+                    if let Some(ref mut file) = open_file.file {
+                        // Set seek position if needed
+                        file.seek(SeekFrom::Start(open_file.seek_position))
+                            .map_err(|_| super::error::WasiError::IoError)?;
+
+                        // Write data
+                        let written = file
+                            .write(&data)
+                            .map_err(|_| super::error::WasiError::IoError)?;
+
+                        // Update seek position
+                        open_file.seek_position += written as u64;
+
+                        written
+                    } else {
+                        return Err(super::error::WasiError::BadFileDescriptor);
+                    }
+                } else {
+                    return Err(super::error::WasiError::BadFileDescriptor);
+                }
             };
 
             total_written += bytes_written as u32;
         }
 
         // Flush output to ensure data is written
-        match fd {
-            1 => io::stdout()
-                .flush()
-                .map_err(|_| super::error::WasiError::IoError)?,
-            2 => io::stderr()
-                .flush()
-                .map_err(|_| super::error::WasiError::IoError)?,
-            _ => unreachable!(),
+        if is_stdout_stderr {
+            match fd {
+                1 => io::stdout()
+                    .flush()
+                    .map_err(|_| super::error::WasiError::IoError)?,
+                2 => io::stderr()
+                    .flush()
+                    .map_err(|_| super::error::WasiError::IoError)?,
+                _ => unreachable!(),
+            }
+        } else {
+            let opened_files = self.opened_files.lock().unwrap();
+            if let Some(open_file) = opened_files.get(&fd) {
+                if let Some(ref file) = open_file.file {
+                    file.sync_all()
+                        .map_err(|_| super::error::WasiError::IoError)?;
+                }
+            }
         }
 
         // Write the total number of bytes written to nwritten_ptr
