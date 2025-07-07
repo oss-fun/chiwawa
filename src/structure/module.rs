@@ -91,6 +91,7 @@ pub enum WasiFuncType {
     PathOpen,
     FdSeek,
     FdTell,
+    FdSync,
 }
 
 impl WasiFuncType {
@@ -225,6 +226,12 @@ impl WasiFuncType {
                 params: vec![
                     ValueType::NumType(NumType::I32), // fd
                     ValueType::NumType(NumType::I32), // offset_ptr
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::FdSync => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
                 ],
                 results: vec![ValueType::NumType(NumType::I32)], // Returns error code
             },

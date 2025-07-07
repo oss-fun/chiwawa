@@ -508,6 +508,15 @@ impl Runtime {
                 let result = wasi_impl.fd_tell(memory, fd, offset_ptr)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
+            WasiFuncType::FdSync => {
+                if params.len() != 1 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+
+                let result = wasi_impl.fd_sync(fd)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
             _ => Err(WasiError::NotImplemented),
         }
     }

@@ -155,6 +155,7 @@ fn parse_wasi_function(name: &str) -> Option<WasiFuncType> {
         "path_open" => Some(WasiFuncType::PathOpen),
         "fd_seek" => Some(WasiFuncType::FdSeek),
         "fd_tell" => Some(WasiFuncType::FdTell),
+        "fd_sync" => Some(WasiFuncType::FdSync),
         _ => None,
     }
 }

@@ -1080,4 +1080,39 @@ impl StandardWasiImpl {
 
         Ok(0)
     }
+
+    pub fn fd_sync(&self, fd: Fd) -> WasiResult<i32> {
+        match fd {
+            0 => {
+                return Err(WasiError::BadFileDescriptor);
+            }
+            1 => {
+                io::stdout().flush().map_err(|_| WasiError::IoError)?;
+                return Ok(0);
+            }
+            2 => {
+                io::stderr().flush().map_err(|_| WasiError::IoError)?;
+                return Ok(0);
+            }
+            _ => {}
+        }
+
+        if self.preopen_dirs.contains_key(&fd) {
+            return Err(WasiError::BadFileDescriptor);
+        }
+
+        let opened_files = self.opened_files.lock().unwrap();
+        let open_file = opened_files.get(&fd).ok_or(WasiError::BadFileDescriptor)?;
+
+        if open_file.is_directory {
+            return Err(WasiError::BadFileDescriptor);
+        }
+
+        if let Some(ref file) = open_file.file {
+            file.sync_all().map_err(|_| WasiError::IoError)?;
+            Ok(0)
+        } else {
+            Err(WasiError::BadFileDescriptor)
+        }
+    }
 }
