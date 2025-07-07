@@ -320,14 +320,22 @@ impl StandardWasiImpl {
         match fd {
             0 | 1 | 2 => {
                 // Standard file descriptors (stdin, stdout, stderr)
-                // These are always open and cannot be closed in this simple implementation
-                // Return success to maintain compatibility
                 Ok(0)
             }
             _ => {
-                // Other file descriptors - not implemented yet
-                // In a full implementation, this would close files opened with path_open
-                Err(WasiError::BadFileDescriptor)
+                if self.preopen_dirs.contains_key(&fd) {
+                    return Err(WasiError::BadFileDescriptor);
+                }
+
+                let mut opened_files = self.opened_files.lock().unwrap();
+                if let Some(open_file) = opened_files.remove(&fd) {
+                    if let Some(file) = open_file.file {
+                        let _ = file.sync_all();
+                    }
+                    Ok(0)
+                } else {
+                    Err(WasiError::BadFileDescriptor)
+                }
             }
         }
     }
