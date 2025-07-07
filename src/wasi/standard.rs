@@ -1055,4 +1055,29 @@ impl StandardWasiImpl {
         // Return the new position
         Ok(new_position)
     }
+
+    pub fn fd_tell(&self, memory: &MemAddr, fd: Fd, offset_ptr: Ptr) -> WasiResult<i32> {
+        if fd <= 2 {
+            return Err(WasiError::InvalidArgument);
+        }
+
+        let opened_files = self.opened_files.lock().unwrap();
+        let open_file = opened_files.get(&fd).ok_or(WasiError::BadFileDescriptor)?;
+
+        if open_file.is_directory {
+            return Err(WasiError::InvalidArgument);
+        }
+
+        let current_position = open_file.seek_position;
+
+        let offset_memarg = Memarg {
+            offset: 0,
+            align: 8,
+        };
+        memory
+            .store(&offset_memarg, offset_ptr as i32, current_position as i64)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
+    }
 }

@@ -90,6 +90,7 @@ pub enum WasiFuncType {
     FdFdstatGet,
     PathOpen,
     FdSeek,
+    FdTell,
 }
 
 impl WasiFuncType {
@@ -219,6 +220,13 @@ impl WasiFuncType {
                     ValueType::NumType(NumType::I32), // whence
                 ],
                 results: vec![ValueType::NumType(NumType::I64)], // Returns new file position
+            },
+            WasiFuncType::FdTell => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I32), // offset_ptr
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
             },
         }
     }
