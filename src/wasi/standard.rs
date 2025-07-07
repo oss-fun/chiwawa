@@ -301,17 +301,10 @@ impl StandardWasiImpl {
         let mut random_bytes = vec![0u8; buf_len as usize];
         getrandom(&mut random_bytes).map_err(|_| WasiError::IoError)?;
 
-        // Write random bytes to WebAssembly memory
-        let byte_memarg = Memarg {
-            offset: 0,
-            align: 1,
-        };
-
-        for (i, &byte) in random_bytes.iter().enumerate() {
-            memory
-                .store(&byte_memarg, (buf_ptr + i as u32) as i32, byte)
-                .map_err(|_| WasiError::MemoryAccessError)?;
-        }
+        // Write random bytes to WebAssembly memory in bulk
+        memory
+            .store_bytes(buf_ptr as i32, &random_bytes)
+            .map_err(|_| WasiError::MemoryAccessError)?;
 
         Ok(0)
     }

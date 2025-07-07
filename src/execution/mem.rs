@@ -86,6 +86,21 @@ impl MemAddr {
         Ok(guard.data.clone())
     }
 
+    /// Store multiple bytes at once (bulk operation)
+    pub fn store_bytes(&self, ptr: i32, data: &[u8]) -> Result<(), RuntimeError> {
+        let pos = ptr as usize;
+        let mut raw = self.0.write().expect("RwLock poisoned");
+
+        // Bounds check
+        if pos.checked_add(data.len()).unwrap_or(usize::MAX) > raw.data.len() {
+            return Err(RuntimeError::InstructionFailed);
+        }
+
+        // Bulk copy
+        raw.data[pos..pos + data.len()].copy_from_slice(data);
+        Ok(())
+    }
+
     pub fn set_data(&self, data: Vec<u8>) -> Result<(), RuntimeError> {
         let mut guard = self
             .0
