@@ -157,19 +157,30 @@ impl StandardWasiImpl {
         iovs_len: Size,
         nread_ptr: Ptr,
     ) -> WasiResult<i32> {
-        match fd {
-            0 => {
-                // stdin - proceed with reading
-            }
+        // Validate file descriptor and determine source type
+        let is_stdin = match fd {
+            0 => true, // stdin
             1 | 2 => {
                 // stdout and stderr - not readable
                 return Err(super::error::WasiError::BadFileDescriptor);
             }
             _ => {
-                // Other file descriptors - not implemented yet
-                return Err(super::error::WasiError::NotImplemented);
+                if self.preopen_dirs.contains_key(&fd) {
+                    return Err(super::error::WasiError::BadFileDescriptor);
+                }
+
+                // Check if it's an opened file
+                let opened_files = self.opened_files.lock().unwrap();
+                if let Some(open_file) = opened_files.get(&fd) {
+                    if open_file.is_directory {
+                        return Err(super::error::WasiError::BadFileDescriptor);
+                    }
+                    false
+                } else {
+                    return Err(super::error::WasiError::BadFileDescriptor);
+                }
             }
-        }
+        };
 
         // Collect all iovec information first
         let mut iovecs = Vec::new();
@@ -214,11 +225,37 @@ impl StandardWasiImpl {
             return Ok(0);
         }
 
-        // Read data from stdin in one operation (like POSIX readv)
+        // Read data from stdin or file in one operation (like POSIX readv)
         let mut input_buffer = vec![0u8; total_buf_size as usize];
-        let bytes_read = io::stdin()
-            .read(&mut input_buffer)
-            .map_err(|_| super::error::WasiError::IoError)?;
+        let bytes_read = if is_stdin {
+            // Read from stdin
+            io::stdin()
+                .read(&mut input_buffer)
+                .map_err(|_| super::error::WasiError::IoError)?
+        } else {
+            // Read from opened file
+            let mut opened_files = self.opened_files.lock().unwrap();
+            if let Some(open_file) = opened_files.get_mut(&fd) {
+                if let Some(ref mut file) = open_file.file {
+                    // Use seek position if available
+                    use std::io::Seek;
+                    let _ = file.seek(io::SeekFrom::Start(open_file.seek_position));
+
+                    let bytes_read = file
+                        .read(&mut input_buffer)
+                        .map_err(|_| super::error::WasiError::IoError)?;
+
+                    // Update seek position
+                    open_file.seek_position += bytes_read as u64;
+
+                    bytes_read
+                } else {
+                    return Err(super::error::WasiError::BadFileDescriptor);
+                }
+            } else {
+                return Err(super::error::WasiError::BadFileDescriptor);
+            }
+        };
 
         let mut total_written = 0u32;
         let mut data_offset = 0usize;
@@ -232,43 +269,10 @@ impl StandardWasiImpl {
 
             let data_slice = &input_buffer[data_offset..data_offset + bytes_to_write];
 
-            // Write all bytes at once using multiple store operations in chunks
-            const CHUNK_SIZE: usize = 4;
-            let mut written_in_chunk = 0;
-
-            while written_in_chunk + CHUNK_SIZE <= bytes_to_write {
-                let chunk_data = u32::from_le_bytes([
-                    data_slice[written_in_chunk],
-                    data_slice[written_in_chunk + 1],
-                    data_slice[written_in_chunk + 2],
-                    data_slice[written_in_chunk + 3],
-                ]);
-
-                let u32_memarg = Memarg {
-                    offset: 0,
-                    align: 4,
-                };
-                memory
-                    .store(
-                        &u32_memarg,
-                        (buf_ptr + written_in_chunk as u32) as i32,
-                        chunk_data,
-                    )
-                    .map_err(|_| super::error::WasiError::MemoryAccessError)?;
-
-                written_in_chunk += CHUNK_SIZE;
-            }
-
-            // Write remaining bytes individually
-            let byte_memarg = Memarg {
-                offset: 0,
-                align: 1,
-            };
-            for j in written_in_chunk..bytes_to_write {
-                memory
-                    .store(&byte_memarg, (buf_ptr + j as u32) as i32, data_slice[j])
-                    .map_err(|_| super::error::WasiError::MemoryAccessError)?;
-            }
+            // Use bulk write for efficiency
+            memory
+                .store_bytes(buf_ptr as i32, data_slice)
+                .map_err(|_| super::error::WasiError::MemoryAccessError)?;
 
             total_written += bytes_to_write as u32;
             data_offset += bytes_to_write;
