@@ -407,56 +407,31 @@ impl StandardWasiImpl {
             .map(|(key, value)| format!("{}={}", key, value))
             .collect();
 
+        let ptr_size = 4u32;
+
+        let mut ptr_data = Vec::with_capacity((env_vars.len() + 1) * ptr_size as usize);
         let mut buf_offset = 0u32;
-        let ptr_size = 4u32; // 32-bit pointers
 
-        for (i, env_var) in env_vars.iter().enumerate() {
-            let env_bytes = env_var.as_bytes();
-
-            // Write pointer to environ_ptr array
-            let ptr_addr = environ_ptr + (i as u32 * ptr_size);
+        // Calculate pointers and build pointer array
+        for env_var in &env_vars {
             let string_addr = environ_buf_ptr + buf_offset;
+            ptr_data.extend_from_slice(&string_addr.to_le_bytes());
+            buf_offset += env_var.len() as u32 + 1;
+        }
+        ptr_data.extend_from_slice(&0u32.to_le_bytes());
 
-            let ptr_memarg = Memarg {
-                offset: 0,
-                align: 4,
-            };
-            memory
-                .store(&ptr_memarg, ptr_addr as i32, string_addr)
-                .map_err(|_| WasiError::MemoryAccessError)?;
-
-            // Write environment variable string to buffer
-            let byte_memarg = Memarg {
-                offset: 0,
-                align: 1,
-            };
-
-            for (j, &byte) in env_bytes.iter().enumerate() {
-                memory
-                    .store(&byte_memarg, (string_addr + j as u32) as i32, byte)
-                    .map_err(|_| WasiError::MemoryAccessError)?;
-            }
-
-            // Write null terminator
-            memory
-                .store(
-                    &byte_memarg,
-                    (string_addr + env_bytes.len() as u32) as i32,
-                    0u8,
-                )
-                .map_err(|_| WasiError::MemoryAccessError)?;
-
-            buf_offset += env_bytes.len() as u32 + 1; // +1 for null terminator
+        let mut buf_data = Vec::with_capacity(buf_offset as usize);
+        for env_var in &env_vars {
+            buf_data.extend_from_slice(env_var.as_bytes());
+            buf_data.push(0);
         }
 
-        // Write null pointer at the end of environ_ptr array
-        let final_ptr_addr = environ_ptr + (env_vars.len() as u32 * ptr_size);
-        let ptr_memarg = Memarg {
-            offset: 0,
-            align: 4,
-        };
         memory
-            .store(&ptr_memarg, final_ptr_addr as i32, 0u32)
+            .store_bytes(environ_ptr as i32, &ptr_data)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        memory
+            .store_bytes(environ_buf_ptr as i32, &buf_data)
             .map_err(|_| WasiError::MemoryAccessError)?;
 
         Ok(0)
@@ -502,57 +477,31 @@ impl StandardWasiImpl {
     pub fn args_get(&self, memory: &MemAddr, argv_ptr: Ptr, argv_buf_ptr: Ptr) -> WasiResult<i32> {
         let args: Vec<String> = std::env::args().collect();
 
+        let ptr_size = 4u32;
+
+        let mut ptr_data = Vec::with_capacity((args.len() + 1) * ptr_size as usize);
         let mut buf_offset = 0u32;
-        let ptr_size = 4u32; // 32-bit pointers
 
-        // Write argument strings to buffer and pointers to pointer array
-        for (i, arg) in args.iter().enumerate() {
-            let arg_bytes = arg.as_bytes();
-
-            // Write pointer to argv_ptr array
-            let ptr_addr = argv_ptr + (i as u32 * ptr_size);
+        // Calculate pointers and build pointer array
+        for arg in &args {
             let string_addr = argv_buf_ptr + buf_offset;
+            ptr_data.extend_from_slice(&string_addr.to_le_bytes());
+            buf_offset += arg.len() as u32 + 1;
+        }
+        ptr_data.extend_from_slice(&0u32.to_le_bytes());
 
-            let ptr_memarg = Memarg {
-                offset: 0,
-                align: 4,
-            };
-            memory
-                .store(&ptr_memarg, ptr_addr as i32, string_addr)
-                .map_err(|_| WasiError::MemoryAccessError)?;
-
-            // Write argument string to buffer
-            let byte_memarg = Memarg {
-                offset: 0,
-                align: 1,
-            };
-
-            for (j, &byte) in arg_bytes.iter().enumerate() {
-                memory
-                    .store(&byte_memarg, (string_addr + j as u32) as i32, byte)
-                    .map_err(|_| WasiError::MemoryAccessError)?;
-            }
-
-            // Write null terminator
-            memory
-                .store(
-                    &byte_memarg,
-                    (string_addr + arg_bytes.len() as u32) as i32,
-                    0u8,
-                )
-                .map_err(|_| WasiError::MemoryAccessError)?;
-
-            buf_offset += arg_bytes.len() as u32 + 1;
+        let mut buf_data = Vec::with_capacity(buf_offset as usize);
+        for arg in &args {
+            buf_data.extend_from_slice(arg.as_bytes());
+            buf_data.push(0); // null terminator
         }
 
-        // Write null pointer at the end of argv_ptr array
-        let final_ptr_addr = argv_ptr + (args.len() as u32 * ptr_size);
-        let ptr_memarg = Memarg {
-            offset: 0,
-            align: 4,
-        };
         memory
-            .store(&ptr_memarg, final_ptr_addr as i32, 0u32)
+            .store_bytes(argv_ptr as i32, &ptr_data)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        memory
+            .store_bytes(argv_buf_ptr as i32, &buf_data)
             .map_err(|_| WasiError::MemoryAccessError)?;
 
         Ok(0)
@@ -1137,51 +1086,31 @@ impl StandardWasiImpl {
         mtim: u64,
         ctim: u64,
     ) -> WasiResult<()> {
-        let u64_memarg = Memarg {
-            offset: 0,
-            align: 8,
-        };
-        let u32_memarg = Memarg {
-            offset: 0,
-            align: 4,
-        };
+        // Build complete filestat structure in memory (64 bytes)
+        let mut filestat_data = Vec::with_capacity(64);
 
         // filestat layout (64 bytes total):
         // device (u64) - offset 0
-        memory
-            .store(&u64_memarg, filestat_ptr as i32, device as i64)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+        filestat_data.extend_from_slice(&device.to_le_bytes());
         // inode (u64) - offset 8
-        memory
-            .store(&u64_memarg, (filestat_ptr + 8) as i32, inode as i64)
-            .map_err(|_| WasiError::MemoryAccessError)?;
-        // filetype (u8) - offset 16 (stored as u32 for alignment)
-        memory
-            .store(&u32_memarg, (filestat_ptr + 16) as i32, filetype as u32)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+        filestat_data.extend_from_slice(&inode.to_le_bytes());
+        // filetype (u8) - offset 16, stored as u32 for alignment
+        filestat_data.extend_from_slice(&(filetype as u32).to_le_bytes());
         // padding for alignment - offset 20
-        memory
-            .store(&u32_memarg, (filestat_ptr + 20) as i32, 0u32)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+        filestat_data.extend_from_slice(&0u32.to_le_bytes());
         // linkcount (u64) - offset 24
-        memory
-            .store(&u64_memarg, (filestat_ptr + 24) as i32, linkcount as i64)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+        filestat_data.extend_from_slice(&linkcount.to_le_bytes());
         // size (u64) - offset 32
-        memory
-            .store(&u64_memarg, (filestat_ptr + 32) as i32, size as i64)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+        filestat_data.extend_from_slice(&size.to_le_bytes());
         // atim (u64) - offset 40
-        memory
-            .store(&u64_memarg, (filestat_ptr + 40) as i32, atim as i64)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+        filestat_data.extend_from_slice(&atim.to_le_bytes());
         // mtim (u64) - offset 48
-        memory
-            .store(&u64_memarg, (filestat_ptr + 48) as i32, mtim as i64)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+        filestat_data.extend_from_slice(&mtim.to_le_bytes());
         // ctim (u64) - offset 56
+        filestat_data.extend_from_slice(&ctim.to_le_bytes());
+
         memory
-            .store(&u64_memarg, (filestat_ptr + 56) as i32, ctim as i64)
+            .store_bytes(filestat_ptr as i32, &filestat_data)
             .map_err(|_| WasiError::MemoryAccessError)?;
 
         Ok(())
