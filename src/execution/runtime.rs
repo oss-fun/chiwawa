@@ -517,6 +517,17 @@ impl Runtime {
                 let result = wasi_impl.fd_sync(fd)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
+            WasiFuncType::FdFilestatGet => {
+                if params.len() != 2 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+                let filestat_ptr =
+                    params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result = wasi_impl.fd_filestat_get(memory, fd, filestat_ptr)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
             _ => Err(WasiError::NotImplemented),
         }
     }

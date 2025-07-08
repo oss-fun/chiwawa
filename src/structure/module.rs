@@ -92,6 +92,7 @@ pub enum WasiFuncType {
     FdSeek,
     FdTell,
     FdSync,
+    FdFilestatGet,
 }
 
 impl WasiFuncType {
@@ -232,6 +233,13 @@ impl WasiFuncType {
             WasiFuncType::FdSync => FuncType {
                 params: vec![
                     ValueType::NumType(NumType::I32), // fd
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::FdFilestatGet => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I32), // filestat_ptr
                 ],
                 results: vec![ValueType::NumType(NumType::I32)], // Returns error code
             },

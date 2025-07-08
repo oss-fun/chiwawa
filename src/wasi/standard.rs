@@ -21,6 +21,19 @@ pub struct OpenFile {
     pub seek_position: u64, // Current seek position
 }
 
+/// WASI file types
+#[derive(Debug, Clone, Copy)]
+enum WasiFileType {
+    Unknown = 0,
+    BlockDevice = 1,
+    CharacterDevice = 2, // Terminal devices like stdin/stdout/stderr
+    Directory = 3,       // Directory/folder
+    RegularFile = 4,     // Regular files like .txt, .exe, etc.
+    SocketDgram = 5,     // UDP socket
+    SocketStream = 6,    // TCP socket
+    SymbolicLink = 7,    // Symbolic link
+}
+
 /// Standard WASI implementation
 pub struct StandardWasiImpl {
     context: Arc<Mutex<WasiContext>>,
@@ -730,11 +743,6 @@ impl StandardWasiImpl {
     }
 
     pub fn fd_fdstat_get(&self, memory: &MemAddr, fd: Fd, stat_ptr: Ptr) -> WasiResult<i32> {
-        // File types (WASI spec)
-        const FILETYPE_REGULAR_FILE: u8 = 4;
-        const FILETYPE_CHARACTER_DEVICE: u8 = 2;
-        const FILETYPE_UNKNOWN: u8 = 0;
-
         // FD flags (simplified)
         const NO_FLAGS: u16 = 0;
         const FDFLAGS_APPEND: u16 = 0x0001;
@@ -751,7 +759,7 @@ impl StandardWasiImpl {
             0 => {
                 // stdin - character device, readable
                 (
-                    FILETYPE_CHARACTER_DEVICE,
+                    WasiFileType::CharacterDevice as u8,
                     NO_FLAGS,
                     RIGHTS_FD_READ,
                     NO_INHERITING_RIGHTS,
@@ -760,7 +768,7 @@ impl StandardWasiImpl {
             1 | 2 => {
                 // stdout/stderr - character device, writable
                 (
-                    FILETYPE_CHARACTER_DEVICE,
+                    WasiFileType::CharacterDevice as u8,
                     NO_FLAGS,
                     RIGHTS_FD_WRITE,
                     NO_INHERITING_RIGHTS,
@@ -769,7 +777,7 @@ impl StandardWasiImpl {
             _ => {
                 if self.preopen_dirs.contains_key(&fd) {
                     (
-                        FILETYPE_REGULAR_FILE,
+                        WasiFileType::Directory as u8,
                         NO_FLAGS,
                         RIGHTS_FD_READ | RIGHTS_FD_WRITE,
                         RIGHTS_FD_READ | RIGHTS_FD_WRITE,
@@ -1110,6 +1118,186 @@ impl StandardWasiImpl {
 
         if let Some(ref file) = open_file.file {
             file.sync_all().map_err(|_| WasiError::IoError)?;
+            Ok(0)
+        } else {
+            Err(WasiError::BadFileDescriptor)
+        }
+    }
+
+    // Helper function to write filestat structure to memory
+    fn write_filestat_to_memory(
+        memory: &MemAddr,
+        filestat_ptr: Ptr,
+        device: u64,
+        inode: u64,
+        filetype: u8,
+        linkcount: u64,
+        size: u64,
+        atim: u64,
+        mtim: u64,
+        ctim: u64,
+    ) -> WasiResult<()> {
+        let u64_memarg = Memarg {
+            offset: 0,
+            align: 8,
+        };
+        let u32_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+
+        // filestat layout (64 bytes total):
+        // device (u64) - offset 0
+        memory
+            .store(&u64_memarg, filestat_ptr as i32, device as i64)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+        // inode (u64) - offset 8
+        memory
+            .store(&u64_memarg, (filestat_ptr + 8) as i32, inode as i64)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+        // filetype (u8) - offset 16 (stored as u32 for alignment)
+        memory
+            .store(&u32_memarg, (filestat_ptr + 16) as i32, filetype as u32)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+        // padding for alignment - offset 20
+        memory
+            .store(&u32_memarg, (filestat_ptr + 20) as i32, 0u32)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+        // linkcount (u64) - offset 24
+        memory
+            .store(&u64_memarg, (filestat_ptr + 24) as i32, linkcount as i64)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+        // size (u64) - offset 32
+        memory
+            .store(&u64_memarg, (filestat_ptr + 32) as i32, size as i64)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+        // atim (u64) - offset 40
+        memory
+            .store(&u64_memarg, (filestat_ptr + 40) as i32, atim as i64)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+        // mtim (u64) - offset 48
+        memory
+            .store(&u64_memarg, (filestat_ptr + 48) as i32, mtim as i64)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+        // ctim (u64) - offset 56
+        memory
+            .store(&u64_memarg, (filestat_ptr + 56) as i32, ctim as i64)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(())
+    }
+
+    pub fn fd_filestat_get(&self, memory: &MemAddr, fd: Fd, filestat_ptr: Ptr) -> WasiResult<i32> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // Handle standard streams
+        match fd {
+            0 | 1 | 2 => {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64;
+
+                Self::write_filestat_to_memory(
+                    memory,
+                    filestat_ptr,
+                    0,                                   // device
+                    fd as u64,                           // inode (use fd as inode)
+                    WasiFileType::CharacterDevice as u8, // filetype
+                    1,                                   // linkcount
+                    0,                                   // size (0 for streams)
+                    now,                                 // atim
+                    now,                                 // mtim
+                    now,                                 // ctim
+                )?;
+                return Ok(0);
+            }
+            _ => {}
+        }
+
+        // Check if it's a preopen directory
+        if let Some(_) = self.preopen_dirs.get(&fd) {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+
+            Self::write_filestat_to_memory(
+                memory,
+                filestat_ptr,
+                0,                             
+                fd as u64,                     
+                WasiFileType::Directory as u8, 
+                1,                             
+                0,                             
+                now,                           
+                now,                           
+                now,                           
+            )?;
+            return Ok(0);
+        }
+
+        // Get the opened file
+        let opened_files = self.opened_files.lock().unwrap();
+        let open_file = opened_files.get(&fd).ok_or(WasiError::BadFileDescriptor)?;
+
+        if open_file.is_directory {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+
+            Self::write_filestat_to_memory(
+                memory,
+                filestat_ptr,
+                0,                             
+                fd as u64,                     
+                WasiFileType::Directory as u8, 
+                1,                             
+                0,                             
+                now,                           
+                now,                           
+                now,                           
+            )?;
+            return Ok(0);
+        }
+
+        // Regular file - get metadata
+        if let Some(ref file) = open_file.file {
+            let metadata = file.metadata().map_err(|_| WasiError::IoError)?;
+
+            // Get timestamps
+            let accessed = metadata
+                .accessed()
+                .unwrap_or(SystemTime::UNIX_EPOCH)
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+            let modified = metadata
+                .modified()
+                .unwrap_or(SystemTime::UNIX_EPOCH)
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+            let created = metadata
+                .created()
+                .unwrap_or(SystemTime::UNIX_EPOCH)
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+
+            Self::write_filestat_to_memory(
+                memory,
+                filestat_ptr,
+                0,                               
+                fd as u64,                       
+                WasiFileType::RegularFile as u8, 
+                1,                               
+                metadata.len(),                  
+                accessed,                        
+                modified,                        
+                created,                         
+            )?;
             Ok(0)
         } else {
             Err(WasiError::BadFileDescriptor)
