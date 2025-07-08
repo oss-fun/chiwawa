@@ -93,6 +93,7 @@ pub enum WasiFuncType {
     FdTell,
     FdSync,
     FdFilestatGet,
+    FdReaddir,
 }
 
 impl WasiFuncType {
@@ -240,6 +241,16 @@ impl WasiFuncType {
                 params: vec![
                     ValueType::NumType(NumType::I32), // fd
                     ValueType::NumType(NumType::I32), // filestat_ptr
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::FdReaddir => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I32), // buf_ptr
+                    ValueType::NumType(NumType::I32), // buf_len
+                    ValueType::NumType(NumType::I64), // cookie
+                    ValueType::NumType(NumType::I32), // buf_used_ptr
                 ],
                 results: vec![ValueType::NumType(NumType::I32)], // Returns error code
             },

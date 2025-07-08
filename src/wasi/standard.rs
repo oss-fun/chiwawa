@@ -1225,14 +1225,14 @@ impl StandardWasiImpl {
             Self::write_filestat_to_memory(
                 memory,
                 filestat_ptr,
-                0,                             
-                fd as u64,                     
-                WasiFileType::Directory as u8, 
-                1,                             
-                0,                             
-                now,                           
-                now,                           
-                now,                           
+                0,
+                fd as u64,
+                WasiFileType::Directory as u8,
+                1,
+                0,
+                now,
+                now,
+                now,
             )?;
             return Ok(0);
         }
@@ -1250,14 +1250,14 @@ impl StandardWasiImpl {
             Self::write_filestat_to_memory(
                 memory,
                 filestat_ptr,
-                0,                             
-                fd as u64,                     
-                WasiFileType::Directory as u8, 
-                1,                             
-                0,                             
-                now,                           
-                now,                           
-                now,                           
+                0,
+                fd as u64,
+                WasiFileType::Directory as u8,
+                1,
+                0,
+                now,
+                now,
+                now,
             )?;
             return Ok(0);
         }
@@ -1289,18 +1289,115 @@ impl StandardWasiImpl {
             Self::write_filestat_to_memory(
                 memory,
                 filestat_ptr,
-                0,                               
-                fd as u64,                       
-                WasiFileType::RegularFile as u8, 
-                1,                               
-                metadata.len(),                  
-                accessed,                        
-                modified,                        
-                created,                         
+                0,
+                fd as u64,
+                WasiFileType::RegularFile as u8,
+                1,
+                metadata.len(),
+                accessed,
+                modified,
+                created,
             )?;
             Ok(0)
         } else {
             Err(WasiError::BadFileDescriptor)
         }
+    }
+
+    pub fn fd_readdir(
+        &self,
+        memory: &MemAddr,
+        fd: Fd,
+        buf_ptr: Ptr,
+        buf_len: Size,
+        cookie: u64,
+        buf_used_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        use std::fs;
+        if fd <= 2 {
+            return Err(WasiError::BadFileDescriptor);
+        }
+
+        let dir_path = if let Some(preopen_path) = self.preopen_dirs.get(&fd) {
+            PathBuf::from(preopen_path)
+        } else {
+            let opened_files = self.opened_files.lock().unwrap();
+            if let Some(open_file) = opened_files.get(&fd) {
+                if !open_file.is_directory {
+                    return Err(WasiError::NotDirectory);
+                }
+                open_file.path.clone()
+            } else {
+                return Err(WasiError::BadFileDescriptor);
+            }
+        };
+
+        let entries = fs::read_dir(&dir_path).map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound => WasiError::NoSuchFileOrDirectory,
+            io::ErrorKind::PermissionDenied => WasiError::NotPermitted,
+            _ => WasiError::IoError,
+        })?;
+
+        let mut total_written = 0u32;
+        let mut entry_index = 0u64;
+
+        for entry_result in entries {
+            let entry = entry_result.map_err(|_| WasiError::IoError)?;
+
+            if entry_index < cookie {
+                entry_index += 1;
+                continue;
+            }
+
+            let file_name = entry.file_name();
+            let name_string = file_name.to_string_lossy().into_owned();
+            let name_bytes = name_string.as_bytes();
+            let name_len = name_bytes.len() as u32;
+
+            // Calculate dirent size: 24 bytes (header) + name length
+            let dirent_size = 24 + name_len;
+
+            // Check if there's enough space in the buffer
+            if total_written + dirent_size > buf_len {
+                break;
+            }
+
+            // Get file type
+            let metadata = entry.metadata().map_err(|_| WasiError::IoError)?;
+            let file_type = if metadata.is_dir() {
+                WasiFileType::Directory as u8
+            } else if metadata.is_file() {
+                WasiFileType::RegularFile as u8
+            } else {
+                WasiFileType::Unknown as u8
+            };
+
+            // Build complete dirent entry in memory
+            let mut dirent_data = Vec::with_capacity(24 + name_len as usize);
+            dirent_data.extend_from_slice(&(entry_index + 1).to_le_bytes());
+            dirent_data.extend_from_slice(&entry_index.to_le_bytes());
+            dirent_data.extend_from_slice(&name_len.to_le_bytes());
+            dirent_data.push(file_type);
+            dirent_data.extend_from_slice(&[0u8; 3]);
+            dirent_data.extend_from_slice(name_bytes);
+
+            let dirent_start = buf_ptr + total_written;
+            memory
+                .store_bytes(dirent_start as i32, &dirent_data)
+                .map_err(|_| WasiError::MemoryAccessError)?;
+
+            total_written += dirent_size;
+            entry_index += 1;
+        }
+
+        let used_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&used_memarg, buf_used_ptr as i32, total_written)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
     }
 }

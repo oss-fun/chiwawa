@@ -157,6 +157,7 @@ fn parse_wasi_function(name: &str) -> Option<WasiFuncType> {
         "fd_tell" => Some(WasiFuncType::FdTell),
         "fd_sync" => Some(WasiFuncType::FdSync),
         "fd_filestat_get" => Some(WasiFuncType::FdFilestatGet),
+        "fd_readdir" => Some(WasiFuncType::FdReaddir),
         _ => None,
     }
 }

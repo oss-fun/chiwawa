@@ -528,6 +528,21 @@ impl Runtime {
                 let result = wasi_impl.fd_filestat_get(memory, fd, filestat_ptr)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
+            WasiFuncType::FdReaddir => {
+                if params.len() != 5 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+                let buf_ptr = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let buf_len = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let cookie = params[3].to_i64().map_err(|_| WasiError::InvalidArgument)? as u64;
+                let buf_used_ptr =
+                    params[4].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result =
+                    wasi_impl.fd_readdir(memory, fd, buf_ptr, buf_len, cookie, buf_used_ptr)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
             _ => Err(WasiError::NotImplemented),
         }
     }
