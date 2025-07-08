@@ -1329,4 +1329,96 @@ impl StandardWasiImpl {
 
         Ok(0)
     }
+
+    pub fn fd_pread(
+        &self,
+        memory: &MemAddr,
+        fd: Fd,
+        iovs_ptr: Ptr,
+        iovs_len: Size,
+        offset: u64,
+        nread_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        if fd <= 2 {
+            return Err(WasiError::BadFileDescriptor);
+        }
+
+        if self.preopen_dirs.contains_key(&fd) {
+            return Err(WasiError::BadFileDescriptor);
+        }
+
+        let opened_files = self.opened_files.lock().unwrap();
+        let open_file = opened_files.get(&fd).ok_or(WasiError::BadFileDescriptor)?;
+
+        if open_file.is_directory {
+            return Err(WasiError::BadFileDescriptor);
+        }
+
+        let file = open_file
+            .file
+            .as_ref()
+            .ok_or(WasiError::BadFileDescriptor)?;
+
+        // Clone the file handle for positioned read (doesn't change original position)
+        let mut file_clone = file.try_clone().map_err(|_| WasiError::IoError)?;
+
+        // Seek to the specified offset
+        file_clone
+            .seek(SeekFrom::Start(offset))
+            .map_err(|_| WasiError::IoError)?;
+
+        let mut total_read = 0u32;
+
+        for i in 0..iovs_len {
+            let iov_addr = iovs_ptr + (i * 8);
+
+            let buf_ptr: u32 = memory
+                .load(
+                    &Memarg {
+                        offset: 0,
+                        align: 4,
+                    },
+                    iov_addr as i32,
+                )
+                .map_err(|_| WasiError::MemoryAccessError)?;
+
+            let buf_len: u32 = memory
+                .load(
+                    &Memarg {
+                        offset: 4,
+                        align: 4,
+                    },
+                    iov_addr as i32,
+                )
+                .map_err(|_| WasiError::MemoryAccessError)?;
+
+            let mut buffer = vec![0u8; buf_len as usize];
+            let bytes_read = file_clone
+                .read(&mut buffer)
+                .map_err(|_| WasiError::IoError)?;
+
+            // Truncate buffer to actual bytes read
+            buffer.truncate(bytes_read);
+
+            memory
+                .store_bytes(buf_ptr as i32, &buffer)
+                .map_err(|_| WasiError::MemoryAccessError)?;
+
+            total_read += bytes_read as u32;
+
+            if bytes_read < buf_len as usize {
+                break;
+            }
+        }
+
+        let nread_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&nread_memarg, nread_ptr as i32, total_read)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
+    }
 }

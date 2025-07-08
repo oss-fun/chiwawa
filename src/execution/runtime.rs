@@ -543,6 +543,20 @@ impl Runtime {
                     wasi_impl.fd_readdir(memory, fd, buf_ptr, buf_len, cookie, buf_used_ptr)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
+            WasiFuncType::FdPread => {
+                if params.len() != 5 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+                let iovs_ptr = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let iovs_len = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let offset = params[3].to_i64().map_err(|_| WasiError::InvalidArgument)? as u64;
+                let nread_ptr = params[4].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result =
+                    wasi_impl.fd_pread(memory, fd, iovs_ptr, iovs_len, offset, nread_ptr)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
             _ => Err(WasiError::NotImplemented),
         }
     }
