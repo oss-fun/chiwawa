@@ -557,6 +557,135 @@ impl Runtime {
                     wasi_impl.fd_pread(memory, fd, iovs_ptr, iovs_len, offset, nread_ptr)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
+            WasiFuncType::FdDatasync => {
+                if params.len() != 1 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+
+                let result = wasi_impl.fd_datasync(fd)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::FdFdstatSetFlags => {
+                if params.len() != 2 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+                let flags = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result = wasi_impl.fd_fdstat_set_flags(fd, flags)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::FdFilestatSetSize => {
+                if params.len() != 2 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+                let size = params[1].to_i64().map_err(|_| WasiError::InvalidArgument)? as u64;
+
+                let result = wasi_impl.fd_filestat_set_size(fd, size)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::FdPwrite => {
+                if params.len() != 5 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+                let iovs_ptr = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let iovs_len = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let offset = params[3].to_i64().map_err(|_| WasiError::InvalidArgument)? as u64;
+                let nwritten_ptr = params[4].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result = wasi_impl.fd_pwrite(memory, fd, iovs_ptr, iovs_len, offset, nwritten_ptr)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::PathCreateDirectory => {
+                if params.len() != 3 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+                let path_ptr = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let path_len = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result = wasi_impl.path_create_directory(memory, fd, path_ptr, path_len)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::PathFilestatGet => {
+                if params.len() != 5 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+                let flags = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let path_ptr = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let path_len = params[3].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let filestat_ptr = params[4].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result = wasi_impl.path_filestat_get(memory, fd, flags, path_ptr, path_len, filestat_ptr)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::PathFilestatSetTimes => {
+                if params.len() != 7 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+                let flags = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let path_ptr = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let path_len = params[3].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let atim = params[4].to_i64().map_err(|_| WasiError::InvalidArgument)? as u64;
+                let mtim = params[5].to_i64().map_err(|_| WasiError::InvalidArgument)? as u64;
+                let fst_flags = params[6].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result = wasi_impl.path_filestat_set_times(memory, fd, flags, path_ptr, path_len, atim, mtim, fst_flags)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::PathReadlink => {
+                if params.len() != 6 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+                let path_ptr = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let path_len = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let buf_ptr = params[3].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let buf_len = params[4].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let buf_used_ptr = params[5].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result = wasi_impl.path_readlink(memory, fd, path_ptr, path_len, buf_ptr, buf_len, buf_used_ptr)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::PathRemoveDirectory => {
+                if params.len() != 3 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+                let path_ptr = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let path_len = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result = wasi_impl.path_remove_directory(memory, fd, path_ptr, path_len)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::PathUnlinkFile => {
+                if params.len() != 3 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)?;
+                let path_ptr = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let path_len = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result = wasi_impl.path_unlink_file(memory, fd, path_ptr, path_len)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::PollOneoff => {
+                if params.len() != 4 {
+                    return Err(WasiError::InvalidArgument);
+                }
+                let in_ptr = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let out_ptr = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let nsubscriptions = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let nevents_ptr = params[3].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+
+                let result = wasi_impl.poll_oneoff(memory, in_ptr, out_ptr, nsubscriptions, nevents_ptr)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
             _ => Err(WasiError::NotImplemented),
         }
     }

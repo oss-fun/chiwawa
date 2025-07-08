@@ -1421,4 +1421,130 @@ impl StandardWasiImpl {
 
         Ok(0)
     }
+
+    pub fn fd_datasync(&self, fd: Fd) -> WasiResult<i32> {
+        // TODO: Implement fd_datasync
+        // For now, return not implemented
+        Err(WasiError::NotImplemented)
+    }
+
+    pub fn fd_fdstat_set_flags(&self, fd: Fd, flags: u32) -> WasiResult<i32> {
+        // TODO: Implement fd_fdstat_set_flags
+        // For now, return not implemented
+        Err(WasiError::NotImplemented)
+    }
+
+    pub fn fd_filestat_set_size(&self, fd: Fd, size: u64) -> WasiResult<i32> {
+        // TODO: Implement fd_filestat_set_size (truncate)
+        // For now, return not implemented
+        Err(WasiError::NotImplemented)
+    }
+
+    pub fn fd_pwrite(
+        &self,
+        memory: &MemAddr,
+        fd: Fd,
+        iovs_ptr: Ptr,
+        iovs_len: Size,
+        offset: u64,
+        nwritten_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        // TODO: Implement fd_pwrite (positioned write)
+        // For now, return not implemented
+        Err(WasiError::NotImplemented)
+    }
+
+    pub fn path_create_directory(
+        &self,
+        memory: &MemAddr,
+        fd: Fd,
+        path_ptr: Ptr,
+        path_len: Size,
+    ) -> WasiResult<i32> {
+        // TODO: Implement path_create_directory
+        // For now, return not implemented
+        Err(WasiError::NotImplemented)
+    }
+
+    pub fn path_filestat_get(
+        &self,
+        memory: &MemAddr,
+        fd: Fd,
+        flags: u32,
+        path_ptr: Ptr,
+        path_len: Size,
+        filestat_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        // TODO: Implement path_filestat_get
+        // For now, return not implemented
+        Err(WasiError::NotImplemented)
+    }
+
+    pub fn path_filestat_set_times(
+        &self,
+        memory: &MemAddr,
+        fd: Fd,
+        flags: u32,
+        path_ptr: Ptr,
+        path_len: Size,
+        atim: u64,
+        mtim: u64,
+        fst_flags: u32,
+    ) -> WasiResult<i32> {
+        // TODO: Implement path_filestat_set_times
+        // For now, return not implemented
+        Err(WasiError::NotImplemented)
+    }
+
+    pub fn path_readlink(
+        &self,
+        memory: &MemAddr,
+        fd: Fd,
+        path_ptr: Ptr,
+        path_len: Size,
+        buf_ptr: Ptr,
+        buf_len: Size,
+        buf_used_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        // TODO: Implement path_readlink
+        // For now, return not implemented
+        Err(WasiError::NotImplemented)
+    }
+
+    pub fn path_remove_directory(
+        &self,
+        memory: &MemAddr,
+        fd: Fd,
+        path_ptr: Ptr,
+        path_len: Size,
+    ) -> WasiResult<i32> {
+        // TODO: Implement path_remove_directory
+        // For now, return not implemented
+        Err(WasiError::NotImplemented)
+    }
+
+    pub fn path_unlink_file(
+        &self,
+        memory: &MemAddr,
+        fd: Fd,
+        path_ptr: Ptr,
+        path_len: Size,
+    ) -> WasiResult<i32> {
+        // TODO: Implement path_unlink_file
+        // For now, return not implemented
+        Err(WasiError::NotImplemented)
+    }
+
+    pub fn poll_oneoff(
+        &self,
+        memory: &MemAddr,
+        in_ptr: Ptr,
+        out_ptr: Ptr,
+        nsubscriptions: Size,
+        nevents_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        // TODO: Implement poll_oneoff
+        // For now, return not implemented
+        Err(WasiError::NotImplemented)
+    }
 }
