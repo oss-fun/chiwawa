@@ -1449,9 +1449,96 @@ impl StandardWasiImpl {
         offset: u64,
         nwritten_ptr: Ptr,
     ) -> WasiResult<i32> {
-        // TODO: Implement fd_pwrite (positioned write)
-        // For now, return not implemented
-        Err(WasiError::NotImplemented)
+        if fd <= 2 {
+            return Err(WasiError::BadFileDescriptor);
+        }
+
+        if self.preopen_dirs.contains_key(&fd) {
+            return Err(WasiError::BadFileDescriptor);
+        }
+
+        // Get the opened file
+        let opened_files = self.opened_files.lock().unwrap();
+        let open_file = opened_files.get(&fd).ok_or(WasiError::BadFileDescriptor)?;
+
+        if open_file.is_directory {
+            return Err(WasiError::BadFileDescriptor);
+        }
+
+        let file = open_file
+            .file
+            .as_ref()
+            .ok_or(WasiError::BadFileDescriptor)?;
+
+        let mut file_clone = file.try_clone().map_err(|_| WasiError::IoError)?;
+
+        file_clone
+            .seek(SeekFrom::Start(offset))
+            .map_err(|_| WasiError::IoError)?;
+
+        let mut total_written = 0u32;
+
+        for i in 0..iovs_len {
+            let iovec_offset = iovs_ptr + (i * 8);
+
+            let buf_ptr_memarg = Memarg {
+                offset: 0,
+                align: 4,
+            };
+            let buf_ptr: u32 = memory
+                .load(&buf_ptr_memarg, iovec_offset as i32)
+                .map_err(|_| WasiError::MemoryAccessError)?;
+
+            // Read buf_len (next 4 bytes of iovec)
+            let buf_len_memarg = Memarg {
+                offset: 0,
+                align: 4,
+            };
+            let buf_len: u32 = memory
+                .load(&buf_len_memarg, (iovec_offset + 4) as i32)
+                .map_err(|_| WasiError::MemoryAccessError)?;
+
+            if buf_len == 0 {
+                continue;
+            }
+
+            // Read data from memory buffer
+            let mut data = Vec::with_capacity(buf_len as usize);
+            let byte_memarg = Memarg {
+                offset: 0,
+                align: 1,
+            };
+
+            for j in 0..buf_len {
+                let byte: u8 = memory
+                    .load(&byte_memarg, (buf_ptr + j) as i32)
+                    .map_err(|_| WasiError::MemoryAccessError)?;
+                data.push(byte);
+            }
+
+            // Write data to file at current position
+            let bytes_written = file_clone
+                .write(&data)
+                .map_err(|_| WasiError::IoError)?;
+
+            total_written += bytes_written as u32;
+
+            // If we couldn't write all data, stop
+            if bytes_written < data.len() {
+                break;
+            }
+        }
+        file_clone.flush().map_err(|_| WasiError::IoError)?;
+
+        let nwritten_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&nwritten_memarg, nwritten_ptr as i32, total_written)
+            .map_err(|_| WasiError::MemoryAccessError)?;
+
+        Ok(0)
     }
 
     pub fn path_create_directory(
