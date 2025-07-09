@@ -384,7 +384,7 @@ impl FrameStack {
             }
 
             let current_label_stack = &mut self.label_stack[current_label_stack_idx];
-            let processed_code = &current_label_stack.processed_instrs;
+            let processed_code = current_label_stack.processed_instrs.clone();
             let ip = current_label_stack.ip;
 
             if ip >= processed_code.len() {
@@ -407,7 +407,7 @@ impl FrameStack {
 
             let mut context = ExecutionContext {
                 frame: &mut self.frame,
-                value_stack: &mut current_label_stack.value_stack,
+                value_stack: &mut self.label_stack[current_label_stack_idx].value_stack,
                 ip,
             };
 
@@ -416,6 +416,13 @@ impl FrameStack {
             self.label_stack[current_label_stack_idx].ip = context.ip;
 
             match result {
+                Err(e) => {
+                    eprintln!(
+                        "Error at IP {}, handler_index: {}: {:?}",
+                        ip, instruction_ref.handler_index, e
+                    );
+                    return Ok(Err(e));
+                }
                 Ok(handler_result) => {
                     match handler_result {
                         HandlerResult::Continue(next_ip) => {
@@ -449,12 +456,6 @@ impl FrameStack {
                             current_label_stack_idx = new_top_idx;
                         }
                     }
-                }
-                Err(e) => {
-                    if current_label_stack_idx < self.label_stack.len() {
-                        self.label_stack[current_label_stack_idx].ip = ip;
-                    }
-                    return Ok(Err(e));
                 }
             }
         }

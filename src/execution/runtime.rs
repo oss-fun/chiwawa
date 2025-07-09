@@ -143,7 +143,6 @@ impl Runtime {
                                     match host_code(params) {
                                         Ok(results) => {
                                             cur_label_stack_mut.value_stack.extend(results);
-                                            cur_label_stack_mut.ip += 1;
                                         }
                                         Err(e) => return Err(e),
                                     }
@@ -178,16 +177,6 @@ impl Runtime {
                                                     .unwrap();
                                                 cur_label_stack_mut.value_stack.push(val);
                                             }
-                                            let current_frame_stack_mut = self
-                                                .stacks
-                                                .activation_frame_stack
-                                                .last_mut()
-                                                .unwrap();
-                                            let cur_label_stack_mut = current_frame_stack_mut
-                                                .label_stack
-                                                .last_mut()
-                                                .unwrap();
-                                            cur_label_stack_mut.ip += 1;
                                         }
                                         Err(WasiError::ProcessExit(_code)) => {
                                             return Err(RuntimeError::ExecutionFailed(
@@ -594,9 +583,11 @@ impl Runtime {
                 let iovs_ptr = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
                 let iovs_len = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
                 let offset = params[3].to_i64().map_err(|_| WasiError::InvalidArgument)? as u64;
-                let nwritten_ptr = params[4].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let nwritten_ptr =
+                    params[4].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
 
-                let result = wasi_impl.fd_pwrite(memory, fd, iovs_ptr, iovs_len, offset, nwritten_ptr)?;
+                let result =
+                    wasi_impl.fd_pwrite(memory, fd, iovs_ptr, iovs_len, offset, nwritten_ptr)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
             WasiFuncType::PathCreateDirectory => {
@@ -618,9 +609,17 @@ impl Runtime {
                 let flags = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
                 let path_ptr = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
                 let path_len = params[3].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
-                let filestat_ptr = params[4].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let filestat_ptr =
+                    params[4].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
 
-                let result = wasi_impl.path_filestat_get(memory, fd, flags, path_ptr, path_len, filestat_ptr)?;
+                let result = wasi_impl.path_filestat_get(
+                    memory,
+                    fd,
+                    flags,
+                    path_ptr,
+                    path_len,
+                    filestat_ptr,
+                )?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
             WasiFuncType::PathFilestatSetTimes => {
@@ -635,7 +634,9 @@ impl Runtime {
                 let mtim = params[5].to_i64().map_err(|_| WasiError::InvalidArgument)? as u64;
                 let fst_flags = params[6].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
 
-                let result = wasi_impl.path_filestat_set_times(memory, fd, flags, path_ptr, path_len, atim, mtim, fst_flags)?;
+                let result = wasi_impl.path_filestat_set_times(
+                    memory, fd, flags, path_ptr, path_len, atim, mtim, fst_flags,
+                )?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
             WasiFuncType::PathReadlink => {
@@ -647,9 +648,18 @@ impl Runtime {
                 let path_len = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
                 let buf_ptr = params[3].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
                 let buf_len = params[4].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
-                let buf_used_ptr = params[5].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let buf_used_ptr =
+                    params[5].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
 
-                let result = wasi_impl.path_readlink(memory, fd, path_ptr, path_len, buf_ptr, buf_len, buf_used_ptr)?;
+                let result = wasi_impl.path_readlink(
+                    memory,
+                    fd,
+                    path_ptr,
+                    path_len,
+                    buf_ptr,
+                    buf_len,
+                    buf_used_ptr,
+                )?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
             WasiFuncType::PathRemoveDirectory => {
@@ -680,10 +690,13 @@ impl Runtime {
                 }
                 let in_ptr = params[0].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
                 let out_ptr = params[1].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
-                let nsubscriptions = params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
-                let nevents_ptr = params[3].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let nsubscriptions =
+                    params[2].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
+                let nevents_ptr =
+                    params[3].to_i32().map_err(|_| WasiError::InvalidArgument)? as u32;
 
-                let result = wasi_impl.poll_oneoff(memory, in_ptr, out_ptr, nsubscriptions, nevents_ptr)?;
+                let result =
+                    wasi_impl.poll_oneoff(memory, in_ptr, out_ptr, nsubscriptions, nevents_ptr)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
             _ => Err(WasiError::NotImplemented),

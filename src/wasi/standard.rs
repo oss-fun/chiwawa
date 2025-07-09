@@ -1517,9 +1517,7 @@ impl StandardWasiImpl {
             }
 
             // Write data to file at current position
-            let bytes_written = file_clone
-                .write(&data)
-                .map_err(|_| WasiError::IoError)?;
+            let bytes_written = file_clone.write(&data).map_err(|_| WasiError::IoError)?;
 
             total_written += bytes_written as u32;
 
