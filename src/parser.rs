@@ -980,7 +980,10 @@ fn map_operator_to_initial_instr_and_fixup(
             ..
         } => {
             handler_index = HANDLER_IDX_CALL_INDIRECT;
-            operand = Operand::TypeIdx(TypeIdx(type_index));
+            operand = Operand::CallIndirect {
+                type_idx: TypeIdx(type_index),
+                table_idx: TableIdx(table_index),
+            };
         }
 
         /* Parametric Instructions */
