@@ -259,13 +259,13 @@ mod tests {
     fn test_as_select_last_spec() {
         let inst = load_instance("tests/wasm/select.wasm");
         
-        // (assert_return (invoke "as-select-last" (i32.const 0)) (i32.const 3))
+        // (assert_return (invoke "as-select-last" (i32.const 0)) (i32.const 2))
         let ret = call_function(&inst, "as-select-last", vec![Val::Num(Num::I32(0))]);
-        assert_eq!(ret.unwrap().last().unwrap().to_i32().unwrap(), 3);
-
-        // (assert_return (invoke "as-select-last" (i32.const 1)) (i32.const 2))
-        let ret = call_function(&inst, "as-select-last", vec![Val::Num(Num::I32(1))]);
         assert_eq!(ret.unwrap().last().unwrap().to_i32().unwrap(), 2);
+
+        // (assert_return (invoke "as-select-last" (i32.const 1)) (i32.const 3))
+        let ret = call_function(&inst, "as-select-last", vec![Val::Num(Num::I32(1))]);
+        assert_eq!(ret.unwrap().last().unwrap().to_i32().unwrap(), 3);
     }
 
     #[test]
