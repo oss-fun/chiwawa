@@ -33,6 +33,10 @@ pub enum Operand {
         targets: Vec<Operand>,
         default: Box<Operand>,
     },
+    CallIndirect {
+        type_idx: TypeIdx,
+        table_idx: TableIdx,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2324,7 +2328,7 @@ fn handle_i64_trunc_f64_u(
 }
 
 fn handle_unimplemented(
-    _ctx: &mut ExecutionContext,
+    ctx: &mut ExecutionContext,
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     Err(RuntimeError::UnimplementedInstruction)
@@ -2378,8 +2382,11 @@ fn handle_call_indirect(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::TypeIdx(expected_type_idx) = operand {
-        let table_idx = 0;
+    if let Operand::CallIndirect {
+        type_idx: expected_type_idx,
+        table_idx,
+    } = operand
+    {
         let i_val = ctx
             .value_stack
             .pop()
@@ -2392,7 +2399,7 @@ fn handle_call_indirect(
             .ok_or(RuntimeError::ModuleInstanceGone)?;
         let table_addr = module_inst
             .table_addrs
-            .get(table_idx)
+            .get(table_idx.0 as usize)
             .ok_or(RuntimeError::TableNotFound)?;
 
         let func_ref_option = table_addr.get(i as usize);
