@@ -980,12 +980,6 @@ fn map_operator_to_initial_instr_and_fixup(
             ..
         } => {
             handler_index = HANDLER_IDX_CALL_INDIRECT;
-            if table_index != 0 {
-                return Err(
-                    Box::new(RuntimeError::InvalidWasm("Only table index 0 is supported"))
-                        as Box<dyn std::error::Error>,
-                );
-            }
             operand = Operand::TypeIdx(TypeIdx(type_index));
         }
 
