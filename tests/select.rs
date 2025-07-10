@@ -630,12 +630,12 @@ mod tests {
     fn test_as_convert_operand_spec() {
         let inst = load_instance("tests/wasm/select.wasm");
         
-        // (assert_return (invoke "as-convert-operand" (i32.const 0)) (i64.const 0))
+        // (assert_return (invoke "as-convert-operand" (i32.const 0)) (i32.const 0))
         let ret = call_function(&inst, "as-convert-operand", vec![Val::Num(Num::I32(0))]);
-        assert_eq!(ret.unwrap().last().unwrap().to_i64().unwrap(), 0);
+        assert_eq!(ret.unwrap().last().unwrap().to_i32().unwrap(), 0);
 
-        // (assert_return (invoke "as-convert-operand" (i32.const 1)) (i64.const 1))
+        // (assert_return (invoke "as-convert-operand" (i32.const 1)) (i32.const 1))
         let ret = call_function(&inst, "as-convert-operand", vec![Val::Num(Num::I32(1))]);
-        assert_eq!(ret.unwrap().last().unwrap().to_i64().unwrap(), 1);
+        assert_eq!(ret.unwrap().last().unwrap().to_i32().unwrap(), 1);
     }
 }
