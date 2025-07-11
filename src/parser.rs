@@ -34,6 +34,20 @@ fn types_to_vec(types: &[ValType], vec: &mut Vec<ValueType>) {
     }
 }
 
+fn calculate_block_arity(block_type: &wasmparser::BlockType, module: &Module) -> usize {
+    match block_type {
+        wasmparser::BlockType::Empty => 0,
+        wasmparser::BlockType::Type(_) => 1,
+        wasmparser::BlockType::FuncType(type_idx) => {
+            if let Some(func_type) = module.types.get(*type_idx as usize) {
+                func_type.results.len()
+            } else {
+                0 // Fallback to 0 if invalid type index
+            }
+        }
+    }
+}
+
 fn decode_type_section(
     body: SectionLimited<'_, wasmparser::RecGroup>,
     module: &mut Module,
@@ -411,7 +425,7 @@ fn decode_code_section(
     let mut ops_iter = ops_reader.into_iter_with_offsets().peekable();
 
     // Phase 1: Decode instructions and get necessary info for preprocessing
-    let (mut processed_instrs, mut fixups, block_end_map, if_else_map) =
+    let (mut processed_instrs, mut fixups, block_end_map, if_else_map, block_type_map) =
         decode_processed_instrs_and_fixups(&mut ops_iter)?;
 
     // Phase 2 & 3: Preprocess instructions for this function
@@ -420,6 +434,8 @@ fn decode_code_section(
         &mut fixups,
         &block_end_map,
         &if_else_map,
+        &block_type_map,
+        module,
     )
     .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
@@ -449,6 +465,8 @@ fn preprocess_instructions(
     fixups: &mut Vec<FixupInfo>,
     block_end_map: &HashMap<usize, usize>,
     if_else_map: &HashMap<usize, usize>,
+    block_type_map: &HashMap<usize, wasmparser::BlockType>,
+    module: &Module,
 ) -> Result<(), RuntimeError> {
     // --- Phase 2: Resolve Br, BrIf, If, Else jumps ---
 
@@ -477,7 +495,10 @@ fn preprocess_instructions(
         for (pc, instr) in processed.iter().enumerate().take(current_fixup_pc + 1) {
             match instr.handler_index {
                 HANDLER_IDX_BLOCK | HANDLER_IDX_IF => {
-                    let block_type = wasmparser::BlockType::Empty;
+                    let block_type = block_type_map
+                        .get(&pc)
+                        .cloned()
+                        .unwrap_or(wasmparser::BlockType::Empty);
                     current_control_stack_pass2.push((
                         pc,
                         false,
@@ -487,7 +508,10 @@ fn preprocess_instructions(
                     runtime_label_stack_idx_counter += 1;
                 }
                 HANDLER_IDX_LOOP => {
-                    let block_type = wasmparser::BlockType::Empty;
+                    let block_type = block_type_map
+                        .get(&pc)
+                        .cloned()
+                        .unwrap_or(wasmparser::BlockType::Empty);
                     current_control_stack_pass2.push((
                         pc,
                         true,
@@ -516,7 +540,7 @@ fn preprocess_instructions(
             continue;
         }
 
-        let (target_start_pc, is_loop, _target_block_type, target_runtime_idx) =
+        let (target_start_pc, is_loop, target_block_type, target_runtime_idx) =
             current_control_stack_pass2[target_stack_level];
 
         // Calculate target IP
@@ -528,7 +552,7 @@ fn preprocess_instructions(
                 .ok_or_else(|| RuntimeError::InvalidWasm("Missing EndMarker for branch target"))?
         };
 
-        let target_arity = 0;
+        let target_arity = calculate_block_arity(&target_block_type, module);
         let target_label_stack_idx = target_runtime_idx;
 
         // Patch the instruction operand
@@ -575,7 +599,10 @@ fn preprocess_instructions(
         if let Some(instr) = processed.get(pc) {
             match instr.handler_index {
                 HANDLER_IDX_BLOCK | HANDLER_IDX_IF => {
-                    let block_type = wasmparser::BlockType::Empty;
+                    let block_type = block_type_map
+                        .get(&pc)
+                        .cloned()
+                        .unwrap_or(wasmparser::BlockType::Empty);
                     current_control_stack_pass3.push((
                         pc,
                         false,
@@ -585,7 +612,10 @@ fn preprocess_instructions(
                     runtime_label_stack_idx_counter += 1;
                 }
                 HANDLER_IDX_LOOP => {
-                    let block_type = wasmparser::BlockType::Empty;
+                    let block_type = block_type_map
+                        .get(&pc)
+                        .cloned()
+                        .unwrap_or(wasmparser::BlockType::Empty);
                     current_control_stack_pass3.push((
                         pc,
                         true,
@@ -641,7 +671,7 @@ fn preprocess_instructions(
                         return Err(RuntimeError::InvalidWasm("Internal Error: Invalid stack level calculated for BrTable default target"));
                     }
 
-                    let (target_start_pc, is_loop, _target_block_type, target_runtime_idx) =
+                    let (target_start_pc, is_loop, target_block_type, target_runtime_idx) =
                         current_control_stack_pass3[target_stack_level];
 
                     let target_ip = if is_loop {
@@ -653,7 +683,7 @@ fn preprocess_instructions(
                             )
                         })?
                     };
-                    let target_arity = 0;
+                    let target_arity = calculate_block_arity(&target_block_type, module);
                     let target_label_stack_idx = target_runtime_idx;
 
                     fixups[default_fixup_idx].original_wasm_depth = usize::MAX;
@@ -685,7 +715,7 @@ fn preprocess_instructions(
                             ));
                         }
 
-                        let (target_start_pc, is_loop, _target_block_type, target_runtime_idx) =
+                        let (target_start_pc, is_loop, target_block_type, target_runtime_idx) =
                             current_control_stack_pass3[target_stack_level];
                         let target_ip = if is_loop {
                             target_start_pc
@@ -694,7 +724,7 @@ fn preprocess_instructions(
                                 RuntimeError::InvalidWasm("Missing EndMarker for BrTable target")
                             })?
                         };
-                        let target_arity = 0;
+                        let target_arity = calculate_block_arity(&target_block_type, module);
                         let target_label_stack_idx = target_runtime_idx;
 
                         fixups[fixup_idx].original_wasm_depth = usize::MAX;
@@ -747,6 +777,7 @@ fn decode_processed_instrs_and_fixups(
         Vec<FixupInfo>,
         HashMap<usize, usize>,
         HashMap<usize, usize>,
+        HashMap<usize, wasmparser::BlockType>,
     ),
     Box<dyn std::error::Error>,
 > {
@@ -757,6 +788,7 @@ fn decode_processed_instrs_and_fixups(
 
     let mut block_end_map: HashMap<usize, usize> = HashMap::new();
     let mut if_else_map: HashMap<usize, usize> = HashMap::new();
+    let mut block_type_map: HashMap<usize, wasmparser::BlockType> = HashMap::new();
     let mut control_stack_for_map_building: Vec<(usize, bool, Option<usize>)> = Vec::new();
 
     loop {
@@ -778,14 +810,17 @@ fn decode_processed_instrs_and_fixups(
 
         // --- Update Maps and Stacks based on operator ---
         match op {
-            wasmparser::Operator::Block { blockty: _ } => {
+            wasmparser::Operator::Block { blockty } => {
                 control_stack_for_map_building.push((current_processed_pc, false, None));
+                block_type_map.insert(current_processed_pc, blockty);
             }
-            wasmparser::Operator::Loop { blockty: _ } => {
+            wasmparser::Operator::Loop { blockty } => {
                 control_stack_for_map_building.push((current_processed_pc, false, None));
+                block_type_map.insert(current_processed_pc, blockty);
             }
-            wasmparser::Operator::If { blockty: _ } => {
+            wasmparser::Operator::If { blockty } => {
                 control_stack_for_map_building.push((current_processed_pc, true, None));
+                block_type_map.insert(current_processed_pc, blockty);
             }
             wasmparser::Operator::Else => {
                 if let Some((_, true, else_pc @ None)) = control_stack_for_map_building.last_mut() {
@@ -877,6 +912,7 @@ fn decode_processed_instrs_and_fixups(
         initial_fixups,
         block_end_map,
         if_else_map,
+        block_type_map,
     ))
 }
 
