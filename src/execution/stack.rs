@@ -444,32 +444,18 @@ impl FrameStack {
                             target_label_stack_idx,
                             values_to_push,
                         } => {
-                            // 2. Truncate the label stack
                             self.label_stack.truncate(target_label_stack_idx + 1);
-
-                            // 3. Push values onto the new top stack (which is the target)
                             let new_top_idx = self.label_stack.len() - 1;
+                            
+                            let expected_stack_base = self.label_stack[new_top_idx].label.locals_num;                            
                             let target_stack = &mut self.label_stack[new_top_idx].value_stack;
-
-                            let arity = values_to_push.len();
-
-                            if target_stack.len() >= arity + 1 {
-                                let excess_values = target_stack.len() - arity;
-                                if excess_values > 0 {
-                                    // Remove the most recent excess values (intermediate computations)
-                                    for _ in 0..excess_values {
-                                        target_stack.pop();
-                                    }
-                                }
+                            
+                            if target_stack.len() > expected_stack_base {
+                                target_stack.truncate(expected_stack_base);
                             }
-
-                            // Add the branch result values
                             target_stack.extend(values_to_push);
 
-                            // 4. Set IP for the target label stack
                             self.label_stack[new_top_idx].ip = target_ip;
-
-                            // 5. Update the current index for the next loop iteration
                             current_label_stack_idx = new_top_idx;
                         }
                     }
