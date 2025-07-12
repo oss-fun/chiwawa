@@ -530,6 +530,18 @@ fn preprocess_instructions(
         }
 
         if current_control_stack_pass2.len() <= current_fixup_depth {
+            if let Some(instr_to_patch) = processed.get_mut(current_fixup_pc) {
+                if is_if_false_jump {
+                    fixups[fixup_index].original_wasm_depth = usize::MAX;
+                    continue;
+                } else if is_else_jump {
+                    fixups[fixup_index].original_wasm_depth = usize::MAX;
+                    continue;
+                } else {
+                    instr_to_patch.handler_index = HANDLER_IDX_RETURN;
+                    instr_to_patch.operand = Operand::None;
+                }
+            }
             fixups[fixup_index].original_wasm_depth = usize::MAX;
             continue;
         }
