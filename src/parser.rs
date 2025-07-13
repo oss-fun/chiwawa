@@ -48,6 +48,20 @@ fn calculate_block_arity(block_type: &wasmparser::BlockType, module: &Module) ->
     }
 }
 
+fn calculate_loop_parameter_arity(block_type: &wasmparser::BlockType, module: &Module) -> usize {
+    match block_type {
+        wasmparser::BlockType::Empty => 0,
+        wasmparser::BlockType::Type(_) => 0, // Single type means no parameters for loop
+        wasmparser::BlockType::FuncType(type_idx) => {
+            if let Some(func_type) = module.types.get(*type_idx as usize) {
+                func_type.params.len() // For loops, we want parameter count, not result count
+            } else {
+                0 // Fallback to 0 if invalid type index
+            }
+        }
+    }
+}
+
 fn decode_type_section(
     body: SectionLimited<'_, wasmparser::RecGroup>,
     module: &mut Module,
@@ -564,7 +578,11 @@ fn preprocess_instructions(
                 .ok_or_else(|| RuntimeError::InvalidWasm("Missing EndMarker for branch target"))?
         };
 
-        let target_arity = calculate_block_arity(&target_block_type, module);
+        let target_arity = if is_loop {
+            calculate_loop_parameter_arity(&target_block_type, module)
+        } else {
+            calculate_block_arity(&target_block_type, module)
+        };
         let target_label_stack_idx = target_runtime_idx;
 
         // Patch the instruction operand
@@ -577,6 +595,7 @@ fn preprocess_instructions(
                     target_ip: else_target,
                     arity: 0,
                     target_label_stack_idx: 0,
+                    is_loop: false,
                 };
             } else if is_else_jump {
                 // Else instruction's jump-to-end
@@ -584,6 +603,7 @@ fn preprocess_instructions(
                     target_ip: target_ip,
                     arity: 0,
                     target_label_stack_idx: 0,
+                    is_loop: false,
                 };
             } else {
                 // Br or BrIf instruction
@@ -591,6 +611,7 @@ fn preprocess_instructions(
                     target_ip,
                     arity: target_arity,
                     target_label_stack_idx,
+                    is_loop: is_loop,
                 };
             }
         } else {
@@ -695,7 +716,13 @@ fn preprocess_instructions(
                             )
                         })?
                     };
-                    let target_arity = calculate_block_arity(&target_block_type, module);
+                    let target_arity = if is_loop {
+                        // For loops: Branch provides parameters (input types)
+                        calculate_loop_parameter_arity(&target_block_type, module)
+                    } else {
+                        // For blocks: Branch provides results (output types)
+                        calculate_block_arity(&target_block_type, module)
+                    };
                     let target_label_stack_idx = target_runtime_idx;
 
                     fixups[default_fixup_idx].original_wasm_depth = usize::MAX;
@@ -704,6 +731,7 @@ fn preprocess_instructions(
                         target_ip,
                         arity: target_arity,
                         target_label_stack_idx,
+                        is_loop: is_loop, // Use default target's loop/block information
                     }
                 };
 
@@ -736,7 +764,11 @@ fn preprocess_instructions(
                                 RuntimeError::InvalidWasm("Missing EndMarker for BrTable target")
                             })?
                         };
-                        let target_arity = calculate_block_arity(&target_block_type, module);
+                        let target_arity = if is_loop {
+                            calculate_loop_parameter_arity(&target_block_type, module)
+                        } else {
+                            calculate_block_arity(&target_block_type, module)
+                        };
                         let target_label_stack_idx = target_runtime_idx;
 
                         fixups[fixup_idx].original_wasm_depth = usize::MAX;
@@ -745,6 +777,7 @@ fn preprocess_instructions(
                             target_ip,
                             arity: target_arity,
                             target_label_stack_idx,
+                            is_loop: is_loop,
                         }
                     };
                     resolved_targets.push(target_operand);
@@ -962,6 +995,7 @@ fn map_operator_to_initial_instr_and_fixup(
                 target_ip: usize::MAX,
                 arity: 0,
                 target_label_stack_idx: 0,
+                is_loop: false,
             };
         }
         wasmparser::Operator::Else => {
@@ -976,6 +1010,7 @@ fn map_operator_to_initial_instr_and_fixup(
                 target_ip: usize::MAX,
                 arity: 0,
                 target_label_stack_idx: 0,
+                is_loop: false,
             };
         }
         wasmparser::Operator::End => {
@@ -993,6 +1028,7 @@ fn map_operator_to_initial_instr_and_fixup(
                 target_ip: usize::MAX,
                 arity: 0,
                 target_label_stack_idx: 0,
+                is_loop: false,
             };
         }
         wasmparser::Operator::BrIf { relative_depth } => {
@@ -1008,6 +1044,7 @@ fn map_operator_to_initial_instr_and_fixup(
                 target_ip: usize::MAX,
                 arity: 0,
                 target_label_stack_idx: 0,
+                is_loop: false,
             };
         }
         wasmparser::Operator::BrTable { targets: _ } => {
