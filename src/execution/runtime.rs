@@ -122,6 +122,7 @@ impl Runtime {
                                             label: Label {
                                                 locals_num: type_.results.len(),
                                                 arity: type_.results.len(),
+                                                is_loop: false,
                                             },
                                             processed_instrs: code.body.clone(),
                                             value_stack: vec![],

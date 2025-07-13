@@ -27,6 +27,7 @@ pub enum Operand {
         target_ip: usize,
         arity: usize,
         target_label_stack_idx: usize,
+        is_loop: bool,
     },
     MemArg(Memarg),
     BrTable {
@@ -312,6 +313,7 @@ impl Stacks {
                         label: Label {
                             locals_num: type_.results.len(),
                             arity: type_.results.len(),
+                            is_loop: false, // function frame is not a loop
                         },
                         processed_instrs: code.body.clone(),
                         value_stack: vec![],
@@ -446,13 +448,19 @@ impl FrameStack {
                         self.label_stack.truncate(target_label_stack_idx + 1);
                         let new_top_idx = self.label_stack.len() - 1;
 
+                        let is_loop = self.label_stack[new_top_idx].label.is_loop;
                         let expected_stack_base = self.label_stack[new_top_idx].label.locals_num;
                         let target_stack = &mut self.label_stack[new_top_idx].value_stack;
 
-                        if target_stack.len() > expected_stack_base {
+                        if is_loop {
                             target_stack.truncate(expected_stack_base);
+                            target_stack.extend(values_to_push);
+                        } else {
+                            if target_stack.len() > expected_stack_base {
+                                target_stack.truncate(expected_stack_base);
+                            }
+                            target_stack.extend(values_to_push);
                         }
-                        target_stack.extend(values_to_push);
 
                         self.label_stack[new_top_idx].ip = target_ip;
                         current_label_stack_idx = new_top_idx;
@@ -468,6 +476,7 @@ impl FrameStack {
 pub struct Label {
     pub locals_num: usize,
     pub arity: usize,
+    pub is_loop: bool, // true for loop, false for block
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -616,6 +625,7 @@ fn handle_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
         target_ip,
         arity: _,
         target_label_stack_idx: _,
+        is_loop: _,
     } = operand
     {
         if target_ip == usize::MAX {
@@ -641,6 +651,7 @@ fn handle_else(
         target_ip,
         arity: _,
         target_label_stack_idx: _,
+        is_loop: _,
     } = operand
     {
         if target_ip == usize::MAX {
@@ -666,6 +677,7 @@ fn handle_br(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
         target_ip,
         arity,
         target_label_stack_idx,
+        is_loop: _,
     } = operand
     {
         if *target_ip == usize::MAX {
@@ -701,6 +713,7 @@ fn handle_br_if(
             target_ip,
             arity,
             target_label_stack_idx,
+            is_loop: _,
         } = operand
         {
             if *target_ip == usize::MAX {
@@ -2352,6 +2365,7 @@ fn handle_br_table(
             target_ip,
             arity,
             target_label_stack_idx,
+            is_loop: _,
         } = chosen_operand
         {
             if *target_ip == usize::MAX {
