@@ -1275,7 +1275,11 @@ fn map_operator_to_initial_instr_and_fixup(
         wasmparser::Operator::MemoryCopy { .. } => {
             handler_index = HANDLER_IDX_MEMORY_COPY;
         }
-        // TODO: MemoryFill, MemoryInit, DataDrop
+        wasmparser::Operator::MemoryInit { data_index, .. } => {
+            handler_index = HANDLER_IDX_MEMORY_INIT;
+            operand = Operand::I32(data_index as i32);
+        }
+        // TODO: MemoryFill, DataDrop
 
         /* Numeric Instructions */
         wasmparser::Operator::I32Const { value } => {

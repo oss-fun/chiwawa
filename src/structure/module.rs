@@ -48,6 +48,7 @@ pub struct Data {
     pub offset: Option<Expr>,
 }
 
+#[derive(Debug, PartialEq)]
 pub enum DataMode {
     Passive,
     Active,

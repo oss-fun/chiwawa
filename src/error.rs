@@ -60,6 +60,8 @@ pub enum RuntimeError {
     UninitializedElement,
     #[error("Invalid Constant Expression")]
     InvalidConstantExpression,
+    #[error("Invalid Data Segment Index")]
+    InvalidDataSegmentIndex,
     #[error("Trap")]
     Trap,
 
