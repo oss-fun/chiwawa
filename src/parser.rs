@@ -1272,7 +1272,10 @@ fn map_operator_to_initial_instr_and_fixup(
         wasmparser::Operator::MemoryGrow { .. } => {
             handler_index = HANDLER_IDX_MEMORY_GROW;
         }
-        // TODO: MemoryFill, MemoryCopy, MemoryInit, DataDrop
+        wasmparser::Operator::MemoryCopy { .. } => {
+            handler_index = HANDLER_IDX_MEMORY_COPY;
+        }
+        // TODO: MemoryFill, MemoryInit, DataDrop
 
         /* Numeric Instructions */
         wasmparser::Operator::I32Const { value } => {

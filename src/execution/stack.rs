@@ -123,6 +123,7 @@ pub const HANDLER_IDX_I64_STORE16: usize = 0x3D;
 pub const HANDLER_IDX_I64_STORE32: usize = 0x3E;
 pub const HANDLER_IDX_MEMORY_SIZE: usize = 0x3F;
 pub const HANDLER_IDX_MEMORY_GROW: usize = 0x40;
+pub const HANDLER_IDX_MEMORY_COPY: usize = 0xC5;
 
 pub const HANDLER_IDX_I32_CONST: usize = 0x41;
 pub const HANDLER_IDX_I64_CONST: usize = 0x42;
@@ -269,7 +270,7 @@ pub const HANDLER_IDX_I64_EXTEND32_S: usize = 0xC4;
 
 // TODO: Add remaining indices (Ref types, Table, Bulk Memory, SIMD, TruncSat)
 
-pub const MAX_HANDLER_INDEX: usize = 0xC5;
+pub const MAX_HANDLER_INDEX: usize = 0xC6;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stacks {
@@ -3388,6 +3389,43 @@ fn handle_memory_grow(
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 
+fn handle_memory_copy(
+    ctx: &mut ExecutionContext,
+    _operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    let len_val = ctx
+        .value_stack
+        .pop()
+        .ok_or(RuntimeError::ValueStackUnderflow)?;
+    let src_val = ctx
+        .value_stack
+        .pop()
+        .ok_or(RuntimeError::ValueStackUnderflow)?;
+    let dest_val = ctx
+        .value_stack
+        .pop()
+        .ok_or(RuntimeError::ValueStackUnderflow)?;
+
+    let len = len_val.to_i32()?;
+    let src = src_val.to_i32()?;
+    let dest = dest_val.to_i32()?;
+
+    let module_inst = ctx
+        .frame
+        .module
+        .upgrade()
+        .ok_or(RuntimeError::ModuleInstanceGone)?;
+
+    if module_inst.mem_addrs.is_empty() {
+        return Err(RuntimeError::MemoryNotFound);
+    }
+
+    let mem_addr = &module_inst.mem_addrs[0];
+    mem_addr.memory_copy(dest, src, len)?;
+
+    Ok(HandlerResult::Continue(ctx.ip + 1))
+}
+
 fn handle_f32_convert_i32_s(
     ctx: &mut ExecutionContext,
     _operand: &Operand,
@@ -3604,6 +3642,7 @@ lazy_static! {
         table[HANDLER_IDX_I64_STORE32] = handle_i64_store32;
         table[HANDLER_IDX_MEMORY_SIZE] = handle_memory_size;
         table[HANDLER_IDX_MEMORY_GROW] = handle_memory_grow;
+        table[HANDLER_IDX_MEMORY_COPY] = handle_memory_copy;
         table[HANDLER_IDX_I32_CONST] = handle_i32_const;
         table[HANDLER_IDX_I64_CONST] = handle_i64_const;
         table[HANDLER_IDX_F32_CONST] = handle_f32_const;

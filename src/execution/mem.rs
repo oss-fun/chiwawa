@@ -109,6 +109,19 @@ impl MemAddr {
         guard.data = data;
         Ok(())
     }
+
+    pub fn memory_copy(&self, dest: i32, src: i32, len: i32) -> Result<(), RuntimeError> {
+        let dest_pos = dest as usize;
+        let src_pos = src as usize;
+        let len_usize = len as usize;
+        let mut raw = self.0.write().expect("RwLock poisoned");
+
+        if len_usize > 0 {
+            raw.data.copy_within(src_pos..src_pos + len_usize, dest_pos);
+        }
+
+        Ok(())
+    }
 }
 
 pub trait ByteMem: Sized {
