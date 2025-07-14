@@ -168,21 +168,24 @@ impl ModuleInst {
         for data in &module.datas {
             let init: Vec<u8> = data.init.iter().map(|x| x.0).collect();
             module_inst.data_addrs.push(DataAddr::new(&init));
-            let offset_res = match &data.offset {
-                Some(x) => module_inst
-                    .expr_to_const(x)
-                    .ok_or(RuntimeError::InvalidConstantExpression)?
-                    .to_i32(),
-                None => Ok(0),
-            };
-            let offset = offset_res?;
 
-            let idx = match &data.memory {
-                Some(i) => i.0,
-                None => 0,
-            };
+            if data.mode == DataMode::Active {
+                let offset_res = match &data.offset {
+                    Some(x) => module_inst
+                        .expr_to_const(x)
+                        .ok_or(RuntimeError::InvalidConstantExpression)?
+                        .to_i32(),
+                    None => Ok(0),
+                };
+                let offset = offset_res?;
 
-            module_inst.mem_addrs[idx as usize].init(offset as usize, &init);
+                let idx = match &data.memory {
+                    Some(i) => i.0,
+                    None => 0,
+                };
+
+                module_inst.mem_addrs[idx as usize].init(offset as usize, &init);
+            }
         }
 
         for export in &module.exports {

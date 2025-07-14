@@ -13,4 +13,8 @@ impl DataAddr {
             _data: data.clone(),
         })))
     }
+
+    pub fn get_data(&self) -> Vec<u8> {
+        self.0.read().expect("RwLock poisoned")._data.clone()
+    }
 }

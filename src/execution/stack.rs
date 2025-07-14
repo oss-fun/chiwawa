@@ -124,6 +124,7 @@ pub const HANDLER_IDX_I64_STORE32: usize = 0x3E;
 pub const HANDLER_IDX_MEMORY_SIZE: usize = 0x3F;
 pub const HANDLER_IDX_MEMORY_GROW: usize = 0x40;
 pub const HANDLER_IDX_MEMORY_COPY: usize = 0xC5;
+pub const HANDLER_IDX_MEMORY_INIT: usize = 0xC6;
 
 pub const HANDLER_IDX_I32_CONST: usize = 0x41;
 pub const HANDLER_IDX_I64_CONST: usize = 0x42;
@@ -270,7 +271,7 @@ pub const HANDLER_IDX_I64_EXTEND32_S: usize = 0xC4;
 
 // TODO: Add remaining indices (Ref types, Table, Bulk Memory, SIMD, TruncSat)
 
-pub const MAX_HANDLER_INDEX: usize = 0xC6;
+pub const MAX_HANDLER_INDEX: usize = 0xC7;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stacks {
@@ -3426,6 +3427,65 @@ fn handle_memory_copy(
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 
+fn handle_memory_init(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    println!("DEBUG: memory.init called");
+    let len_val = ctx
+        .value_stack
+        .pop()
+        .ok_or(RuntimeError::ValueStackUnderflow)?;
+    let offset_val = ctx
+        .value_stack
+        .pop()
+        .ok_or(RuntimeError::ValueStackUnderflow)?;
+    let dest_val = ctx
+        .value_stack
+        .pop()
+        .ok_or(RuntimeError::ValueStackUnderflow)?;
+
+    let len = len_val.to_i32()? as usize;
+    let offset = offset_val.to_i32()? as usize;
+    let dest = dest_val.to_i32()? as usize;
+
+    let data_index = match operand {
+        Operand::I32(idx) => *idx as u32,
+        _ => return Err(RuntimeError::InvalidOperand),
+    };
+
+    let module_inst = ctx
+        .frame
+        .module
+        .upgrade()
+        .ok_or(RuntimeError::ModuleInstanceGone)?;
+
+    if module_inst.mem_addrs.is_empty() {
+        return Err(RuntimeError::MemoryNotFound);
+    }
+
+    // Get data segment
+    if data_index as usize >= module_inst.data_addrs.len() {
+        return Err(RuntimeError::InvalidDataSegmentIndex);
+    }
+
+    let data_addr = &module_inst.data_addrs[data_index as usize];
+    let data_bytes = data_addr.get_data();
+
+    let mem_addr = &module_inst.mem_addrs[0];
+
+    for i in 0..len {
+        let byte_value = data_bytes[offset + i];
+        let memarg = Memarg {
+            offset: 0,
+            align: 1,
+        };
+        mem_addr.store(&memarg, (dest as usize + i) as i32, byte_value)?;
+    }
+
+    Ok(HandlerResult::Continue(ctx.ip + 1))
+}
+
 fn handle_f32_convert_i32_s(
     ctx: &mut ExecutionContext,
     _operand: &Operand,
@@ -3643,6 +3703,7 @@ lazy_static! {
         table[HANDLER_IDX_MEMORY_SIZE] = handle_memory_size;
         table[HANDLER_IDX_MEMORY_GROW] = handle_memory_grow;
         table[HANDLER_IDX_MEMORY_COPY] = handle_memory_copy;
+        table[HANDLER_IDX_MEMORY_INIT] = handle_memory_init;
         table[HANDLER_IDX_I32_CONST] = handle_i32_const;
         table[HANDLER_IDX_I64_CONST] = handle_i64_const;
         table[HANDLER_IDX_F32_CONST] = handle_f32_const;
