@@ -5,6 +5,9 @@ use super::{
 };
 use crate::error::RuntimeError;
 use crate::structure::{instructions::*, module::*, types::*};
+#[cfg(target_os = "wasi")]
+use crate::wasi::passthrough::PassthroughWasiImpl;
+#[cfg(not(target_os = "wasi"))]
 use crate::wasi::standard::StandardWasiImpl;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,6 +24,9 @@ pub struct ModuleInst {
     pub data_addrs: Vec<DataAddr>,
     pub exports: Vec<ExportInst>,
     pub wasi_func_addrs: Vec<WasiFuncAddr>,
+    #[cfg(target_os = "wasi")]
+    pub wasi_impl: Option<Arc<PassthroughWasiImpl>>,
+    #[cfg(not(target_os = "wasi"))]
     pub wasi_impl: Option<Arc<StandardWasiImpl>>,
 }
 
@@ -68,7 +74,14 @@ impl ModuleInst {
             .any(|import| matches!(import.desc, ImportDesc::WasiFunc(_)));
 
         if needs_wasi {
-            module_inst.wasi_impl = Some(Arc::new(StandardWasiImpl::new(preopen_dirs)));
+            #[cfg(target_os = "wasi")]
+            {
+                module_inst.wasi_impl = Some(Arc::new(PassthroughWasiImpl::new()));
+            }
+            #[cfg(not(target_os = "wasi"))]
+            {
+                module_inst.wasi_impl = Some(Arc::new(StandardWasiImpl::new(preopen_dirs)));
+            }
         }
 
         /*Import processing*/

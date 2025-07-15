@@ -141,6 +141,10 @@ impl MemAddr {
 
         Ok(())
     }
+
+    pub fn get_memory_direct_access(&self) -> std::sync::RwLockReadGuard<MemInst> {
+        self.0.read().expect("RwLock poisoned")
+    }
 }
 
 pub trait ByteMem: Sized {
