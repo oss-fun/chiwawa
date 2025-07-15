@@ -122,6 +122,25 @@ impl MemAddr {
 
         Ok(())
     }
+
+    pub fn memory_fill(&self, dest: i32, val: u8, len: i32) -> Result<(), RuntimeError> {
+        let dest_pos = dest as usize;
+        let len_usize = len as usize;
+        let mut raw = self.0.write().expect("RwLock poisoned");
+
+        // Bounds check
+        if dest_pos.checked_add(len_usize).unwrap_or(usize::MAX) > raw.data.len() {
+            return Err(RuntimeError::InstructionFailed);
+        }
+
+        if len_usize > 0 {
+            for i in 0..len_usize {
+                raw.data[dest_pos + i] = val;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 pub trait ByteMem: Sized {

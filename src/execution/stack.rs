@@ -3520,14 +3520,8 @@ fn handle_memory_fill(
 
     let mem_addr = &module_inst.mem_addrs[0];
 
-    // Fill memory with the specified value
-    for i in 0..size {
-        let memarg = Memarg {
-            offset: 0,
-            align: 1,
-        };
-        mem_addr.store(&memarg, (dest + i) as i32, val)?;
-    }
+    // Fill memory with the specified value using the dedicated memory_fill method
+    mem_addr.memory_fill(dest as i32, val, size as i32)?;
 
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
