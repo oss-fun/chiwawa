@@ -62,6 +62,20 @@ fn calculate_loop_parameter_arity(block_type: &wasmparser::BlockType, module: &M
     }
 }
 
+fn calculate_block_parameter_count(block_type: &wasmparser::BlockType, module: &Module) -> usize {
+    match block_type {
+        wasmparser::BlockType::Empty => 0,
+        wasmparser::BlockType::Type(_) => 0, // Single type means no parameters for block
+        wasmparser::BlockType::FuncType(type_idx) => {
+            if let Some(func_type) = module.types.get(*type_idx as usize) {
+                func_type.params.len()
+            } else {
+                0 // Fallback to 0 if invalid type index
+            }
+        }
+    }
+}
+
 fn decode_type_section(
     body: SectionLimited<'_, wasmparser::RecGroup>,
     module: &mut Module,
@@ -427,7 +441,9 @@ fn decode_code_section(
         locals.push((cnt, ty));
     }
 
-    if let Some(func) = module.funcs.get_mut(func_index) {
+    // Convert absolute function index to relative index in module.funcs
+    let relative_func_index = func_index - module.num_imported_funcs;
+    if let Some(func) = module.funcs.get_mut(relative_func_index) {
         func.locals = locals;
     } else {
         return Err(Box::new(RuntimeError::InvalidWasm(
@@ -440,7 +456,7 @@ fn decode_code_section(
 
     // Phase 1: Decode instructions and get necessary info for preprocessing
     let (mut processed_instrs, mut fixups, block_end_map, if_else_map, block_type_map) =
-        decode_processed_instrs_and_fixups(&mut ops_iter)?;
+        decode_processed_instrs_and_fixups(&mut ops_iter, module)?;
 
     // Phase 2 & 3: Preprocess instructions for this function
     preprocess_instructions(
@@ -453,8 +469,27 @@ fn decode_code_section(
     )
     .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
-    if let Some(func) = module.funcs.get_mut(func_index) {
+    if let Some(func) = module.funcs.get_mut(relative_func_index) {
         func.body = processed_instrs;
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "Assigned {} instructions to function {} (relative index {})",
+            func.body.len(),
+            func_index,
+            relative_func_index
+        );
+
+        #[cfg(debug_assertions)]
+        if relative_func_index == 1 {
+            // Likely the singular function
+            eprintln!("Function {} instructions:", relative_func_index);
+            for (i, instr) in func.body.iter().enumerate() {
+                eprintln!(
+                    "  IP {}: handler_index={}, operand={:?}",
+                    i, instr.handler_index, instr.operand
+                );
+            }
+        }
     } else {
         return Err(Box::new(RuntimeError::InvalidWasm(
             "Invalid function index when storing body",
@@ -583,7 +618,12 @@ fn preprocess_instructions(
         } else {
             calculate_block_arity(&target_block_type, module)
         };
-        let target_label_stack_idx = target_runtime_idx;
+        // Branch to parent level: if target block is at index N, unwind to N-1
+        let target_label_stack_idx = if target_runtime_idx > 0 {
+            target_runtime_idx - 1
+        } else {
+            0 // Branching out of function
+        };
 
         // Patch the instruction operand
         if let Some(instr_to_patch) = processed.get_mut(current_fixup_pc) {
@@ -591,18 +631,36 @@ fn preprocess_instructions(
                 // If instruction's jump-on-false
                 // Target is ElseMarker+1 or EndMarker+1
                 let else_target = *if_else_map.get(&target_start_pc).unwrap_or(&target_ip);
+                // For if statements, get the block type of the current if instruction
+                let if_block_type = block_type_map
+                    .get(&current_fixup_pc)
+                    .cloned()
+                    .unwrap_or(wasmparser::BlockType::Empty);
+                let if_arity = calculate_block_arity(&if_block_type, module);
+
+                #[cfg(debug_assertions)]
+                eprintln!("If fixup: pc={}, target_start_pc={}, else_target={}, target_ip={}, if_arity={}, if_else_map={:?}", 
+                         current_fixup_pc, target_start_pc, else_target, target_ip, if_arity, if_else_map);
+
                 instr_to_patch.operand = Operand::LabelIdx {
                     target_ip: else_target,
-                    arity: 0,
+                    arity: if_arity,
                     target_label_stack_idx: 0,
+                    original_wasm_depth: current_fixup_depth,
                     is_loop: false,
                 };
             } else if is_else_jump {
                 // Else instruction's jump-to-end
+                let else_block_type = block_type_map
+                    .get(&current_fixup_pc)
+                    .cloned()
+                    .unwrap_or(wasmparser::BlockType::Empty);
+                let else_arity = calculate_block_arity(&else_block_type, module);
                 instr_to_patch.operand = Operand::LabelIdx {
                     target_ip: target_ip,
-                    arity: 0,
+                    arity: else_arity,
                     target_label_stack_idx: 0,
+                    original_wasm_depth: current_fixup_depth,
                     is_loop: false,
                 };
             } else {
@@ -611,6 +669,7 @@ fn preprocess_instructions(
                     target_ip,
                     arity: target_arity,
                     target_label_stack_idx,
+                    original_wasm_depth: current_fixup_depth,
                     is_loop: is_loop,
                 };
             }
@@ -723,7 +782,12 @@ fn preprocess_instructions(
                         // For blocks: Branch provides results (output types)
                         calculate_block_arity(&target_block_type, module)
                     };
-                    let target_label_stack_idx = target_runtime_idx;
+                    // Branch to parent level: if target block is at index N, unwind to N-1
+                    let target_label_stack_idx = if target_runtime_idx > 0 {
+                        target_runtime_idx - 1
+                    } else {
+                        0 // Branching out of function
+                    };
 
                     fixups[default_fixup_idx].original_wasm_depth = usize::MAX;
 
@@ -731,6 +795,7 @@ fn preprocess_instructions(
                         target_ip,
                         arity: target_arity,
                         target_label_stack_idx,
+                        original_wasm_depth: fixup_depth,
                         is_loop: is_loop, // Use default target's loop/block information
                     }
                 };
@@ -760,16 +825,22 @@ fn preprocess_instructions(
                         let target_ip = if is_loop {
                             target_start_pc
                         } else {
-                            *block_end_map.get(&target_start_pc).ok_or_else(|| {
+                            let end_ip = *block_end_map.get(&target_start_pc).ok_or_else(|| {
                                 RuntimeError::InvalidWasm("Missing EndMarker for BrTable target")
-                            })?
+                            })?;
+                            end_ip
                         };
                         let target_arity = if is_loop {
                             calculate_loop_parameter_arity(&target_block_type, module)
                         } else {
                             calculate_block_arity(&target_block_type, module)
                         };
-                        let target_label_stack_idx = target_runtime_idx;
+                        // Branch to parent level: if target block is at index N, unwind to N-1
+                        let target_label_stack_idx = if target_runtime_idx > 0 {
+                            target_runtime_idx - 1
+                        } else {
+                            0 // Branching out of function
+                        };
 
                         fixups[fixup_idx].original_wasm_depth = usize::MAX;
 
@@ -777,6 +848,7 @@ fn preprocess_instructions(
                             target_ip,
                             arity: target_arity,
                             target_label_stack_idx,
+                            original_wasm_depth: fixup_depth,
                             is_loop: is_loop,
                         }
                     };
@@ -816,6 +888,7 @@ fn preprocess_instructions(
 
 fn decode_processed_instrs_and_fixups(
     ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>,
+    module: &Module,
 ) -> Result<
     (
         Vec<ProcessedInstr>,
@@ -847,10 +920,18 @@ fn decode_processed_instrs_and_fixups(
             None => break,
         };
 
+        #[cfg(debug_assertions)]
+        if current_processed_pc < 15 {
+            // Only debug first 15 instructions to avoid spam
+            eprintln!("Parsing OP at PC {}: {:?}", current_processed_pc, op);
+        }
+
         let (processed_instr_template, fixup_info_opt) = map_operator_to_initial_instr_and_fixup(
             &op,
             current_processed_pc,
             &control_info_stack,
+            module,
+            &HashMap::new(), // Empty map for first pass - will be updated later
         )?;
 
         // --- Update Maps and Stacks based on operator ---
@@ -952,6 +1033,9 @@ fn decode_processed_instrs_and_fixups(
         )) as Box<dyn std::error::Error>);
     }
 
+    // Update block operands with range information
+    update_block_operands_with_ranges(&mut initial_processed_instrs, &block_end_map);
+
     Ok((
         initial_processed_instrs,
         initial_fixups,
@@ -961,10 +1045,35 @@ fn decode_processed_instrs_and_fixups(
     ))
 }
 
+fn update_block_operands_with_ranges(
+    processed_instrs: &mut Vec<ProcessedInstr>,
+    block_end_map: &HashMap<usize, usize>,
+) {
+    for (pc, instr) in processed_instrs.iter_mut().enumerate() {
+        if let Operand::Block {
+            arity: _,
+            param_count: _,
+            is_loop: _,
+            start_ip,
+            end_ip,
+        } = &mut instr.operand
+        {
+            if let Some(&actual_end_ip) = block_end_map.get(&pc) {
+                // Block content starts from the instruction after the block/loop
+                *start_ip = pc + 1;
+                // Block content ends before the corresponding end instruction (exclude the end)
+                *end_ip = actual_end_ip;
+            }
+        }
+    }
+}
+
 fn map_operator_to_initial_instr_and_fixup(
     op: &wasmparser::Operator,
     current_processed_pc: usize,
     _control_info_stack: &[(wasmparser::BlockType, usize)],
+    module: &Module,
+    block_end_map: &HashMap<usize, usize>,
 ) -> Result<(ProcessedInstr, Option<FixupInfo>), Box<dyn std::error::Error>> {
     let handler_index;
     let mut operand = Operand::None;
@@ -977,14 +1086,42 @@ fn map_operator_to_initial_instr_and_fixup(
         wasmparser::Operator::Nop => {
             handler_index = HANDLER_IDX_NOP;
         }
-        wasmparser::Operator::Block { blockty: _ } => {
+        wasmparser::Operator::Block { blockty } => {
             handler_index = HANDLER_IDX_BLOCK;
+            let arity = calculate_block_arity(&blockty, module);
+            let param_count = calculate_block_parameter_count(&blockty, module);
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "Parser: Block arity={}, param_count={}, blockty={:?}",
+                arity, param_count, blockty
+            );
+            operand = Operand::Block {
+                arity,
+                param_count,
+                is_loop: false,
+                start_ip: 0, // Will be updated in post-processing
+                end_ip: 0,   // Will be updated in post-processing
+            };
         }
-        wasmparser::Operator::Loop { blockty: _ } => {
+        wasmparser::Operator::Loop { blockty } => {
             handler_index = HANDLER_IDX_LOOP;
+            let arity = calculate_block_arity(&blockty, module); // Use block arity for loop results
+            let param_count = calculate_block_parameter_count(&blockty, module);
+            operand = Operand::Block {
+                arity,
+                param_count,
+                is_loop: true,
+                start_ip: 0, // Will be updated in post-processing
+                end_ip: 0,   // Will be updated in post-processing
+            };
         }
-        wasmparser::Operator::If { blockty: _ } => {
+        wasmparser::Operator::If { blockty } => {
             handler_index = HANDLER_IDX_IF;
+            let arity = calculate_block_arity(&blockty, module);
+
+            #[cfg(debug_assertions)]
+            eprintln!("Parser: If arity={}, blockty={:?}", arity, blockty);
+
             fixup_info = Some(FixupInfo {
                 pc: current_processed_pc,
                 original_wasm_depth: 0,
@@ -993,8 +1130,9 @@ fn map_operator_to_initial_instr_and_fixup(
             });
             operand = Operand::LabelIdx {
                 target_ip: usize::MAX,
-                arity: 0,
+                arity,
                 target_label_stack_idx: 0,
+                original_wasm_depth: 0,
                 is_loop: false,
             };
         }
@@ -1010,6 +1148,7 @@ fn map_operator_to_initial_instr_and_fixup(
                 target_ip: usize::MAX,
                 arity: 0,
                 target_label_stack_idx: 0,
+                original_wasm_depth: 0,
                 is_loop: false,
             };
         }
@@ -1028,6 +1167,7 @@ fn map_operator_to_initial_instr_and_fixup(
                 target_ip: usize::MAX,
                 arity: 0,
                 target_label_stack_idx: 0,
+                original_wasm_depth: relative_depth as usize,
                 is_loop: false,
             };
         }
@@ -1044,6 +1184,7 @@ fn map_operator_to_initial_instr_and_fixup(
                 target_ip: usize::MAX,
                 arity: 0,
                 target_label_stack_idx: 0,
+                original_wasm_depth: relative_depth as usize,
                 is_loop: false,
             };
         }
@@ -1810,6 +1951,7 @@ pub fn parse_bytecode(
 
             ImportSection(body) => {
                 decode_import_section(body, &mut module)?;
+                current_func_index = module.num_imported_funcs;
             }
             ExportSection(body) => {
                 decode_export_section(body, &mut module)?;

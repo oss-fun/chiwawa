@@ -98,12 +98,15 @@ impl Runtime {
                                     code,
                                 } => {
                                     let params_len = type_.params.len();
-                                    if cur_label_stack_mut.value_stack.len() < params_len {
+                                    if current_frame_stack_mut.global_value_stack.len() < params_len
+                                    {
                                         return Err(RuntimeError::ValueStackUnderflow);
                                     }
-                                    let params = cur_label_stack_mut.value_stack.split_off(
-                                        cur_label_stack_mut.value_stack.len() - params_len,
-                                    );
+                                    let params =
+                                        current_frame_stack_mut.global_value_stack.split_off(
+                                            current_frame_stack_mut.global_value_stack.len()
+                                                - params_len,
+                                        );
 
                                     let mut locals = params;
                                     for v in code.locals.iter() {
@@ -123,6 +126,8 @@ impl Runtime {
                                                 locals_num: type_.results.len(),
                                                 arity: type_.results.len(),
                                                 is_loop: false,
+                                                stack_height: 0, // Function level starts with empty stack
+                                                return_ip: 0, // No return needed for function level
                                             },
                                             processed_instrs: code.body.clone(),
                                             value_stack: vec![],
@@ -130,20 +135,26 @@ impl Runtime {
                                         }],
                                         void: type_.results.is_empty(),
                                         instruction_count: 0,
+                                        global_value_stack: vec![], // Will be set up after frame creation
                                     };
                                     self.stacks.activation_frame_stack.push(new_frame);
                                 }
                                 FuncInst::HostFunc { type_, host_code } => {
                                     let params_len = type_.params.len();
-                                    if cur_label_stack_mut.value_stack.len() < params_len {
+                                    if current_frame_stack_mut.global_value_stack.len() < params_len
+                                    {
                                         return Err(RuntimeError::ValueStackUnderflow);
                                     }
-                                    let params = cur_label_stack_mut.value_stack.split_off(
-                                        cur_label_stack_mut.value_stack.len() - params_len,
-                                    );
+                                    let params =
+                                        current_frame_stack_mut.global_value_stack.split_off(
+                                            current_frame_stack_mut.global_value_stack.len()
+                                                - params_len,
+                                        );
                                     match host_code(params) {
                                         Ok(results) => {
-                                            cur_label_stack_mut.value_stack.extend(results);
+                                            current_frame_stack_mut
+                                                .global_value_stack
+                                                .extend(results);
                                         }
                                         Err(e) => return Err(e),
                                     }
@@ -153,12 +164,15 @@ impl Runtime {
                                     wasi_func_addr,
                                 } => {
                                     let params_len = type_.params.len();
-                                    if cur_label_stack_mut.value_stack.len() < params_len {
+                                    if current_frame_stack_mut.global_value_stack.len() < params_len
+                                    {
                                         return Err(RuntimeError::ValueStackUnderflow);
                                     }
-                                    let params = cur_label_stack_mut.value_stack.split_off(
-                                        cur_label_stack_mut.value_stack.len() - params_len,
-                                    );
+                                    let params =
+                                        current_frame_stack_mut.global_value_stack.split_off(
+                                            current_frame_stack_mut.global_value_stack.len()
+                                                - params_len,
+                                        );
 
                                     let wasi_func_type = wasi_func_addr.func_type.clone();
                                     drop(func_inst_guard); // Release the lock before calling WASI function
@@ -176,7 +190,9 @@ impl Runtime {
                                                     .label_stack
                                                     .last_mut()
                                                     .unwrap();
-                                                cur_label_stack_mut.value_stack.push(val);
+                                                current_frame_stack_mut
+                                                    .global_value_stack
+                                                    .push(val);
                                             }
                                         }
                                         Err(WasiError::ProcessExit(_code)) => {
@@ -200,11 +216,11 @@ impl Runtime {
                             )?;
                             let expected_n = finished_frame.frame.n;
 
-                            if finished_label_stack.value_stack.len() < expected_n {
+                            if finished_frame.global_value_stack.len() < expected_n {
                                 return Err(RuntimeError::Trap);
                             }
-                            let values_to_pass = finished_label_stack
-                                .value_stack
+                            let values_to_pass = finished_frame
+                                .global_value_stack
                                 .iter()
                                 .rev()
                                 .take(expected_n)
@@ -219,11 +235,7 @@ impl Runtime {
                             } else {
                                 let caller_frame =
                                     self.stacks.activation_frame_stack.last_mut().unwrap();
-                                let caller_label_stack = caller_frame
-                                    .label_stack
-                                    .last_mut()
-                                    .ok_or(RuntimeError::StackError("Caller label stack empty"))?;
-                                caller_label_stack.value_stack.extend(values_to_pass);
+                                caller_frame.global_value_stack.extend(values_to_pass);
                             }
                         }
                         None => {
@@ -233,11 +245,11 @@ impl Runtime {
                             )?;
                             let expected_n = finished_frame.frame.n;
 
-                            if finished_label_stack.value_stack.len() < expected_n {
+                            if finished_frame.global_value_stack.len() < expected_n {
                                 return Err(RuntimeError::Trap);
                             }
-                            let values_to_pass = finished_label_stack
-                                .value_stack
+                            let values_to_pass = finished_frame
+                                .global_value_stack
                                 .iter()
                                 .rev()
                                 .take(expected_n)
@@ -252,11 +264,7 @@ impl Runtime {
                             } else {
                                 let caller_frame =
                                     self.stacks.activation_frame_stack.last_mut().unwrap();
-                                let caller_label_stack = caller_frame
-                                    .label_stack
-                                    .last_mut()
-                                    .ok_or(RuntimeError::StackError("Caller label stack empty"))?;
-                                caller_label_stack.value_stack.extend(values_to_pass);
+                                caller_frame.global_value_stack.extend(values_to_pass);
                             }
                         }
                     }
