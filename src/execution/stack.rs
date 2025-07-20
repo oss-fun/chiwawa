@@ -27,6 +27,7 @@ pub enum Operand {
         target_ip: usize,
         arity: usize,
         target_label_stack_idx: usize,
+        original_wasm_depth: usize,
         is_loop: bool,
     },
     MemArg(Memarg),
@@ -37,6 +38,13 @@ pub enum Operand {
     CallIndirect {
         type_idx: TypeIdx,
         table_idx: TableIdx,
+    },
+    Block {
+        arity: usize,
+        param_count: usize,
+        is_loop: bool,
+        start_ip: usize,
+        end_ip: usize,
     },
 }
 
@@ -61,6 +69,16 @@ enum HandlerResult {
         target_ip: usize,
         target_label_stack_idx: usize,
         values_to_push: Vec<Val>,
+        branch_depth: usize,
+    },
+    PushLabelStack {
+        label: Label,
+        next_ip: usize,
+        start_ip: usize,
+        end_ip: usize,
+    },
+    PopLabelStack {
+        next_ip: usize,
     },
 }
 
@@ -316,7 +334,9 @@ impl Stacks {
                         label: Label {
                             locals_num: type_.results.len(),
                             arity: type_.results.len(),
-                            is_loop: false, // function frame is not a loop
+                            is_loop: false,
+                            stack_height: 0, // Function level starts with empty stack
+                            return_ip: 0,    // No return needed for function level
                         },
                         processed_instrs: code.body.clone(),
                         value_stack: vec![],
@@ -324,6 +344,7 @@ impl Stacks {
                     }],
                     void: type_.results.is_empty(),
                     instruction_count: 0,
+                    global_value_stack: vec![],
                 };
 
                 Ok(Stacks {
@@ -358,9 +379,39 @@ pub struct FrameStack {
     pub void: bool,
     #[serde(default)]
     pub instruction_count: u64,
+    // Global value stack shared across all label stacks
+    pub global_value_stack: Vec<Val>,
 }
 
 impl FrameStack {
+    /// Push a new label stack for a block or loop
+    pub fn push_label_stack(&mut self, label: Label, instructions: Vec<ProcessedInstr>) {
+        let new_label_stack = LabelStack {
+            label,
+            processed_instrs: instructions,
+            value_stack: vec![],
+            ip: 0,
+        };
+        self.label_stack.push(new_label_stack);
+    }
+
+    /// Pop the top label stack when exiting a block
+    pub fn pop_label_stack(&mut self) -> Option<LabelStack> {
+        if self.label_stack.len() > 1 {
+            self.label_stack.pop()
+        } else {
+            None
+        }
+    }
+
+    pub fn current_stack_height(&self) -> usize {
+        if let Some(current_label) = self.label_stack.last() {
+            current_label.value_stack.len()
+        } else {
+            0
+        }
+    }
+
     pub fn run_dtc_loop(
         &mut self,
         _called_func_addr_out: &mut Option<FuncAddr>,
@@ -399,11 +450,33 @@ impl FrameStack {
             if ip >= processed_code.len() {
                 current_label_stack.ip = ip;
 
+                // Label stack index indicates nesting level:
+                // Index 0: Function level (function body)
+                // Index 1+: Block/loop/if levels (nested blocks)
                 if current_label_stack_idx > 0 {
+                    let return_ip = self.label_stack[current_label_stack_idx].label.return_ip;
+                    let current_label = &self.label_stack[current_label_stack_idx].label;
+                    let is_loop = current_label.is_loop;
+
+                    // Check if returning to parent would cause re-execution of already processed code
+                    // This handles cases where break jumps out of loops and shouldn't re-enter them
+                    // Exception: For loops, it's normal for return_ip to be smaller than current_ip
+                    if return_ip <= ip && !is_loop {
+                        // This would cause re-execution - end the function instead
+                        break;
+                    }
+
                     self.label_stack.pop();
                     current_label_stack_idx -= 1;
+
+                    // Continue execution at return point in parent level
+                    if current_label_stack_idx < self.label_stack.len() {
+                        let parent_label_stack = &mut self.label_stack[current_label_stack_idx];
+                        parent_label_stack.ip = return_ip;
+                    }
                     continue;
                 } else {
+                    // Function level (index 0): end of function execution
                     break;
                 }
             }
@@ -416,13 +489,11 @@ impl FrameStack {
 
             let mut context = ExecutionContext {
                 frame: &mut self.frame,
-                value_stack: &mut self.label_stack[current_label_stack_idx].value_stack,
+                value_stack: &mut self.global_value_stack,
                 ip,
             };
 
             let result = handler_fn(&mut context, &instruction_ref.operand);
-
-            self.label_stack[current_label_stack_idx].ip = context.ip;
 
             match result {
                 Err(e) => {
@@ -432,43 +503,167 @@ impl FrameStack {
                     );
                     return Ok(Err(e));
                 }
-                Ok(handler_result) => match handler_result {
-                    HandlerResult::Continue(next_ip) => {
-                        self.label_stack[current_label_stack_idx].ip = next_ip;
-                    }
-                    HandlerResult::Return => {
-                        return Ok(Ok(Some(ModuleLevelInstr::Return)));
-                    }
-                    HandlerResult::Invoke(func_addr) => {
-                        self.label_stack[current_label_stack_idx].ip = ip + 1;
-                        return Ok(Ok(Some(ModuleLevelInstr::Invoke(func_addr))));
-                    }
-                    HandlerResult::Branch {
-                        target_ip,
-                        target_label_stack_idx,
-                        values_to_push,
-                    } => {
-                        self.label_stack.truncate(target_label_stack_idx + 1);
-                        let new_top_idx = self.label_stack.len() - 1;
-
-                        let is_loop = self.label_stack[new_top_idx].label.is_loop;
-                        let expected_stack_base = self.label_stack[new_top_idx].label.locals_num;
-                        let target_stack = &mut self.label_stack[new_top_idx].value_stack;
-
-                        if is_loop {
-                            target_stack.truncate(expected_stack_base);
-                            target_stack.extend(values_to_push);
-                        } else {
-                            if target_stack.len() > expected_stack_base {
-                                target_stack.truncate(expected_stack_base);
-                            }
-                            target_stack.extend(values_to_push);
+                Ok(handler_result) => {
+                    match handler_result {
+                        HandlerResult::Continue(next_ip) => {
+                            self.label_stack[current_label_stack_idx].ip = next_ip;
                         }
+                        HandlerResult::Return => {
+                            return Ok(Ok(Some(ModuleLevelInstr::Return)));
+                        }
+                        HandlerResult::Invoke(func_addr) => {
+                            self.label_stack[current_label_stack_idx].ip = ip + 1;
+                            return Ok(Ok(Some(ModuleLevelInstr::Invoke(func_addr))));
+                        }
+                        HandlerResult::Branch {
+                            target_ip,
+                            target_label_stack_idx,
+                            values_to_push,
+                            branch_depth,
+                        } => {
+                            // Use the branch depth directly from the Branch result
+                            // Calculate target label stack index from current position and branch depth
+                            // Branch depth 0 = current block, 1 = parent block, etc.
+                            if branch_depth <= current_label_stack_idx {
+                                let target_depth = current_label_stack_idx - branch_depth;
+                                let target_level = target_depth + 1;
 
-                        self.label_stack[new_top_idx].ip = target_ip;
-                        current_label_stack_idx = new_top_idx;
+                                let current_label_stack =
+                                    &self.label_stack[current_label_stack_idx];
+                                let current_stack_height = current_label_stack.label.stack_height;
+
+                                // For branch depth 0, we need to exit the current block
+                                if branch_depth == 0 {
+                                    self.label_stack.pop();
+                                    if self.label_stack.len() > 0 {
+                                        current_label_stack_idx = self.label_stack.len() - 1;
+                                    } else {
+                                        return Err(RuntimeError::StackError(
+                                            "Label stack underflow during branch",
+                                        ));
+                                    }
+                                } else {
+                                    // For deeper branches, truncate to the target level
+                                    self.label_stack.truncate(target_level);
+                                    if self.label_stack.len() > 0 {
+                                        current_label_stack_idx = self.label_stack.len() - 1;
+                                    } else {
+                                        return Err(RuntimeError::StackError(
+                                            "Label stack underflow during branch",
+                                        ));
+                                    }
+                                }
+
+                                let target_label_stack =
+                                    &mut self.label_stack[current_label_stack_idx];
+
+                                let stack_height = if branch_depth == 0 {
+                                    current_stack_height
+                                } else {
+                                    target_label_stack.label.stack_height
+                                };
+
+                                self.global_value_stack.truncate(stack_height);
+                                self.global_value_stack.extend(values_to_push);
+                                target_label_stack.ip = target_ip;
+                            } else {
+                                return Err(RuntimeError::InvalidBranchTarget);
+                            }
+                            continue;
+                        }
+                        HandlerResult::PushLabelStack {
+                            label,
+                            next_ip,
+                            start_ip,
+                            end_ip,
+                        } => {
+                            let current_instrs =
+                                &self.label_stack[current_label_stack_idx].processed_instrs;
+
+                            let new_label_stack = LabelStack {
+                                label,
+                                processed_instrs: current_instrs.clone(),
+                                value_stack: vec![],
+                                ip: next_ip,
+                            };
+
+                            self.label_stack.push(new_label_stack);
+                            current_label_stack_idx = self.label_stack.len() - 1;
+                        }
+                        HandlerResult::PopLabelStack { next_ip } => {
+                            // Pop the current label stack when ending a block/loop
+                            if self.label_stack.len() > 1 {
+                                let current_label =
+                                    &self.label_stack[current_label_stack_idx].label;
+                                let return_ip = current_label.return_ip;
+                                let stack_height = current_label.stack_height;
+                                let arity = current_label.arity;
+
+                                // Extract the result values from the global stack
+                                let result_values = if arity > 0 {
+                                    if self.global_value_stack.len() >= arity {
+                                        let start_idx = self.global_value_stack.len() - arity;
+                                        let values = self.global_value_stack[start_idx..].to_vec();
+                                        values
+                                    } else {
+                                        // Not enough values on stack for the required arity
+                                        if self.global_value_stack.len() > stack_height {
+                                            // Use all available values that were added after this block started
+                                            self.global_value_stack[stack_height..].to_vec()
+                                        } else {
+                                            // No new values available
+                                            Vec::new()
+                                        }
+                                    }
+                                } else {
+                                    Vec::new()
+                                };
+
+                                // Restore the global stack to the entry state
+                                if arity == 0 && result_values.is_empty() {
+                                    // For void blocks (arity=0) with no results, preserve the current stack state
+                                } else {
+                                    // Normal case: restore to entry state and add result values
+                                    let correct_stack_height =
+                                        if arity > 0 && self.global_value_stack.len() >= arity {
+                                            self.global_value_stack.len() - arity
+                                        } else {
+                                            stack_height
+                                        };
+
+                                    self.global_value_stack.truncate(correct_stack_height);
+                                    self.global_value_stack.extend(result_values);
+                                }
+
+                                self.label_stack.pop();
+                                current_label_stack_idx = self.label_stack.len() - 1;
+                                self.label_stack[current_label_stack_idx].ip = next_ip;
+                            } else {
+                                let current_label =
+                                    &self.label_stack[current_label_stack_idx].label;
+                                let function_arity = current_label.arity;
+
+                                // Extract the function result values from the global stack
+                                let result_values = if function_arity > 0 {
+                                    if self.global_value_stack.len() >= function_arity {
+                                        let start_idx =
+                                            self.global_value_stack.len() - function_arity;
+                                        let values = self.global_value_stack[start_idx..].to_vec();
+                                        values
+                                    } else {
+                                        return Err(RuntimeError::ValueStackUnderflow);
+                                    }
+                                } else {
+                                    self.global_value_stack.clone()
+                                };
+
+                                self.global_value_stack.clear();
+                                self.global_value_stack.extend(result_values);
+                                break;
+                            }
+                        }
                     }
-                },
+                }
             }
         }
         Ok(Ok(None))
@@ -479,7 +674,9 @@ impl FrameStack {
 pub struct Label {
     pub locals_num: usize,
     pub arity: usize,
-    pub is_loop: bool, // true for loop, false for block
+    pub is_loop: bool,
+    pub stack_height: usize,
+    pub return_ip: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -606,16 +803,68 @@ fn handle_nop(
 
 fn handle_block(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    if let Operand::Block {
+        arity,
+        param_count,
+        is_loop,
+        start_ip,
+        end_ip,
+    } = operand
+    {
+        // Create a new label for this block
+        let current_stack_height = ctx.value_stack.len();
+        let label = Label {
+            locals_num: *param_count,
+            arity: *arity,
+            is_loop: *is_loop,
+            stack_height: current_stack_height,
+            return_ip: *end_ip + 1, // IP to return to after this block (after the end instruction)
+        };
+
+        Ok(HandlerResult::PushLabelStack {
+            label,
+            next_ip: ctx.ip + 1,
+            start_ip: *start_ip,
+            end_ip: *end_ip,
+        })
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
 }
 
 fn handle_loop(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    if let Operand::Block {
+        arity,
+        param_count,
+        is_loop,
+        start_ip,
+        end_ip,
+    } = operand
+    {
+        let current_stack_height = ctx.value_stack.len();
+        let label = Label {
+            locals_num: *param_count,
+            arity: *arity,
+            is_loop: *is_loop,
+            stack_height: current_stack_height,
+            return_ip: *end_ip + 1, // IP to return to after this loop (after the end instruction)
+        };
+
+        // Signal to the main execution loop to create a new label stack
+        Ok(HandlerResult::PushLabelStack {
+            label,
+            next_ip: ctx.ip + 1,
+            start_ip: *start_ip,
+            end_ip: *end_ip,
+        })
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
 }
 
 fn handle_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerResult, RuntimeError> {
@@ -624,10 +873,12 @@ fn handle_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
         .pop()
         .ok_or(RuntimeError::ValueStackUnderflow)?;
     let cond = cond_val.to_i32()?;
+
     if let &Operand::LabelIdx {
         target_ip,
-        arity: _,
+        arity,
         target_label_stack_idx: _,
+        original_wasm_depth: _,
         is_loop: _,
     } = operand
     {
@@ -636,11 +887,25 @@ fn handle_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
                 "Branch fixup not done for If",
             ));
         }
-        if cond == 0 {
-            Ok(HandlerResult::Continue(target_ip))
-        } else {
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
+
+        let current_stack_height = ctx.value_stack.len();
+        let label = Label {
+            locals_num: 0, // If blocks don't have parameters
+            arity,
+            is_loop: false,
+            stack_height: current_stack_height,
+            return_ip: target_ip, // IP after the if block (either else or end)
+        };
+
+        // WebAssembly if: 0 = false (else/skip), non-zero = true (then)
+        let next_ip = if cond != 0 { ctx.ip + 1 } else { target_ip };
+
+        Ok(HandlerResult::PushLabelStack {
+            label,
+            next_ip,
+            start_ip: ctx.ip + 1,
+            end_ip: target_ip,
+        })
     } else {
         Err(RuntimeError::InvalidOperand)
     }
@@ -654,6 +919,7 @@ fn handle_else(
         target_ip,
         arity: _,
         target_label_stack_idx: _,
+        original_wasm_depth: _,
         is_loop: _,
     } = operand
     {
@@ -672,7 +938,9 @@ fn handle_end(
     ctx: &mut ExecutionContext,
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    Ok(HandlerResult::PopLabelStack {
+        next_ip: ctx.ip + 1,
+    })
 }
 
 fn handle_br(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerResult, RuntimeError> {
@@ -680,6 +948,7 @@ fn handle_br(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
         target_ip,
         arity,
         target_label_stack_idx,
+        original_wasm_depth,
         is_loop: _,
     } = operand
     {
@@ -695,6 +964,7 @@ fn handle_br(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
             target_ip: *target_ip,
             target_label_stack_idx: *target_label_stack_idx,
             values_to_push,
+            branch_depth: *original_wasm_depth,
         })
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -716,6 +986,7 @@ fn handle_br_if(
             target_ip,
             arity,
             target_label_stack_idx,
+            original_wasm_depth,
             is_loop: _,
         } = operand
         {
@@ -731,6 +1002,7 @@ fn handle_br_if(
                 target_ip: *target_ip,
                 target_label_stack_idx: *target_label_stack_idx,
                 values_to_push,
+                branch_depth: *original_wasm_depth,
             })
         } else {
             Err(RuntimeError::InvalidOperand)
@@ -2351,6 +2623,7 @@ fn handle_br_table(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
+    // First pop the index
     let i_val = ctx
         .value_stack
         .pop()
@@ -2368,6 +2641,7 @@ fn handle_br_table(
             target_ip,
             arity,
             target_label_stack_idx,
+            original_wasm_depth,
             is_loop: _,
         } = chosen_operand
         {
@@ -2377,12 +2651,18 @@ fn handle_br_table(
                 ));
             }
 
-            let values_to_push = ctx.pop_n_values(*arity)?;
+            // Then pop the values needed for the branch target
+            let values_to_push = if *arity > 0 {
+                ctx.pop_n_values(*arity)?
+            } else {
+                Vec::new()
+            };
 
             Ok(HandlerResult::Branch {
                 target_ip: *target_ip,
                 target_label_stack_idx: *target_label_stack_idx,
                 values_to_push,
+                branch_depth: *original_wasm_depth,
             })
         } else {
             Err(RuntimeError::InvalidOperand)
@@ -3432,7 +3712,6 @@ fn handle_memory_init(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    println!("DEBUG: memory.init called");
     let len_val = ctx
         .value_stack
         .pop()
