@@ -471,25 +471,6 @@ fn decode_code_section(
 
     if let Some(func) = module.funcs.get_mut(relative_func_index) {
         func.body = processed_instrs;
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "Assigned {} instructions to function {} (relative index {})",
-            func.body.len(),
-            func_index,
-            relative_func_index
-        );
-
-        #[cfg(debug_assertions)]
-        if relative_func_index == 1 {
-            // Likely the singular function
-            eprintln!("Function {} instructions:", relative_func_index);
-            for (i, instr) in func.body.iter().enumerate() {
-                eprintln!(
-                    "  IP {}: handler_index={}, operand={:?}",
-                    i, instr.handler_index, instr.operand
-                );
-            }
-        }
     } else {
         return Err(Box::new(RuntimeError::InvalidWasm(
             "Invalid function index when storing body",
@@ -637,10 +618,6 @@ fn preprocess_instructions(
                     .cloned()
                     .unwrap_or(wasmparser::BlockType::Empty);
                 let if_arity = calculate_block_arity(&if_block_type, module);
-
-                #[cfg(debug_assertions)]
-                eprintln!("If fixup: pc={}, target_start_pc={}, else_target={}, target_ip={}, if_arity={}, if_else_map={:?}", 
-                         current_fixup_pc, target_start_pc, else_target, target_ip, if_arity, if_else_map);
 
                 instr_to_patch.operand = Operand::LabelIdx {
                     target_ip: else_target,
@@ -920,12 +897,6 @@ fn decode_processed_instrs_and_fixups(
             None => break,
         };
 
-        #[cfg(debug_assertions)]
-        if current_processed_pc < 15 {
-            // Only debug first 15 instructions to avoid spam
-            eprintln!("Parsing OP at PC {}: {:?}", current_processed_pc, op);
-        }
-
         let (processed_instr_template, fixup_info_opt) = map_operator_to_initial_instr_and_fixup(
             &op,
             current_processed_pc,
@@ -1090,11 +1061,6 @@ fn map_operator_to_initial_instr_and_fixup(
             handler_index = HANDLER_IDX_BLOCK;
             let arity = calculate_block_arity(&blockty, module);
             let param_count = calculate_block_parameter_count(&blockty, module);
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "Parser: Block arity={}, param_count={}, blockty={:?}",
-                arity, param_count, blockty
-            );
             operand = Operand::Block {
                 arity,
                 param_count,
@@ -1118,9 +1084,6 @@ fn map_operator_to_initial_instr_and_fixup(
         wasmparser::Operator::If { blockty } => {
             handler_index = HANDLER_IDX_IF;
             let arity = calculate_block_arity(&blockty, module);
-
-            #[cfg(debug_assertions)]
-            eprintln!("Parser: If arity={}, blockty={:?}", arity, blockty);
 
             fixup_info = Some(FixupInfo {
                 pc: current_processed_pc,

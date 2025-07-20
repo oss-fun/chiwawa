@@ -86,7 +86,6 @@ impl ModuleInst {
 
         /*Import processing*/
         if module.imports.len() != 0 {
-            println!("len{}", module.imports.len());
             for import in &module.imports {
                 match &import.desc {
                     ImportDesc::Func(idx) => {
@@ -151,7 +150,6 @@ impl ModuleInst {
                     init.push(idx.0 as i32);
                 }
             }
-            //  let init: Vec<i32> = elem.init.clone().into_iter().map(|expr| module_inst.expr_to_const(&expr).unwrap().to_i32()).collect();
             module_inst
                 .elem_addrs
                 .push(ElemAddr::new(&elem.type_, &module_inst.func_addrs, &init));
@@ -237,7 +235,6 @@ impl ModuleInst {
                 .replace(func.clone(), Arc::downgrade(&arc_module_inst));
         }
         if let Some(start) = &module.start {
-            //Todo: Invoke _start function
             arc_module_inst.func_addrs.get_by_idx(start.func.clone());
         }
         Ok(arc_module_inst)

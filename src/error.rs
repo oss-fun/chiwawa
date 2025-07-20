@@ -64,6 +64,8 @@ pub enum RuntimeError {
     InvalidDataSegmentIndex,
     #[error("Trap")]
     Trap,
+    #[error("Invalid Branch Target")]
+    InvalidBranchTarget,
 
     // Migration Errors
     #[error("Serialization Error: {0}")]

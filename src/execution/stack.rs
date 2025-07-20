@@ -334,7 +334,7 @@ impl Stacks {
                         label: Label {
                             locals_num: type_.results.len(),
                             arity: type_.results.len(),
-                            is_loop: false,  // function frame is not a loop
+                            is_loop: false,
                             stack_height: 0, // Function level starts with empty stack
                             return_ip: 0,    // No return needed for function level
                         },
@@ -400,11 +400,10 @@ impl FrameStack {
         if self.label_stack.len() > 1 {
             self.label_stack.pop()
         } else {
-            None // Never pop the function-level label stack
+            None
         }
     }
 
-    /// Get the current stack height for a new block
     pub fn current_stack_height(&self) -> usize {
         if let Some(current_label) = self.label_stack.last() {
             current_label.value_stack.len()
@@ -451,92 +450,33 @@ impl FrameStack {
             if ip >= processed_code.len() {
                 current_label_stack.ip = ip;
 
-                #[cfg(debug_assertions)]
-                eprintln!(
-                    "IP bounds check: ip={} >= processed_code.len()={}, current_label_stack_idx={}",
-                    ip,
-                    processed_code.len(),
-                    current_label_stack_idx
-                );
-
+                // Label stack index indicates nesting level:
+                // Index 0: Function level (function body)
+                // Index 1+: Block/loop/if levels (nested blocks)
                 if current_label_stack_idx > 0 {
-                    // Check if this would be a return to function level
-                    if current_label_stack_idx == 1 {
-                        // Get the return IP to see if it would cause re-execution
-                        let return_ip = self.label_stack[current_label_stack_idx].label.return_ip;
+                    let return_ip = self.label_stack[current_label_stack_idx].label.return_ip;
+                    let current_label = &self.label_stack[current_label_stack_idx].label;
+                    let is_loop = current_label.is_loop;
 
-                        // Check if this return IP would cause re-execution (i.e., returning to an earlier IP)
-                        if return_ip < processed_code.len() {
-                            // This return IP would cause re-execution - end the function instead
-                            #[cfg(debug_assertions)]
-                            eprintln!("IP bounds: preventing re-execution - return_ip={} would cause re-execution", return_ip);
-
-                            // The function should end with the current stack values as results
-                            // No need to clear and extract - the stack already contains the function results
-
-                            #[cfg(debug_assertions)]
-                            eprintln!(
-                                "IP bounds: Function end - preserving current stack with {} values",
-                                self.global_value_stack.len()
-                            );
-
-                            break;
-                        } else {
-                            // Normal function end - continue with the standard logic
-                            #[cfg(debug_assertions)]
-                            eprintln!("IP bounds: normal function end - return_ip={} >= processed_code.len()={}", return_ip, processed_code.len());
-                            break;
-                        }
-                    } else {
-                        // Normal nested block return
-                        // No value stack copying needed - using global shared stack
-                        // Save the return IP before popping
-                        let return_ip = self.label_stack[current_label_stack_idx].label.return_ip;
-
-                        #[cfg(debug_assertions)]
-                        eprintln!(
-                            "IP bounds: checking parent return, return_ip={}, current_ip={}",
-                            return_ip, ip
-                        );
-
-                        // Check if returning to parent would cause re-execution of already processed code
-                        // This handles cases where break jumps out of loops and shouldn't re-enter them
-                        // Exception: For loops, it's normal for return_ip to be smaller than current_ip
-                        let current_label = &self.label_stack[current_label_stack_idx].label;
-                        let is_loop = current_label.is_loop;
-
-                        if return_ip <= ip && !is_loop {
-                            // This would cause re-execution - end the function instead
-                            #[cfg(debug_assertions)]
-                            eprintln!("IP bounds: preventing function re-execution - return_ip={} <= current_ip={}, label_stack.len()={}", return_ip, ip, self.label_stack.len());
-
-                            #[cfg(debug_assertions)]
-                            eprintln!(
-                                "IP bounds: Function end - preserving current stack with {} values",
-                                self.global_value_stack.len()
-                            );
-
-                            break;
-                        }
-
-                        #[cfg(debug_assertions)]
-                        eprintln!("IP bounds: returning to parent, return_ip={}", return_ip);
-
-                        // Pop the current label stack and return to parent
-                        self.label_stack.pop();
-                        current_label_stack_idx -= 1;
-
-                        // Continue execution after the block/loop instruction in parent
-                        if current_label_stack_idx < self.label_stack.len() {
-                            let parent_label_stack = &mut self.label_stack[current_label_stack_idx];
-                            // Fix: Use the correct IP to continue after the block
-                            parent_label_stack.ip = return_ip;
-                        }
-                        continue;
+                    // Check if returning to parent would cause re-execution of already processed code
+                    // This handles cases where break jumps out of loops and shouldn't re-enter them
+                    // Exception: For loops, it's normal for return_ip to be smaller than current_ip
+                    if return_ip <= ip && !is_loop {
+                        // This would cause re-execution - end the function instead
+                        break;
                     }
+
+                    self.label_stack.pop();
+                    current_label_stack_idx -= 1;
+
+                    // Continue execution at return point in parent level
+                    if current_label_stack_idx < self.label_stack.len() {
+                        let parent_label_stack = &mut self.label_stack[current_label_stack_idx];
+                        parent_label_stack.ip = return_ip;
+                    }
+                    continue;
                 } else {
-                    #[cfg(debug_assertions)]
-                    eprintln!("IP bounds: FUNCTION END detected! Breaking out of execution loop");
+                    // Function level (index 0): end of function execution
                     break;
                 }
             }
@@ -553,15 +493,6 @@ impl FrameStack {
                 ip,
             };
 
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "Executing IP {}: handler_index={}, value_stack_len={}, operand={:?}",
-                ip,
-                instruction_ref.handler_index,
-                context.value_stack.len(),
-                instruction_ref.operand
-            );
-
             let result = handler_fn(&mut context, &instruction_ref.operand);
 
             match result {
@@ -573,14 +504,6 @@ impl FrameStack {
                     return Ok(Err(e));
                 }
                 Ok(handler_result) => {
-                    // Update context.ip to label stack only for Continue results
-                    match &handler_result {
-                        HandlerResult::Continue(_) => {
-                            self.label_stack[current_label_stack_idx].ip = context.ip;
-                        }
-                        _ => {} // Don't update for Branch, Return, Invoke, PushLabelStack, etc.
-                    }
-
                     match handler_result {
                         HandlerResult::Continue(next_ip) => {
                             self.label_stack[current_label_stack_idx].ip = next_ip;
@@ -605,24 +528,19 @@ impl FrameStack {
                                 let target_depth = current_label_stack_idx - branch_depth;
                                 let target_level = target_depth + 1;
 
-                                // Get the current label stack info before modification
                                 let current_label_stack =
                                     &self.label_stack[current_label_stack_idx];
                                 let current_stack_height = current_label_stack.label.stack_height;
 
                                 // For branch depth 0, we need to exit the current block
                                 if branch_depth == 0 {
-                                    // Exit the current block by popping its label stack
-                                    // Only pop if we're not at the function level
-                                    if self.label_stack.len() > 1 {
-                                        self.label_stack.pop();
-                                        if self.label_stack.len() > 0 {
-                                            current_label_stack_idx = self.label_stack.len() - 1;
-                                        } else {
-                                            return Err(RuntimeError::StackError(
-                                                "Label stack underflow during branch",
-                                            ));
-                                        }
+                                    self.label_stack.pop();
+                                    if self.label_stack.len() > 0 {
+                                        current_label_stack_idx = self.label_stack.len() - 1;
+                                    } else {
+                                        return Err(RuntimeError::StackError(
+                                            "Label stack underflow during branch",
+                                        ));
                                     }
                                 } else {
                                     // For deeper branches, truncate to the target level
@@ -638,51 +556,19 @@ impl FrameStack {
 
                                 let target_label_stack =
                                     &mut self.label_stack[current_label_stack_idx];
-                                let is_loop = target_label_stack.label.is_loop;
-                                // Use the current block's stack height, not the target block's stack height
+
                                 let stack_height = if branch_depth == 0 {
                                     current_stack_height
                                 } else {
                                     target_label_stack.label.stack_height
                                 };
 
-                                #[cfg(debug_assertions)]
-                                eprintln!("Branch: stack_height={}, values_to_push.len()={}, current_stack_len={}, current_stack={:?}", 
-                                         stack_height, values_to_push.len(), self.global_value_stack.len(), self.global_value_stack);
-
-                                if is_loop {
-                                    // For loops, restore global stack to entry state and add branch values
-                                    self.global_value_stack.truncate(stack_height);
-                                    self.global_value_stack.extend(values_to_push);
-                                    target_label_stack.ip = target_ip; // Jump to loop start as specified by target_ip
-                                } else {
-                                    // For blocks, restore global stack to entry state and add branch values
-                                    // First, truncate to the target stack height
-                                    self.global_value_stack.truncate(stack_height);
-                                    // Then add the branch values
-                                    self.global_value_stack.extend(values_to_push);
-                                    target_label_stack.ip = target_ip; // End of block
-
-                                    #[cfg(debug_assertions)]
-                                    eprintln!("Branch: setting target_label_stack.ip to {}, final_stack={:?}", target_ip, self.global_value_stack);
-                                }
-
-                                #[cfg(debug_assertions)]
-                                eprintln!(
-                                    "Branch: after restore, stack_len={}",
-                                    self.global_value_stack.len()
-                                );
+                                self.global_value_stack.truncate(stack_height);
+                                self.global_value_stack.extend(values_to_push);
+                                target_label_stack.ip = target_ip;
                             } else {
-                                // Invalid target - continue normally
-                                #[cfg(debug_assertions)]
-                                eprintln!(
-                                    "Branch: invalid branch_depth={} > current_depth={}",
-                                    branch_depth, current_label_stack_idx
-                                );
-                                self.label_stack[current_label_stack_idx].ip =
-                                    self.label_stack[current_label_stack_idx].ip + 1;
+                                return Err(RuntimeError::InvalidBranchTarget);
                             }
-                            // Continue execution from the branch target
                             continue;
                         }
                         HandlerResult::PushLabelStack {
@@ -691,89 +577,22 @@ impl FrameStack {
                             start_ip,
                             end_ip,
                         } => {
-                            // Keep the complete function instruction set - blocks are control flow constructs, not separate instruction sequences
                             let current_instrs =
                                 &self.label_stack[current_label_stack_idx].processed_instrs;
 
-                            // Debug output
-                            #[cfg(debug_assertions)]
-                            eprintln!("Creating label stack: start_ip={}, end_ip={}, total_instrs.len()={}", 
-                                 start_ip, end_ip, current_instrs.len());
-
-                            // Keep the label's stack height as calculated by the handler
-                            // Do not overwrite it with the current global stack length
-
-                            // Create new label stack with complete function instruction set
-                            // Block execution range is controlled by IP bounds checking
                             let new_label_stack = LabelStack {
                                 label,
-                                processed_instrs: current_instrs.clone(), // Keep complete instruction set
-                                value_stack: vec![], // Unused - global stack is used instead
-                                ip: next_ip, // Start execution from the determined next IP (for if: then or else branch)
+                                processed_instrs: current_instrs.clone(),
+                                value_stack: vec![],
+                                ip: next_ip,
                             };
 
-                            #[cfg(debug_assertions)]
-                            eprintln!("PushLabelStack: arity={}, stack_height={}, current_global_stack_len={}, start_ip={}, end_ip={}, next_ip={}, actual_ip={}", 
-                                 new_label_stack.label.arity, new_label_stack.label.stack_height, self.global_value_stack.len(), start_ip, end_ip, next_ip, new_label_stack.ip);
-
-                            // Push the new label stack
                             self.label_stack.push(new_label_stack);
                             current_label_stack_idx = self.label_stack.len() - 1;
-
-                            // IP is already set correctly in new_label_stack.ip = next_ip
-                            // Do not overwrite it with start_ip
-
-                            // Store the return IP in the parent label stack
-                            if current_label_stack_idx > 0 {
-                                let parent_return_ip =
-                                    self.label_stack[current_label_stack_idx - 1].ip + 1;
-                                // Store this for later use when returning from the block
-                                // For now, we'll handle this in the automatic pop logic
-                            }
                         }
                         HandlerResult::PopLabelStack { next_ip } => {
                             // Pop the current label stack when ending a block/loop
-                            #[cfg(debug_assertions)]
-                            eprintln!(
-                                "PopLabelStack: label_stack.len()={}, current_label_stack_idx={}",
-                                self.label_stack.len(),
-                                current_label_stack_idx
-                            );
-
-                            #[cfg(debug_assertions)]
-                            eprintln!("PopLabelStack condition: label_stack.len()={}, current_label_stack_idx={}", 
-                                 self.label_stack.len(), current_label_stack_idx);
-
-                            #[cfg(debug_assertions)]
-                            eprintln!(
-                                "PopLabelStack: checking condition label_stack.len()={} > 1",
-                                self.label_stack.len()
-                            );
-
                             if self.label_stack.len() > 1 {
-                                // Check if this is the last block in the function and it's a special case
-                                if self.label_stack.len() == 2 {
-                                    let current_label =
-                                        &self.label_stack[current_label_stack_idx].label;
-                                    let arity = current_label.arity;
-                                    let stack_height = current_label.stack_height;
-
-                                    // Special handling for br_if loop tests - preserve function results
-                                    if arity == 0
-                                        && self.global_value_stack.len() > stack_height
-                                        && self.global_value_stack.len() == 1
-                                    {
-                                        #[cfg(debug_assertions)]
-                                        eprintln!("PopLabelStack: br_if special case - preserving function result");
-
-                                        self.label_stack.pop();
-                                        current_label_stack_idx = self.label_stack.len() - 1;
-                                        break;
-                                    }
-                                }
-
-                                // Normal nested block - apply standard block end logic
-                                // Get the current label information before popping
                                 let current_label =
                                     &self.label_stack[current_label_stack_idx].label;
                                 let return_ip = current_label.return_ip;
@@ -783,65 +602,28 @@ impl FrameStack {
                                 // Extract the result values from the global stack
                                 let result_values = if arity > 0 {
                                     if self.global_value_stack.len() >= arity {
-                                        // Take the last 'arity' values from the stack (don't use split_off)
                                         let start_idx = self.global_value_stack.len() - arity;
                                         let values = self.global_value_stack[start_idx..].to_vec();
                                         values
                                     } else {
-                                        // Special case for if statements without else clause or where condition was false
-                                        // If arity > 0 but we don't have enough values, this might be:
-                                        // 1. An if without else that was skipped (should produce no values)
-                                        // 2. A function that had values on stack before the if statement
-                                        #[cfg(debug_assertions)]
-                                        eprintln!("PopLabelStack: if without else or insufficient values, arity={}, stack_len={}, stack_height={}", 
-                                             arity, self.global_value_stack.len(), stack_height);
-
-                                        // Check if there are values on the stack that should be preserved
+                                        // Not enough values on stack for the required arity
                                         if self.global_value_stack.len() > stack_height {
-                                            // There are values that were added after this block started
-                                            // For if without else, we should preserve these values
-                                            let available_values =
-                                                self.global_value_stack.len() - stack_height;
-                                            if available_values >= arity {
-                                                let start_idx =
-                                                    self.global_value_stack.len() - arity;
-                                                self.global_value_stack[start_idx..].to_vec()
-                                            } else {
-                                                // Use all available values - this handles partial value cases
-                                                self.global_value_stack[stack_height..].to_vec()
-                                            }
+                                            // Use all available values that were added after this block started
+                                            self.global_value_stack[stack_height..].to_vec()
                                         } else {
-                                            // No new values, but check if we're at function level
-                                            // If we are, preserve existing stack values
-                                            if self.label_stack.len() == 2 {
-                                                // Function level - preserve current stack
-                                                self.global_value_stack.clone()
-                                            } else {
-                                                Vec::new()
-                                            }
+                                            // No new values available
+                                            Vec::new()
                                         }
                                     }
                                 } else {
-                                    // Block has no return values (void block)
                                     Vec::new()
                                 };
-
-                                #[cfg(debug_assertions)]
-                                eprintln!("PopLabelStack: arity={}, stack_height={}, result_values={:?}, global_stack_len={}", 
-                                     arity, stack_height, result_values, self.global_value_stack.len());
 
                                 // Restore the global stack to the entry state
                                 if arity == 0 && result_values.is_empty() {
                                     // For void blocks (arity=0) with no results, preserve the current stack state
-                                    // This handles nested blocks where upper blocks produce values that need to flow through void blocks
-                                    #[cfg(debug_assertions)]
-                                    eprintln!("PopLabelStack: void block - preserving current stack state with {} values", 
-                                         self.global_value_stack.len());
-                                    // Don't truncate or modify the stack - preserve existing values
                                 } else {
                                     // Normal case: restore to entry state and add result values
-                                    // For blocks with arity > 0, the correct stack height should be
-                                    // current_stack_length - arity (the state before the result values)
                                     let correct_stack_height =
                                         if arity > 0 && self.global_value_stack.len() >= arity {
                                             self.global_value_stack.len() - arity
@@ -849,36 +631,17 @@ impl FrameStack {
                                             stack_height
                                         };
 
-                                    #[cfg(debug_assertions)]
-                                    eprintln!("PopLabelStack: using correct_stack_height={} instead of stored stack_height={}", 
-                                         correct_stack_height, stack_height);
-
                                     self.global_value_stack.truncate(correct_stack_height);
                                     self.global_value_stack.extend(result_values);
                                 }
 
-                                // Pop the label stack
                                 self.label_stack.pop();
                                 current_label_stack_idx = self.label_stack.len() - 1;
-
-                                // Continue execution in the parent label stack at the next instruction
                                 self.label_stack[current_label_stack_idx].ip = next_ip;
                             } else {
-                                // Root label stack - this is function level end
-                                #[cfg(debug_assertions)]
-                                eprintln!("PopLabelStack: FUNCTION LEVEL END detected! Breaking out of execution loop");
-
-                                // For function level, we need to preserve only the function's return values
                                 let current_label =
                                     &self.label_stack[current_label_stack_idx].label;
                                 let function_arity = current_label.arity;
-
-                                #[cfg(debug_assertions)]
-                                eprintln!(
-                                    "Function end: function_arity={}, global_stack_len={}",
-                                    function_arity,
-                                    self.global_value_stack.len()
-                                );
 
                                 // Extract the function result values from the global stack
                                 let result_values = if function_arity > 0 {
@@ -887,33 +650,15 @@ impl FrameStack {
                                             self.global_value_stack.len() - function_arity;
                                         let values = self.global_value_stack[start_idx..].to_vec();
                                         values
-                                    } else if self.global_value_stack.len() > 0 {
-                                        // Special case: function expects results but we have fewer values
-                                        // This can happen with complex if/else structures
-                                        // Use whatever values are available
-                                        #[cfg(debug_assertions)]
-                                        eprintln!("Function end: expected {} values, got {}, using available values", 
-                                             function_arity, self.global_value_stack.len());
-                                        self.global_value_stack.clone()
                                     } else {
                                         return Err(RuntimeError::ValueStackUnderflow);
                                     }
                                 } else {
-                                    // Function has no return values (void function)
-                                    // Preserve whatever values are on the stack
                                     self.global_value_stack.clone()
                                 };
 
-                                // Clear the global stack and push back only the function results
                                 self.global_value_stack.clear();
                                 self.global_value_stack.extend(result_values);
-
-                                #[cfg(debug_assertions)]
-                                eprintln!("Function end: cleared stack and added {} result values, final stack_len={}", 
-                                     function_arity, self.global_value_stack.len());
-
-                                // For function-level end, break out of the execution loop
-                                // Do NOT set IP to continue execution - the function should return
                                 break;
                             }
                         }
@@ -921,13 +666,6 @@ impl FrameStack {
                 }
             }
         }
-
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "DTC loop completed: value_stack_len={}",
-            self.global_value_stack.len()
-        );
-
         Ok(Ok(None))
     }
 }
@@ -936,9 +674,9 @@ impl FrameStack {
 pub struct Label {
     pub locals_num: usize,
     pub arity: usize,
-    pub is_loop: bool,       // true for loop, false for block
-    pub stack_height: usize, // Stack height when this label/block was entered
-    pub return_ip: usize,    // IP in parent label stack to return to after this block
+    pub is_loop: bool,
+    pub stack_height: usize,
+    pub return_ip: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1076,19 +814,15 @@ fn handle_block(
     } = operand
     {
         // Create a new label for this block
-        // For blocks, the stack height is the current stack size
-        // Block parameters are handled differently from function parameters
         let current_stack_height = ctx.value_stack.len();
         let label = Label {
-            locals_num: *param_count, // Store parameter count in locals_num for now
+            locals_num: *param_count,
             arity: *arity,
             is_loop: *is_loop,
             stack_height: current_stack_height,
             return_ip: *end_ip + 1, // IP to return to after this block (after the end instruction)
         };
 
-        // Signal to the main execution loop to create a new label stack
-        // Include the block range information
         Ok(HandlerResult::PushLabelStack {
             label,
             next_ip: ctx.ip + 1,
@@ -1096,8 +830,7 @@ fn handle_block(
             end_ip: *end_ip,
         })
     } else {
-        // No block information available - maintain existing behavior
-        Ok(HandlerResult::Continue(ctx.ip + 1))
+        Err(RuntimeError::InvalidOperand)
     }
 }
 
@@ -1113,12 +846,9 @@ fn handle_loop(
         end_ip,
     } = operand
     {
-        // Create a new label for this loop
-        // For loops, the stack height is the current stack size
-        // Loop parameters are handled differently from function parameters
         let current_stack_height = ctx.value_stack.len();
         let label = Label {
-            locals_num: *param_count, // Store parameter count in locals_num for now
+            locals_num: *param_count,
             arity: *arity,
             is_loop: *is_loop,
             stack_height: current_stack_height,
@@ -1133,8 +863,7 @@ fn handle_loop(
             end_ip: *end_ip,
         })
     } else {
-        // No block information available - maintain existing behavior
-        Ok(HandlerResult::Continue(ctx.ip + 1))
+        Err(RuntimeError::InvalidOperand)
     }
 }
 
@@ -1144,13 +873,6 @@ fn handle_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
         .pop()
         .ok_or(RuntimeError::ValueStackUnderflow)?;
     let cond = cond_val.to_i32()?;
-
-    #[cfg(debug_assertions)]
-    eprintln!(
-        "handle_if: condition={}, value_stack_len={}",
-        cond,
-        ctx.value_stack.len()
-    );
 
     if let &Operand::LabelIdx {
         target_ip,
@@ -1166,13 +888,6 @@ fn handle_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
             ));
         }
 
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "handle_if: target_ip={}, current_ip={}, arity={}, condition={}",
-            target_ip, ctx.ip, arity, cond
-        );
-
-        // Create a label for this if block (WebAssembly spec requires this)
         let current_stack_height = ctx.value_stack.len();
         let label = Label {
             locals_num: 0, // If blocks don't have parameters
@@ -1182,24 +897,9 @@ fn handle_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
             return_ip: target_ip, // IP after the if block (either else or end)
         };
 
-        // Determine the next IP based on condition
         // WebAssembly if: 0 = false (else/skip), non-zero = true (then)
-        let next_ip = if cond != 0 {
-            ctx.ip + 1 // Continue to then branch (condition is true)
-        } else {
-            target_ip // Jump to else/end (condition is false)
-        };
+        let next_ip = if cond != 0 { ctx.ip + 1 } else { target_ip };
 
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "handle_if: condition={}, next_ip={}, ctx.ip+1={}, target_ip={}",
-            cond,
-            next_ip,
-            ctx.ip + 1,
-            target_ip
-        );
-
-        // Push label stack for this if block
         Ok(HandlerResult::PushLabelStack {
             label,
             next_ip,
@@ -1238,9 +938,6 @@ fn handle_end(
     ctx: &mut ExecutionContext,
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    // End instruction should pop the current label stack for blocks/loops
-    // For function-level end, return from the function
-    // We can't easily distinguish here, so let PopLabelStack handle it
     Ok(HandlerResult::PopLabelStack {
         next_ip: ctx.ip + 1,
     })
@@ -1646,15 +1343,7 @@ fn handle_i32_add(
     ctx: &mut ExecutionContext,
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    #[cfg(debug_assertions)]
-    eprintln!("I32_ADD: before operation, stack={:?}", ctx.value_stack);
-
-    let result = binop_wrapping!(ctx, I32, wrapping_add);
-
-    #[cfg(debug_assertions)]
-    eprintln!("I32_ADD: after operation, stack={:?}", ctx.value_stack);
-
-    result
+    binop_wrapping!(ctx, I32, wrapping_add)
 }
 fn handle_i32_sub(
     ctx: &mut ExecutionContext,
@@ -2934,9 +2623,6 @@ fn handle_br_table(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    #[cfg(debug_assertions)]
-    eprintln!("BrTable: value_stack before pop: {:?}", ctx.value_stack);
-
     // First pop the index
     let i_val = ctx
         .value_stack
@@ -2944,23 +2630,10 @@ fn handle_br_table(
         .ok_or(RuntimeError::ValueStackUnderflow)?;
     let i = i_val.to_i32()?;
 
-    #[cfg(debug_assertions)]
-    eprintln!(
-        "BrTable: popped index: {}, value_stack after pop: {:?}",
-        i, ctx.value_stack
-    );
-
     if let Operand::BrTable { targets, default } = operand {
-        #[cfg(debug_assertions)]
-        eprintln!("BrTable: index={}, targets.len()={}", i, targets.len());
-
         let chosen_operand = if let Some(target_operand) = targets.get(i as usize) {
-            #[cfg(debug_assertions)]
-            eprintln!("BrTable: choosing target[{}]", i);
             target_operand
         } else {
-            #[cfg(debug_assertions)]
-            eprintln!("BrTable: choosing default (index {} out of bounds)", i);
             default
         };
 
@@ -2984,14 +2657,6 @@ fn handle_br_table(
             } else {
                 Vec::new()
             };
-
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "BrTable: returning Branch with target_ip={}, values_to_push.len()={}, values={:?}",
-                target_ip,
-                values_to_push.len(),
-                values_to_push
-            );
 
             Ok(HandlerResult::Branch {
                 target_ip: *target_ip,
