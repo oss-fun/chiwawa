@@ -288,9 +288,19 @@ pub const HANDLER_IDX_I64_EXTEND8_S: usize = 0xC2;
 pub const HANDLER_IDX_I64_EXTEND16_S: usize = 0xC3;
 pub const HANDLER_IDX_I64_EXTEND32_S: usize = 0xC4;
 
-// TODO: Add remaining indices (Ref types, Table, Bulk Memory, SIMD, TruncSat)
+// TruncSat instructions
+pub const HANDLER_IDX_I32_TRUNC_SAT_F32_S: usize = 0xC8;
+pub const HANDLER_IDX_I32_TRUNC_SAT_F32_U: usize = 0xC9;
+pub const HANDLER_IDX_I32_TRUNC_SAT_F64_S: usize = 0xCA;
+pub const HANDLER_IDX_I32_TRUNC_SAT_F64_U: usize = 0xCB;
+pub const HANDLER_IDX_I64_TRUNC_SAT_F32_S: usize = 0xCC;
+pub const HANDLER_IDX_I64_TRUNC_SAT_F32_U: usize = 0xCD;
+pub const HANDLER_IDX_I64_TRUNC_SAT_F64_S: usize = 0xCE;
+pub const HANDLER_IDX_I64_TRUNC_SAT_F64_U: usize = 0xCF;
 
-pub const MAX_HANDLER_INDEX: usize = 0xC8;
+// TODO: Add remaining indices (Ref types, Table, Bulk Memory, SIMD)
+
+pub const MAX_HANDLER_INDEX: usize = 0xD0;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stacks {
@@ -2476,7 +2486,7 @@ fn handle_i32_trunc_f64_u(
         return Err(RuntimeError::InvalidConversionToInt);
     }
     let truncated = val_f64.trunc();
-    if !(truncated >= 0.0 && truncated < 4294967296.0) {
+    if !(truncated >= 0.0 && truncated < u32::MAX as f64 + 1.0) {
         return Err(RuntimeError::IntegerOverflow);
     }
     ctx.value_stack
@@ -3973,6 +3983,190 @@ fn handle_f64_reinterpret_i64(
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 
+fn handle_i32_trunc_sat_f32_s(
+    ctx: &mut ExecutionContext,
+    _operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    let val = ctx
+        .value_stack
+        .pop()
+        .ok_or(RuntimeError::ValueStackUnderflow)?
+        .to_f32()?;
+
+    let result = if val.is_nan() {
+        0
+    } else if val >= i32::MAX as f32 + 1.0 {
+        i32::MAX
+    } else if val <= i32::MIN as f32 - 1.0 {
+        i32::MIN
+    } else {
+        val as i32
+    };
+
+    ctx.value_stack.push(Val::Num(Num::I32(result)));
+    Ok(HandlerResult::Continue(ctx.ip + 1))
+}
+
+fn handle_i32_trunc_sat_f32_u(
+    ctx: &mut ExecutionContext,
+    _operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    let val = ctx
+        .value_stack
+        .pop()
+        .ok_or(RuntimeError::ValueStackUnderflow)?
+        .to_f32()?;
+
+    let result = if val.is_nan() || val <= -1.0 {
+        0
+    } else if val >= u32::MAX as f32 + 1.0 {
+        u32::MAX as i32
+    } else {
+        val as u32 as i32
+    };
+
+    ctx.value_stack.push(Val::Num(Num::I32(result)));
+    Ok(HandlerResult::Continue(ctx.ip + 1))
+}
+
+fn handle_i32_trunc_sat_f64_s(
+    ctx: &mut ExecutionContext,
+    _operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    let val = ctx
+        .value_stack
+        .pop()
+        .ok_or(RuntimeError::ValueStackUnderflow)?
+        .to_f64()?;
+
+    let result = if val.is_nan() {
+        0
+    } else if val >= i32::MAX as f64 + 1.0 {
+        i32::MAX
+    } else if val <= i32::MIN as f64 - 1.0 {
+        i32::MIN
+    } else {
+        val as i32
+    };
+
+    ctx.value_stack.push(Val::Num(Num::I32(result)));
+    Ok(HandlerResult::Continue(ctx.ip + 1))
+}
+
+fn handle_i32_trunc_sat_f64_u(
+    ctx: &mut ExecutionContext,
+    _operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    let val = ctx
+        .value_stack
+        .pop()
+        .ok_or(RuntimeError::ValueStackUnderflow)?
+        .to_f64()?;
+
+    let result = if val.is_nan() || val <= -1.0 {
+        0
+    } else if val >= u32::MAX as f64 + 1.0 {
+        u32::MAX as i32
+    } else {
+        val as u32 as i32
+    };
+
+    ctx.value_stack.push(Val::Num(Num::I32(result)));
+    Ok(HandlerResult::Continue(ctx.ip + 1))
+}
+
+fn handle_i64_trunc_sat_f32_s(
+    ctx: &mut ExecutionContext,
+    _operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    let val = ctx
+        .value_stack
+        .pop()
+        .ok_or(RuntimeError::ValueStackUnderflow)?
+        .to_f32()?;
+
+    let result = if val.is_nan() {
+        0
+    } else if val >= i64::MAX as f32 + 1.0 {
+        i64::MAX
+    } else if val <= i64::MIN as f32 - 1.0 {
+        i64::MIN
+    } else {
+        val as i64
+    };
+
+    ctx.value_stack.push(Val::Num(Num::I64(result)));
+    Ok(HandlerResult::Continue(ctx.ip + 1))
+}
+
+fn handle_i64_trunc_sat_f32_u(
+    ctx: &mut ExecutionContext,
+    _operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    let val = ctx
+        .value_stack
+        .pop()
+        .ok_or(RuntimeError::ValueStackUnderflow)?
+        .to_f32()?;
+
+    let result = if val.is_nan() || val <= -1.0 {
+        0
+    } else if val >= u64::MAX as f32 + 1.0 {
+        u64::MAX as i64
+    } else {
+        val as u64 as i64
+    };
+
+    ctx.value_stack.push(Val::Num(Num::I64(result)));
+    Ok(HandlerResult::Continue(ctx.ip + 1))
+}
+
+fn handle_i64_trunc_sat_f64_s(
+    ctx: &mut ExecutionContext,
+    _operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    let val = ctx
+        .value_stack
+        .pop()
+        .ok_or(RuntimeError::ValueStackUnderflow)?
+        .to_f64()?;
+
+    let result = if val.is_nan() {
+        0
+    } else if val >= i64::MAX as f64 + 1.0 {
+        i64::MAX
+    } else if val <= i64::MIN as f64 - 1.0 {
+        i64::MIN
+    } else {
+        val as i64
+    };
+
+    ctx.value_stack.push(Val::Num(Num::I64(result)));
+    Ok(HandlerResult::Continue(ctx.ip + 1))
+}
+
+fn handle_i64_trunc_sat_f64_u(
+    ctx: &mut ExecutionContext,
+    _operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    let val = ctx
+        .value_stack
+        .pop()
+        .ok_or(RuntimeError::ValueStackUnderflow)?
+        .to_f64()?;
+
+    let result = if val.is_nan() || val <= -1.0 {
+        0
+    } else if val >= u64::MAX as f64 + 1.0 {
+        u64::MAX as i64
+    } else {
+        val as u64 as i64
+    };
+
+    ctx.value_stack.push(Val::Num(Num::I64(result)));
+    Ok(HandlerResult::Continue(ctx.ip + 1))
+}
+
 lazy_static! {
     static ref HANDLER_TABLE: Vec<HandlerFn> = {
         let mut table: Vec<HandlerFn> = vec![handle_unimplemented; MAX_HANDLER_INDEX];
@@ -4156,6 +4350,14 @@ lazy_static! {
         table[HANDLER_IDX_I64_EXTEND8_S] = handle_i64_extend8_s;
         table[HANDLER_IDX_I64_EXTEND16_S] = handle_i64_extend16_s;
         table[HANDLER_IDX_I64_EXTEND32_S] = handle_i64_extend32_s;
+        table[HANDLER_IDX_I32_TRUNC_SAT_F32_S] = handle_i32_trunc_sat_f32_s;
+        table[HANDLER_IDX_I32_TRUNC_SAT_F32_U] = handle_i32_trunc_sat_f32_u;
+        table[HANDLER_IDX_I32_TRUNC_SAT_F64_S] = handle_i32_trunc_sat_f64_s;
+        table[HANDLER_IDX_I32_TRUNC_SAT_F64_U] = handle_i32_trunc_sat_f64_u;
+        table[HANDLER_IDX_I64_TRUNC_SAT_F32_S] = handle_i64_trunc_sat_f32_s;
+        table[HANDLER_IDX_I64_TRUNC_SAT_F32_U] = handle_i64_trunc_sat_f32_u;
+        table[HANDLER_IDX_I64_TRUNC_SAT_F64_S] = handle_i64_trunc_sat_f64_s;
+        table[HANDLER_IDX_I64_TRUNC_SAT_F64_U] = handle_i64_trunc_sat_f64_u;
 
         table
     };

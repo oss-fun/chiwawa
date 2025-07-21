@@ -1733,28 +1733,28 @@ fn map_operator_to_initial_instr_and_fixup(
             handler_index = HANDLER_IDX_I64_TRUNC_F64_U;
         }
         wasmparser::Operator::I32TruncSatF32S => {
-            handler_index = HANDLER_IDX_NOP;
+            handler_index = HANDLER_IDX_I32_TRUNC_SAT_F32_S;
         }
         wasmparser::Operator::I32TruncSatF32U => {
-            handler_index = HANDLER_IDX_NOP;
+            handler_index = HANDLER_IDX_I32_TRUNC_SAT_F32_U;
         }
         wasmparser::Operator::I32TruncSatF64S => {
-            handler_index = HANDLER_IDX_NOP;
+            handler_index = HANDLER_IDX_I32_TRUNC_SAT_F64_S;
         }
         wasmparser::Operator::I32TruncSatF64U => {
-            handler_index = HANDLER_IDX_NOP;
+            handler_index = HANDLER_IDX_I32_TRUNC_SAT_F64_U;
         }
         wasmparser::Operator::I64TruncSatF32S => {
-            handler_index = HANDLER_IDX_NOP;
+            handler_index = HANDLER_IDX_I64_TRUNC_SAT_F32_S;
         }
         wasmparser::Operator::I64TruncSatF32U => {
-            handler_index = HANDLER_IDX_NOP;
+            handler_index = HANDLER_IDX_I64_TRUNC_SAT_F32_U;
         }
         wasmparser::Operator::I64TruncSatF64S => {
-            handler_index = HANDLER_IDX_NOP;
+            handler_index = HANDLER_IDX_I64_TRUNC_SAT_F64_S;
         }
         wasmparser::Operator::I64TruncSatF64U => {
-            handler_index = HANDLER_IDX_NOP;
+            handler_index = HANDLER_IDX_I64_TRUNC_SAT_F64_U;
         }
         wasmparser::Operator::F32DemoteF64 => {
             handler_index = HANDLER_IDX_F32_DEMOTE_F64;
