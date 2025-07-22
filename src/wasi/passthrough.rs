@@ -20,6 +20,8 @@ extern "C" {
     fn __wasi_fd_read(fd: u32, iovs: *const WasiIovec, iovs_len: u32, nread: *mut u32) -> u16;
 
     fn __wasi_proc_exit(exit_code: u32) -> !;
+
+    fn __wasi_random_get(buf: *mut u8, buf_len: u32) -> u16;
 }
 
 /// Passthrough WASI implementation that delegates to host runtime via wasi-libc
@@ -187,8 +189,24 @@ impl PassthroughWasiImpl {
         // This function never returns
     }
 
-    pub fn random_get(&self, _memory: &MemAddr, _buf_ptr: Ptr, _buf_len: Size) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+    pub fn random_get(&self, memory: &MemAddr, buf_ptr: Ptr, buf_len: Size) -> WasiResult<i32> {
+        if buf_len == 0 {
+            return Ok(0);
+        }
+
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno =
+            unsafe { __wasi_random_get(memory_base.add(buf_ptr as usize) as *mut u8, buf_len) };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return Err(super::error::WasiError::IoError);
+        }
+
+        Ok(0)
     }
 
     pub fn fd_close(&self, _fd: Fd) -> WasiResult<i32> {
