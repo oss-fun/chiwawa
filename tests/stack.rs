@@ -13,7 +13,7 @@ mod tests {
         let mut module = Module::new("test");
         let _ = parser::parse_bytecode(&mut module, wasm_path);
         let imports: ImportObjects = HashMap::new();
-        ModuleInst::new(&module, imports, Vec::new()).unwrap()
+        ModuleInst::new(&module, imports, Vec::new(), Vec::new()).unwrap()
     }
 
     fn call_function(

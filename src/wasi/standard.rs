@@ -40,10 +40,11 @@ pub struct StandardWasiImpl {
     preopen_dirs: HashMap<Fd, String>,
     opened_files: Arc<Mutex<HashMap<Fd, OpenFile>>>,
     next_fd: Arc<Mutex<Fd>>,
+    argv: Vec<String>,
 }
 
 impl StandardWasiImpl {
-    pub fn new(preopen_paths: Vec<String>) -> Self {
+    pub fn new(preopen_paths: Vec<String>, argv: Vec<String>) -> Self {
         let mut preopen_dirs = HashMap::new();
 
         // Assign FDs starting from 3 (after stdin=0, stdout=1, stderr=2)
@@ -60,6 +61,7 @@ impl StandardWasiImpl {
             preopen_dirs,
             opened_files: Arc::new(Mutex::new(HashMap::new())),
             next_fd: Arc::new(Mutex::new(next_fd)),
+            argv,
         }
     }
 
@@ -475,7 +477,7 @@ impl StandardWasiImpl {
     }
 
     pub fn args_get(&self, memory: &MemAddr, argv_ptr: Ptr, argv_buf_ptr: Ptr) -> WasiResult<i32> {
-        let args: Vec<String> = std::env::args().collect();
+        let args = &self.argv;
 
         let ptr_size = 4u32;
 
@@ -483,7 +485,7 @@ impl StandardWasiImpl {
         let mut buf_offset = 0u32;
 
         // Calculate pointers and build pointer array
-        for arg in &args {
+        for arg in args {
             let string_addr = argv_buf_ptr + buf_offset;
             ptr_data.extend_from_slice(&string_addr.to_le_bytes());
             buf_offset += arg.len() as u32 + 1;
@@ -491,7 +493,7 @@ impl StandardWasiImpl {
         ptr_data.extend_from_slice(&0u32.to_le_bytes());
 
         let mut buf_data = Vec::with_capacity(buf_offset as usize);
-        for arg in &args {
+        for arg in args {
             buf_data.extend_from_slice(arg.as_bytes());
             buf_data.push(0); // null terminator
         }
@@ -513,7 +515,7 @@ impl StandardWasiImpl {
         argc_ptr: Ptr,
         argv_buf_size_ptr: Ptr,
     ) -> WasiResult<i32> {
-        let args: Vec<String> = std::env::args().collect();
+        let args = &self.argv;
 
         let argc = args.len() as u32;
         let argv_buf_size: u32 = args.iter().map(|arg| arg.len() as u32 + 1).sum();

@@ -53,6 +53,7 @@ impl ModuleInst {
         module: &Module,
         imports: ImportObjects,
         preopen_dirs: Vec<String>,
+        argv: Vec<String>,
     ) -> Result<Arc<ModuleInst>, RuntimeError> {
         let mut module_inst = ModuleInst {
             types: module.types.clone(),
@@ -76,11 +77,11 @@ impl ModuleInst {
         if needs_wasi {
             #[cfg(target_os = "wasi")]
             {
-                module_inst.wasi_impl = Some(Arc::new(PassthroughWasiImpl::new()));
+                module_inst.wasi_impl = Some(Arc::new(PassthroughWasiImpl::new(argv)));
             }
             #[cfg(not(target_os = "wasi"))]
             {
-                module_inst.wasi_impl = Some(Arc::new(StandardWasiImpl::new(preopen_dirs)));
+                module_inst.wasi_impl = Some(Arc::new(StandardWasiImpl::new(preopen_dirs, argv)));
             }
         }
 

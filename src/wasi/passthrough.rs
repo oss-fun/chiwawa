@@ -19,11 +19,13 @@ extern "C" {
 }
 
 /// Passthrough WASI implementation that delegates to host runtime via wasi-libc
-pub struct PassthroughWasiImpl;
+pub struct PassthroughWasiImpl {
+    argv: Vec<String>,
+}
 
 impl PassthroughWasiImpl {
-    pub fn new() -> Self {
-        PassthroughWasiImpl
+    pub fn new(argv: Vec<String>) -> Self {
+        PassthroughWasiImpl { argv }
     }
 
     pub fn fd_write(
@@ -155,47 +157,26 @@ impl PassthroughWasiImpl {
     }
 
     pub fn args_get(&self, memory: &MemAddr, argv_ptr: Ptr, argv_buf_ptr: Ptr) -> WasiResult<i32> {
-        // First, get the argument count and buffer size using args_sizes_get
-        let mut argc: u32 = 0;
-        let mut argv_buf_size: u32 = 0;
+        let args = &self.argv;
 
-        let wasi_errno =
-            unsafe { __wasi_args_sizes_get(&mut argc as *mut u32, &mut argv_buf_size as *mut u32) };
+        // Calculate total buffer size needed for all argument strings (including null terminators)
+        let total_len: usize = args.iter().map(|arg| arg.len() + 1).sum();
 
-        if wasi_errno != 0 {
-            return match wasi_errno {
-                22 => Err(super::error::WasiError::InvalidArgument), // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+        // Build the argument buffer and pointer array
+        let mut argv_buf = Vec::with_capacity(total_len);
+        let mut ptr_data = Vec::with_capacity((args.len() + 1) * 4); // +1 for null terminator
+
+        for arg in args {
+            // Store pointer to current position in buffer (relative to argv_buf_ptr)
+            let string_addr = argv_buf_ptr + argv_buf.len() as u32;
+            ptr_data.extend_from_slice(&string_addr.to_le_bytes());
+
+            // Add the string to the buffer
+            argv_buf.extend_from_slice(arg.as_bytes());
+            argv_buf.push(0); // null terminator
         }
 
-        // Allocate buffers for the arguments
-        let mut argv_buf = vec![0u8; argv_buf_size as usize];
-        let mut argv_ptrs = vec![std::ptr::null_mut::<u8>(); argc as usize];
-
-        // Call wasi-libc args_get function
-        let wasi_errno = unsafe { __wasi_args_get(argv_ptrs.as_mut_ptr(), argv_buf.as_mut_ptr()) };
-
-        if wasi_errno != 0 {
-            return match wasi_errno {
-                22 => Err(super::error::WasiError::InvalidArgument), // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
-        }
-
-        // Calculate pointer offsets relative to argv_buf_ptr
-        let mut ptr_data = Vec::with_capacity((argc as usize + 1) * 4);
-        for i in 0..argc as usize {
-            if !argv_ptrs[i].is_null() {
-                // Calculate offset from the start of argv_buf
-                let offset = unsafe { argv_ptrs[i].offset_from(argv_buf.as_ptr()) };
-                let string_addr = argv_buf_ptr.wrapping_add(offset as u32);
-                ptr_data.extend_from_slice(&string_addr.to_le_bytes());
-            } else {
-                ptr_data.extend_from_slice(&0u32.to_le_bytes());
-            }
-        }
-        // Null terminator for argv array
+        // Add null terminator for the argv array
         ptr_data.extend_from_slice(&0u32.to_le_bytes());
 
         // Write pointer array to WebAssembly memory
@@ -217,20 +198,13 @@ impl PassthroughWasiImpl {
         argc_ptr: Ptr,
         argv_buf_size_ptr: Ptr,
     ) -> WasiResult<i32> {
-        // Call wasi-libc args_sizes_get function
-        let mut argc: u32 = 0;
-        let mut argv_buf_size: u32 = 0;
+        let args = &self.argv;
 
-        let wasi_errno =
-            unsafe { __wasi_args_sizes_get(&mut argc as *mut u32, &mut argv_buf_size as *mut u32) };
+        // Calculate argument count
+        let argc = args.len() as u32;
 
-        // Convert WASI errno to our error type
-        if wasi_errno != 0 {
-            return match wasi_errno {
-                22 => Err(super::error::WasiError::InvalidArgument), // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
-        }
+        // Calculate total buffer size needed (sum of string lengths + null terminators)
+        let argv_buf_size: u32 = args.iter().map(|arg| arg.len() + 1).sum::<usize>() as u32;
 
         // Write argument count to WebAssembly memory
         let argc_memarg = Memarg {

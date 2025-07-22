@@ -26,6 +26,40 @@ struct Cli {
     /// Preopen directories for WASI (format: "/path/to/dir")
     #[arg(long, value_delimiter = ',', num_args = 0..)]
     preopen: Option<Vec<String>>,
+    /// Additional arguments to pass to WASM application (argv[1], argv[2], ...)
+    /// Example: --app-args "--database test.db --iterations 1000"
+    #[arg(long, allow_hyphen_values = true)]
+    app_args: Option<String>,
+}
+
+fn parse_args_string(args: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut current_arg = String::new();
+    let mut in_quotes = false;
+    let mut chars = args.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                in_quotes = !in_quotes;
+            }
+            ' ' if !in_quotes => {
+                if !current_arg.is_empty() {
+                    result.push(current_arg.clone());
+                    current_arg.clear();
+                }
+            }
+            _ => {
+                current_arg.push(ch);
+            }
+        }
+    }
+
+    if !current_arg.is_empty() {
+        result.push(current_arg);
+    }
+
+    result
 }
 
 fn parse_params(params: Vec<String>) -> Vec<Val> {
@@ -84,7 +118,14 @@ fn main() -> Result<()> {
     let _ = parser::parse_bytecode(&mut module, &cli.wasm_file);
     let imports: ImportObjects = HashMap::new();
     let preopen_dirs = cli.preopen.unwrap_or_default();
-    let inst = ModuleInst::new(&module, imports, preopen_dirs).unwrap();
+
+    let mut wasm_argv = vec![cli.wasm_file.clone()];
+    if let Some(args_string) = cli.app_args {
+        let additional_args = parse_args_string(&args_string);
+        wasm_argv.extend(additional_args);
+    }
+
+    let inst = ModuleInst::new(&module, imports, preopen_dirs, wasm_argv).unwrap();
 
     if let Some(restore_path) = cli.restore {
         println!("Restoring from checkpoint: {}", restore_path);
