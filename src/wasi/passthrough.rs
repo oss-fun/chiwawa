@@ -11,17 +11,14 @@ struct WasiIovec {
 
 // External links to wasi-libc functions
 extern "C" {
-    fn __wasi_fd_write(fd: u32, iovs: *const WasiIovec, iovs_len: u32, nwritten: *mut u32) -> u16; // WASI errno_t
-
-    fn __wasi_args_sizes_get(argc: *mut u32, argv_buf_size: *mut u32) -> u16; // WASI errno_t
-
-    fn __wasi_args_get(argv: *mut *mut u8, argv_buf: *mut u8) -> u16; // WASI errno_t
-
+    fn __wasi_fd_write(fd: u32, iovs: *const WasiIovec, iovs_len: u32, nwritten: *mut u32) -> u16;
+    fn __wasi_args_sizes_get(argc: *mut u32, argv_buf_size: *mut u32) -> u16;
+    fn __wasi_args_get(argv: *mut *mut u8, argv_buf: *mut u8) -> u16;
     fn __wasi_fd_read(fd: u32, iovs: *const WasiIovec, iovs_len: u32, nread: *mut u32) -> u16;
-
     fn __wasi_proc_exit(exit_code: u32) -> !;
-
     fn __wasi_random_get(buf: *mut u8, buf_len: u32) -> u16;
+    fn __wasi_environ_sizes_get(environ_count: *mut u32, environ_buf_size: *mut u32) -> u16;
+    fn __wasi_environ_get(environ: *mut *mut u8, environ_buf: *mut u8) -> u16;
 }
 
 /// Passthrough WASI implementation that delegates to host runtime via wasi-libc
@@ -215,20 +212,103 @@ impl PassthroughWasiImpl {
 
     pub fn environ_get(
         &self,
-        _memory: &MemAddr,
-        _environ_ptr: Ptr,
-        _environ_buf_ptr: Ptr,
+        memory: &MemAddr,
+        environ_ptr: Ptr,
+        environ_buf_ptr: Ptr,
     ) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+        let mut environ_count: u32 = 0;
+        let mut environ_buf_size: u32 = 0;
+
+        let wasi_errno =
+            unsafe { __wasi_environ_sizes_get(&mut environ_count, &mut environ_buf_size) };
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                22 => Err(super::error::WasiError::InvalidArgument), // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        let mut environ_buf = vec![0u8; environ_buf_size as usize];
+        let mut environ_ptrs = vec![std::ptr::null_mut::<u8>(); environ_count as usize];
+
+        // Call wasi-libc environ_get function
+        let wasi_errno =
+            unsafe { __wasi_environ_get(environ_ptrs.as_mut_ptr(), environ_buf.as_mut_ptr()) };
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                22 => Err(super::error::WasiError::InvalidArgument), // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        // Calculate pointer offsets relative to environ_buf_ptr
+        let mut ptr_data = Vec::with_capacity((environ_count as usize + 1) * 4);
+        for i in 0..environ_count as usize {
+            if !environ_ptrs[i].is_null() {
+                // Calculate offset from the start of environ_buf
+                let offset = unsafe { environ_ptrs[i].offset_from(environ_buf.as_ptr()) };
+                let string_addr = environ_buf_ptr.wrapping_add(offset as u32);
+                ptr_data.extend_from_slice(&string_addr.to_le_bytes());
+            } else {
+                ptr_data.extend_from_slice(&0u32.to_le_bytes());
+            }
+        }
+        // Null terminator for environ array
+        ptr_data.extend_from_slice(&0u32.to_le_bytes());
+
+        // Write pointer array to WebAssembly memory
+        memory
+            .store_bytes(environ_ptr as i32, &ptr_data)
+            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+
+        // Write environment strings to WebAssembly memory
+        memory
+            .store_bytes(environ_buf_ptr as i32, &environ_buf)
+            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+
+        Ok(0)
     }
 
     pub fn environ_sizes_get(
         &self,
-        _memory: &MemAddr,
-        _environ_count_ptr: Ptr,
-        _environ_buf_size_ptr: Ptr,
+        memory: &MemAddr,
+        environ_count_ptr: Ptr,
+        environ_buf_size_ptr: Ptr,
     ) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+        let mut environ_count: u32 = 0;
+        let mut environ_buf_size: u32 = 0;
+
+        let wasi_errno =
+            unsafe { __wasi_environ_sizes_get(&mut environ_count, &mut environ_buf_size) };
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                22 => Err(super::error::WasiError::InvalidArgument), // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        // Write environment variable count
+        let count_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&count_memarg, environ_count_ptr as i32, environ_count)
+            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+
+        // Write total buffer size needed
+        let size_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&size_memarg, environ_buf_size_ptr as i32, environ_buf_size)
+            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+
+        Ok(0)
     }
 
     pub fn args_get(&self, memory: &MemAddr, argv_ptr: Ptr, argv_buf_ptr: Ptr) -> WasiResult<i32> {
