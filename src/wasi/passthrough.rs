@@ -21,6 +21,7 @@ extern "C" {
     fn __wasi_environ_get(environ: *mut *mut u8, environ_buf: *mut u8) -> u16;
     fn __wasi_clock_time_get(clock_id: u32, precision: u64, time: *mut u64) -> u16;
     fn __wasi_clock_res_get(clock_id: u32, resolution: *mut u64) -> u16;
+    fn __wasi_sched_yield() -> u16;
 }
 
 /// Passthrough WASI implementation that delegates to host runtime via wasi-libc
@@ -455,7 +456,13 @@ impl PassthroughWasiImpl {
     }
 
     pub fn sched_yield(&self) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+        let wasi_errno = unsafe { __wasi_sched_yield() };
+
+        if wasi_errno != 0 {
+            return Err(super::error::WasiError::IoError);
+        }
+
+        Ok(0)
     }
 
     pub fn fd_fdstat_get(&self, _memory: &MemAddr, _fd: Fd, _stat_ptr: Ptr) -> WasiResult<i32> {
