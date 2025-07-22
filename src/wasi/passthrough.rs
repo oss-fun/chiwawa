@@ -19,6 +19,8 @@ extern "C" {
     fn __wasi_random_get(buf: *mut u8, buf_len: u32) -> u16;
     fn __wasi_environ_sizes_get(environ_count: *mut u32, environ_buf_size: *mut u32) -> u16;
     fn __wasi_environ_get(environ: *mut *mut u8, environ_buf: *mut u8) -> u16;
+    fn __wasi_clock_time_get(clock_id: u32, precision: u64, time: *mut u64) -> u16;
+    fn __wasi_clock_res_get(clock_id: u32, resolution: *mut u64) -> u16;
 }
 
 /// Passthrough WASI implementation that delegates to host runtime via wasi-libc
@@ -388,21 +390,54 @@ impl PassthroughWasiImpl {
 
     pub fn clock_time_get(
         &self,
-        _memory: &MemAddr,
-        _clock_id: i32,
-        _precision: i64,
-        _time_ptr: Ptr,
+        memory: &MemAddr,
+        clock_id: i32,
+        precision: i64,
+        time_ptr: Ptr,
     ) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+        let mut time: u64 = 0;
+
+        let wasi_errno =
+            unsafe { __wasi_clock_time_get(clock_id as u32, precision as u64, &mut time) };
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                22 => Err(super::error::WasiError::InvalidArgument), // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        // Write timestamp (64-bit nanoseconds) to memory using store_bytes
+        memory
+            .store_bytes(time_ptr as i32, &time.to_le_bytes())
+            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+
+        Ok(0)
     }
 
     pub fn clock_res_get(
         &self,
-        _memory: &MemAddr,
-        _clock_id: i32,
-        _resolution_ptr: Ptr,
+        memory: &MemAddr,
+        clock_id: i32,
+        resolution_ptr: Ptr,
     ) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+        let mut resolution: u64 = 0;
+
+        let wasi_errno = unsafe { __wasi_clock_res_get(clock_id as u32, &mut resolution) };
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                22 => Err(super::error::WasiError::InvalidArgument), // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        // Write resolution (64-bit nanoseconds) to memory using store_bytes
+        memory
+            .store_bytes(resolution_ptr as i32, &resolution.to_le_bytes())
+            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+
+        Ok(0)
     }
 
     pub fn fd_prestat_get(&self, _memory: &MemAddr, _fd: Fd, _prestat_ptr: Ptr) -> WasiResult<i32> {
