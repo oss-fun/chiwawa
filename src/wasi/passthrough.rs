@@ -24,6 +24,7 @@ extern "C" {
     fn __wasi_sched_yield() -> u16;
     fn __wasi_fd_close(fd: u32) -> u16;
     fn __wasi_fd_sync(fd: u32) -> u16;
+    fn __wasi_fd_datasync(fd: u32) -> u16;
 }
 
 /// Passthrough WASI implementation that delegates to host runtime via wasi-libc
@@ -552,8 +553,18 @@ impl PassthroughWasiImpl {
         Err(super::error::WasiError::NotImplemented)
     }
 
-    pub fn fd_datasync(&self, _fd: Fd) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+    pub fn fd_datasync(&self, fd: Fd) -> WasiResult<i32> {
+        let wasi_errno = unsafe { __wasi_fd_datasync(fd as u32) };
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
     }
 
     pub fn fd_fdstat_set_flags(&self, _fd: Fd, _flags: u32) -> WasiResult<i32> {
