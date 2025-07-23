@@ -71,6 +71,12 @@ extern "C" {
         fdflags: u32,
         opened_fd: *mut u32,
     ) -> u16;
+    fn __wasi_poll_oneoff(
+        in_ptr: *const u8,
+        out_ptr: *mut u8,
+        nsubscriptions: u32,
+        nevents: *mut u32,
+    ) -> u16;
 }
 
 /// Passthrough WASI implementation that delegates to host runtime via wasi-libc
@@ -972,12 +978,33 @@ impl PassthroughWasiImpl {
 
     pub fn poll_oneoff(
         &self,
-        _memory: &MemAddr,
-        _in_ptr: Ptr,
-        _out_ptr: Ptr,
-        _nsubscriptions: Size,
-        _nevents_ptr: Ptr,
+        memory: &MemAddr,
+        in_ptr: Ptr,
+        out_ptr: Ptr,
+        nsubscriptions: Size,
+        nevents_ptr: Ptr,
     ) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno = unsafe {
+            __wasi_poll_oneoff(
+                memory_base.add(in_ptr as usize),
+                memory_base.add(out_ptr as usize) as *mut u8,
+                nsubscriptions,
+                memory_base.add(nevents_ptr as usize) as *mut u32,
+            )
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                22 => Err(super::error::WasiError::InvalidArgument), // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
     }
 }
