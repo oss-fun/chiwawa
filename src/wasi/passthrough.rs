@@ -27,6 +27,7 @@ extern "C" {
     fn __wasi_fd_datasync(fd: u32) -> u16;
     fn __wasi_fd_prestat_get(fd: u32, prestat: *mut u8) -> u16;
     fn __wasi_fd_prestat_dir_name(fd: u32, path: *mut u8, path_len: u32) -> u16;
+    fn __wasi_fd_fdstat_get(fd: u32, stat: *mut u8) -> u16;
 }
 
 /// Passthrough WASI implementation that delegates to host runtime via wasi-libc
@@ -518,8 +519,25 @@ impl PassthroughWasiImpl {
         Ok(0)
     }
 
-    pub fn fd_fdstat_get(&self, _memory: &MemAddr, _fd: Fd, _stat_ptr: Ptr) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+    pub fn fd_fdstat_get(&self, memory: &MemAddr, fd: Fd, stat_ptr: Ptr) -> WasiResult<i32> {
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno = unsafe {
+            __wasi_fd_fdstat_get(fd as u32, memory_base.add(stat_ptr as usize) as *mut u8)
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
     }
 
     pub fn path_open(
