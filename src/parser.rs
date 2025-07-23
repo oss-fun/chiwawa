@@ -213,6 +213,10 @@ fn parse_wasi_function(name: &str) -> Option<WasiFuncType> {
         "path_unlink_file" => Some(WasiFuncType::PathUnlinkFile),
         "poll_oneoff" => Some(WasiFuncType::PollOneoff),
         "proc_raise" => Some(WasiFuncType::ProcRaise),
+        "fd_advise" => Some(WasiFuncType::FdAdvise),
+        "fd_allocate" => Some(WasiFuncType::FdAllocate),
+        "fd_fdstat_set_rights" => Some(WasiFuncType::FdFdstatSetRights),
+        "fd_renumber" => Some(WasiFuncType::FdRenumber),
         _ => None,
     }
 }

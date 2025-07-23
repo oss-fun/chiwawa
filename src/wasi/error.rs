@@ -42,6 +42,12 @@ pub enum WasiError {
 
     #[error("Not a directory")]
     NotDirectory,
+
+    #[error("No space left on device")]
+    NoSpace,
+
+    #[error("Permission denied")]
+    PermissionDenied,
 }
 
 impl WasiError {
@@ -59,8 +65,10 @@ impl WasiError {
             WasiError::Exist => 17,                // EEXIST
             WasiError::NotDirectory => 20,         // ENOTDIR
             WasiError::InvalidArgument => 22,      // EINVAL
+            WasiError::NoSpace => 28,              // ENOSPC
             WasiError::InvalidSeek => 29,          // ESPIPE
             WasiError::NotImplemented => 38,       // ENOSYS
+            WasiError::PermissionDenied => 1,      // EPERM
         }
     }
 }

@@ -108,6 +108,10 @@ pub enum WasiFuncType {
     PathUnlinkFile,
     PollOneoff,
     ProcRaise,
+    FdAdvise,
+    FdAllocate,
+    FdFdstatSetRights,
+    FdRenumber,
 }
 
 impl WasiFuncType {
@@ -377,6 +381,38 @@ impl WasiFuncType {
             WasiFuncType::ProcRaise => FuncType {
                 params: vec![
                     ValueType::NumType(NumType::I32), // signal
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::FdAdvise => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I64), // offset
+                    ValueType::NumType(NumType::I64), // len
+                    ValueType::NumType(NumType::I32), // advice
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::FdAllocate => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I64), // offset
+                    ValueType::NumType(NumType::I64), // len
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::FdFdstatSetRights => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I64), // fs_rights_base
+                    ValueType::NumType(NumType::I64), // fs_rights_inheriting
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::FdRenumber => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I32), // to
                 ],
                 results: vec![ValueType::NumType(NumType::I32)], // Returns error code
             },

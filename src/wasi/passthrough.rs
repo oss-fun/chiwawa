@@ -99,6 +99,10 @@ extern "C" {
         nwritten: *mut u32,
     ) -> u16;
     fn __wasi_proc_raise(signal: u32) -> u16;
+    fn __wasi_fd_advise(fd: u32, offset: u64, len: u64, advice: u32) -> u16;
+    fn __wasi_fd_allocate(fd: u32, offset: u64, len: u64) -> u16;
+    fn __wasi_fd_fdstat_set_rights(fd: u32, fs_rights_base: u64, fs_rights_inheriting: u64) -> u16;
+    fn __wasi_fd_renumber(fd: u32, to: u32) -> u16;
 }
 
 /// Passthrough WASI implementation that delegates to host runtime via wasi-libc
@@ -1198,6 +1202,84 @@ impl PassthroughWasiImpl {
         if wasi_errno != 0 {
             return match wasi_errno {
                 22 => Err(super::error::WasiError::InvalidArgument), // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
+    }
+
+    pub fn fd_advise(
+        &self,
+        _memory: &MemAddr,
+        fd: u32,
+        offset: u64,
+        len: u64,
+        advice: u32,
+    ) -> WasiResult<i32> {
+        let wasi_errno = unsafe { __wasi_fd_advise(fd, offset, len, advice) };
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
+    }
+
+    pub fn fd_allocate(
+        &self,
+        _memory: &MemAddr,
+        fd: u32,
+        offset: u64,
+        len: u64,
+    ) -> WasiResult<i32> {
+        let wasi_errno = unsafe { __wasi_fd_allocate(fd, offset, len) };
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                28 => Err(super::error::WasiError::NoSpace),          // ENOSPC
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
+    }
+
+    pub fn fd_fdstat_set_rights(
+        &self,
+        _memory: &MemAddr,
+        fd: u32,
+        fs_rights_base: u64,
+        fs_rights_inheriting: u64,
+    ) -> WasiResult<i32> {
+        let wasi_errno =
+            unsafe { __wasi_fd_fdstat_set_rights(fd, fs_rights_base, fs_rights_inheriting) };
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                1 => Err(super::error::WasiError::PermissionDenied),  // EPERM
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
+    }
+
+    pub fn fd_renumber(&self, _memory: &MemAddr, fd: u32, to: u32) -> WasiResult<i32> {
+        let wasi_errno = unsafe { __wasi_fd_renumber(fd, to) };
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
                 _ => Err(super::error::WasiError::IoError),
             };
         }
