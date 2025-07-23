@@ -77,6 +77,13 @@ extern "C" {
         nsubscriptions: u32,
         nevents: *mut u32,
     ) -> u16;
+    fn __wasi_fd_readdir(
+        fd: u32,
+        buf: *mut u8,
+        buf_len: u32,
+        cookie: u64,
+        buf_used: *mut u32,
+    ) -> u16;
 }
 
 /// Passthrough WASI implementation that delegates to host runtime via wasi-libc
@@ -708,14 +715,38 @@ impl PassthroughWasiImpl {
 
     pub fn fd_readdir(
         &self,
-        _memory: &MemAddr,
-        _fd: Fd,
-        _buf_ptr: Ptr,
-        _buf_len: Size,
-        _cookie: u64,
-        _buf_used_ptr: Ptr,
+        memory: &MemAddr,
+        fd: Fd,
+        buf_ptr: Ptr,
+        buf_len: Size,
+        cookie: u64,
+        buf_used_ptr: Ptr,
     ) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno = unsafe {
+            __wasi_fd_readdir(
+                fd as u32,
+                memory_base.add(buf_ptr as usize) as *mut u8,
+                buf_len,
+                cookie,
+                memory_base.add(buf_used_ptr as usize) as *mut u32,
+            )
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                28 => Err(super::error::WasiError::IoError),          // ENOSPC
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
     }
 
     pub fn fd_pread(
