@@ -84,6 +84,20 @@ extern "C" {
         cookie: u64,
         buf_used: *mut u32,
     ) -> u16;
+    fn __wasi_fd_pread(
+        fd: u32,
+        iovs: *const WasiIovec,
+        iovs_len: u32,
+        offset: u64,
+        nread: *mut u32,
+    ) -> u16;
+    fn __wasi_fd_pwrite(
+        fd: u32,
+        iovs: *const WasiIovec,
+        iovs_len: u32,
+        offset: u64,
+        nwritten: *mut u32,
+    ) -> u16;
 }
 
 /// Passthrough WASI implementation that delegates to host runtime via wasi-libc
@@ -213,10 +227,17 @@ impl PassthroughWasiImpl {
                 memory_guard.data[iovec_offset + 7],
             ]);
 
-            iovecs.push(WasiIovec {
-                buf: unsafe { memory_base.add(buf_ptr as usize) as *mut u8 },
-                buf_len,
-            });
+            if buf_len == 0 {
+                iovecs.push(WasiIovec {
+                    buf: std::ptr::null(),
+                    buf_len: 0,
+                });
+            } else {
+                iovecs.push(WasiIovec {
+                    buf: unsafe { memory_base.add(buf_ptr as usize) },
+                    buf_len,
+                });
+            }
         }
 
         let mut nread: u32 = 0;
@@ -751,14 +772,79 @@ impl PassthroughWasiImpl {
 
     pub fn fd_pread(
         &self,
-        _memory: &MemAddr,
-        _fd: Fd,
-        _iovs_ptr: Ptr,
-        _iovs_len: Size,
-        _offset: u64,
-        _nread_ptr: Ptr,
+        memory: &MemAddr,
+        fd: Fd,
+        iovs_ptr: Ptr,
+        iovs_len: Size,
+        offset: u64,
+        nread_ptr: Ptr,
     ) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let mut iovecs = Vec::with_capacity(iovs_len as usize);
+
+        for i in 0..iovs_len {
+            // Each iovec is 8 bytes: buf_ptr (4 bytes) + buf_len (4 bytes)
+            let iovec_offset = iovs_ptr as usize + (i as usize * 8);
+
+            let buf_ptr = u32::from_le_bytes([
+                memory_guard.data[iovec_offset],
+                memory_guard.data[iovec_offset + 1],
+                memory_guard.data[iovec_offset + 2],
+                memory_guard.data[iovec_offset + 3],
+            ]);
+
+            let buf_len = u32::from_le_bytes([
+                memory_guard.data[iovec_offset + 4],
+                memory_guard.data[iovec_offset + 5],
+                memory_guard.data[iovec_offset + 6],
+                memory_guard.data[iovec_offset + 7],
+            ]);
+
+            if buf_len == 0 {
+                iovecs.push(WasiIovec {
+                    buf: std::ptr::null(),
+                    buf_len: 0,
+                });
+            } else {
+                iovecs.push(WasiIovec {
+                    buf: unsafe { memory_base.add(buf_ptr as usize) },
+                    buf_len,
+                });
+            }
+        }
+
+        let mut nread: u32 = 0;
+        let wasi_errno = unsafe {
+            __wasi_fd_pread(
+                fd as u32,
+                iovecs.as_ptr(),
+                iovs_len,
+                offset,
+                &mut nread as *mut u32,
+            )
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        let nread_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&nread_memarg, nread_ptr as i32, nread)
+            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+
+        Ok(0)
     }
 
     pub fn fd_datasync(&self, fd: Fd) -> WasiResult<i32> {
@@ -805,14 +891,80 @@ impl PassthroughWasiImpl {
 
     pub fn fd_pwrite(
         &self,
-        _memory: &MemAddr,
-        _fd: Fd,
-        _iovs_ptr: Ptr,
-        _iovs_len: Size,
-        _offset: u64,
-        _nwritten_ptr: Ptr,
+        memory: &MemAddr,
+        fd: Fd,
+        iovs_ptr: Ptr,
+        iovs_len: Size,
+        offset: u64,
+        nwritten_ptr: Ptr,
     ) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let mut iovecs = Vec::with_capacity(iovs_len as usize);
+
+        for i in 0..iovs_len {
+            // Each iovec is 8 bytes: buf_ptr (4 bytes) + buf_len (4 bytes)
+            let iovec_offset = iovs_ptr as usize + (i as usize * 8);
+
+            let buf_ptr = u32::from_le_bytes([
+                memory_guard.data[iovec_offset],
+                memory_guard.data[iovec_offset + 1],
+                memory_guard.data[iovec_offset + 2],
+                memory_guard.data[iovec_offset + 3],
+            ]);
+
+            let buf_len = u32::from_le_bytes([
+                memory_guard.data[iovec_offset + 4],
+                memory_guard.data[iovec_offset + 5],
+                memory_guard.data[iovec_offset + 6],
+                memory_guard.data[iovec_offset + 7],
+            ]);
+
+            if buf_len == 0 {
+                iovecs.push(WasiIovec {
+                    buf: std::ptr::null(),
+                    buf_len: 0,
+                });
+            } else {
+                iovecs.push(WasiIovec {
+                    buf: unsafe { memory_base.add(buf_ptr as usize) },
+                    buf_len,
+                });
+            }
+        }
+
+        let mut nwritten: u32 = 0;
+        let wasi_errno = unsafe {
+            __wasi_fd_pwrite(
+                fd as u32,
+                iovecs.as_ptr(),
+                iovs_len,
+                offset,
+                &mut nwritten as *mut u32,
+            )
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                28 => Err(super::error::WasiError::IoError),          // ENOSPC
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        let nwritten_memarg = Memarg {
+            offset: 0,
+            align: 4,
+        };
+        memory
+            .store(&nwritten_memarg, nwritten_ptr as i32, nwritten)
+            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+
+        Ok(0)
     }
 
     pub fn path_create_directory(
