@@ -212,6 +212,7 @@ fn parse_wasi_function(name: &str) -> Option<WasiFuncType> {
         "path_remove_directory" => Some(WasiFuncType::PathRemoveDirectory),
         "path_unlink_file" => Some(WasiFuncType::PathUnlinkFile),
         "poll_oneoff" => Some(WasiFuncType::PollOneoff),
+        "proc_raise" => Some(WasiFuncType::ProcRaise),
         _ => None,
     }
 }

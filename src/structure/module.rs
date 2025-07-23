@@ -107,6 +107,7 @@ pub enum WasiFuncType {
     PathRemoveDirectory,
     PathUnlinkFile,
     PollOneoff,
+    ProcRaise,
 }
 
 impl WasiFuncType {
@@ -370,6 +371,12 @@ impl WasiFuncType {
                     ValueType::NumType(NumType::I32), // out_ptr
                     ValueType::NumType(NumType::I32), // nsubscriptions
                     ValueType::NumType(NumType::I32), // nevents_ptr
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::ProcRaise => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // signal
                 ],
                 results: vec![ValueType::NumType(NumType::I32)], // Returns error code
             },

@@ -98,6 +98,7 @@ extern "C" {
         offset: u64,
         nwritten: *mut u32,
     ) -> u16;
+    fn __wasi_proc_raise(signal: u32) -> u16;
 }
 
 /// Passthrough WASI implementation that delegates to host runtime via wasi-libc
@@ -1180,6 +1181,19 @@ impl PassthroughWasiImpl {
         };
 
         drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                22 => Err(super::error::WasiError::InvalidArgument), // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
+    }
+
+    pub fn proc_raise(&self, _memory: &MemAddr, signal: u32) -> WasiResult<i32> {
+        let wasi_errno = unsafe { __wasi_proc_raise(signal) };
 
         if wasi_errno != 0 {
             return match wasi_errno {
