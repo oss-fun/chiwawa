@@ -28,6 +28,49 @@ extern "C" {
     fn __wasi_fd_prestat_get(fd: u32, prestat: *mut u8) -> u16;
     fn __wasi_fd_prestat_dir_name(fd: u32, path: *mut u8, path_len: u32) -> u16;
     fn __wasi_fd_fdstat_get(fd: u32, stat: *mut u8) -> u16;
+    fn __wasi_fd_seek(fd: u32, offset: i64, whence: u32, newoffset: *mut u64) -> u16;
+    fn __wasi_fd_tell(fd: u32, offset: *mut u64) -> u16;
+    fn __wasi_fd_fdstat_set_flags(fd: u32, flags: u32) -> u16;
+    fn __wasi_fd_filestat_set_size(fd: u32, size: u64) -> u16;
+    fn __wasi_fd_filestat_get(fd: u32, filestat: *mut u8) -> u16;
+    fn __wasi_path_create_directory(fd: u32, path: *const u8, path_len: u32) -> u16;
+    fn __wasi_path_remove_directory(fd: u32, path: *const u8, path_len: u32) -> u16;
+    fn __wasi_path_unlink_file(fd: u32, path: *const u8, path_len: u32) -> u16;
+    fn __wasi_path_readlink(
+        fd: u32,
+        path: *const u8,
+        path_len: u32,
+        buf: *mut u8,
+        buf_len: u32,
+        buf_used: *mut u32,
+    ) -> u16;
+    fn __wasi_path_filestat_get(
+        fd: u32,
+        flags: u32,
+        path: *const u8,
+        path_len: u32,
+        filestat: *mut u8,
+    ) -> u16;
+    fn __wasi_path_filestat_set_times(
+        fd: u32,
+        flags: u32,
+        path: *const u8,
+        path_len: u32,
+        atim: u64,
+        mtim: u64,
+        fst_flags: u32,
+    ) -> u16;
+    fn __wasi_path_open(
+        fd: u32,
+        dirflags: u32,
+        path: *const u8,
+        path_len: u32,
+        oflags: u32,
+        fs_rights_base: u64,
+        fs_rights_inheriting: u64,
+        fdflags: u32,
+        opened_fd: *mut u32,
+    ) -> u16;
 }
 
 /// Passthrough WASI implementation that delegates to host runtime via wasi-libc
@@ -542,26 +585,84 @@ impl PassthroughWasiImpl {
 
     pub fn path_open(
         &self,
-        _memory: &MemAddr,
-        _fd: Fd,
-        _dirflags: u32,
-        _path_ptr: Ptr,
-        _path_len: Size,
-        _oflags: u32,
-        _fs_rights_base: u64,
-        _fs_rights_inheriting: u64,
-        _fdflags: u32,
-        _opened_fd_ptr: Ptr,
+        memory: &MemAddr,
+        fd: Fd,
+        dirflags: u32,
+        path_ptr: Ptr,
+        path_len: Size,
+        oflags: u32,
+        fs_rights_base: u64,
+        fs_rights_inheriting: u64,
+        fdflags: u32,
+        opened_fd_ptr: Ptr,
     ) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno = unsafe {
+            __wasi_path_open(
+                fd as u32,
+                dirflags,
+                memory_base.add(path_ptr as usize),
+                path_len,
+                oflags,
+                fs_rights_base,
+                fs_rights_inheriting,
+                fdflags,
+                memory_base.add(opened_fd_ptr as usize) as *mut u32,
+            )
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                2 => Err(super::error::WasiError::IoError),           // ENOENT
+                13 => Err(super::error::WasiError::IoError),          // EACCES
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
     }
 
-    pub fn fd_seek(&self, _fd: Fd, _offset: i64, _whence: u32) -> WasiResult<u64> {
-        Err(super::error::WasiError::NotImplemented)
+    pub fn fd_seek(&self, fd: Fd, offset: i64, whence: u32) -> WasiResult<u64> {
+        let mut newoffset: u64 = 0;
+
+        let wasi_errno =
+            unsafe { __wasi_fd_seek(fd as u32, offset, whence, &mut newoffset as *mut u64) };
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(newoffset)
     }
 
-    pub fn fd_tell(&self, _memory: &MemAddr, _fd: Fd, _offset_ptr: Ptr) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+    pub fn fd_tell(&self, memory: &MemAddr, fd: Fd, offset_ptr: Ptr) -> WasiResult<i32> {
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno =
+            unsafe { __wasi_fd_tell(fd as u32, memory_base.add(offset_ptr as usize) as *mut u64) };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
     }
 
     pub fn fd_sync(&self, fd: Fd) -> WasiResult<i32> {
@@ -578,13 +679,25 @@ impl PassthroughWasiImpl {
         Ok(0)
     }
 
-    pub fn fd_filestat_get(
-        &self,
-        _memory: &MemAddr,
-        _fd: Fd,
-        _filestat_ptr: Ptr,
-    ) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+    pub fn fd_filestat_get(&self, memory: &MemAddr, fd: Fd, filestat_ptr: Ptr) -> WasiResult<i32> {
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno = unsafe {
+            __wasi_fd_filestat_get(fd as u32, memory_base.add(filestat_ptr as usize) as *mut u8)
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
     }
 
     pub fn fd_readdir(
@@ -625,12 +738,32 @@ impl PassthroughWasiImpl {
         Ok(0)
     }
 
-    pub fn fd_fdstat_set_flags(&self, _fd: Fd, _flags: u32) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+    pub fn fd_fdstat_set_flags(&self, fd: Fd, flags: u32) -> WasiResult<i32> {
+        let wasi_errno = unsafe { __wasi_fd_fdstat_set_flags(fd as u32, flags) };
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
     }
 
-    pub fn fd_filestat_set_size(&self, _fd: Fd, _size: u64) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+    pub fn fd_filestat_set_size(&self, fd: Fd, size: u64) -> WasiResult<i32> {
+        let wasi_errno = unsafe { __wasi_fd_filestat_set_size(fd as u32, size) };
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
     }
 
     pub fn fd_pwrite(
@@ -647,71 +780,194 @@ impl PassthroughWasiImpl {
 
     pub fn path_create_directory(
         &self,
-        _memory: &MemAddr,
-        _fd: Fd,
-        _path_ptr: Ptr,
-        _path_len: Size,
+        memory: &MemAddr,
+        fd: Fd,
+        path_ptr: Ptr,
+        path_len: Size,
     ) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno = unsafe {
+            __wasi_path_create_directory(fd as u32, memory_base.add(path_ptr as usize), path_len)
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
     }
 
     pub fn path_filestat_get(
         &self,
-        _memory: &MemAddr,
-        _fd: Fd,
-        _flags: u32,
-        _path_ptr: Ptr,
-        _path_len: Size,
-        _filestat_ptr: Ptr,
+        memory: &MemAddr,
+        fd: Fd,
+        flags: u32,
+        path_ptr: Ptr,
+        path_len: Size,
+        filestat_ptr: Ptr,
     ) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno = unsafe {
+            __wasi_path_filestat_get(
+                fd as u32,
+                flags,
+                memory_base.add(path_ptr as usize),
+                path_len,
+                memory_base.add(filestat_ptr as usize) as *mut u8,
+            )
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
     }
 
     pub fn path_filestat_set_times(
         &self,
-        _memory: &MemAddr,
-        _fd: Fd,
-        _flags: u32,
-        _path_ptr: Ptr,
-        _path_len: Size,
-        _atim: u64,
-        _mtim: u64,
-        _fst_flags: u32,
+        memory: &MemAddr,
+        fd: Fd,
+        flags: u32,
+        path_ptr: Ptr,
+        path_len: Size,
+        atim: u64,
+        mtim: u64,
+        fst_flags: u32,
     ) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno = unsafe {
+            __wasi_path_filestat_set_times(
+                fd as u32,
+                flags,
+                memory_base.add(path_ptr as usize),
+                path_len,
+                atim,
+                mtim,
+                fst_flags,
+            )
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
     }
 
     pub fn path_readlink(
         &self,
-        _memory: &MemAddr,
-        _fd: Fd,
-        _path_ptr: Ptr,
-        _path_len: Size,
-        _buf_ptr: Ptr,
-        _buf_len: Size,
-        _buf_used_ptr: Ptr,
+        memory: &MemAddr,
+        fd: Fd,
+        path_ptr: Ptr,
+        path_len: Size,
+        buf_ptr: Ptr,
+        buf_len: Size,
+        buf_used_ptr: Ptr,
     ) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno = unsafe {
+            __wasi_path_readlink(
+                fd as u32,
+                memory_base.add(path_ptr as usize),
+                path_len,
+                memory_base.add(buf_ptr as usize) as *mut u8,
+                buf_len,
+                memory_base.add(buf_used_ptr as usize) as *mut u32,
+            )
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
     }
 
     pub fn path_remove_directory(
         &self,
-        _memory: &MemAddr,
-        _fd: Fd,
-        _path_ptr: Ptr,
-        _path_len: Size,
+        memory: &MemAddr,
+        fd: Fd,
+        path_ptr: Ptr,
+        path_len: Size,
     ) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno = unsafe {
+            __wasi_path_remove_directory(fd as u32, memory_base.add(path_ptr as usize), path_len)
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
     }
 
     pub fn path_unlink_file(
         &self,
-        _memory: &MemAddr,
-        _fd: Fd,
-        _path_ptr: Ptr,
-        _path_len: Size,
+        memory: &MemAddr,
+        fd: Fd,
+        path_ptr: Ptr,
+        path_len: Size,
     ) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno = unsafe {
+            __wasi_path_unlink_file(fd as u32, memory_base.add(path_ptr as usize), path_len)
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
     }
 
     pub fn poll_oneoff(
