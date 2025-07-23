@@ -1,6 +1,7 @@
 use super::*;
 use crate::execution::mem::MemAddr;
 use crate::structure::instructions::Memarg;
+use WasiError;
 
 /// WASI iovec structure that matches wasi-libc layout
 #[repr(C)]
@@ -134,7 +135,7 @@ impl PassthroughWasiImpl {
             let iovec_offset = iovs_ptr as usize + (i as usize * 8);
 
             if iovec_offset + 8 > memory_len {
-                return Err(super::error::WasiError::MemoryAccessError);
+                return Err(WasiError::Fault);
             }
 
             let buf_ptr = u32::from_le_bytes([
@@ -160,7 +161,7 @@ impl PassthroughWasiImpl {
             }
 
             if buf_ptr as usize + buf_len as usize > memory_len {
-                return Err(super::error::WasiError::MemoryAccessError);
+                return Err(WasiError::Fault);
             }
 
             iovecs.push(WasiIovec {
@@ -183,12 +184,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                28 => Err(super::error::WasiError::IoError),          // ENOSPC -> IoError
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         let nwritten_memarg = Memarg {
@@ -197,7 +193,7 @@ impl PassthroughWasiImpl {
         };
         memory
             .store(&nwritten_memarg, nwritten_ptr as i32, nwritten)
-            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -252,11 +248,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         let nread_memarg = Memarg {
@@ -265,7 +257,7 @@ impl PassthroughWasiImpl {
         };
         memory
             .store(&nread_memarg, nread_ptr as i32, nread)
-            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -291,7 +283,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return Err(super::error::WasiError::IoError);
+            return Err(WasiError::Io);
         }
 
         Ok(0)
@@ -301,11 +293,7 @@ impl PassthroughWasiImpl {
         let wasi_errno = unsafe { __wasi_fd_close(fd as u32) };
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -324,10 +312,7 @@ impl PassthroughWasiImpl {
             unsafe { __wasi_environ_sizes_get(&mut environ_count, &mut environ_buf_size) };
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                22 => Err(super::error::WasiError::InvalidArgument), // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         let mut environ_buf = vec![0u8; environ_buf_size as usize];
@@ -338,10 +323,7 @@ impl PassthroughWasiImpl {
             unsafe { __wasi_environ_get(environ_ptrs.as_mut_ptr(), environ_buf.as_mut_ptr()) };
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                22 => Err(super::error::WasiError::InvalidArgument), // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         // Calculate pointer offsets relative to environ_buf_ptr
@@ -362,12 +344,12 @@ impl PassthroughWasiImpl {
         // Write pointer array to WebAssembly memory
         memory
             .store_bytes(environ_ptr as i32, &ptr_data)
-            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         // Write environment strings to WebAssembly memory
         memory
             .store_bytes(environ_buf_ptr as i32, &environ_buf)
-            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -385,10 +367,7 @@ impl PassthroughWasiImpl {
             unsafe { __wasi_environ_sizes_get(&mut environ_count, &mut environ_buf_size) };
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                22 => Err(super::error::WasiError::InvalidArgument), // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         // Write environment variable count
@@ -398,7 +377,7 @@ impl PassthroughWasiImpl {
         };
         memory
             .store(&count_memarg, environ_count_ptr as i32, environ_count)
-            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         // Write total buffer size needed
         let size_memarg = Memarg {
@@ -407,7 +386,7 @@ impl PassthroughWasiImpl {
         };
         memory
             .store(&size_memarg, environ_buf_size_ptr as i32, environ_buf_size)
-            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -438,12 +417,12 @@ impl PassthroughWasiImpl {
         // Write pointer array to WebAssembly memory
         memory
             .store_bytes(argv_ptr as i32, &ptr_data)
-            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         // Write argument strings to WebAssembly memory
         memory
             .store_bytes(argv_buf_ptr as i32, &argv_buf)
-            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -469,7 +448,7 @@ impl PassthroughWasiImpl {
         };
         memory
             .store(&argc_memarg, argc_ptr as i32, argc)
-            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         // Write total buffer size needed to WebAssembly memory
         let argv_buf_size_memarg = Memarg {
@@ -482,7 +461,7 @@ impl PassthroughWasiImpl {
                 argv_buf_size_ptr as i32,
                 argv_buf_size,
             )
-            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -500,16 +479,13 @@ impl PassthroughWasiImpl {
             unsafe { __wasi_clock_time_get(clock_id as u32, precision as u64, &mut time) };
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                22 => Err(super::error::WasiError::InvalidArgument), // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         // Write timestamp (64-bit nanoseconds) to memory using store_bytes
         memory
             .store_bytes(time_ptr as i32, &time.to_le_bytes())
-            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -525,16 +501,13 @@ impl PassthroughWasiImpl {
         let wasi_errno = unsafe { __wasi_clock_res_get(clock_id as u32, &mut resolution) };
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                22 => Err(super::error::WasiError::InvalidArgument), // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         // Write resolution (64-bit nanoseconds) to memory using store_bytes
         memory
             .store_bytes(resolution_ptr as i32, &resolution.to_le_bytes())
-            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -550,11 +523,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -581,11 +550,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -595,7 +560,7 @@ impl PassthroughWasiImpl {
         let wasi_errno = unsafe { __wasi_sched_yield() };
 
         if wasi_errno != 0 {
-            return Err(super::error::WasiError::IoError);
+            return Err(WasiError::Io);
         }
 
         Ok(0)
@@ -612,11 +577,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -655,13 +616,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                2 => Err(super::error::WasiError::IoError),           // ENOENT
-                13 => Err(super::error::WasiError::IoError),          // EACCES
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -674,11 +629,7 @@ impl PassthroughWasiImpl {
             unsafe { __wasi_fd_seek(fd as u32, offset, whence, &mut newoffset as *mut u64) };
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(newoffset)
@@ -694,11 +645,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -708,11 +655,7 @@ impl PassthroughWasiImpl {
         let wasi_errno = unsafe { __wasi_fd_sync(fd as u32) };
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -729,11 +672,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -764,12 +703,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                28 => Err(super::error::WasiError::IoError),          // ENOSPC
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -834,11 +768,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         let nread_memarg = Memarg {
@@ -847,7 +777,7 @@ impl PassthroughWasiImpl {
         };
         memory
             .store(&nread_memarg, nread_ptr as i32, nread)
-            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -856,11 +786,7 @@ impl PassthroughWasiImpl {
         let wasi_errno = unsafe { __wasi_fd_datasync(fd as u32) };
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -870,11 +796,7 @@ impl PassthroughWasiImpl {
         let wasi_errno = unsafe { __wasi_fd_fdstat_set_flags(fd as u32, flags) };
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -884,11 +806,7 @@ impl PassthroughWasiImpl {
         let wasi_errno = unsafe { __wasi_fd_filestat_set_size(fd as u32, size) };
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -953,12 +871,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                28 => Err(super::error::WasiError::IoError),          // ENOSPC
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         let nwritten_memarg = Memarg {
@@ -967,7 +880,7 @@ impl PassthroughWasiImpl {
         };
         memory
             .store(&nwritten_memarg, nwritten_ptr as i32, nwritten)
-            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -989,11 +902,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -1024,11 +933,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -1063,11 +968,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -1100,11 +1001,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -1127,11 +1024,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -1154,11 +1047,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -1187,10 +1076,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                22 => Err(super::error::WasiError::InvalidArgument), // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -1200,10 +1086,7 @@ impl PassthroughWasiImpl {
         let wasi_errno = unsafe { __wasi_proc_raise(signal) };
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                22 => Err(super::error::WasiError::InvalidArgument), // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -1220,11 +1103,7 @@ impl PassthroughWasiImpl {
         let wasi_errno = unsafe { __wasi_fd_advise(fd, offset, len, advice) };
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -1240,12 +1119,7 @@ impl PassthroughWasiImpl {
         let wasi_errno = unsafe { __wasi_fd_allocate(fd, offset, len) };
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                28 => Err(super::error::WasiError::NoSpace),          // ENOSPC
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -1262,12 +1136,7 @@ impl PassthroughWasiImpl {
             unsafe { __wasi_fd_fdstat_set_rights(fd, fs_rights_base, fs_rights_inheriting) };
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                1 => Err(super::error::WasiError::PermissionDenied),  // EPERM
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)
@@ -1277,11 +1146,7 @@ impl PassthroughWasiImpl {
         let wasi_errno = unsafe { __wasi_fd_renumber(fd, to) };
 
         if wasi_errno != 0 {
-            return match wasi_errno {
-                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
-                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
-                _ => Err(super::error::WasiError::IoError),
-            };
+            return Err(WasiError::from_errno(wasi_errno));
         }
 
         Ok(0)

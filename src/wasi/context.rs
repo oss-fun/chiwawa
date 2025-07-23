@@ -27,9 +27,7 @@ impl WasiContext {
     }
 
     pub fn get_fd(&mut self, fd: i32) -> WasiResult<&mut Box<dyn FileDescriptor>> {
-        self.file_descriptors
-            .get_mut(&fd)
-            .ok_or(WasiError::BadFileDescriptor)
+        self.file_descriptors.get_mut(&fd).ok_or(WasiError::BadF)
     }
 }
 
@@ -54,15 +52,15 @@ impl StdinWrapper {
 
 impl FileDescriptor for StdinWrapper {
     fn read(&mut self, buf: &mut [u8]) -> WasiResult<usize> {
-        self.stdin.read(buf).map_err(|_| WasiError::IoError)
+        self.stdin.read(buf).map_err(|_| WasiError::Io)
     }
 
     fn write(&mut self, _buf: &[u8]) -> WasiResult<usize> {
-        Err(WasiError::BadFileDescriptor)
+        Err(WasiError::BadF)
     }
 
     fn seek(&mut self, _offset: i64, _whence: i32) -> WasiResult<i64> {
-        Err(WasiError::InvalidSeek)
+        Err(WasiError::SPipe)
     }
 
     fn close(&mut self) -> WasiResult<()> {
@@ -85,15 +83,15 @@ impl StdoutWrapper {
 
 impl FileDescriptor for StdoutWrapper {
     fn read(&mut self, _buf: &mut [u8]) -> WasiResult<usize> {
-        Err(WasiError::BadFileDescriptor)
+        Err(WasiError::BadF)
     }
 
     fn write(&mut self, buf: &[u8]) -> WasiResult<usize> {
-        self.stdout.write(buf).map_err(|_| WasiError::IoError)
+        self.stdout.write(buf).map_err(|_| WasiError::Io)
     }
 
     fn seek(&mut self, _offset: i64, _whence: i32) -> WasiResult<i64> {
-        Err(WasiError::InvalidSeek)
+        Err(WasiError::SPipe)
     }
 
     fn close(&mut self) -> WasiResult<()> {
@@ -116,15 +114,15 @@ impl StderrWrapper {
 
 impl FileDescriptor for StderrWrapper {
     fn read(&mut self, _buf: &mut [u8]) -> WasiResult<usize> {
-        Err(WasiError::BadFileDescriptor)
+        Err(WasiError::BadF)
     }
 
     fn write(&mut self, buf: &[u8]) -> WasiResult<usize> {
-        self.stderr.write(buf).map_err(|_| WasiError::IoError)
+        self.stderr.write(buf).map_err(|_| WasiError::Io)
     }
 
     fn seek(&mut self, _offset: i64, _whence: i32) -> WasiResult<i64> {
-        Err(WasiError::InvalidSeek)
+        Err(WasiError::SPipe)
     }
 
     fn close(&mut self) -> WasiResult<()> {
