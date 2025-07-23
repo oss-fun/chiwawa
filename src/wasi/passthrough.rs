@@ -25,6 +25,8 @@ extern "C" {
     fn __wasi_fd_close(fd: u32) -> u16;
     fn __wasi_fd_sync(fd: u32) -> u16;
     fn __wasi_fd_datasync(fd: u32) -> u16;
+    fn __wasi_fd_prestat_get(fd: u32, prestat: *mut u8) -> u16;
+    fn __wasi_fd_prestat_dir_name(fd: u32, path: *mut u8, path_len: u32) -> u16;
 }
 
 /// Passthrough WASI implementation that delegates to host runtime via wasi-libc
@@ -454,18 +456,56 @@ impl PassthroughWasiImpl {
         Ok(0)
     }
 
-    pub fn fd_prestat_get(&self, _memory: &MemAddr, _fd: Fd, _prestat_ptr: Ptr) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+    pub fn fd_prestat_get(&self, memory: &MemAddr, fd: Fd, prestat_ptr: Ptr) -> WasiResult<i32> {
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno = unsafe {
+            __wasi_fd_prestat_get(fd as u32, memory_base.add(prestat_ptr as usize) as *mut u8)
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
     }
 
     pub fn fd_prestat_dir_name(
         &self,
-        _memory: &MemAddr,
-        _fd: Fd,
-        _path_ptr: Ptr,
-        _path_len: Size,
+        memory: &MemAddr,
+        fd: Fd,
+        path_ptr: Ptr,
+        path_len: Size,
     ) -> WasiResult<i32> {
-        Err(super::error::WasiError::NotImplemented)
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno = unsafe {
+            __wasi_fd_prestat_dir_name(
+                fd as u32,
+                memory_base.add(path_ptr as usize) as *mut u8,
+                path_len,
+            )
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return match wasi_errno {
+                8 => Err(super::error::WasiError::BadFileDescriptor), // EBADF
+                22 => Err(super::error::WasiError::InvalidArgument),  // EINVAL
+                _ => Err(super::error::WasiError::IoError),
+            };
+        }
+
+        Ok(0)
     }
 
     pub fn sched_yield(&self) -> WasiResult<i32> {
