@@ -116,6 +116,10 @@ pub enum WasiFuncType {
     PathLink,
     PathRename,
     PathSymlink,
+    SockAccept,
+    SockRecv,
+    SockSend,
+    SockShutdown,
 }
 
 impl WasiFuncType {
@@ -459,6 +463,42 @@ impl WasiFuncType {
                     ValueType::NumType(NumType::I32), // fd
                     ValueType::NumType(NumType::I32), // new_path_ptr
                     ValueType::NumType(NumType::I32), // new_path_len
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::SockAccept => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I32), // flags
+                    ValueType::NumType(NumType::I32), // fd_ptr
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::SockRecv => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I32), // ri_data_ptr
+                    ValueType::NumType(NumType::I32), // ri_data_len
+                    ValueType::NumType(NumType::I32), // ri_flags
+                    ValueType::NumType(NumType::I32), // ro_datalen_ptr
+                    ValueType::NumType(NumType::I32), // ro_flags_ptr
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::SockSend => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I32), // si_data_ptr
+                    ValueType::NumType(NumType::I32), // si_data_len
+                    ValueType::NumType(NumType::I32), // si_flags
+                    ValueType::NumType(NumType::I32), // so_datalen_ptr
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::SockShutdown => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I32), // how
                 ],
                 results: vec![ValueType::NumType(NumType::I32)], // Returns error code
             },

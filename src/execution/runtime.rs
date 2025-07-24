@@ -768,6 +768,69 @@ impl Runtime {
                 )?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
+            WasiFuncType::SockAccept => {
+                if params.len() != 3 {
+                    return Err(WasiError::Inval);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let flags = params[1].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let fd_ptr = params[2].to_i32().map_err(|_| WasiError::Inval)? as u32;
+
+                let result = wasi_impl.sock_accept(memory, fd, flags, fd_ptr)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::SockRecv => {
+                if params.len() != 6 {
+                    return Err(WasiError::Inval);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let ri_data_ptr = params[1].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let ri_data_len = params[2].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let ri_flags = params[3].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let ro_datalen_ptr = params[4].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let ro_flags_ptr = params[5].to_i32().map_err(|_| WasiError::Inval)? as u32;
+
+                let result = wasi_impl.sock_recv(
+                    memory,
+                    fd,
+                    ri_data_ptr,
+                    ri_data_len,
+                    ri_flags,
+                    ro_datalen_ptr,
+                    ro_flags_ptr,
+                )?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::SockSend => {
+                if params.len() != 5 {
+                    return Err(WasiError::Inval);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let si_data_ptr = params[1].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let si_data_len = params[2].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let si_flags = params[3].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let so_datalen_ptr = params[4].to_i32().map_err(|_| WasiError::Inval)? as u32;
+
+                let result = wasi_impl.sock_send(
+                    memory,
+                    fd,
+                    si_data_ptr,
+                    si_data_len,
+                    si_flags,
+                    so_datalen_ptr,
+                )?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::SockShutdown => {
+                if params.len() != 2 {
+                    return Err(WasiError::Inval);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let how = params[1].to_i32().map_err(|_| WasiError::Inval)? as u32;
+
+                let result = wasi_impl.sock_shutdown(memory, fd, how)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
             _ => Err(WasiError::NoSys),
         }
     }

@@ -129,6 +129,23 @@ extern "C" {
         new_path: *const u8,
         new_path_len: u32,
     ) -> u16;
+    fn __wasi_sock_accept(fd: u32, flags: u32, fd_ptr: *mut u32) -> u16;
+    fn __wasi_sock_recv(
+        fd: u32,
+        ri_data: *const WasiIovec,
+        ri_data_len: u32,
+        ri_flags: u32,
+        ro_datalen: *mut u32,
+        ro_flags: *mut u32,
+    ) -> u16;
+    fn __wasi_sock_send(
+        fd: u32,
+        si_data: *const WasiIovec,
+        si_data_len: u32,
+        si_flags: u32,
+        so_datalen: *mut u32,
+    ) -> u16;
+    fn __wasi_sock_shutdown(fd: u32, how: u32) -> u16;
 }
 
 /// Passthrough WASI implementation that delegates to host runtime via wasi-libc
@@ -1285,6 +1302,102 @@ impl PassthroughWasiImpl {
         };
 
         drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return Err(WasiError::from_errno(wasi_errno));
+        }
+
+        Ok(0)
+    }
+
+    pub fn sock_accept(
+        &self,
+        memory: &MemAddr,
+        fd: u32,
+        flags: u32,
+        fd_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno =
+            unsafe { __wasi_sock_accept(fd, flags, memory_base.add(fd_ptr as usize) as *mut u32) };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return Err(WasiError::from_errno(wasi_errno));
+        }
+
+        Ok(0)
+    }
+
+    pub fn sock_recv(
+        &self,
+        memory: &MemAddr,
+        fd: u32,
+        ri_data_ptr: Ptr,
+        ri_data_len: Size,
+        ri_flags: u32,
+        ro_datalen_ptr: Ptr,
+        ro_flags_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno = unsafe {
+            __wasi_sock_recv(
+                fd,
+                memory_base.add(ri_data_ptr as usize) as *const WasiIovec,
+                ri_data_len,
+                ri_flags,
+                memory_base.add(ro_datalen_ptr as usize) as *mut u32,
+                memory_base.add(ro_flags_ptr as usize) as *mut u32,
+            )
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return Err(WasiError::from_errno(wasi_errno));
+        }
+
+        Ok(0)
+    }
+
+    pub fn sock_send(
+        &self,
+        memory: &MemAddr,
+        fd: u32,
+        si_data_ptr: Ptr,
+        si_data_len: Size,
+        si_flags: u32,
+        so_datalen_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno = unsafe {
+            __wasi_sock_send(
+                fd,
+                memory_base.add(si_data_ptr as usize) as *const WasiIovec,
+                si_data_len,
+                si_flags,
+                memory_base.add(so_datalen_ptr as usize) as *mut u32,
+            )
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return Err(WasiError::from_errno(wasi_errno));
+        }
+
+        Ok(0)
+    }
+
+    pub fn sock_shutdown(&self, _memory: &MemAddr, fd: u32, how: u32) -> WasiResult<i32> {
+        let wasi_errno = unsafe { __wasi_sock_shutdown(fd, how) };
 
         if wasi_errno != 0 {
             return Err(WasiError::from_errno(wasi_errno));

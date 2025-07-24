@@ -221,6 +221,10 @@ fn parse_wasi_function(name: &str) -> Option<WasiFuncType> {
         "path_link" => Some(WasiFuncType::PathLink),
         "path_rename" => Some(WasiFuncType::PathRename),
         "path_symlink" => Some(WasiFuncType::PathSymlink),
+        "sock_accept" => Some(WasiFuncType::SockAccept),
+        "sock_recv" => Some(WasiFuncType::SockRecv),
+        "sock_send" => Some(WasiFuncType::SockSend),
+        "sock_shutdown" => Some(WasiFuncType::SockShutdown),
         _ => None,
     }
 }
