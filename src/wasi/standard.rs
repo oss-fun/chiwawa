@@ -75,22 +75,22 @@ impl StandardWasiImpl {
     ) -> WasiResult<i32> {
         let is_stdout_stderr = match fd {
             0 => {
-                return Err(super::error::WasiError::BadFileDescriptor);
+                return Err(super::error::WasiError::BadF);
             }
             1 | 2 => true,
             _ => {
                 if self.preopen_dirs.contains_key(&fd) {
-                    return Err(super::error::WasiError::BadFileDescriptor);
+                    return Err(super::error::WasiError::BadF);
                 }
 
                 let opened_files = self.opened_files.lock().unwrap();
                 if let Some(open_file) = opened_files.get(&fd) {
                     if open_file.is_directory {
-                        return Err(super::error::WasiError::BadFileDescriptor);
+                        return Err(super::error::WasiError::BadF);
                     }
                     false
                 } else {
-                    return Err(super::error::WasiError::BadFileDescriptor);
+                    return Err(super::error::WasiError::BadF);
                 }
             }
         };
@@ -109,7 +109,7 @@ impl StandardWasiImpl {
             };
             let buf_ptr: u32 = memory
                 .load(&buf_ptr_memarg, iovec_offset as i32)
-                .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+                .map_err(|_| super::error::WasiError::Fault)?;
 
             // Read buf_len (next 4 bytes of iovec)
             let buf_len_memarg = Memarg {
@@ -118,7 +118,7 @@ impl StandardWasiImpl {
             };
             let buf_len: u32 = memory
                 .load(&buf_len_memarg, (iovec_offset + 4) as i32)
-                .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+                .map_err(|_| super::error::WasiError::Fault)?;
 
             if buf_len == 0 {
                 continue;
@@ -134,7 +134,7 @@ impl StandardWasiImpl {
             for j in 0..buf_len {
                 let byte: u8 = memory
                     .load(&byte_memarg, (buf_ptr + j) as i32)
-                    .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+                    .map_err(|_| super::error::WasiError::Fault)?;
                 data.push(byte);
             }
 
@@ -143,10 +143,10 @@ impl StandardWasiImpl {
                 match fd {
                     1 => io::stdout()
                         .write(&data)
-                        .map_err(|_| super::error::WasiError::IoError)?,
+                        .map_err(|_| super::error::WasiError::Io)?,
                     2 => io::stderr()
                         .write(&data)
-                        .map_err(|_| super::error::WasiError::IoError)?,
+                        .map_err(|_| super::error::WasiError::Io)?,
                     _ => unreachable!(),
                 }
             } else {
@@ -155,22 +155,20 @@ impl StandardWasiImpl {
                     if let Some(ref mut file) = open_file.file {
                         // Set seek position if needed
                         file.seek(SeekFrom::Start(open_file.seek_position))
-                            .map_err(|_| super::error::WasiError::IoError)?;
+                            .map_err(|_| super::error::WasiError::Io)?;
 
                         // Write data
-                        let written = file
-                            .write(&data)
-                            .map_err(|_| super::error::WasiError::IoError)?;
+                        let written = file.write(&data).map_err(|_| super::error::WasiError::Io)?;
 
                         // Update seek position
                         open_file.seek_position += written as u64;
 
                         written
                     } else {
-                        return Err(super::error::WasiError::BadFileDescriptor);
+                        return Err(super::error::WasiError::BadF);
                     }
                 } else {
-                    return Err(super::error::WasiError::BadFileDescriptor);
+                    return Err(super::error::WasiError::BadF);
                 }
             };
 
@@ -182,18 +180,17 @@ impl StandardWasiImpl {
             match fd {
                 1 => io::stdout()
                     .flush()
-                    .map_err(|_| super::error::WasiError::IoError)?,
+                    .map_err(|_| super::error::WasiError::Io)?,
                 2 => io::stderr()
                     .flush()
-                    .map_err(|_| super::error::WasiError::IoError)?,
+                    .map_err(|_| super::error::WasiError::Io)?,
                 _ => unreachable!(),
             }
         } else {
             let opened_files = self.opened_files.lock().unwrap();
             if let Some(open_file) = opened_files.get(&fd) {
                 if let Some(ref file) = open_file.file {
-                    file.sync_all()
-                        .map_err(|_| super::error::WasiError::IoError)?;
+                    file.sync_all().map_err(|_| super::error::WasiError::Io)?;
                 }
             }
         }
@@ -205,7 +202,7 @@ impl StandardWasiImpl {
         };
         memory
             .store(&nwritten_memarg, nwritten_ptr as i32, total_written)
-            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            .map_err(|_| super::error::WasiError::Fault)?;
 
         Ok(0)
     }
@@ -223,22 +220,22 @@ impl StandardWasiImpl {
             0 => true, // stdin
             1 | 2 => {
                 // stdout and stderr - not readable
-                return Err(super::error::WasiError::BadFileDescriptor);
+                return Err(super::error::WasiError::BadF);
             }
             _ => {
                 if self.preopen_dirs.contains_key(&fd) {
-                    return Err(super::error::WasiError::BadFileDescriptor);
+                    return Err(super::error::WasiError::BadF);
                 }
 
                 // Check if it's an opened file
                 let opened_files = self.opened_files.lock().unwrap();
                 if let Some(open_file) = opened_files.get(&fd) {
                     if open_file.is_directory {
-                        return Err(super::error::WasiError::BadFileDescriptor);
+                        return Err(super::error::WasiError::BadF);
                     }
                     false
                 } else {
-                    return Err(super::error::WasiError::BadFileDescriptor);
+                    return Err(super::error::WasiError::BadF);
                 }
             }
         };
@@ -258,7 +255,7 @@ impl StandardWasiImpl {
             };
             let buf_ptr: u32 = memory
                 .load(&buf_ptr_memarg, iovec_offset as i32)
-                .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+                .map_err(|_| super::error::WasiError::Fault)?;
 
             // Read buf_len (next 4 bytes of iovec)
             let buf_len_memarg = Memarg {
@@ -267,7 +264,7 @@ impl StandardWasiImpl {
             };
             let buf_len: u32 = memory
                 .load(&buf_len_memarg, (iovec_offset + 4) as i32)
-                .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+                .map_err(|_| super::error::WasiError::Fault)?;
 
             if buf_len > 0 {
                 iovecs.push((buf_ptr, buf_len));
@@ -282,7 +279,7 @@ impl StandardWasiImpl {
             };
             memory
                 .store(&nread_memarg, nread_ptr as i32, 0u32)
-                .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+                .map_err(|_| super::error::WasiError::Fault)?;
             return Ok(0);
         }
 
@@ -292,7 +289,7 @@ impl StandardWasiImpl {
             // Read from stdin
             io::stdin()
                 .read(&mut input_buffer)
-                .map_err(|_| super::error::WasiError::IoError)?
+                .map_err(|_| super::error::WasiError::Io)?
         } else {
             // Read from opened file
             let mut opened_files = self.opened_files.lock().unwrap();
@@ -304,17 +301,17 @@ impl StandardWasiImpl {
 
                     let bytes_read = file
                         .read(&mut input_buffer)
-                        .map_err(|_| super::error::WasiError::IoError)?;
+                        .map_err(|_| super::error::WasiError::Io)?;
 
                     // Update seek position
                     open_file.seek_position += bytes_read as u64;
 
                     bytes_read
                 } else {
-                    return Err(super::error::WasiError::BadFileDescriptor);
+                    return Err(super::error::WasiError::BadF);
                 }
             } else {
-                return Err(super::error::WasiError::BadFileDescriptor);
+                return Err(super::error::WasiError::BadF);
             }
         };
 
@@ -333,7 +330,7 @@ impl StandardWasiImpl {
             // Use bulk write for efficiency
             memory
                 .store_bytes(buf_ptr as i32, data_slice)
-                .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+                .map_err(|_| super::error::WasiError::Fault)?;
 
             total_written += bytes_to_write as u32;
             data_offset += bytes_to_write;
@@ -348,7 +345,7 @@ impl StandardWasiImpl {
         };
         memory
             .store(&nread_memarg, nread_ptr as i32, total_read)
-            .map_err(|_| super::error::WasiError::MemoryAccessError)?;
+            .map_err(|_| super::error::WasiError::Fault)?;
 
         Ok(0)
     }
@@ -364,12 +361,12 @@ impl StandardWasiImpl {
 
         // Generate random bytes
         let mut random_bytes = vec![0u8; buf_len as usize];
-        getrandom(&mut random_bytes).map_err(|_| WasiError::IoError)?;
+        getrandom(&mut random_bytes).map_err(|_| WasiError::Io)?;
 
         // Write random bytes to WebAssembly memory in bulk
         memory
             .store_bytes(buf_ptr as i32, &random_bytes)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -382,7 +379,7 @@ impl StandardWasiImpl {
             }
             _ => {
                 if self.preopen_dirs.contains_key(&fd) {
-                    return Err(WasiError::BadFileDescriptor);
+                    return Err(WasiError::BadF);
                 }
 
                 let mut opened_files = self.opened_files.lock().unwrap();
@@ -392,7 +389,7 @@ impl StandardWasiImpl {
                     }
                     Ok(0)
                 } else {
-                    Err(WasiError::BadFileDescriptor)
+                    Err(WasiError::BadF)
                 }
             }
         }
@@ -430,11 +427,11 @@ impl StandardWasiImpl {
 
         memory
             .store_bytes(environ_ptr as i32, &ptr_data)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         memory
             .store_bytes(environ_buf_ptr as i32, &buf_data)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -462,7 +459,7 @@ impl StandardWasiImpl {
         };
         memory
             .store(&count_memarg, environ_count_ptr as i32, environ_count)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         // Write total buffer size needed
         let size_memarg = Memarg {
@@ -471,7 +468,7 @@ impl StandardWasiImpl {
         };
         memory
             .store(&size_memarg, environ_buf_size_ptr as i32, environ_buf_size)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -500,11 +497,11 @@ impl StandardWasiImpl {
 
         memory
             .store_bytes(argv_ptr as i32, &ptr_data)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         memory
             .store_bytes(argv_buf_ptr as i32, &buf_data)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -527,7 +524,7 @@ impl StandardWasiImpl {
         };
         memory
             .store(&count_memarg, argc_ptr as i32, argc)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         // Write total buffer size needed
         let size_memarg = Memarg {
@@ -536,7 +533,7 @@ impl StandardWasiImpl {
         };
         memory
             .store(&size_memarg, argv_buf_size_ptr as i32, argv_buf_size)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -560,17 +557,17 @@ impl StandardWasiImpl {
                 use std::time::{SystemTime, UNIX_EPOCH};
                 let duration = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .map_err(|_| WasiError::IoError)?;
+                    .map_err(|_| WasiError::Io)?;
 
                 // Convert to nanoseconds
                 duration.as_secs() * 1_000_000_000 + duration.subsec_nanos() as u64
             }
             2 | 3 => {
                 // Process/thread CPU time - not implemented in WASI
-                return Err(WasiError::NotImplemented);
+                return Err(WasiError::NoSys);
             }
             _ => {
-                return Err(WasiError::InvalidArgument);
+                return Err(WasiError::Inval);
             }
         };
 
@@ -581,7 +578,7 @@ impl StandardWasiImpl {
         };
         memory
             .store(&time_memarg, time_ptr as i32, time_ns as i64)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -600,10 +597,10 @@ impl StandardWasiImpl {
             }
             2 | 3 => {
                 // Process/thread CPU time resolution - not implemented in WASI
-                return Err(WasiError::NotImplemented);
+                return Err(WasiError::NoSys);
             }
             _ => {
-                return Err(WasiError::InvalidArgument);
+                return Err(WasiError::Inval);
             }
         };
 
@@ -614,7 +611,7 @@ impl StandardWasiImpl {
         };
         memory
             .store(&res_memarg, resolution_ptr as i32, resolution_ns as i64)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -624,7 +621,7 @@ impl StandardWasiImpl {
         if let Some(path) = self.preopen_dirs.get(&fd) {
             Ok(path.clone())
         } else {
-            Err(WasiError::BadFileDescriptor)
+            Err(WasiError::BadF)
         }
     }
 
@@ -644,7 +641,7 @@ impl StandardWasiImpl {
         // Write tag = 0 (PREOPENTYPE_DIR)
         memory
             .store(&tag_memarg, prestat_ptr as i32, 0u8)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         let name_len_memarg = Memarg {
             offset: 0,
@@ -653,7 +650,7 @@ impl StandardWasiImpl {
         // Write name length at offset 4 (after tag + 3 bytes padding)
         memory
             .store(&name_len_memarg, (prestat_ptr + 4) as i32, name_len)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -671,7 +668,7 @@ impl StandardWasiImpl {
 
         // Check if provided buffer is large enough
         if path_len < dir_bytes.len() as u32 {
-            return Err(WasiError::InvalidArgument);
+            return Err(WasiError::Inval);
         }
 
         let byte_memarg = Memarg {
@@ -683,7 +680,7 @@ impl StandardWasiImpl {
         for (i, &byte) in dir_bytes.iter().enumerate() {
             memory
                 .store(&byte_memarg, (path_ptr + i as u32) as i32, byte)
-                .map_err(|_| WasiError::MemoryAccessError)?;
+                .map_err(|_| WasiError::Fault)?;
         }
         Ok(0)
     }
@@ -734,7 +731,7 @@ impl StandardWasiImpl {
                         RIGHTS_FD_READ | RIGHTS_FD_WRITE,
                     )
                 } else {
-                    return Err(WasiError::BadFileDescriptor);
+                    return Err(WasiError::BadF);
                 }
             }
         };
@@ -750,7 +747,7 @@ impl StandardWasiImpl {
         };
         memory
             .store(&filetype_memarg, stat_ptr as i32, filetype)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         // Write flags (u16) at offset 2 (with padding)
         let flags_memarg = Memarg {
@@ -759,7 +756,7 @@ impl StandardWasiImpl {
         };
         memory
             .store(&flags_memarg, (stat_ptr + 2) as i32, flags)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         // Write rights_base (u64) at offset 8
         let rights_base_memarg = Memarg {
@@ -772,7 +769,7 @@ impl StandardWasiImpl {
                 (stat_ptr + 8) as i32,
                 rights_base as i64,
             )
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         // Write rights_inheriting (u64) at offset 16
         let rights_inheriting_memarg = Memarg {
@@ -785,7 +782,7 @@ impl StandardWasiImpl {
                 (stat_ptr + 16) as i32,
                 rights_inheriting as i64,
             )
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -823,16 +820,16 @@ impl StandardWasiImpl {
                     },
                     (path_ptr + i) as i32,
                 )
-                .map_err(|_| WasiError::MemoryAccessError)?;
+                .map_err(|_| WasiError::Fault)?;
             path_bytes[i as usize] = byte;
         }
-        let path_str = String::from_utf8(path_bytes).map_err(|_| WasiError::InvalidArgument)?;
+        let path_str = String::from_utf8(path_bytes).map_err(|_| WasiError::Inval)?;
 
         // Resolve base directory
         let base_dir = if let Some(preopen_path) = self.preopen_dirs.get(&fd) {
             PathBuf::from(preopen_path)
         } else {
-            return Err(WasiError::BadFileDescriptor);
+            return Err(WasiError::BadF);
         };
 
         // Construct full path
@@ -843,34 +840,34 @@ impl StandardWasiImpl {
 
         if follow_symlinks {
             full_path = full_path.canonicalize().map_err(|e| match e.kind() {
-                io::ErrorKind::NotFound => WasiError::NoSuchFileOrDirectory,
-                io::ErrorKind::PermissionDenied => WasiError::NotPermitted,
+                io::ErrorKind::NotFound => WasiError::NoEnt,
+                io::ErrorKind::PermissionDenied => WasiError::Perm,
                 _ => WasiError::Io,
             })?;
         } else {
             if full_path.is_symlink() {
                 if !full_path.exists() {
-                    return Err(WasiError::NoSuchFileOrDirectory);
+                    return Err(WasiError::NoEnt);
                 }
             }
         }
 
         // Validate path is within base directory
         if !full_path.starts_with(&base_dir) {
-            return Err(WasiError::NotPermitted);
+            return Err(WasiError::Perm);
         }
 
         let is_directory_request = oflags & OFLAGS_DIRECTORY != 0;
 
         // Validate path exists
         if !follow_symlinks && !full_path.exists() {
-            return Err(WasiError::NoSuchFileOrDirectory);
+            return Err(WasiError::NoEnt);
         }
 
         // Validate it's actually a directory
         if is_directory_request {
             if !full_path.is_dir() {
-                return Err(WasiError::NotDirectory);
+                return Err(WasiError::NotDir);
             }
         }
 
@@ -908,8 +905,8 @@ impl StandardWasiImpl {
 
             // Open the file
             let file = open_options.open(&full_path).map_err(|e| match e.kind() {
-                io::ErrorKind::NotFound => WasiError::NoSuchFileOrDirectory,
-                io::ErrorKind::PermissionDenied => WasiError::NotPermitted,
+                io::ErrorKind::NotFound => WasiError::NoEnt,
+                io::ErrorKind::PermissionDenied => WasiError::Perm,
                 io::ErrorKind::AlreadyExists => WasiError::Exist,
                 _ => WasiError::Io,
             })?;
@@ -945,7 +942,7 @@ impl StandardWasiImpl {
         };
         memory
             .store(&fd_memarg, opened_fd_ptr as i32, new_fd)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -958,32 +955,27 @@ impl StandardWasiImpl {
 
         // Check if fd is a standard stream (not seekable)
         if fd <= 2 {
-            return Err(WasiError::InvalidArgument);
+            return Err(WasiError::Inval);
         }
 
         // Get the opened file
         let mut opened_files = self.opened_files.lock().unwrap();
-        let open_file = opened_files
-            .get_mut(&fd)
-            .ok_or(WasiError::BadFileDescriptor)?;
+        let open_file = opened_files.get_mut(&fd).ok_or(WasiError::BadF)?;
 
         // Check if it's a directory (not seekable)
         if open_file.is_directory {
-            return Err(WasiError::InvalidArgument);
+            return Err(WasiError::Inval);
         }
 
         // Get the file handle
-        let file = open_file
-            .file
-            .as_mut()
-            .ok_or(WasiError::BadFileDescriptor)?;
+        let file = open_file.file.as_mut().ok_or(WasiError::BadF)?;
 
         // Calculate new position based on whence
         let new_position = match whence {
             WHENCE_SET => {
                 // Seek from beginning
                 if offset < 0 {
-                    return Err(WasiError::InvalidArgument);
+                    return Err(WasiError::Inval);
                 }
                 offset as u64
             }
@@ -992,16 +984,16 @@ impl StandardWasiImpl {
                 let current_pos = open_file.seek_position;
                 current_pos
                     .checked_add_signed(offset)
-                    .ok_or(WasiError::InvalidArgument)?
+                    .ok_or(WasiError::Inval)?
             }
             WHENCE_END => {
                 // Seek from end of file
                 let file_size = file.metadata().map_err(|_| WasiError::Io)?.len();
                 file_size
                     .checked_add_signed(offset)
-                    .ok_or(WasiError::InvalidArgument)?
+                    .ok_or(WasiError::Inval)?
             }
-            _ => return Err(WasiError::InvalidArgument),
+            _ => return Err(WasiError::Inval),
         };
 
         // Perform the seek operation
@@ -1017,14 +1009,14 @@ impl StandardWasiImpl {
 
     pub fn fd_tell(&self, memory: &MemAddr, fd: Fd, offset_ptr: Ptr) -> WasiResult<i32> {
         if fd <= 2 {
-            return Err(WasiError::InvalidArgument);
+            return Err(WasiError::Inval);
         }
 
         let opened_files = self.opened_files.lock().unwrap();
-        let open_file = opened_files.get(&fd).ok_or(WasiError::BadFileDescriptor)?;
+        let open_file = opened_files.get(&fd).ok_or(WasiError::BadF)?;
 
         if open_file.is_directory {
-            return Err(WasiError::InvalidArgument);
+            return Err(WasiError::Inval);
         }
 
         let current_position = open_file.seek_position;
@@ -1035,7 +1027,7 @@ impl StandardWasiImpl {
         };
         memory
             .store(&offset_memarg, offset_ptr as i32, current_position as i64)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -1043,35 +1035,35 @@ impl StandardWasiImpl {
     pub fn fd_sync(&self, fd: Fd) -> WasiResult<i32> {
         match fd {
             0 => {
-                return Err(WasiError::BadFileDescriptor);
+                return Err(WasiError::BadF);
             }
             1 => {
-                io::stdout().flush().map_err(|_| WasiError::IoError)?;
+                io::stdout().flush().map_err(|_| WasiError::Io)?;
                 return Ok(0);
             }
             2 => {
-                io::stderr().flush().map_err(|_| WasiError::IoError)?;
+                io::stderr().flush().map_err(|_| WasiError::Io)?;
                 return Ok(0);
             }
             _ => {}
         }
 
         if self.preopen_dirs.contains_key(&fd) {
-            return Err(WasiError::BadFileDescriptor);
+            return Err(WasiError::BadF);
         }
 
         let opened_files = self.opened_files.lock().unwrap();
-        let open_file = opened_files.get(&fd).ok_or(WasiError::BadFileDescriptor)?;
+        let open_file = opened_files.get(&fd).ok_or(WasiError::BadF)?;
 
         if open_file.is_directory {
-            return Err(WasiError::BadFileDescriptor);
+            return Err(WasiError::BadF);
         }
 
         if let Some(ref file) = open_file.file {
-            file.sync_all().map_err(|_| WasiError::IoError)?;
+            file.sync_all().map_err(|_| WasiError::Io)?;
             Ok(0)
         } else {
-            Err(WasiError::BadFileDescriptor)
+            Err(WasiError::BadF)
         }
     }
 
@@ -1113,7 +1105,7 @@ impl StandardWasiImpl {
 
         memory
             .store_bytes(filestat_ptr as i32, &filestat_data)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(())
     }
@@ -1170,7 +1162,7 @@ impl StandardWasiImpl {
 
         // Get the opened file
         let opened_files = self.opened_files.lock().unwrap();
-        let open_file = opened_files.get(&fd).ok_or(WasiError::BadFileDescriptor)?;
+        let open_file = opened_files.get(&fd).ok_or(WasiError::BadF)?;
 
         if open_file.is_directory {
             let now = SystemTime::now()
@@ -1195,7 +1187,7 @@ impl StandardWasiImpl {
 
         // Regular file - get metadata
         if let Some(ref file) = open_file.file {
-            let metadata = file.metadata().map_err(|_| WasiError::IoError)?;
+            let metadata = file.metadata().map_err(|_| WasiError::Io)?;
 
             // Get timestamps
             let accessed = metadata
@@ -1231,7 +1223,7 @@ impl StandardWasiImpl {
             )?;
             Ok(0)
         } else {
-            Err(WasiError::BadFileDescriptor)
+            Err(WasiError::BadF)
         }
     }
 
@@ -1246,7 +1238,7 @@ impl StandardWasiImpl {
     ) -> WasiResult<i32> {
         use std::fs;
         if fd <= 2 {
-            return Err(WasiError::BadFileDescriptor);
+            return Err(WasiError::BadF);
         }
 
         let dir_path = if let Some(preopen_path) = self.preopen_dirs.get(&fd) {
@@ -1255,25 +1247,25 @@ impl StandardWasiImpl {
             let opened_files = self.opened_files.lock().unwrap();
             if let Some(open_file) = opened_files.get(&fd) {
                 if !open_file.is_directory {
-                    return Err(WasiError::NotDirectory);
+                    return Err(WasiError::NotDir);
                 }
                 open_file.path.clone()
             } else {
-                return Err(WasiError::BadFileDescriptor);
+                return Err(WasiError::BadF);
             }
         };
 
         let entries = fs::read_dir(&dir_path).map_err(|e| match e.kind() {
-            io::ErrorKind::NotFound => WasiError::NoSuchFileOrDirectory,
-            io::ErrorKind::PermissionDenied => WasiError::NotPermitted,
-            _ => WasiError::IoError,
+            io::ErrorKind::NotFound => WasiError::NoEnt,
+            io::ErrorKind::PermissionDenied => WasiError::Perm,
+            _ => WasiError::Io,
         })?;
 
         let mut total_written = 0u32;
         let mut entry_index = 0u64;
 
         for entry_result in entries {
-            let entry = entry_result.map_err(|_| WasiError::IoError)?;
+            let entry = entry_result.map_err(|_| WasiError::Io)?;
 
             if entry_index < cookie {
                 entry_index += 1;
@@ -1294,7 +1286,7 @@ impl StandardWasiImpl {
             }
 
             // Get file type
-            let metadata = entry.metadata().map_err(|_| WasiError::IoError)?;
+            let metadata = entry.metadata().map_err(|_| WasiError::Io)?;
             let file_type = if metadata.is_dir() {
                 WasiFileType::Directory as u8
             } else if metadata.is_file() {
@@ -1315,7 +1307,7 @@ impl StandardWasiImpl {
             let dirent_start = buf_ptr + total_written;
             memory
                 .store_bytes(dirent_start as i32, &dirent_data)
-                .map_err(|_| WasiError::MemoryAccessError)?;
+                .map_err(|_| WasiError::Fault)?;
 
             total_written += dirent_size;
             entry_index += 1;
@@ -1327,7 +1319,7 @@ impl StandardWasiImpl {
         };
         memory
             .store(&used_memarg, buf_used_ptr as i32, total_written)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -1342,32 +1334,29 @@ impl StandardWasiImpl {
         nread_ptr: Ptr,
     ) -> WasiResult<i32> {
         if fd <= 2 {
-            return Err(WasiError::BadFileDescriptor);
+            return Err(WasiError::BadF);
         }
 
         if self.preopen_dirs.contains_key(&fd) {
-            return Err(WasiError::BadFileDescriptor);
+            return Err(WasiError::BadF);
         }
 
         let opened_files = self.opened_files.lock().unwrap();
-        let open_file = opened_files.get(&fd).ok_or(WasiError::BadFileDescriptor)?;
+        let open_file = opened_files.get(&fd).ok_or(WasiError::BadF)?;
 
         if open_file.is_directory {
-            return Err(WasiError::BadFileDescriptor);
+            return Err(WasiError::BadF);
         }
 
-        let file = open_file
-            .file
-            .as_ref()
-            .ok_or(WasiError::BadFileDescriptor)?;
+        let file = open_file.file.as_ref().ok_or(WasiError::BadF)?;
 
         // Clone the file handle for positioned read (doesn't change original position)
-        let mut file_clone = file.try_clone().map_err(|_| WasiError::IoError)?;
+        let mut file_clone = file.try_clone().map_err(|_| WasiError::Io)?;
 
         // Seek to the specified offset
         file_clone
             .seek(SeekFrom::Start(offset))
-            .map_err(|_| WasiError::IoError)?;
+            .map_err(|_| WasiError::Io)?;
 
         let mut total_read = 0u32;
 
@@ -1382,7 +1371,7 @@ impl StandardWasiImpl {
                     },
                     iov_addr as i32,
                 )
-                .map_err(|_| WasiError::MemoryAccessError)?;
+                .map_err(|_| WasiError::Fault)?;
 
             let buf_len: u32 = memory
                 .load(
@@ -1392,19 +1381,17 @@ impl StandardWasiImpl {
                     },
                     iov_addr as i32,
                 )
-                .map_err(|_| WasiError::MemoryAccessError)?;
+                .map_err(|_| WasiError::Fault)?;
 
             let mut buffer = vec![0u8; buf_len as usize];
-            let bytes_read = file_clone
-                .read(&mut buffer)
-                .map_err(|_| WasiError::IoError)?;
+            let bytes_read = file_clone.read(&mut buffer).map_err(|_| WasiError::Io)?;
 
             // Truncate buffer to actual bytes read
             buffer.truncate(bytes_read);
 
             memory
                 .store_bytes(buf_ptr as i32, &buffer)
-                .map_err(|_| WasiError::MemoryAccessError)?;
+                .map_err(|_| WasiError::Fault)?;
 
             total_read += bytes_read as u32;
 
@@ -1419,7 +1406,7 @@ impl StandardWasiImpl {
         };
         memory
             .store(&nread_memarg, nread_ptr as i32, total_read)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -1427,19 +1414,19 @@ impl StandardWasiImpl {
     pub fn fd_datasync(&self, fd: Fd) -> WasiResult<i32> {
         // TODO: Implement fd_datasync
         // For now, return not implemented
-        Err(WasiError::NotImplemented)
+        Err(WasiError::NoSys)
     }
 
     pub fn fd_fdstat_set_flags(&self, fd: Fd, flags: u32) -> WasiResult<i32> {
         // TODO: Implement fd_fdstat_set_flags
         // For now, return not implemented
-        Err(WasiError::NotImplemented)
+        Err(WasiError::NoSys)
     }
 
     pub fn fd_filestat_set_size(&self, fd: Fd, size: u64) -> WasiResult<i32> {
         // TODO: Implement fd_filestat_set_size (truncate)
         // For now, return not implemented
-        Err(WasiError::NotImplemented)
+        Err(WasiError::NoSys)
     }
 
     pub fn fd_pwrite(
@@ -1452,31 +1439,28 @@ impl StandardWasiImpl {
         nwritten_ptr: Ptr,
     ) -> WasiResult<i32> {
         if fd <= 2 {
-            return Err(WasiError::BadFileDescriptor);
+            return Err(WasiError::BadF);
         }
 
         if self.preopen_dirs.contains_key(&fd) {
-            return Err(WasiError::BadFileDescriptor);
+            return Err(WasiError::BadF);
         }
 
         // Get the opened file
         let opened_files = self.opened_files.lock().unwrap();
-        let open_file = opened_files.get(&fd).ok_or(WasiError::BadFileDescriptor)?;
+        let open_file = opened_files.get(&fd).ok_or(WasiError::BadF)?;
 
         if open_file.is_directory {
-            return Err(WasiError::BadFileDescriptor);
+            return Err(WasiError::BadF);
         }
 
-        let file = open_file
-            .file
-            .as_ref()
-            .ok_or(WasiError::BadFileDescriptor)?;
+        let file = open_file.file.as_ref().ok_or(WasiError::BadF)?;
 
-        let mut file_clone = file.try_clone().map_err(|_| WasiError::IoError)?;
+        let mut file_clone = file.try_clone().map_err(|_| WasiError::Io)?;
 
         file_clone
             .seek(SeekFrom::Start(offset))
-            .map_err(|_| WasiError::IoError)?;
+            .map_err(|_| WasiError::Io)?;
 
         let mut total_written = 0u32;
 
@@ -1489,7 +1473,7 @@ impl StandardWasiImpl {
             };
             let buf_ptr: u32 = memory
                 .load(&buf_ptr_memarg, iovec_offset as i32)
-                .map_err(|_| WasiError::MemoryAccessError)?;
+                .map_err(|_| WasiError::Fault)?;
 
             // Read buf_len (next 4 bytes of iovec)
             let buf_len_memarg = Memarg {
@@ -1498,7 +1482,7 @@ impl StandardWasiImpl {
             };
             let buf_len: u32 = memory
                 .load(&buf_len_memarg, (iovec_offset + 4) as i32)
-                .map_err(|_| WasiError::MemoryAccessError)?;
+                .map_err(|_| WasiError::Fault)?;
 
             if buf_len == 0 {
                 continue;
@@ -1514,12 +1498,12 @@ impl StandardWasiImpl {
             for j in 0..buf_len {
                 let byte: u8 = memory
                     .load(&byte_memarg, (buf_ptr + j) as i32)
-                    .map_err(|_| WasiError::MemoryAccessError)?;
+                    .map_err(|_| WasiError::Fault)?;
                 data.push(byte);
             }
 
             // Write data to file at current position
-            let bytes_written = file_clone.write(&data).map_err(|_| WasiError::IoError)?;
+            let bytes_written = file_clone.write(&data).map_err(|_| WasiError::Io)?;
 
             total_written += bytes_written as u32;
 
@@ -1528,7 +1512,7 @@ impl StandardWasiImpl {
                 break;
             }
         }
-        file_clone.flush().map_err(|_| WasiError::IoError)?;
+        file_clone.flush().map_err(|_| WasiError::Io)?;
 
         let nwritten_memarg = Memarg {
             offset: 0,
@@ -1536,7 +1520,7 @@ impl StandardWasiImpl {
         };
         memory
             .store(&nwritten_memarg, nwritten_ptr as i32, total_written)
-            .map_err(|_| WasiError::MemoryAccessError)?;
+            .map_err(|_| WasiError::Fault)?;
 
         Ok(0)
     }
@@ -1550,7 +1534,7 @@ impl StandardWasiImpl {
     ) -> WasiResult<i32> {
         // TODO: Implement path_create_directory
         // For now, return not implemented
-        Err(WasiError::NotImplemented)
+        Err(WasiError::NoSys)
     }
 
     pub fn path_filestat_get(
@@ -1564,7 +1548,7 @@ impl StandardWasiImpl {
     ) -> WasiResult<i32> {
         // TODO: Implement path_filestat_get
         // For now, return not implemented
-        Err(WasiError::NotImplemented)
+        Err(WasiError::NoSys)
     }
 
     pub fn path_filestat_set_times(
@@ -1580,7 +1564,7 @@ impl StandardWasiImpl {
     ) -> WasiResult<i32> {
         // TODO: Implement path_filestat_set_times
         // For now, return not implemented
-        Err(WasiError::NotImplemented)
+        Err(WasiError::NoSys)
     }
 
     pub fn path_readlink(
@@ -1595,7 +1579,7 @@ impl StandardWasiImpl {
     ) -> WasiResult<i32> {
         // TODO: Implement path_readlink
         // For now, return not implemented
-        Err(WasiError::NotImplemented)
+        Err(WasiError::NoSys)
     }
 
     pub fn path_remove_directory(
@@ -1607,7 +1591,7 @@ impl StandardWasiImpl {
     ) -> WasiResult<i32> {
         // TODO: Implement path_remove_directory
         // For now, return not implemented
-        Err(WasiError::NotImplemented)
+        Err(WasiError::NoSys)
     }
 
     pub fn path_unlink_file(
@@ -1619,7 +1603,7 @@ impl StandardWasiImpl {
     ) -> WasiResult<i32> {
         // TODO: Implement path_unlink_file
         // For now, return not implemented
-        Err(WasiError::NotImplemented)
+        Err(WasiError::NoSys)
     }
 
     pub fn poll_oneoff(
@@ -1632,6 +1616,95 @@ impl StandardWasiImpl {
     ) -> WasiResult<i32> {
         // TODO: Implement poll_oneoff
         // For now, return not implemented
-        Err(WasiError::NotImplemented)
+        Err(WasiError::NoSys)
+    }
+
+    pub fn fd_filestat_set_times(
+        &self,
+        _memory: &MemAddr,
+        _fd: u32,
+        _atim: u64,
+        _mtim: u64,
+        _fst_flags: u32,
+    ) -> WasiResult<i32> {
+        Err(WasiError::NoSys)
+    }
+
+    pub fn path_link(
+        &self,
+        _memory: &MemAddr,
+        _old_fd: u32,
+        _old_flags: u32,
+        _old_path_ptr: Ptr,
+        _old_path_len: Size,
+        _new_fd: u32,
+        _new_path_ptr: Ptr,
+        _new_path_len: Size,
+    ) -> WasiResult<i32> {
+        Err(WasiError::NoSys)
+    }
+
+    pub fn path_rename(
+        &self,
+        _memory: &MemAddr,
+        _old_fd: u32,
+        _old_path_ptr: Ptr,
+        _old_path_len: Size,
+        _new_fd: u32,
+        _new_path_ptr: Ptr,
+        _new_path_len: Size,
+    ) -> WasiResult<i32> {
+        Err(WasiError::NoSys)
+    }
+
+    pub fn path_symlink(
+        &self,
+        _memory: &MemAddr,
+        _old_path_ptr: Ptr,
+        _old_path_len: Size,
+        _fd: u32,
+        _new_path_ptr: Ptr,
+        _new_path_len: Size,
+    ) -> WasiResult<i32> {
+        Err(WasiError::NoSys)
+    }
+
+    pub fn sock_accept(
+        &self,
+        _memory: &MemAddr,
+        _fd: u32,
+        _flags: u32,
+        _fd_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        Err(WasiError::NoSys)
+    }
+
+    pub fn sock_recv(
+        &self,
+        _memory: &MemAddr,
+        _fd: u32,
+        _ri_data_ptr: Ptr,
+        _ri_data_len: Size,
+        _ri_flags: u32,
+        _ro_datalen_ptr: Ptr,
+        _ro_flags_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        Err(WasiError::NoSys)
+    }
+
+    pub fn sock_send(
+        &self,
+        _memory: &MemAddr,
+        _fd: u32,
+        _si_data_ptr: Ptr,
+        _si_data_len: Size,
+        _si_flags: u32,
+        _so_datalen_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        Err(WasiError::NoSys)
+    }
+
+    pub fn sock_shutdown(&self, _memory: &MemAddr, _fd: u32, _how: u32) -> WasiResult<i32> {
+        Err(WasiError::NoSys)
     }
 }

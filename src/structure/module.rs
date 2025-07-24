@@ -107,6 +107,19 @@ pub enum WasiFuncType {
     PathRemoveDirectory,
     PathUnlinkFile,
     PollOneoff,
+    ProcRaise,
+    FdAdvise,
+    FdAllocate,
+    FdFdstatSetRights,
+    FdRenumber,
+    FdFilestatSetTimes,
+    PathLink,
+    PathRename,
+    PathSymlink,
+    SockAccept,
+    SockRecv,
+    SockSend,
+    SockShutdown,
 }
 
 impl WasiFuncType {
@@ -370,6 +383,122 @@ impl WasiFuncType {
                     ValueType::NumType(NumType::I32), // out_ptr
                     ValueType::NumType(NumType::I32), // nsubscriptions
                     ValueType::NumType(NumType::I32), // nevents_ptr
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::ProcRaise => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // signal
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::FdAdvise => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I64), // offset
+                    ValueType::NumType(NumType::I64), // len
+                    ValueType::NumType(NumType::I32), // advice
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::FdAllocate => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I64), // offset
+                    ValueType::NumType(NumType::I64), // len
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::FdFdstatSetRights => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I64), // fs_rights_base
+                    ValueType::NumType(NumType::I64), // fs_rights_inheriting
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::FdRenumber => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I32), // to
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::FdFilestatSetTimes => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I64), // atim
+                    ValueType::NumType(NumType::I64), // mtim
+                    ValueType::NumType(NumType::I32), // fst_flags
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::PathLink => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // old_fd
+                    ValueType::NumType(NumType::I32), // old_flags
+                    ValueType::NumType(NumType::I32), // old_path_ptr
+                    ValueType::NumType(NumType::I32), // old_path_len
+                    ValueType::NumType(NumType::I32), // new_fd
+                    ValueType::NumType(NumType::I32), // new_path_ptr
+                    ValueType::NumType(NumType::I32), // new_path_len
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::PathRename => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // old_fd
+                    ValueType::NumType(NumType::I32), // old_path_ptr
+                    ValueType::NumType(NumType::I32), // old_path_len
+                    ValueType::NumType(NumType::I32), // new_fd
+                    ValueType::NumType(NumType::I32), // new_path_ptr
+                    ValueType::NumType(NumType::I32), // new_path_len
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::PathSymlink => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // old_path_ptr
+                    ValueType::NumType(NumType::I32), // old_path_len
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I32), // new_path_ptr
+                    ValueType::NumType(NumType::I32), // new_path_len
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::SockAccept => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I32), // flags
+                    ValueType::NumType(NumType::I32), // fd_ptr
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::SockRecv => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I32), // ri_data_ptr
+                    ValueType::NumType(NumType::I32), // ri_data_len
+                    ValueType::NumType(NumType::I32), // ri_flags
+                    ValueType::NumType(NumType::I32), // ro_datalen_ptr
+                    ValueType::NumType(NumType::I32), // ro_flags_ptr
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::SockSend => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I32), // si_data_ptr
+                    ValueType::NumType(NumType::I32), // si_data_len
+                    ValueType::NumType(NumType::I32), // si_flags
+                    ValueType::NumType(NumType::I32), // so_datalen_ptr
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::SockShutdown => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I32), // how
                 ],
                 results: vec![ValueType::NumType(NumType::I32)], // Returns error code
             },
