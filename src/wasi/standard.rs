@@ -1618,4 +1618,93 @@ impl StandardWasiImpl {
         // For now, return not implemented
         Err(WasiError::NoSys)
     }
+
+    pub fn fd_filestat_set_times(
+        &self,
+        _memory: &MemAddr,
+        _fd: u32,
+        _atim: u64,
+        _mtim: u64,
+        _fst_flags: u32,
+    ) -> WasiResult<i32> {
+        Err(WasiError::NoSys)
+    }
+
+    pub fn path_link(
+        &self,
+        _memory: &MemAddr,
+        _old_fd: u32,
+        _old_flags: u32,
+        _old_path_ptr: Ptr,
+        _old_path_len: Size,
+        _new_fd: u32,
+        _new_path_ptr: Ptr,
+        _new_path_len: Size,
+    ) -> WasiResult<i32> {
+        Err(WasiError::NoSys)
+    }
+
+    pub fn path_rename(
+        &self,
+        _memory: &MemAddr,
+        _old_fd: u32,
+        _old_path_ptr: Ptr,
+        _old_path_len: Size,
+        _new_fd: u32,
+        _new_path_ptr: Ptr,
+        _new_path_len: Size,
+    ) -> WasiResult<i32> {
+        Err(WasiError::NoSys)
+    }
+
+    pub fn path_symlink(
+        &self,
+        _memory: &MemAddr,
+        _old_path_ptr: Ptr,
+        _old_path_len: Size,
+        _fd: u32,
+        _new_path_ptr: Ptr,
+        _new_path_len: Size,
+    ) -> WasiResult<i32> {
+        Err(WasiError::NoSys)
+    }
+
+    pub fn sock_accept(
+        &self,
+        _memory: &MemAddr,
+        _fd: u32,
+        _flags: u32,
+        _fd_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        Err(WasiError::NoSys)
+    }
+
+    pub fn sock_recv(
+        &self,
+        _memory: &MemAddr,
+        _fd: u32,
+        _ri_data_ptr: Ptr,
+        _ri_data_len: Size,
+        _ri_flags: u32,
+        _ro_datalen_ptr: Ptr,
+        _ro_flags_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        Err(WasiError::NoSys)
+    }
+
+    pub fn sock_send(
+        &self,
+        _memory: &MemAddr,
+        _fd: u32,
+        _si_data_ptr: Ptr,
+        _si_data_len: Size,
+        _si_flags: u32,
+        _so_datalen_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        Err(WasiError::NoSys)
+    }
+
+    pub fn sock_shutdown(&self, _memory: &MemAddr, _fd: u32, _how: u32) -> WasiResult<i32> {
+        Err(WasiError::NoSys)
+    }
 }
