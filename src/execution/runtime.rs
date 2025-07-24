@@ -702,6 +702,72 @@ impl Runtime {
                     wasi_impl.fd_filestat_set_times(memory, fd as u32, atim, mtim, fst_flags)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
+            WasiFuncType::PathLink => {
+                if params.len() != 7 {
+                    return Err(WasiError::Inval);
+                }
+                let old_fd = params[0].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let old_flags = params[1].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let old_path_ptr = params[2].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let old_path_len = params[3].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let new_fd = params[4].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let new_path_ptr = params[5].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let new_path_len = params[6].to_i32().map_err(|_| WasiError::Inval)? as u32;
+
+                let result = wasi_impl.path_link(
+                    memory,
+                    old_fd,
+                    old_flags,
+                    old_path_ptr,
+                    old_path_len,
+                    new_fd,
+                    new_path_ptr,
+                    new_path_len,
+                )?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::PathRename => {
+                if params.len() != 6 {
+                    return Err(WasiError::Inval);
+                }
+                let old_fd = params[0].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let old_path_ptr = params[1].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let old_path_len = params[2].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let new_fd = params[3].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let new_path_ptr = params[4].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let new_path_len = params[5].to_i32().map_err(|_| WasiError::Inval)? as u32;
+
+                let result = wasi_impl.path_rename(
+                    memory,
+                    old_fd,
+                    old_path_ptr,
+                    old_path_len,
+                    new_fd,
+                    new_path_ptr,
+                    new_path_len,
+                )?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::PathSymlink => {
+                if params.len() != 5 {
+                    return Err(WasiError::Inval);
+                }
+                let old_path_ptr = params[0].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let old_path_len = params[1].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let fd = params[2].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let new_path_ptr = params[3].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let new_path_len = params[4].to_i32().map_err(|_| WasiError::Inval)? as u32;
+
+                let result = wasi_impl.path_symlink(
+                    memory,
+                    old_path_ptr,
+                    old_path_len,
+                    fd,
+                    new_path_ptr,
+                    new_path_len,
+                )?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
             _ => Err(WasiError::NoSys),
         }
     }

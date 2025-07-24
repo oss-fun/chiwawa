@@ -218,6 +218,9 @@ fn parse_wasi_function(name: &str) -> Option<WasiFuncType> {
         "fd_fdstat_set_rights" => Some(WasiFuncType::FdFdstatSetRights),
         "fd_renumber" => Some(WasiFuncType::FdRenumber),
         "fd_filestat_set_times" => Some(WasiFuncType::FdFilestatSetTimes),
+        "path_link" => Some(WasiFuncType::PathLink),
+        "path_rename" => Some(WasiFuncType::PathRename),
+        "path_symlink" => Some(WasiFuncType::PathSymlink),
         _ => None,
     }
 }

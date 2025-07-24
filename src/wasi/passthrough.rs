@@ -105,6 +105,30 @@ extern "C" {
     fn __wasi_fd_fdstat_set_rights(fd: u32, fs_rights_base: u64, fs_rights_inheriting: u64) -> u16;
     fn __wasi_fd_renumber(fd: u32, to: u32) -> u16;
     fn __wasi_fd_filestat_set_times(fd: u32, atim: u64, mtim: u64, fst_flags: u32) -> u16;
+    fn __wasi_path_link(
+        old_fd: u32,
+        old_flags: u32,
+        old_path: *const u8,
+        old_path_len: u32,
+        new_fd: u32,
+        new_path: *const u8,
+        new_path_len: u32,
+    ) -> u16;
+    fn __wasi_path_rename(
+        old_fd: u32,
+        old_path: *const u8,
+        old_path_len: u32,
+        new_fd: u32,
+        new_path: *const u8,
+        new_path_len: u32,
+    ) -> u16;
+    fn __wasi_path_symlink(
+        old_path: *const u8,
+        old_path_len: u32,
+        fd: u32,
+        new_path: *const u8,
+        new_path_len: u32,
+    ) -> u16;
 }
 
 /// Passthrough WASI implementation that delegates to host runtime via wasi-libc
@@ -1162,6 +1186,105 @@ impl PassthroughWasiImpl {
         fst_flags: u32,
     ) -> WasiResult<i32> {
         let wasi_errno = unsafe { __wasi_fd_filestat_set_times(fd, atim, mtim, fst_flags) };
+
+        if wasi_errno != 0 {
+            return Err(WasiError::from_errno(wasi_errno));
+        }
+
+        Ok(0)
+    }
+
+    pub fn path_link(
+        &self,
+        memory: &MemAddr,
+        old_fd: u32,
+        old_flags: u32,
+        old_path_ptr: Ptr,
+        old_path_len: Size,
+        new_fd: u32,
+        new_path_ptr: Ptr,
+        new_path_len: Size,
+    ) -> WasiResult<i32> {
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno = unsafe {
+            __wasi_path_link(
+                old_fd,
+                old_flags,
+                memory_base.add(old_path_ptr as usize),
+                old_path_len,
+                new_fd,
+                memory_base.add(new_path_ptr as usize),
+                new_path_len,
+            )
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return Err(WasiError::from_errno(wasi_errno));
+        }
+
+        Ok(0)
+    }
+
+    pub fn path_rename(
+        &self,
+        memory: &MemAddr,
+        old_fd: u32,
+        old_path_ptr: Ptr,
+        old_path_len: Size,
+        new_fd: u32,
+        new_path_ptr: Ptr,
+        new_path_len: Size,
+    ) -> WasiResult<i32> {
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno = unsafe {
+            __wasi_path_rename(
+                old_fd,
+                memory_base.add(old_path_ptr as usize),
+                old_path_len,
+                new_fd,
+                memory_base.add(new_path_ptr as usize),
+                new_path_len,
+            )
+        };
+
+        drop(memory_guard);
+
+        if wasi_errno != 0 {
+            return Err(WasiError::from_errno(wasi_errno));
+        }
+
+        Ok(0)
+    }
+
+    pub fn path_symlink(
+        &self,
+        memory: &MemAddr,
+        old_path_ptr: Ptr,
+        old_path_len: Size,
+        fd: u32,
+        new_path_ptr: Ptr,
+        new_path_len: Size,
+    ) -> WasiResult<i32> {
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+
+        let wasi_errno = unsafe {
+            __wasi_path_symlink(
+                memory_base.add(old_path_ptr as usize),
+                old_path_len,
+                fd,
+                memory_base.add(new_path_ptr as usize),
+                new_path_len,
+            )
+        };
+
+        drop(memory_guard);
 
         if wasi_errno != 0 {
             return Err(WasiError::from_errno(wasi_errno));

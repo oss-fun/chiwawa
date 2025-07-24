@@ -113,6 +113,9 @@ pub enum WasiFuncType {
     FdFdstatSetRights,
     FdRenumber,
     FdFilestatSetTimes,
+    PathLink,
+    PathRename,
+    PathSymlink,
 }
 
 impl WasiFuncType {
@@ -423,6 +426,39 @@ impl WasiFuncType {
                     ValueType::NumType(NumType::I64), // atim
                     ValueType::NumType(NumType::I64), // mtim
                     ValueType::NumType(NumType::I32), // fst_flags
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::PathLink => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // old_fd
+                    ValueType::NumType(NumType::I32), // old_flags
+                    ValueType::NumType(NumType::I32), // old_path_ptr
+                    ValueType::NumType(NumType::I32), // old_path_len
+                    ValueType::NumType(NumType::I32), // new_fd
+                    ValueType::NumType(NumType::I32), // new_path_ptr
+                    ValueType::NumType(NumType::I32), // new_path_len
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::PathRename => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // old_fd
+                    ValueType::NumType(NumType::I32), // old_path_ptr
+                    ValueType::NumType(NumType::I32), // old_path_len
+                    ValueType::NumType(NumType::I32), // new_fd
+                    ValueType::NumType(NumType::I32), // new_path_ptr
+                    ValueType::NumType(NumType::I32), // new_path_len
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::PathSymlink => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // old_path_ptr
+                    ValueType::NumType(NumType::I32), // old_path_len
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I32), // new_path_ptr
+                    ValueType::NumType(NumType::I32), // new_path_len
                 ],
                 results: vec![ValueType::NumType(NumType::I32)], // Returns error code
             },
