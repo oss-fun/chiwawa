@@ -689,6 +689,19 @@ impl Runtime {
                     wasi_impl.poll_oneoff(memory, in_ptr, out_ptr, nsubscriptions, nevents_ptr)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
+            WasiFuncType::FdFilestatSetTimes => {
+                if params.len() != 4 {
+                    return Err(WasiError::Inval);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::Inval)?;
+                let atim = params[1].to_i64().map_err(|_| WasiError::Inval)? as u64;
+                let mtim = params[2].to_i64().map_err(|_| WasiError::Inval)? as u64;
+                let fst_flags = params[3].to_i32().map_err(|_| WasiError::Inval)? as u32;
+
+                let result =
+                    wasi_impl.fd_filestat_set_times(memory, fd as u32, atim, mtim, fst_flags)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
             _ => Err(WasiError::NoSys),
         }
     }

@@ -217,6 +217,7 @@ fn parse_wasi_function(name: &str) -> Option<WasiFuncType> {
         "fd_allocate" => Some(WasiFuncType::FdAllocate),
         "fd_fdstat_set_rights" => Some(WasiFuncType::FdFdstatSetRights),
         "fd_renumber" => Some(WasiFuncType::FdRenumber),
+        "fd_filestat_set_times" => Some(WasiFuncType::FdFilestatSetTimes),
         _ => None,
     }
 }

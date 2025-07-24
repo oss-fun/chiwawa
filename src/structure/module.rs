@@ -112,6 +112,7 @@ pub enum WasiFuncType {
     FdAllocate,
     FdFdstatSetRights,
     FdRenumber,
+    FdFilestatSetTimes,
 }
 
 impl WasiFuncType {
@@ -413,6 +414,15 @@ impl WasiFuncType {
                 params: vec![
                     ValueType::NumType(NumType::I32), // fd
                     ValueType::NumType(NumType::I32), // to
+                ],
+                results: vec![ValueType::NumType(NumType::I32)], // Returns error code
+            },
+            WasiFuncType::FdFilestatSetTimes => FuncType {
+                params: vec![
+                    ValueType::NumType(NumType::I32), // fd
+                    ValueType::NumType(NumType::I64), // atim
+                    ValueType::NumType(NumType::I64), // mtim
+                    ValueType::NumType(NumType::I32), // fst_flags
                 ],
                 results: vec![ValueType::NumType(NumType::I32)], // Returns error code
             },

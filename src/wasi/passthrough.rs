@@ -104,6 +104,7 @@ extern "C" {
     fn __wasi_fd_allocate(fd: u32, offset: u64, len: u64) -> u16;
     fn __wasi_fd_fdstat_set_rights(fd: u32, fs_rights_base: u64, fs_rights_inheriting: u64) -> u16;
     fn __wasi_fd_renumber(fd: u32, to: u32) -> u16;
+    fn __wasi_fd_filestat_set_times(fd: u32, atim: u64, mtim: u64, fst_flags: u32) -> u16;
 }
 
 /// Passthrough WASI implementation that delegates to host runtime via wasi-libc
@@ -1144,6 +1145,23 @@ impl PassthroughWasiImpl {
 
     pub fn fd_renumber(&self, _memory: &MemAddr, fd: u32, to: u32) -> WasiResult<i32> {
         let wasi_errno = unsafe { __wasi_fd_renumber(fd, to) };
+
+        if wasi_errno != 0 {
+            return Err(WasiError::from_errno(wasi_errno));
+        }
+
+        Ok(0)
+    }
+
+    pub fn fd_filestat_set_times(
+        &self,
+        _memory: &MemAddr,
+        fd: u32,
+        atim: u64,
+        mtim: u64,
+        fst_flags: u32,
+    ) -> WasiResult<i32> {
+        let wasi_errno = unsafe { __wasi_fd_filestat_set_times(fd, atim, mtim, fst_flags) };
 
         if wasi_errno != 0 {
             return Err(WasiError::from_errno(wasi_errno));
