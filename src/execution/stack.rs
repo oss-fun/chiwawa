@@ -2536,6 +2536,11 @@ fn handle_i64_trunc_f32_u(
         .ok_or(RuntimeError::ValueStackUnderflow)?
         .to_f32()?;
 
+    // Check for overflow conditions according to WebAssembly spec
+    if val.is_nan() || val.is_infinite() || val < 0.0 || val >= (u64::MAX as f32) {
+        return Err(RuntimeError::IntegerOverflow);
+    }
+
     #[cfg(target_arch = "wasm32")]
     let result = {
         let mut result: i64;
