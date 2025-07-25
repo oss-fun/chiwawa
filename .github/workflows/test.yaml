@@ -34,10 +34,19 @@ jobs:
           target/
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-    - name: Build test
+    - name: Install wasmtime
+      run: |
+        curl -L https://github.com/bytecodealliance/wasmtime/releases/download/v35.0.0/wasmtime-v35.0.0-x86_64-linux.tar.xz | tar -xJ
+        sudo mv wasmtime-v35.0.0-x86_64-linux/wasmtime /usr/local/bin/
+        wasmtime --version
+    - name: Build test (wasm32-wasip1)
       run: cargo build --release --verbose --target wasm32-wasip1
-    - name: Run tests
-      run: cargo test --verbose
+
+    - name: Run tests (wasm32-wasip1)
+      run: |
+        echo "Running wasm32-wasip1 tests with wasmtime "
+        cargo test --verbose --target wasm32-wasip1
+    
     - name: Check formatting
       run: cargo fmt --all --check
 
