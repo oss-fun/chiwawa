@@ -526,11 +526,11 @@ mod tests {
         assert_eq!(ret.unwrap().last().unwrap().to_i64().unwrap(), 1);
 
         let ret = call_function(
-                &inst,
-                "i64.trunc_f32_u",
-                vec![Val::Num(Num::F32(f32::from_bits(0x3f8ccccd)))],
+            &inst,
+            "i64.trunc_f32_u",
+            vec![Val::Num(Num::F32(f32::from_bits(0x3f8ccccd)))],
         );
-        if let Ok(result) = &ret {  
+        if let Ok(result) = &ret {
             assert_eq!(result.last().unwrap().to_i64().unwrap(), 1);
         } else if let Err(err) = &ret {
             assert!(matches!(err, chiwawa::error::RuntimeError::IntegerOverflow));

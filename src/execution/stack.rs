@@ -2540,7 +2540,7 @@ fn handle_i64_trunc_f32_u(
     if val.is_nan() || val.is_infinite() || val < 0.0 || val >= (u64::MAX as f32) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    
+
     #[cfg(target_arch = "wasm32")]
     let result = {
         let mut result: i64;
