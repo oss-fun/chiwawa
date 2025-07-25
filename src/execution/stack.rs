@@ -23,6 +23,7 @@ pub enum Operand {
     FuncIdx(FuncIdx),
     TableIdx(TableIdx),
     TypeIdx(TypeIdx),
+    RefType(RefType),
     LabelIdx {
         target_ip: usize,
         arity: usize,
@@ -144,6 +145,7 @@ pub const HANDLER_IDX_MEMORY_GROW: usize = 0x40;
 pub const HANDLER_IDX_MEMORY_COPY: usize = 0xC5;
 pub const HANDLER_IDX_MEMORY_INIT: usize = 0xC6;
 pub const HANDLER_IDX_MEMORY_FILL: usize = 0xC7;
+pub const HANDLER_IDX_REF_NULL: usize = 0xD0;
 
 pub const HANDLER_IDX_I32_CONST: usize = 0x41;
 pub const HANDLER_IDX_I64_CONST: usize = 0x42;
@@ -300,7 +302,7 @@ pub const HANDLER_IDX_I64_TRUNC_SAT_F64_U: usize = 0xCF;
 
 // TODO: Add remaining indices (Ref types, Table, Bulk Memory, SIMD)
 
-pub const MAX_HANDLER_INDEX: usize = 0xD0;
+pub const MAX_HANDLER_INDEX: usize = 0xD1;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stacks {
@@ -329,7 +331,7 @@ impl Stacks {
                             ValueType::NumType(NumType::F32) => Val::Num(Num::F32(0.0)),
                             ValueType::NumType(NumType::F64) => Val::Num(Num::F64(0.0)),
                             ValueType::VecType(VecType::V128) => Val::Vec_(Vec_::V128(0)),
-                            ValueType::RefType(_) => todo!("RefType local initialization"),
+                            ValueType::RefType(_) => Val::Ref(Ref::RefNull),
                         });
                     }
                 }
@@ -3820,6 +3822,14 @@ fn handle_memory_fill(
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 
+fn handle_ref_null(
+    ctx: &mut ExecutionContext,
+    _operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    ctx.value_stack.push(Val::Ref(Ref::RefNull));
+    Ok(HandlerResult::Continue(ctx.ip + 1))
+}
+
 fn handle_f32_convert_i32_s(
     ctx: &mut ExecutionContext,
     _operand: &Operand,
@@ -4223,6 +4233,7 @@ lazy_static! {
         table[HANDLER_IDX_MEMORY_COPY] = handle_memory_copy;
         table[HANDLER_IDX_MEMORY_INIT] = handle_memory_init;
         table[HANDLER_IDX_MEMORY_FILL] = handle_memory_fill;
+        table[HANDLER_IDX_REF_NULL] = handle_ref_null;
         table[HANDLER_IDX_I32_CONST] = handle_i32_const;
         table[HANDLER_IDX_I64_CONST] = handle_i64_const;
         table[HANDLER_IDX_F32_CONST] = handle_f32_const;

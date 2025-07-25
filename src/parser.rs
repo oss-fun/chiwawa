@@ -1828,9 +1828,13 @@ fn map_operator_to_initial_instr_and_fixup(
         }
 
         /* Reference Instructions */
-        wasmparser::Operator::RefNull { hty: _ } => {
-            handler_index = HANDLER_IDX_NOP;
-            operand = Operand::None;
+        wasmparser::Operator::RefNull { hty } => {
+            handler_index = HANDLER_IDX_REF_NULL;
+            operand = Operand::RefType(match hty {
+                wasmparser::HeapType::Func => RefType::FuncRef,
+                wasmparser::HeapType::Extern => RefType::ExternalRef,
+                _ => RefType::ExternalRef, // Default fallback
+            });
         }
         wasmparser::Operator::RefIsNull => {
             handler_index = HANDLER_IDX_NOP;
