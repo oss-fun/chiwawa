@@ -37,6 +37,10 @@ chiwawaは、WebAssembly（Wasm）ランタイムをWasm上で実行するセル
 # 特定のテスト実行（Wasmターゲット）
 ~/.cargo/bin/cargo test --target wasm32-wasip1 <テスト名>
 
+# 複数Wasmランタイムでのテスト実行
+./test-wasmtime.sh <テスト名>   # wasmtimeでテスト実行（デフォルト）
+./test-wasmedge.sh <テスト名>    # wasmedgeでテスト実行
+
 # 注意：Wasmターゲットテストでは .cargo/config.toml の設定により
 # wasmtimeが --dir . オプション付きで実行されファイルアクセスが可能
 ```
