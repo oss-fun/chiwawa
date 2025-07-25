@@ -66,6 +66,18 @@ impl MemAddr {
     pub fn mem_grow(&self, size: i32) -> i32 {
         let prev_size = self.mem_size();
         let new = prev_size + size;
+
+        let max_pages = {
+            let guard = self.0.read().expect("RwLock poisoned");
+            guard._type_.0.max
+        };
+
+        if let Some(max) = max_pages {
+            if new > max as i32 {
+                return -1;
+            }
+        }
+
         if new > 65536 {
             -1
         } else {
