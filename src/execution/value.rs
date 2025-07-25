@@ -1,11 +1,11 @@
 use super::{func::FuncAddr, global::GlobalAddr, mem::MemAddr, table::TableAddr};
 use crate::error::RuntimeError;
 use crate::structure::module::WasiFuncType;
-use crate::structure::types::{NumType, ValueType, VecType};
+use crate::structure::types::{NumType, RefType, ValueType, VecType};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum Val {
     Num(Num),
     Vec_(Vec_),
@@ -44,12 +44,14 @@ impl Val {
             Val::Num(Num::F32(_)) => ValueType::NumType(NumType::F32),
             Val::Num(Num::F64(_)) => ValueType::NumType(NumType::F64),
             Val::Vec_(Vec_::V128(_)) => ValueType::VecType(VecType::V128),
-            Val::Ref(_) => todo!(),
+            Val::Ref(Ref::RefNull) => ValueType::RefType(RefType::FuncRef),
+            Val::Ref(Ref::FuncAddr(_)) => ValueType::RefType(RefType::FuncRef),
+            Val::Ref(Ref::RefExtern(_)) => ValueType::RefType(RefType::ExternalRef),
         }
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum Num {
     I32(i32),
     I64(i64),
@@ -57,7 +59,7 @@ pub enum Num {
     F64(f64),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum Vec_ {
     V128(i128),
 }
@@ -69,6 +71,20 @@ pub enum Ref {
     FuncAddr(FuncAddr),
     #[serde(skip)]
     RefExtern(ExternAddr),
+}
+
+impl PartialEq for Ref {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Ref::RefNull, Ref::RefNull) => true,
+            (Ref::FuncAddr(a), Ref::FuncAddr(b)) => {
+                // Compare FuncAddr by pointer equality
+                std::ptr::eq(a as *const _, b as *const _)
+            }
+            (Ref::RefExtern(a), Ref::RefExtern(b)) => Arc::ptr_eq(&a.0, &b.0),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

@@ -261,6 +261,7 @@ impl ModuleInst {
             &[Instr::F32Const(i)] => Some(Val::Num(Num::F32(i as f32))),
             &[Instr::F64Const(i)] => Some(Val::Num(Num::F64(i as f64))),
             &[Instr::V128Const(i)] => Some(Val::Vec_(Vec_::V128(i))),
+            &[Instr::RefNull(_)] => Some(Val::Ref(Ref::RefNull)),
             [Instr::GlobalGet(i)] => Some(self.global_addrs.get_by_idx(i.clone()).get()),
             _ => None,
         }
