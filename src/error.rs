@@ -52,6 +52,8 @@ pub enum RuntimeError {
     UnimplementedHostFunction,
     #[error("Table Instance Not Found")]
     TableNotFound,
+    #[error("Invalid Table Index")]
+    InvalidTableIndex,
     #[error("Type Not Found in Module")]
     TypeNotFound,
     #[error("Indirect Call Type Mismatch")]
