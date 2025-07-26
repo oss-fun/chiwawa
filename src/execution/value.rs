@@ -90,6 +90,12 @@ impl PartialEq for Ref {
 #[derive(Clone, Debug)]
 pub struct ExternAddr(Arc<RwLock<Externval>>);
 
+impl ExternAddr {
+    pub fn new(externval: Externval) -> Self {
+        ExternAddr(Arc::new(RwLock::new(externval)))
+    }
+}
+
 /// WASI function address
 #[derive(Clone, Debug)]
 pub struct WasiFuncAddr {
