@@ -1866,7 +1866,7 @@ fn map_operator_to_initial_instr_and_fixup(
             operand = Operand::TableIdx(TableIdx(table));
         }
         wasmparser::Operator::TableFill { table } => {
-            handler_index = HANDLER_IDX_NOP;
+            handler_index = HANDLER_IDX_TABLE_FILL;
             operand = Operand::TableIdx(TableIdx(table));
         }
         wasmparser::Operator::TableCopy {
