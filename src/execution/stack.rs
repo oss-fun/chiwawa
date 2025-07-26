@@ -146,6 +146,9 @@ pub const HANDLER_IDX_MEMORY_COPY: usize = 0xC5;
 pub const HANDLER_IDX_MEMORY_INIT: usize = 0xC6;
 pub const HANDLER_IDX_MEMORY_FILL: usize = 0xC7;
 pub const HANDLER_IDX_REF_NULL: usize = 0xD0;
+pub const HANDLER_IDX_REF_IS_NULL: usize = 0xD1;
+pub const HANDLER_IDX_TABLE_GET: usize = 0xD2;
+pub const HANDLER_IDX_TABLE_SET: usize = 0xD3;
 
 pub const HANDLER_IDX_I32_CONST: usize = 0x41;
 pub const HANDLER_IDX_I64_CONST: usize = 0x42;
@@ -302,7 +305,7 @@ pub const HANDLER_IDX_I64_TRUNC_SAT_F64_U: usize = 0xCF;
 
 // TODO: Add remaining indices (Ref types, Table, Bulk Memory, SIMD)
 
-pub const MAX_HANDLER_INDEX: usize = 0xD1;
+pub const MAX_HANDLER_INDEX: usize = 0xD4;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stacks {
@@ -2713,7 +2716,7 @@ fn handle_call_indirect(
             .get(table_idx.0 as usize)
             .ok_or(RuntimeError::TableNotFound)?;
 
-        let func_ref_option = table_addr.get(i as usize);
+        let func_ref_option = table_addr.get_func_addr(i as usize);
 
         if let Some(func_addr) = func_ref_option {
             let actual_type = func_addr.func_type();
@@ -3830,6 +3833,88 @@ fn handle_ref_null(
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 
+fn handle_ref_is_null(
+    ctx: &mut ExecutionContext,
+    _operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    let ref_val = ctx
+        .value_stack
+        .pop()
+        .ok_or(RuntimeError::ValueStackUnderflow)?;
+
+    let is_null = match ref_val {
+        Val::Ref(Ref::RefNull) => 1,
+        Val::Ref(_) => 0,
+        _ => return Err(RuntimeError::TypeMismatch),
+    };
+
+    ctx.value_stack.push(Val::Num(Num::I32(is_null)));
+    Ok(HandlerResult::Continue(ctx.ip + 1))
+}
+
+fn handle_table_get(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    if let &Operand::TableIdx(TableIdx(table_idx)) = operand {
+        let index_val = ctx
+            .value_stack
+            .pop()
+            .ok_or(RuntimeError::ValueStackUnderflow)?;
+        let index = index_val.to_i32()? as usize;
+
+        let module_inst = ctx
+            .frame
+            .module
+            .upgrade()
+            .ok_or(RuntimeError::ModuleInstanceGone)?;
+
+        let table_addr = module_inst
+            .table_addrs
+            .get(table_idx as usize)
+            .ok_or(RuntimeError::InvalidTableIndex)?;
+
+        let ref_val = table_addr.get(index);
+        ctx.value_stack.push(ref_val);
+        Ok(HandlerResult::Continue(ctx.ip + 1))
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_table_set(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    if let &Operand::TableIdx(TableIdx(table_idx)) = operand {
+        let ref_val = ctx
+            .value_stack
+            .pop()
+            .ok_or(RuntimeError::ValueStackUnderflow)?;
+        let index_val = ctx
+            .value_stack
+            .pop()
+            .ok_or(RuntimeError::ValueStackUnderflow)?;
+        let index = index_val.to_i32()? as usize;
+
+        let module_inst = ctx
+            .frame
+            .module
+            .upgrade()
+            .ok_or(RuntimeError::ModuleInstanceGone)?;
+
+        let table_addr = module_inst
+            .table_addrs
+            .get(table_idx as usize)
+            .ok_or(RuntimeError::InvalidTableIndex)?;
+
+        table_addr.set(index, ref_val)?;
+        Ok(HandlerResult::Continue(ctx.ip + 1))
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
 fn handle_f32_convert_i32_s(
     ctx: &mut ExecutionContext,
     _operand: &Operand,
@@ -4234,6 +4319,9 @@ lazy_static! {
         table[HANDLER_IDX_MEMORY_INIT] = handle_memory_init;
         table[HANDLER_IDX_MEMORY_FILL] = handle_memory_fill;
         table[HANDLER_IDX_REF_NULL] = handle_ref_null;
+        table[HANDLER_IDX_REF_IS_NULL] = handle_ref_is_null;
+        table[HANDLER_IDX_TABLE_GET] = handle_table_get;
+        table[HANDLER_IDX_TABLE_SET] = handle_table_set;
         table[HANDLER_IDX_I32_CONST] = handle_i32_const;
         table[HANDLER_IDX_I64_CONST] = handle_i64_const;
         table[HANDLER_IDX_F32_CONST] = handle_f32_const;

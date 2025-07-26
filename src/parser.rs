@@ -1837,7 +1837,7 @@ fn map_operator_to_initial_instr_and_fixup(
             });
         }
         wasmparser::Operator::RefIsNull => {
-            handler_index = HANDLER_IDX_NOP;
+            handler_index = HANDLER_IDX_REF_IS_NULL;
         }
         wasmparser::Operator::RefFunc { function_index } => {
             handler_index = HANDLER_IDX_NOP;
@@ -1850,11 +1850,11 @@ fn map_operator_to_initial_instr_and_fixup(
 
         /* Table Instructions */
         wasmparser::Operator::TableGet { table } => {
-            handler_index = HANDLER_IDX_NOP;
+            handler_index = HANDLER_IDX_TABLE_GET;
             operand = Operand::TableIdx(TableIdx(table));
         }
         wasmparser::Operator::TableSet { table } => {
-            handler_index = HANDLER_IDX_NOP;
+            handler_index = HANDLER_IDX_TABLE_SET;
             operand = Operand::TableIdx(TableIdx(table));
         }
         wasmparser::Operator::TableSize { table } => {

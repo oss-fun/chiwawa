@@ -4,7 +4,7 @@ use crate::execution::mem::MemAddr;
 use crate::execution::module::ModuleInst;
 use crate::execution::stack::Stacks;
 use crate::execution::table::TableAddr;
-use crate::execution::value::Val;
+use crate::execution::value::{Ref, Val};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{Read, Write};
@@ -49,8 +49,8 @@ pub fn checkpoint<P: AsRef<Path>>(
             let table_inst = table_addr.read_lock()
                 .map_err(|_| RuntimeError::SerializationError("Table RwLock poisoned".to_string()))?;
             let mut table_indices = Vec::with_capacity(table_inst.elem.len());
-            for maybe_func_addr in table_inst.elem.iter() {
-                if let Some(target_func_addr) = maybe_func_addr {
+            for val in table_inst.elem.iter() {
+                if let Val::Ref(Ref::FuncAddr(target_func_addr)) = val {
                     let found_index = module_inst.func_addrs.iter().position(|module_func_addr| {
                         Arc::ptr_eq(target_func_addr.get_arc(), module_func_addr.get_arc())
                     });
