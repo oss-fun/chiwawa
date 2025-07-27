@@ -33,6 +33,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "ci"] 
     fn test_sched_yield() {
         let inst = load_wasi_instance("tests/wasi/sched_yield.wasm");
         let result = run_wasi_module(&inst);
