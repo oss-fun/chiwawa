@@ -117,3 +117,4 @@ wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name 
 
 ### WebAssembly仕様参考
 - Wasmコア仕様: https://webassembly.github.io/spec/core/bikeshed/
+- Wasi関数一覧: https://github.com/WebAssembly/wasi-libc/blob/main/libc-bottom-half/headers/public/wasi/api.h
