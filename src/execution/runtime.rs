@@ -200,7 +200,11 @@ impl Runtime {
                                                 "Process exit",
                                             ));
                                         }
-                                        Err(_e) => {
+                                        Err(e) => {
+                                            eprintln!(
+                                                "WASI function failed: {:?}, error: {:?}",
+                                                wasi_func_type, e
+                                            );
                                             return Err(RuntimeError::ExecutionFailed(
                                                 "WASI function failed",
                                             ));
