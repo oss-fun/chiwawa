@@ -224,19 +224,17 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
+        if wasi_errno == 0 {
+            let nwritten_memarg = Memarg {
+                offset: 0,
+                align: 4,
+            };
+            memory
+                .store(&nwritten_memarg, nwritten_ptr as i32, nwritten)
+                .map_err(|_| WasiError::Fault)?;
         }
 
-        let nwritten_memarg = Memarg {
-            offset: 0,
-            align: 4,
-        };
-        memory
-            .store(&nwritten_memarg, nwritten_ptr as i32, nwritten)
-            .map_err(|_| WasiError::Fault)?;
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_read(
@@ -288,19 +286,17 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
+        if wasi_errno == 0 {
+            let nread_memarg = Memarg {
+                offset: 0,
+                align: 4,
+            };
+            memory
+                .store(&nread_memarg, nread_ptr as i32, nread)
+                .map_err(|_| WasiError::Fault)?;
         }
 
-        let nread_memarg = Memarg {
-            offset: 0,
-            align: 4,
-        };
-        memory
-            .store(&nread_memarg, nread_ptr as i32, nread)
-            .map_err(|_| WasiError::Fault)?;
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn proc_exit(&self, exit_code: ExitCode) -> WasiResult<i32> {
@@ -323,21 +319,13 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::Io);
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_close(&self, fd: Fd) -> WasiResult<i32> {
         let wasi_errno = unsafe { __wasi_fd_close(fd as u32) };
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn environ_get(
@@ -353,7 +341,7 @@ impl PassthroughWasiImpl {
             unsafe { __wasi_environ_sizes_get(&mut environ_count, &mut environ_buf_size) };
 
         if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
+            return Ok(wasi_errno as i32);
         }
 
         let mut environ_buf = vec![0u8; environ_buf_size as usize];
@@ -364,7 +352,7 @@ impl PassthroughWasiImpl {
             unsafe { __wasi_environ_get(environ_ptrs.as_mut_ptr(), environ_buf.as_mut_ptr()) };
 
         if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
+            return Ok(wasi_errno as i32);
         }
 
         // Calculate pointer offsets relative to environ_buf_ptr
@@ -408,7 +396,7 @@ impl PassthroughWasiImpl {
             unsafe { __wasi_environ_sizes_get(&mut environ_count, &mut environ_buf_size) };
 
         if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
+            return Ok(wasi_errno as i32);
         }
 
         // Write environment variable count
@@ -520,7 +508,7 @@ impl PassthroughWasiImpl {
             unsafe { __wasi_clock_time_get(clock_id as u32, precision as u64, &mut time) };
 
         if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
+            return Ok(wasi_errno as i32);
         }
 
         // Write timestamp (64-bit nanoseconds) to memory using store_bytes
@@ -528,7 +516,7 @@ impl PassthroughWasiImpl {
             .store_bytes(time_ptr as i32, &time.to_le_bytes())
             .map_err(|_| WasiError::Fault)?;
 
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn clock_res_get(
@@ -542,7 +530,7 @@ impl PassthroughWasiImpl {
         let wasi_errno = unsafe { __wasi_clock_res_get(clock_id as u32, &mut resolution) };
 
         if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
+            return Ok(wasi_errno as i32);
         }
 
         // Write resolution (64-bit nanoseconds) to memory using store_bytes
@@ -550,7 +538,7 @@ impl PassthroughWasiImpl {
             .store_bytes(resolution_ptr as i32, &resolution.to_le_bytes())
             .map_err(|_| WasiError::Fault)?;
 
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_prestat_get(&self, memory: &MemAddr, fd: Fd, prestat_ptr: Ptr) -> WasiResult<i32> {
@@ -592,11 +580,7 @@ impl PassthroughWasiImpl {
     pub fn sched_yield(&self) -> WasiResult<i32> {
         let wasi_errno = unsafe { __wasi_sched_yield() };
 
-        if wasi_errno != 0 {
-            return Err(WasiError::Io);
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_fdstat_get(&self, memory: &MemAddr, fd: Fd, stat_ptr: Ptr) -> WasiResult<i32> {
@@ -609,11 +593,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn path_open(
@@ -662,11 +642,6 @@ impl PassthroughWasiImpl {
 
         let wasi_errno =
             unsafe { __wasi_fd_seek(fd as u32, offset, whence, &mut newoffset as *mut u64) };
-
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
         Ok(newoffset)
     }
 
@@ -679,21 +654,13 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_sync(&self, fd: Fd) -> WasiResult<i32> {
         let wasi_errno = unsafe { __wasi_fd_sync(fd as u32) };
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_filestat_get(&self, memory: &MemAddr, fd: Fd, filestat_ptr: Ptr) -> WasiResult<i32> {
@@ -706,11 +673,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_readdir(
@@ -737,11 +700,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_pread(
@@ -803,7 +762,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
+            return Ok(wasi_errno as i32);
         }
 
         let nread_memarg = Memarg {
@@ -820,31 +779,19 @@ impl PassthroughWasiImpl {
     pub fn fd_datasync(&self, fd: Fd) -> WasiResult<i32> {
         let wasi_errno = unsafe { __wasi_fd_datasync(fd as u32) };
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_fdstat_set_flags(&self, fd: Fd, flags: u32) -> WasiResult<i32> {
         let wasi_errno = unsafe { __wasi_fd_fdstat_set_flags(fd as u32, flags) };
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_filestat_set_size(&self, fd: Fd, size: u64) -> WasiResult<i32> {
         let wasi_errno = unsafe { __wasi_fd_filestat_set_size(fd as u32, size) };
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_pwrite(
@@ -906,7 +853,7 @@ impl PassthroughWasiImpl {
         drop(memory_guard);
 
         if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
+            return Ok(wasi_errno as i32);
         }
 
         let nwritten_memarg = Memarg {
@@ -936,11 +883,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn path_filestat_get(
@@ -967,11 +910,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn path_filestat_set_times(
@@ -1002,11 +941,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn path_readlink(
@@ -1035,11 +970,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn path_remove_directory(
@@ -1058,11 +989,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn path_unlink_file(
@@ -1081,11 +1008,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn poll_oneoff(
@@ -1110,21 +1033,13 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn proc_raise(&self, _memory: &MemAddr, signal: u32) -> WasiResult<i32> {
         let wasi_errno = unsafe { __wasi_proc_raise(signal) };
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_advise(
@@ -1137,11 +1052,7 @@ impl PassthroughWasiImpl {
     ) -> WasiResult<i32> {
         let wasi_errno = unsafe { __wasi_fd_advise(fd, offset, len, advice) };
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_allocate(
@@ -1153,11 +1064,7 @@ impl PassthroughWasiImpl {
     ) -> WasiResult<i32> {
         let wasi_errno = unsafe { __wasi_fd_allocate(fd, offset, len) };
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_fdstat_set_rights(
@@ -1170,21 +1077,13 @@ impl PassthroughWasiImpl {
         let wasi_errno =
             unsafe { __wasi_fd_fdstat_set_rights(fd, fs_rights_base, fs_rights_inheriting) };
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_renumber(&self, _memory: &MemAddr, fd: u32, to: u32) -> WasiResult<i32> {
         let wasi_errno = unsafe { __wasi_fd_renumber(fd, to) };
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_filestat_set_times(
@@ -1197,11 +1096,7 @@ impl PassthroughWasiImpl {
     ) -> WasiResult<i32> {
         let wasi_errno = unsafe { __wasi_fd_filestat_set_times(fd, atim, mtim, fst_flags) };
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn path_link(
@@ -1232,11 +1127,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn path_rename(
@@ -1265,11 +1156,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn path_symlink(
@@ -1296,11 +1183,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn sock_accept(
@@ -1318,11 +1201,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn sock_recv(
@@ -1351,11 +1230,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn sock_send(
@@ -1382,20 +1257,12 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn sock_shutdown(&self, _memory: &MemAddr, fd: u32, how: u32) -> WasiResult<i32> {
         let wasi_errno = unsafe { __wasi_sock_shutdown(fd, how) };
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 }
