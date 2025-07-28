@@ -2,7 +2,9 @@
 *.so
 *.wasm
 !tests/wasm/*.wasm
+!tests/wasi/*.wasm
 *.wat
 !tests/wasm/*.wat
+!tests/wasi/*.wat
 *.bin
 /.cursor
