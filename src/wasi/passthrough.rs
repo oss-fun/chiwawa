@@ -586,11 +586,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn sched_yield(&self) -> WasiResult<i32> {
@@ -658,11 +654,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_seek(&self, fd: Fd, offset: i64, whence: u32) -> WasiResult<u64> {
