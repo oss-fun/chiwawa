@@ -25,14 +25,9 @@ chiwawaは、WebAssembly（Wasm）ランタイムをWasm上で実行するセル
 
 ### テスト実行
 ```bash
-# ネイティブターゲットでのテスト実行
-~/.cargo/bin/cargo test
 
 # Wasmターゲット（セルフホスト）でのテスト実行
 ~/.cargo/bin/cargo test --target wasm32-wasip1
-
-# 特定のテスト実行（ネイティブ）
-~/.cargo/bin/cargo test <テスト名>
 
 # 特定のテスト実行（Wasmターゲット）
 ~/.cargo/bin/cargo test --target wasm32-wasip1 <テスト名>
@@ -53,6 +48,9 @@ wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name 
 # チェックポイント・リストア実行
 touch ./checkpoint.trigger  # チェックポイントトリガー
 wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --restore checkpoint.trigger
+
+# アプリケーション引数の指定
+wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --app-args "--help"
 
 # 他のランタイム例：
 # WasmEdge target/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --params "I64(100)"
