@@ -65,11 +65,10 @@ extern "C" {
         fd: u32,
         dirflags: u32,
         path: *const u8,
-        path_len: u32,
-        oflags: u32,
+        oflags: u16,
         fs_rights_base: u64,
         fs_rights_inheriting: u64,
-        fdflags: u32,
+        fdflags: u16,
         opened_fd: *mut u32,
     ) -> u16;
     fn __wasi_poll_oneoff(
@@ -564,11 +563,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_prestat_dir_name(
@@ -591,11 +586,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn sched_yield(&self) -> WasiResult<i32> {
@@ -641,27 +632,29 @@ impl PassthroughWasiImpl {
         let memory_guard = memory.get_memory_direct_access();
         let memory_base = memory_guard.data.as_ptr();
 
+        // Create null-terminated string from path
+        let path_slice = unsafe {
+            std::slice::from_raw_parts(memory_base.add(path_ptr as usize), path_len as usize)
+        };
+        let mut path_vec = path_slice.to_vec();
+        path_vec.push(0); // Add null terminator
+
         let wasi_errno = unsafe {
             __wasi_path_open(
                 fd as u32,
                 dirflags,
-                memory_base.add(path_ptr as usize),
-                path_len,
-                oflags,
+                path_vec.as_ptr(),
+                oflags as u16,
                 fs_rights_base,
                 fs_rights_inheriting,
-                fdflags,
+                fdflags as u16,
                 memory_base.add(opened_fd_ptr as usize) as *mut u32,
             )
         };
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_seek(&self, fd: Fd, offset: i64, whence: u32) -> WasiResult<u64> {

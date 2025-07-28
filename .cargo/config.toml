@@ -1,2 +1,2 @@
 [target.wasm32-wasip1]
-runner = ["wasmtime", "--dir", "."]
+runner = ["wasmtime", "--dir", ".", "--dir", "tests/testdir"]
