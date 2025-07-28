@@ -563,11 +563,7 @@ impl PassthroughWasiImpl {
 
         drop(memory_guard);
 
-        if wasi_errno != 0 {
-            return Err(WasiError::from_errno(wasi_errno));
-        }
-
-        Ok(0)
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_prestat_dir_name(
