@@ -36,7 +36,7 @@ extern "C" {
     fn __wasi_fd_filestat_get(fd: u32, filestat: *mut u8) -> u16;
     fn __wasi_path_create_directory(fd: u32, path: *const u8, path_len: u32) -> u16;
     fn __wasi_path_remove_directory(fd: u32, path: *const u8, path_len: u32) -> u16;
-    fn __wasi_path_unlink_file(fd: u32, path: *const u8, path_len: u32) -> u16;
+    fn __wasi_path_unlink_file(fd: u32, path: *const u8) -> u16;
     fn __wasi_path_readlink(
         fd: u32,
         path: *const u8,
@@ -1002,9 +1002,13 @@ impl PassthroughWasiImpl {
         let memory_guard = memory.get_memory_direct_access();
         let memory_base = memory_guard.data.as_ptr();
 
-        let wasi_errno = unsafe {
-            __wasi_path_unlink_file(fd as u32, memory_base.add(path_ptr as usize), path_len)
+        let path_slice = unsafe {
+            std::slice::from_raw_parts(memory_base.add(path_ptr as usize), path_len as usize)
         };
+        let mut path_vec = path_slice.to_vec();
+        path_vec.push(0);
+
+        let wasi_errno = unsafe { __wasi_path_unlink_file(fd as u32, path_vec.as_ptr()) };
 
         drop(memory_guard);
 
