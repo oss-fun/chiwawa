@@ -947,7 +947,14 @@ impl StandardWasiImpl {
         Ok(0)
     }
 
-    pub fn fd_seek(&self, fd: Fd, offset: i64, whence: u32) -> WasiResult<u64> {
+    pub fn fd_seek(
+        &self,
+        memory: &MemAddr,
+        fd: Fd,
+        offset: i64,
+        whence: u32,
+        newoffset_ptr: Ptr,
+    ) -> WasiResult<i32> {
         // WASI whence constants
         const WHENCE_SET: u32 = 0; // Seek from beginning of file
         const WHENCE_CUR: u32 = 1; // Seek from current position
@@ -1003,8 +1010,16 @@ impl StandardWasiImpl {
         // Update our tracked position
         open_file.seek_position = new_position;
 
-        // Return the new position
-        Ok(new_position)
+        // Write the new position to memory
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
+        unsafe {
+            *(memory_base.add(newoffset_ptr as usize) as *mut u64) = new_position;
+        }
+        drop(memory_guard);
+
+        // Return errno (0 for success)
+        Ok(0)
     }
 
     pub fn fd_tell(&self, memory: &MemAddr, fd: Fd, offset_ptr: Ptr) -> WasiResult<i32> {
