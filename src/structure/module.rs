@@ -247,8 +247,9 @@ impl WasiFuncType {
                     ValueType::NumType(NumType::I32), // fd
                     ValueType::NumType(NumType::I64), // offset
                     ValueType::NumType(NumType::I32), // whence
+                    ValueType::NumType(NumType::I32), // newoffset_ptr
                 ],
-                results: vec![ValueType::NumType(NumType::I64)], // Returns new file position
+                results: vec![ValueType::NumType(NumType::I32)], // Returns errno
             },
             WasiFuncType::FdTell => FuncType {
                 params: vec![

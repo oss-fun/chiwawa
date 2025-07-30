@@ -478,15 +478,16 @@ impl Runtime {
                 Ok(Some(Val::Num(Num::I32(result))))
             }
             WasiFuncType::FdSeek => {
-                if params.len() != 3 {
+                if params.len() != 4 {
                     return Err(WasiError::Inval);
                 }
                 let fd = params[0].to_i32().map_err(|_| WasiError::Inval)?;
                 let offset = params[1].to_i64().map_err(|_| WasiError::Inval)?;
                 let whence = params[2].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let newoffset_ptr = params[3].to_i32().map_err(|_| WasiError::Inval)? as u32;
 
-                let result = wasi_impl.fd_seek(fd, offset, whence)?;
-                Ok(Some(Val::Num(Num::I64(result as i64))))
+                let result = wasi_impl.fd_seek(&memory, fd, offset, whence, newoffset_ptr)?;
+                Ok(Some(Val::Num(Num::I32(result))))
             }
             WasiFuncType::FdTell => {
                 if params.len() != 2 {
@@ -833,6 +834,22 @@ impl Runtime {
                 let how = params[1].to_i32().map_err(|_| WasiError::Inval)? as u32;
 
                 let result = wasi_impl.sock_shutdown(memory, fd, how)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::FdFdstatSetRights => {
+                if params.len() != 3 {
+                    return Err(WasiError::Inval);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let fs_rights_base = params[1].to_i64().map_err(|_| WasiError::Inval)? as u64;
+                let fs_rights_inheriting = params[2].to_i64().map_err(|_| WasiError::Inval)? as u64;
+
+                let result = wasi_impl.fd_fdstat_set_rights(
+                    &memory,
+                    fd,
+                    fs_rights_base,
+                    fs_rights_inheriting,
+                )?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
             _ => Err(WasiError::NoSys),

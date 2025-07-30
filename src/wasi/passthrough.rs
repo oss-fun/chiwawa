@@ -637,12 +637,29 @@ impl PassthroughWasiImpl {
         Ok(wasi_errno as i32)
     }
 
-    pub fn fd_seek(&self, fd: Fd, offset: i64, whence: u32) -> WasiResult<u64> {
-        let mut newoffset: u64 = 0;
+    pub fn fd_seek(
+        &self,
+        memory: &MemAddr,
+        fd: Fd,
+        offset: i64,
+        whence: u32,
+        newoffset_ptr: Ptr,
+    ) -> WasiResult<i32> {
+        let memory_guard = memory.get_memory_direct_access();
+        let memory_base = memory_guard.data.as_ptr();
 
-        let wasi_errno =
-            unsafe { __wasi_fd_seek(fd as u32, offset, whence, &mut newoffset as *mut u64) };
-        Ok(newoffset)
+        let wasi_errno = unsafe {
+            __wasi_fd_seek(
+                fd as u32,
+                offset,
+                whence,
+                memory_base.add(newoffset_ptr as usize) as *mut u64,
+            )
+        };
+
+        drop(memory_guard);
+
+        Ok(wasi_errno as i32)
     }
 
     pub fn fd_tell(&self, memory: &MemAddr, fd: Fd, offset_ptr: Ptr) -> WasiResult<i32> {
