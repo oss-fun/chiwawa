@@ -40,10 +40,9 @@ extern "C" {
     fn __wasi_path_readlink(
         fd: u32,
         path: *const u8,
-        path_len: u32,
         buf: *mut u8,
         buf_len: u32,
-        buf_used: *mut u32,
+        retptr0: *mut u32,
     ) -> u16;
     fn __wasi_path_filestat_get(
         fd: u32,
@@ -121,13 +120,7 @@ extern "C" {
         new_path: *const u8,
         new_path_len: u32,
     ) -> u16;
-    fn __wasi_path_symlink(
-        old_path: *const u8,
-        old_path_len: u32,
-        fd: u32,
-        new_path: *const u8,
-        new_path_len: u32,
-    ) -> u16;
+    fn __wasi_path_symlink(old_path: *const u8, fd: u32, new_path: *const u8) -> u16;
     fn __wasi_sock_accept(fd: u32, flags: u32, fd_ptr: *mut u32) -> u16;
     fn __wasi_sock_recv(
         fd: u32,
@@ -979,11 +972,17 @@ impl PassthroughWasiImpl {
         let memory_guard = memory.get_memory_direct_access();
         let memory_base = memory_guard.data.as_ptr();
 
+        // Create null-terminated string from path
+        let path_slice = unsafe {
+            std::slice::from_raw_parts(memory_base.add(path_ptr as usize), path_len as usize)
+        };
+        let mut path_vec = path_slice.to_vec();
+        path_vec.push(0);
+
         let wasi_errno = unsafe {
             __wasi_path_readlink(
                 fd as u32,
-                memory_base.add(path_ptr as usize),
-                path_len,
+                path_vec.as_ptr(),
                 memory_base.add(buf_ptr as usize) as *mut u8,
                 buf_len,
                 memory_base.add(buf_used_ptr as usize) as *mut u32,
@@ -1202,15 +1201,27 @@ impl PassthroughWasiImpl {
         let memory_guard = memory.get_memory_direct_access();
         let memory_base = memory_guard.data.as_ptr();
 
-        let wasi_errno = unsafe {
-            __wasi_path_symlink(
+        let old_path_slice = unsafe {
+            std::slice::from_raw_parts(
                 memory_base.add(old_path_ptr as usize),
-                old_path_len,
-                fd,
-                memory_base.add(new_path_ptr as usize),
-                new_path_len,
+                old_path_len as usize,
             )
         };
+        let new_path_slice = unsafe {
+            std::slice::from_raw_parts(
+                memory_base.add(new_path_ptr as usize),
+                new_path_len as usize,
+            )
+        };
+
+        // null terminate
+        let mut old_path_vec = old_path_slice.to_vec();
+        old_path_vec.push(0);
+        let mut new_path_vec = new_path_slice.to_vec();
+        new_path_vec.push(0);
+
+        let wasi_errno =
+            unsafe { __wasi_path_symlink(old_path_vec.as_ptr(), fd, new_path_vec.as_ptr()) };
 
         drop(memory_guard);
 
