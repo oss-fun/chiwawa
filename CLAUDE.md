@@ -7,7 +7,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 chiwawaは、WebAssembly（Wasm）ランタイムをWasm上で実行するセルフホステッド型のランタイムです。ライブマイグレーション機能とインストルメンテーション機能を提供し、インタープリター、JIT、AOTなどの実行方式やアーキテクチャに中立な設計になっています。
 
 ### 基本方針
-- Rustとシステムソフトウェア、WebAssembly(Wasm)のエキスパートとして動作
 - チャット応答は日本語、コード・コメント・ドキュメントは英語を使用
 - DTC(Direct-threaded Code)方式のインタープリタ実装
 - セルフホストランタイムとして任意のWasmランタイム上で動作し、ランタイム実装やコンパイル方式に非依存
@@ -51,6 +50,8 @@ wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name 
 
 # アプリケーション引数の指定
 wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --app-args "--help"
+
+# --invokeのデフォルトは_startのため、メイン関数実行であれば指定不要
 
 # 他のランタイム例：
 # WasmEdge target/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --params "I64(100)"
@@ -112,6 +113,11 @@ wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --app-args "--help"
 - 実装後は必ずlinterやテストを実行して動作検証
 - テストコードが存在しない場合は必ずテストコードを作成
 - 常にcargoでコードフォーマットを統一する（`~/.cargo/bin/cargo fmt`）
+
+### WASI実装について
+- chiwawaは **passthrough実装のみ** 使用（standard実装は使用されていない）
+- WASI関数はerrnoを返すべきで、Errで終了すべきではない
+- passthroughではwasi-libcの実装に処理を委譲
 
 ### WebAssembly仕様参考
 - Wasmコア仕様: https://webassembly.github.io/spec/core/bikeshed/
