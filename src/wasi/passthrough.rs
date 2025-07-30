@@ -44,18 +44,11 @@ extern "C" {
         buf_len: u32,
         retptr0: *mut u32,
     ) -> u16;
-    fn __wasi_path_filestat_get(
-        fd: u32,
-        flags: u32,
-        path: *const u8,
-        path_len: u32,
-        filestat: *mut u8,
-    ) -> u16;
+    fn __wasi_path_filestat_get(fd: u32, flags: u32, path: *const u8, filestat: *mut u8) -> u16;
     fn __wasi_path_filestat_set_times(
         fd: u32,
         flags: u32,
         path: *const u8,
-        path_len: u32,
         atim: u64,
         mtim: u64,
         fst_flags: u32,
@@ -913,12 +906,18 @@ impl PassthroughWasiImpl {
         let memory_guard = memory.get_memory_direct_access();
         let memory_base = memory_guard.data.as_ptr();
 
+        // Create null-terminated string from path
+        let path_slice = unsafe {
+            std::slice::from_raw_parts(memory_base.add(path_ptr as usize), path_len as usize)
+        };
+        let mut path_vec = path_slice.to_vec();
+        path_vec.push(0); // null terminate
+
         let wasi_errno = unsafe {
             __wasi_path_filestat_get(
                 fd as u32,
                 flags,
-                memory_base.add(path_ptr as usize),
-                path_len,
+                path_vec.as_ptr(),
                 memory_base.add(filestat_ptr as usize) as *mut u8,
             )
         };
@@ -942,12 +941,18 @@ impl PassthroughWasiImpl {
         let memory_guard = memory.get_memory_direct_access();
         let memory_base = memory_guard.data.as_ptr();
 
+        // Create null-terminated string from path
+        let path_slice = unsafe {
+            std::slice::from_raw_parts(memory_base.add(path_ptr as usize), path_len as usize)
+        };
+        let mut path_vec = path_slice.to_vec();
+        path_vec.push(0);
+
         let wasi_errno = unsafe {
             __wasi_path_filestat_set_times(
                 fd as u32,
                 flags,
-                memory_base.add(path_ptr as usize),
-                path_len,
+                path_vec.as_ptr(),
                 atim,
                 mtim,
                 fst_flags,
