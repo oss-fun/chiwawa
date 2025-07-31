@@ -11,9 +11,7 @@ path = "src/bin/write_bench.rs"
 name = "read_bench"
 path = "src/bin/read_bench.rs"
 
+[[bin]]
+name = "pi-leibniz"
+path = "src/bin/pi-leibniz.rs"
 [dependencies]
-
-[profile.release]
-lto = true
-codegen-units = 1
-opt-level = 3
