@@ -8,3 +8,4 @@
 !tests/wasi/*.wat
 *.bin
 /.cursor
+/benchmarks/target

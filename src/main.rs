@@ -167,8 +167,6 @@ fn handle_result(result: Result<Vec<Val>, chiwawa::error::RuntimeError>) {
         Ok(mut values) => {
             if let Some(val) = values.pop() {
                 println!("Result: {:?}", val);
-            } else {
-                println!("Result: (no values returned)");
             }
         }
         Err(chiwawa::error::RuntimeError::CheckpointRequested) => {

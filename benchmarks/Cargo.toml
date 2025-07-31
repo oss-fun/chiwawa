@@ -1,0 +1,17 @@
+[package]
+name = "chiwawa-benchmarks"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "write_bench"
+path = "src/bin/write_bench.rs"
+
+[[bin]]
+name = "read_bench"
+path = "src/bin/read_bench.rs"
+
+[[bin]]
+name = "pi-leibniz"
+path = "src/bin/pi-leibniz.rs"
+[dependencies]
