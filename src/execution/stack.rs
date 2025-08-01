@@ -19,6 +19,10 @@ pub enum Operand {
     F32(f32),
     F64(f64),
     LocalIdx(LocalIdx),
+    LocalIdxI32(LocalIdx, i32),
+    LocalIdxI64(LocalIdx, i64),
+    LocalIdxF32(LocalIdx, f32),
+    LocalIdxF64(LocalIdx, f64),
     GlobalIdx(GlobalIdx),
     FuncIdx(FuncIdx),
     TableIdx(TableIdx),
@@ -114,8 +118,8 @@ pub const HANDLER_IDX_LOCAL_SET: usize = 0x21;
 pub const HANDLER_IDX_LOCAL_TEE: usize = 0x22;
 pub const HANDLER_IDX_GLOBAL_GET: usize = 0x23;
 pub const HANDLER_IDX_GLOBAL_SET: usize = 0x24;
-// pub const HANDLER_IDX_TABLE_GET: usize = 0x25;
-// pub const HANDLER_IDX_TABLE_SET: usize = 0x26;
+// pub const HANDLER_IDX_TABLE_GET: usize = 0x26;
+// pub const HANDLER_IDX_TABLE_SET: usize = 0x27;
 
 pub const HANDLER_IDX_I32_LOAD: usize = 0x28;
 pub const HANDLER_IDX_I64_LOAD: usize = 0x29;
@@ -306,7 +310,13 @@ pub const HANDLER_IDX_I64_TRUNC_SAT_F64_U: usize = 0xCF;
 
 // TODO: Add remaining indices (Ref types, Table, Bulk Memory, SIMD)
 
-pub const MAX_HANDLER_INDEX: usize = 0xD5;
+// Optimized immediate instructions
+pub const HANDLER_IDX_LOCAL_SET_I32_CONST: usize = 0xD8;
+pub const HANDLER_IDX_LOCAL_SET_I64_CONST: usize = 0xD9;
+pub const HANDLER_IDX_LOCAL_SET_F32_CONST: usize = 0xDA;
+pub const HANDLER_IDX_LOCAL_SET_F64_CONST: usize = 0xDB;
+
+pub const MAX_HANDLER_INDEX: usize = 0xDC;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stacks {
@@ -2817,6 +2827,71 @@ fn handle_local_set(
     }
 }
 
+fn handle_local_set_i32_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::LocalIdxI32(local_idx, immediate_val) => {
+            let index = local_idx.0 as usize;
+            if index >= ctx.frame.locals.len() {
+                return Err(RuntimeError::LocalIndexOutOfBounds);
+            }
+            ctx.frame.locals[index] = Val::Num(Num::I32(*immediate_val));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_local_set_i64_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    if let &Operand::LocalIdxI64(LocalIdx(index_val), immediate_val) = operand {
+        let index = index_val as usize;
+        if index >= ctx.frame.locals.len() {
+            return Err(RuntimeError::LocalIndexOutOfBounds);
+        }
+        ctx.frame.locals[index] = Val::Num(Num::I64(immediate_val));
+        Ok(HandlerResult::Continue(ctx.ip + 1))
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_local_set_f32_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    if let &Operand::LocalIdxF32(LocalIdx(index_val), immediate_val) = operand {
+        let index = index_val as usize;
+        if index >= ctx.frame.locals.len() {
+            return Err(RuntimeError::LocalIndexOutOfBounds);
+        }
+        ctx.frame.locals[index] = Val::Num(Num::F32(immediate_val));
+        Ok(HandlerResult::Continue(ctx.ip + 1))
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+fn handle_local_set_f64_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    if let &Operand::LocalIdxF64(LocalIdx(index_val), immediate_val) = operand {
+        let index = index_val as usize;
+        if index >= ctx.frame.locals.len() {
+            return Err(RuntimeError::LocalIndexOutOfBounds);
+        }
+        ctx.frame.locals[index] = Val::Num(Num::F64(immediate_val));
+        Ok(HandlerResult::Continue(ctx.ip + 1))
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
 fn handle_local_tee(
     ctx: &mut ExecutionContext,
     operand: &Operand,
@@ -4333,6 +4408,10 @@ lazy_static! {
         table[HANDLER_IDX_SELECT] = handle_select;
         table[HANDLER_IDX_LOCAL_GET] = handle_local_get;
         table[HANDLER_IDX_LOCAL_SET] = handle_local_set;
+        table[HANDLER_IDX_LOCAL_SET_I32_CONST] = handle_local_set_i32_const;
+        table[HANDLER_IDX_LOCAL_SET_I64_CONST] = handle_local_set_i64_const;
+        table[HANDLER_IDX_LOCAL_SET_F32_CONST] = handle_local_set_f32_const;
+        table[HANDLER_IDX_LOCAL_SET_F64_CONST] = handle_local_set_f64_const;
         table[HANDLER_IDX_LOCAL_TEE] = handle_local_tee;
         table[HANDLER_IDX_GLOBAL_GET] = handle_global_get;
         table[HANDLER_IDX_GLOBAL_SET] = handle_global_set;

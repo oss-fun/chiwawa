@@ -363,6 +363,11 @@ pub enum Instr {
     LocalTee(LocalIdx),
     GlobalGet(GlobalIdx),
     GlobalSet(GlobalIdx),
+    /* Optimized Instructions */
+    LocalSetI32Const(LocalIdx, i32),
+    LocalSetI64Const(LocalIdx, i64),
+    LocalSetF32Const(LocalIdx, f32),
+    LocalSetF64Const(LocalIdx, f64),
     /* Table Instructions */
     TableGet(TableIdx),
     TableSet(TableIdx),

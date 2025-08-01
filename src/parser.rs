@@ -876,8 +876,8 @@ fn preprocess_instructions(
     Ok(())
 }
 
-fn decode_processed_instrs_and_fixups(
-    ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>,
+fn decode_processed_instrs_and_fixups<'a>(
+    ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'a>>,
     module: &Module,
 ) -> Result<
     (
@@ -909,6 +909,13 @@ fn decode_processed_instrs_and_fixups(
             Some(Err(e)) => return Err(Box::new(e)),
             None => break,
         };
+
+        // Try to fuse constant with LocalSet optimization at parse time
+        if let Some(fused_instr) = try_fuse_const_with_local_set(&op, ops) {
+            initial_processed_instrs.push(fused_instr);
+            current_processed_pc += 1;
+            continue;
+        }
 
         let (processed_instr_template, fixup_info_opt) = map_operator_to_initial_instr_and_fixup(
             &op,
@@ -1895,6 +1902,52 @@ fn map_operator_to_initial_instr_and_fixup(
         operand,
     };
     Ok((processed_instr, fixup_info))
+}
+
+fn try_fuse_const_with_local_set(
+    op: &wasmparser::Operator,
+    ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+) -> Option<ProcessedInstr> {
+    fn try_consume_local_set(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+    ) -> Option<u32> {
+        if let Some(Ok((next_op, _))) = ops.peek() {
+            if let wasmparser::Operator::LocalSet { local_index } = next_op {
+                let local_idx = *local_index;
+                let (_, _) = ops.next().unwrap().unwrap();
+                return Some(local_idx);
+            }
+        }
+        None
+    }
+
+    match op {
+        wasmparser::Operator::I32Const { value } => {
+            try_consume_local_set(ops).map(|local_idx| ProcessedInstr {
+                handler_index: HANDLER_IDX_LOCAL_SET_I32_CONST,
+                operand: Operand::LocalIdxI32(LocalIdx(local_idx), *value),
+            })
+        }
+        wasmparser::Operator::I64Const { value } => {
+            try_consume_local_set(ops).map(|local_idx| ProcessedInstr {
+                handler_index: HANDLER_IDX_LOCAL_SET_I64_CONST,
+                operand: Operand::LocalIdxI64(LocalIdx(local_idx), *value),
+            })
+        }
+        wasmparser::Operator::F32Const { value } => {
+            try_consume_local_set(ops).map(|local_idx| ProcessedInstr {
+                handler_index: HANDLER_IDX_LOCAL_SET_F32_CONST,
+                operand: Operand::LocalIdxF32(LocalIdx(local_idx), f32::from_bits(value.bits())),
+            })
+        }
+        wasmparser::Operator::F64Const { value } => {
+            try_consume_local_set(ops).map(|local_idx| ProcessedInstr {
+                handler_index: HANDLER_IDX_LOCAL_SET_F64_CONST,
+                operand: Operand::LocalIdxF64(LocalIdx(local_idx), f64::from_bits(value.bits())),
+            })
+        }
+        _ => None,
+    }
 }
 
 pub fn parse_bytecode(
