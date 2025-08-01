@@ -11,7 +11,7 @@ mod tests {
 
     fn load_wasi_instance(wasm_path: &str) -> Arc<ModuleInst> {
         let mut module = Module::new("test");
-        let _ = parser::parse_bytecode(&mut module, wasm_path);
+        let _ = parser::parse_bytecode(&mut module, wasm_path, true);
 
         let imports: ImportObjects = HashMap::new();
         let app_args = vec![];

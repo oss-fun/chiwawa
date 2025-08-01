@@ -30,6 +30,9 @@ struct Cli {
     /// Example: --app-args "--database test.db --iterations 1000"
     #[arg(long, allow_hyphen_values = true)]
     app_args: Option<String>,
+    /// Enable superinstructions optimizations (const + local.set)
+    #[arg(long, default_value = "false")]
+    enable_superinstructions: bool,
 }
 
 fn parse_args_string(args: &str) -> Vec<String> {
@@ -115,7 +118,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let mut module = Module::new("test");
-    let _ = parser::parse_bytecode(&mut module, &cli.wasm_file);
+    let _ = parser::parse_bytecode(&mut module, &cli.wasm_file, cli.enable_superinstructions);
     let imports: ImportObjects = HashMap::new();
     let preopen_dirs = cli.preopen.unwrap_or_default();
 

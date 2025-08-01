@@ -446,6 +446,7 @@ fn decode_code_section(
     body: FunctionBody<'_>,
     module: &mut Module,
     func_index: usize,
+    enable_superinstructions: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut locals: Vec<(u32, ValueType)> = Vec::new();
     for pair in body.get_locals_reader()? {
@@ -469,7 +470,7 @@ fn decode_code_section(
 
     // Phase 1: Decode instructions and get necessary info for preprocessing
     let (mut processed_instrs, mut fixups, block_end_map, if_else_map, block_type_map) =
-        decode_processed_instrs_and_fixups(&mut ops_iter, module)?;
+        decode_processed_instrs_and_fixups(&mut ops_iter, module, enable_superinstructions)?;
 
     // Phase 2 & 3: Preprocess instructions for this function
     preprocess_instructions(
@@ -879,6 +880,7 @@ fn preprocess_instructions(
 fn decode_processed_instrs_and_fixups<'a>(
     ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'a>>,
     module: &Module,
+    enable_superinstructions: bool,
 ) -> Result<
     (
         Vec<ProcessedInstr>,
@@ -910,11 +912,13 @@ fn decode_processed_instrs_and_fixups<'a>(
             None => break,
         };
 
-        // Try to fuse constant with LocalSet optimization at parse time
-        if let Some(fused_instr) = try_fuse_const_with_local_set(&op, ops) {
-            initial_processed_instrs.push(fused_instr);
-            current_processed_pc += 1;
-            continue;
+        // Try to use superinstructions optimization at parse time
+        if enable_superinstructions {
+            if let Some(superinstr) = try_superinstructions_const_with_local_set(&op, ops) {
+                initial_processed_instrs.push(superinstr);
+                current_processed_pc += 1;
+                continue;
+            }
         }
 
         let (processed_instr_template, fixup_info_opt) = map_operator_to_initial_instr_and_fixup(
@@ -1904,7 +1908,7 @@ fn map_operator_to_initial_instr_and_fixup(
     Ok((processed_instr, fixup_info))
 }
 
-fn try_fuse_const_with_local_set(
+fn try_superinstructions_const_with_local_set(
     op: &wasmparser::Operator,
     ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
 ) -> Option<ProcessedInstr> {
@@ -1953,6 +1957,7 @@ fn try_fuse_const_with_local_set(
 pub fn parse_bytecode(
     mut module: &mut Module,
     path: &str,
+    enable_superinstructions: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut current_func_index = module.num_imported_funcs;
 
@@ -2022,7 +2027,12 @@ pub fn parse_bytecode(
 
             CodeSectionStart { .. } => { /* ... */ }
             CodeSectionEntry(body) => {
-                decode_code_section(body, &mut module, current_func_index)?;
+                decode_code_section(
+                    body,
+                    &mut module,
+                    current_func_index,
+                    enable_superinstructions,
+                )?;
                 current_func_index += 1;
             }
 

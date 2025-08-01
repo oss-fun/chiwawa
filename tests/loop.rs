@@ -12,7 +12,7 @@ mod tests {
     // Helper function to load module and get instance
     fn load_instance(wasm_path: &str) -> Arc<ModuleInst> {
         let mut module = Module::new("test");
-        let _ = parser::parse_bytecode(&mut module, wasm_path);
+        let _ = parser::parse_bytecode(&mut module, wasm_path, true);
         let imports: ImportObjects = HashMap::new();
         ModuleInst::new(&module, imports, Vec::new(), Vec::new()).unwrap()
     }
