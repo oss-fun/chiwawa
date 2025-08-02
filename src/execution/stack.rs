@@ -23,6 +23,8 @@ pub enum Operand {
     LocalIdxI64(LocalIdx, i64),
     LocalIdxF32(LocalIdx, f32),
     LocalIdxF64(LocalIdx, f64),
+    MemArgI32(i32, Memarg),
+    MemArgI64(i64, Memarg),
     GlobalIdx(GlobalIdx),
     FuncIdx(FuncIdx),
     TableIdx(TableIdx),
@@ -315,8 +317,16 @@ pub const HANDLER_IDX_LOCAL_SET_I32_CONST: usize = 0xD8;
 pub const HANDLER_IDX_LOCAL_SET_I64_CONST: usize = 0xD9;
 pub const HANDLER_IDX_LOCAL_SET_F32_CONST: usize = 0xDA;
 pub const HANDLER_IDX_LOCAL_SET_F64_CONST: usize = 0xDB;
-
-pub const MAX_HANDLER_INDEX: usize = 0xDC;
+pub const HANDLER_IDX_I32_LOAD_CONST: usize = 0xDC;
+pub const HANDLER_IDX_I64_LOAD_CONST: usize = 0xDD;
+pub const HANDLER_IDX_I32_CONST_I64_LOAD: usize = 0xDE;
+pub const HANDLER_IDX_I32_CONST_F32_LOAD: usize = 0xDF;
+pub const HANDLER_IDX_I32_CONST_F64_LOAD: usize = 0xE0;
+pub const HANDLER_IDX_I64_CONST_I32_LOAD: usize = 0xE1;
+pub const HANDLER_IDX_I64_CONST_I64_LOAD: usize = 0xE2;
+pub const HANDLER_IDX_I64_CONST_F32_LOAD: usize = 0xE3;
+pub const HANDLER_IDX_I64_CONST_F64_LOAD: usize = 0xE4;
+pub const MAX_HANDLER_INDEX: usize = 0xE5;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stacks {
@@ -2892,6 +2902,213 @@ fn handle_local_set_f64_const(
     }
 }
 
+fn handle_i32_load_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::MemArgI32(offset, memarg) => {
+            let module_inst = ctx
+                .frame
+                .module
+                .upgrade()
+                .ok_or(RuntimeError::ModuleInstanceGone)?;
+            if module_inst.mem_addrs.is_empty() {
+                return Err(RuntimeError::MemoryNotFound);
+            }
+            let mem_addr = &module_inst.mem_addrs[0];
+            let val = mem_addr.load::<i32>(&memarg, *offset)?;
+            ctx.value_stack.push(Val::Num(Num::I32(val)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i64_load_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::MemArgI64(offset, memarg) => {
+            let module_inst = ctx
+                .frame
+                .module
+                .upgrade()
+                .ok_or(RuntimeError::ModuleInstanceGone)?;
+            if module_inst.mem_addrs.is_empty() {
+                return Err(RuntimeError::MemoryNotFound);
+            }
+            let mem_addr = &module_inst.mem_addrs[0];
+            let val = mem_addr.load::<i64>(&memarg, *offset as i32)?;
+            ctx.value_stack.push(Val::Num(Num::I64(val)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i32_const_i64_load(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::MemArgI32(offset, memarg) => {
+            let module_inst = ctx
+                .frame
+                .module
+                .upgrade()
+                .ok_or(RuntimeError::ModuleInstanceGone)?;
+            if module_inst.mem_addrs.is_empty() {
+                return Err(RuntimeError::MemoryNotFound);
+            }
+            let mem_addr = &module_inst.mem_addrs[0];
+            let val = mem_addr.load::<i64>(&memarg, *offset)?;
+            ctx.value_stack.push(Val::Num(Num::I64(val)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i32_const_f32_load(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::MemArgI32(offset, memarg) => {
+            let module_inst = ctx
+                .frame
+                .module
+                .upgrade()
+                .ok_or(RuntimeError::ModuleInstanceGone)?;
+            if module_inst.mem_addrs.is_empty() {
+                return Err(RuntimeError::MemoryNotFound);
+            }
+            let mem_addr = &module_inst.mem_addrs[0];
+            let val = mem_addr.load::<f32>(&memarg, *offset)?;
+            ctx.value_stack.push(Val::Num(Num::F32(val)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i32_const_f64_load(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::MemArgI32(offset, memarg) => {
+            let module_inst = ctx
+                .frame
+                .module
+                .upgrade()
+                .ok_or(RuntimeError::ModuleInstanceGone)?;
+            if module_inst.mem_addrs.is_empty() {
+                return Err(RuntimeError::MemoryNotFound);
+            }
+            let mem_addr = &module_inst.mem_addrs[0];
+            let val = mem_addr.load::<f64>(&memarg, *offset)?;
+            ctx.value_stack.push(Val::Num(Num::F64(val)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i64_const_i32_load(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::MemArgI64(offset, memarg) => {
+            let module_inst = ctx
+                .frame
+                .module
+                .upgrade()
+                .ok_or(RuntimeError::ModuleInstanceGone)?;
+            if module_inst.mem_addrs.is_empty() {
+                return Err(RuntimeError::MemoryNotFound);
+            }
+            let mem_addr = &module_inst.mem_addrs[0];
+            let val = mem_addr.load::<i32>(&memarg, *offset as i32)?;
+            ctx.value_stack.push(Val::Num(Num::I32(val)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i64_const_i64_load(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::MemArgI64(offset, memarg) => {
+            let module_inst = ctx
+                .frame
+                .module
+                .upgrade()
+                .ok_or(RuntimeError::ModuleInstanceGone)?;
+            if module_inst.mem_addrs.is_empty() {
+                return Err(RuntimeError::MemoryNotFound);
+            }
+            let mem_addr = &module_inst.mem_addrs[0];
+            let val = mem_addr.load::<i64>(&memarg, *offset as i32)?;
+            ctx.value_stack.push(Val::Num(Num::I64(val)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i64_const_f32_load(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::MemArgI64(offset, memarg) => {
+            let module_inst = ctx
+                .frame
+                .module
+                .upgrade()
+                .ok_or(RuntimeError::ModuleInstanceGone)?;
+            if module_inst.mem_addrs.is_empty() {
+                return Err(RuntimeError::MemoryNotFound);
+            }
+            let mem_addr = &module_inst.mem_addrs[0];
+            let val = mem_addr.load::<f32>(&memarg, *offset as i32)?;
+            ctx.value_stack.push(Val::Num(Num::F32(val)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i64_const_f64_load(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::MemArgI64(offset, memarg) => {
+            let module_inst = ctx
+                .frame
+                .module
+                .upgrade()
+                .ok_or(RuntimeError::ModuleInstanceGone)?;
+            if module_inst.mem_addrs.is_empty() {
+                return Err(RuntimeError::MemoryNotFound);
+            }
+            let mem_addr = &module_inst.mem_addrs[0];
+            let val = mem_addr.load::<f64>(&memarg, *offset as i32)?;
+            ctx.value_stack.push(Val::Num(Num::F64(val)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
 fn handle_local_tee(
     ctx: &mut ExecutionContext,
     operand: &Operand,
@@ -4412,6 +4629,15 @@ lazy_static! {
         table[HANDLER_IDX_LOCAL_SET_I64_CONST] = handle_local_set_i64_const;
         table[HANDLER_IDX_LOCAL_SET_F32_CONST] = handle_local_set_f32_const;
         table[HANDLER_IDX_LOCAL_SET_F64_CONST] = handle_local_set_f64_const;
+        table[HANDLER_IDX_I32_LOAD_CONST] = handle_i32_load_const;
+        table[HANDLER_IDX_I64_LOAD_CONST] = handle_i64_load_const;
+        table[HANDLER_IDX_I32_CONST_I64_LOAD] = handle_i32_const_i64_load;
+        table[HANDLER_IDX_I32_CONST_F32_LOAD] = handle_i32_const_f32_load;
+        table[HANDLER_IDX_I32_CONST_F64_LOAD] = handle_i32_const_f64_load;
+        table[HANDLER_IDX_I64_CONST_I32_LOAD] = handle_i64_const_i32_load;
+        table[HANDLER_IDX_I64_CONST_I64_LOAD] = handle_i64_const_i64_load;
+        table[HANDLER_IDX_I64_CONST_F32_LOAD] = handle_i64_const_f32_load;
+        table[HANDLER_IDX_I64_CONST_F64_LOAD] = handle_i64_const_f64_load;
         table[HANDLER_IDX_LOCAL_TEE] = handle_local_tee;
         table[HANDLER_IDX_GLOBAL_GET] = handle_global_get;
         table[HANDLER_IDX_GLOBAL_SET] = handle_global_set;

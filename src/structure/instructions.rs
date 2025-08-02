@@ -368,6 +368,16 @@ pub enum Instr {
     LocalSetI64Const(LocalIdx, i64),
     LocalSetF32Const(LocalIdx, f32),
     LocalSetF64Const(LocalIdx, f64),
+    /* const + load superinstructions */
+    I32LoadConst(i32, Memarg),
+    I64LoadConst(i64, Memarg),
+    I32ConstI64Load(i32, Memarg), // i32.const + i64.load
+    I32ConstF32Load(i32, Memarg), // i32.const + f32.load
+    I32ConstF64Load(i32, Memarg), // i32.const + f64.load
+    I64ConstI32Load(i64, Memarg), // i64.const + i32.load
+    I64ConstI64Load(i64, Memarg), // i64.const + i64.load
+    I64ConstF32Load(i64, Memarg), // i64.const + f32.load
+    I64ConstF64Load(i64, Memarg), // i64.const + f64.load
     /* Table Instructions */
     TableGet(TableIdx),
     TableSet(TableIdx),
