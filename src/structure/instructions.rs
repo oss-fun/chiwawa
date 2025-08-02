@@ -388,6 +388,29 @@ pub enum Instr {
     I64ConstI64Store(i64, Memarg), // i64.const + i64.store
     I64ConstF32Store(i64, Memarg), // i64.const + f32.store
     I64ConstF64Store(i64, Memarg), // i64.const + f64.store
+    /* const + arithmetic superinstructions */
+    I32AddConst(i32),
+    I32SubConst(i32),
+    I32MulConst(i32),
+    I32DivSConst(i32),
+    I32DivUConst(i32),
+    I64AddConst(i64),
+    I64SubConst(i64),
+    I64MulConst(i64),
+    I64DivSConst(i64),
+    I64DivUConst(i64),
+    F32AddConst(f32),
+    F32SubConst(f32),
+    F32MulConst(f32),
+    F32DivConst(f32),
+    F64AddConst(f64),
+    F64SubConst(f64),
+    F64MulConst(f64),
+    F64DivConst(f64),
+    I32RemSConst(i32),
+    I32RemUConst(i32),
+    I64RemSConst(i64),
+    I64RemUConst(i64),
     /* Table Instructions */
     TableGet(TableIdx),
     TableSet(TableIdx),

@@ -1915,6 +1915,8 @@ fn try_superinstructions_const(
     enum ConstType {
         I32,
         I64,
+        F32,
+        F64,
     }
 
     fn try_consume_local_set(
@@ -2078,6 +2080,62 @@ fn try_superinstructions_const(
         }
     }
 
+    fn try_consume_arithmetic(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+        const_type: ConstType,
+    ) -> Option<usize> {
+        if let Some(Ok((next_op, _))) = ops.peek() {
+            let result = match (const_type, next_op) {
+                (ConstType::I32, wasmparser::Operator::I32Add) => Some(HANDLER_IDX_I32_ADD_CONST),
+                (ConstType::I32, wasmparser::Operator::I32Sub) => Some(HANDLER_IDX_I32_SUB_CONST),
+                (ConstType::I32, wasmparser::Operator::I32Mul) => Some(HANDLER_IDX_I32_MUL_CONST),
+                (ConstType::I32, wasmparser::Operator::I32DivS) => {
+                    Some(HANDLER_IDX_I32_DIV_S_CONST)
+                }
+                (ConstType::I32, wasmparser::Operator::I32DivU) => {
+                    Some(HANDLER_IDX_I32_DIV_U_CONST)
+                }
+                (ConstType::I32, wasmparser::Operator::I32RemS) => {
+                    Some(HANDLER_IDX_I32_REM_S_CONST)
+                }
+                (ConstType::I32, wasmparser::Operator::I32RemU) => {
+                    Some(HANDLER_IDX_I32_REM_U_CONST)
+                }
+                (ConstType::I64, wasmparser::Operator::I64Add) => Some(HANDLER_IDX_I64_ADD_CONST),
+                (ConstType::I64, wasmparser::Operator::I64Sub) => Some(HANDLER_IDX_I64_SUB_CONST),
+                (ConstType::I64, wasmparser::Operator::I64Mul) => Some(HANDLER_IDX_I64_MUL_CONST),
+                (ConstType::I64, wasmparser::Operator::I64DivS) => {
+                    Some(HANDLER_IDX_I64_DIV_S_CONST)
+                }
+                (ConstType::I64, wasmparser::Operator::I64DivU) => {
+                    Some(HANDLER_IDX_I64_DIV_U_CONST)
+                }
+                (ConstType::I64, wasmparser::Operator::I64RemS) => {
+                    Some(HANDLER_IDX_I64_REM_S_CONST)
+                }
+                (ConstType::I64, wasmparser::Operator::I64RemU) => {
+                    Some(HANDLER_IDX_I64_REM_U_CONST)
+                }
+                (ConstType::F32, wasmparser::Operator::F32Add) => Some(HANDLER_IDX_F32_ADD_CONST),
+                (ConstType::F32, wasmparser::Operator::F32Sub) => Some(HANDLER_IDX_F32_SUB_CONST),
+                (ConstType::F32, wasmparser::Operator::F32Mul) => Some(HANDLER_IDX_F32_MUL_CONST),
+                (ConstType::F32, wasmparser::Operator::F32Div) => Some(HANDLER_IDX_F32_DIV_CONST),
+                (ConstType::F64, wasmparser::Operator::F64Add) => Some(HANDLER_IDX_F64_ADD_CONST),
+                (ConstType::F64, wasmparser::Operator::F64Sub) => Some(HANDLER_IDX_F64_SUB_CONST),
+                (ConstType::F64, wasmparser::Operator::F64Mul) => Some(HANDLER_IDX_F64_MUL_CONST),
+                (ConstType::F64, wasmparser::Operator::F64Div) => Some(HANDLER_IDX_F64_DIV_CONST),
+                _ => None,
+            };
+
+            if result.is_some() {
+                let _ = ops.next().unwrap().unwrap();
+            }
+            result
+        } else {
+            None
+        }
+    }
+
     match op {
         wasmparser::Operator::I32Const { value } => {
             if let Some(local_idx) = try_consume_local_set(ops) {
@@ -2091,12 +2149,17 @@ fn try_superinstructions_const(
                     handler_index,
                     operand: Operand::MemArgI32(*value, memarg),
                 })
+            } else if let Some((handler_index, memarg)) =
+                try_consume_store_type(ops, ConstType::I32)
+            {
+                Some(ProcessedInstr {
+                    handler_index,
+                    operand: Operand::MemArgI32(*value, memarg),
+                })
             } else {
-                try_consume_store_type(ops, ConstType::I32).map(|(handler_index, memarg)| {
-                    ProcessedInstr {
-                        handler_index,
-                        operand: Operand::MemArgI32(*value, memarg),
-                    }
+                try_consume_arithmetic(ops, ConstType::I32).map(|handler_index| ProcessedInstr {
+                    handler_index,
+                    operand: Operand::I32(*value),
                 })
             }
         }
@@ -2112,26 +2175,51 @@ fn try_superinstructions_const(
                     handler_index,
                     operand: Operand::MemArgI64(*value, memarg),
                 })
+            } else if let Some((handler_index, memarg)) =
+                try_consume_store_type(ops, ConstType::I64)
+            {
+                Some(ProcessedInstr {
+                    handler_index,
+                    operand: Operand::MemArgI64(*value, memarg),
+                })
             } else {
-                try_consume_store_type(ops, ConstType::I64).map(|(handler_index, memarg)| {
-                    ProcessedInstr {
-                        handler_index,
-                        operand: Operand::MemArgI64(*value, memarg),
-                    }
+                try_consume_arithmetic(ops, ConstType::I64).map(|handler_index| ProcessedInstr {
+                    handler_index,
+                    operand: Operand::I64(*value),
                 })
             }
         }
         wasmparser::Operator::F32Const { value } => {
-            try_consume_local_set(ops).map(|local_idx| ProcessedInstr {
-                handler_index: HANDLER_IDX_LOCAL_SET_F32_CONST,
-                operand: Operand::LocalIdxF32(LocalIdx(local_idx), f32::from_bits(value.bits())),
-            })
+            if let Some(local_idx) = try_consume_local_set(ops) {
+                Some(ProcessedInstr {
+                    handler_index: HANDLER_IDX_LOCAL_SET_F32_CONST,
+                    operand: Operand::LocalIdxF32(
+                        LocalIdx(local_idx),
+                        f32::from_bits(value.bits()),
+                    ),
+                })
+            } else {
+                try_consume_arithmetic(ops, ConstType::F32).map(|handler_index| ProcessedInstr {
+                    handler_index,
+                    operand: Operand::F32(f32::from_bits(value.bits())),
+                })
+            }
         }
         wasmparser::Operator::F64Const { value } => {
-            try_consume_local_set(ops).map(|local_idx| ProcessedInstr {
-                handler_index: HANDLER_IDX_LOCAL_SET_F64_CONST,
-                operand: Operand::LocalIdxF64(LocalIdx(local_idx), f64::from_bits(value.bits())),
-            })
+            if let Some(local_idx) = try_consume_local_set(ops) {
+                Some(ProcessedInstr {
+                    handler_index: HANDLER_IDX_LOCAL_SET_F64_CONST,
+                    operand: Operand::LocalIdxF64(
+                        LocalIdx(local_idx),
+                        f64::from_bits(value.bits()),
+                    ),
+                })
+            } else {
+                try_consume_arithmetic(ops, ConstType::F64).map(|handler_index| ProcessedInstr {
+                    handler_index,
+                    operand: Operand::F64(f64::from_bits(value.bits())),
+                })
+            }
         }
         _ => None,
     }

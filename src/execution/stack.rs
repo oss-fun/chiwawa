@@ -335,7 +335,30 @@ pub const HANDLER_IDX_I64_CONST_I32_STORE: usize = 0xEA;
 pub const HANDLER_IDX_I64_CONST_I64_STORE: usize = 0xEB;
 pub const HANDLER_IDX_I64_CONST_F32_STORE: usize = 0xEC;
 pub const HANDLER_IDX_I64_CONST_F64_STORE: usize = 0xED;
-pub const MAX_HANDLER_INDEX: usize = 0xEE;
+// const + arithmetic superinstructions
+pub const HANDLER_IDX_I32_ADD_CONST: usize = 0xEE;
+pub const HANDLER_IDX_I32_SUB_CONST: usize = 0xEF;
+pub const HANDLER_IDX_I32_MUL_CONST: usize = 0xF0;
+pub const HANDLER_IDX_I32_DIV_S_CONST: usize = 0xF1;
+pub const HANDLER_IDX_I32_DIV_U_CONST: usize = 0xF2;
+pub const HANDLER_IDX_I64_ADD_CONST: usize = 0xF3;
+pub const HANDLER_IDX_I64_SUB_CONST: usize = 0xF4;
+pub const HANDLER_IDX_I64_MUL_CONST: usize = 0xF5;
+pub const HANDLER_IDX_I64_DIV_S_CONST: usize = 0xF6;
+pub const HANDLER_IDX_I64_DIV_U_CONST: usize = 0xF7;
+pub const HANDLER_IDX_F32_ADD_CONST: usize = 0xF8;
+pub const HANDLER_IDX_F32_SUB_CONST: usize = 0xF9;
+pub const HANDLER_IDX_F32_MUL_CONST: usize = 0xFA;
+pub const HANDLER_IDX_F32_DIV_CONST: usize = 0xFB;
+pub const HANDLER_IDX_F64_ADD_CONST: usize = 0xFC;
+pub const HANDLER_IDX_F64_SUB_CONST: usize = 0xFD;
+pub const HANDLER_IDX_F64_MUL_CONST: usize = 0xFE;
+pub const HANDLER_IDX_F64_DIV_CONST: usize = 0xFF;
+pub const HANDLER_IDX_I32_REM_S_CONST: usize = 0x100;
+pub const HANDLER_IDX_I32_REM_U_CONST: usize = 0x101;
+pub const HANDLER_IDX_I64_REM_S_CONST: usize = 0x102;
+pub const HANDLER_IDX_I64_REM_U_CONST: usize = 0x103;
+pub const MAX_HANDLER_INDEX: usize = 0x104;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stacks {
@@ -3361,6 +3384,462 @@ fn handle_i64_const_f64_store(
     }
 }
 
+fn handle_i32_add_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I32(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i32()?;
+            let result = operand.wrapping_add(*const_val);
+            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i32_sub_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I32(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i32()?;
+            let result = operand.wrapping_sub(*const_val);
+            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i32_mul_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I32(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i32()?;
+            let result = operand.wrapping_mul(*const_val);
+            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i32_div_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I32(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i32()?;
+            if *const_val == 0 {
+                return Err(RuntimeError::ZeroDivideError);
+            }
+            if operand == i32::MIN && *const_val == -1 {
+                return Err(RuntimeError::IntegerOverflow);
+            }
+            let result = operand / *const_val;
+            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i32_div_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I32(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i32()?;
+            if *const_val == 0 {
+                return Err(RuntimeError::ZeroDivideError);
+            }
+            let result = (operand as u32) / (*const_val as u32);
+            ctx.value_stack.push(Val::Num(Num::I32(result as i32)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i64_add_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I64(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i64()?;
+            let result = operand.wrapping_add(*const_val);
+            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i64_sub_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I64(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i64()?;
+            let result = operand.wrapping_sub(*const_val);
+            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i64_mul_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I64(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i64()?;
+            let result = operand.wrapping_mul(*const_val);
+            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i64_div_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I64(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i64()?;
+            if *const_val == 0 {
+                return Err(RuntimeError::ZeroDivideError);
+            }
+            if operand == i64::MIN && *const_val == -1 {
+                return Err(RuntimeError::IntegerOverflow);
+            }
+            let result = operand / *const_val;
+            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i64_div_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I64(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i64()?;
+            if *const_val == 0 {
+                return Err(RuntimeError::ZeroDivideError);
+            }
+            let result = (operand as u64) / (*const_val as u64);
+            ctx.value_stack.push(Val::Num(Num::I64(result as i64)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_f32_add_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::F32(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_f32()?;
+            let result = operand + *const_val;
+            ctx.value_stack.push(Val::Num(Num::F32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_f32_sub_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::F32(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_f32()?;
+            let result = operand - *const_val;
+            ctx.value_stack.push(Val::Num(Num::F32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_f32_mul_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::F32(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_f32()?;
+            let result = operand * *const_val;
+            ctx.value_stack.push(Val::Num(Num::F32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_f32_div_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::F32(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_f32()?;
+            let result = operand / *const_val;
+            ctx.value_stack.push(Val::Num(Num::F32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_f64_add_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::F64(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_f64()?;
+            let result = operand + *const_val;
+            ctx.value_stack.push(Val::Num(Num::F64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_f64_sub_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::F64(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_f64()?;
+            let result = operand - *const_val;
+            ctx.value_stack.push(Val::Num(Num::F64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_f64_mul_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::F64(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_f64()?;
+            let result = operand * *const_val;
+            ctx.value_stack.push(Val::Num(Num::F64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_f64_div_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::F64(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_f64()?;
+            let result = operand / *const_val;
+            ctx.value_stack.push(Val::Num(Num::F64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i32_rem_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I32(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i32()?;
+            if *const_val == 0 {
+                return Err(RuntimeError::ZeroDivideError);
+            }
+            let result = if operand == i32::MIN && *const_val == -1 {
+                0
+            } else {
+                operand % *const_val
+            };
+            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i32_rem_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I32(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i32()?;
+            if *const_val == 0 {
+                return Err(RuntimeError::ZeroDivideError);
+            }
+            let result = (operand as u32) % (*const_val as u32);
+            ctx.value_stack.push(Val::Num(Num::I32(result as i32)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i64_rem_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I64(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i64()?;
+            if *const_val == 0 {
+                return Err(RuntimeError::ZeroDivideError);
+            }
+            let result = if operand == i64::MIN && *const_val == -1 {
+                0
+            } else {
+                operand % *const_val
+            };
+            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i64_rem_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I64(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i64()?;
+            if *const_val == 0 {
+                return Err(RuntimeError::ZeroDivideError);
+            }
+            let result = (operand as u64) % (*const_val as u64);
+            ctx.value_stack.push(Val::Num(Num::I64(result as i64)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
 fn handle_local_tee(
     ctx: &mut ExecutionContext,
     operand: &Operand,
@@ -4877,28 +5356,6 @@ lazy_static! {
         table[HANDLER_IDX_SELECT] = handle_select;
         table[HANDLER_IDX_LOCAL_GET] = handle_local_get;
         table[HANDLER_IDX_LOCAL_SET] = handle_local_set;
-        table[HANDLER_IDX_LOCAL_SET_I32_CONST] = handle_local_set_i32_const;
-        table[HANDLER_IDX_LOCAL_SET_I64_CONST] = handle_local_set_i64_const;
-        table[HANDLER_IDX_LOCAL_SET_F32_CONST] = handle_local_set_f32_const;
-        table[HANDLER_IDX_LOCAL_SET_F64_CONST] = handle_local_set_f64_const;
-        table[HANDLER_IDX_I32_LOAD_CONST] = handle_i32_load_const;
-        table[HANDLER_IDX_I64_LOAD_CONST] = handle_i64_load_const;
-        table[HANDLER_IDX_I32_CONST_I64_LOAD] = handle_i32_const_i64_load;
-        table[HANDLER_IDX_I32_CONST_F32_LOAD] = handle_i32_const_f32_load;
-        table[HANDLER_IDX_I32_CONST_F64_LOAD] = handle_i32_const_f64_load;
-        table[HANDLER_IDX_I64_CONST_I32_LOAD] = handle_i64_const_i32_load;
-        table[HANDLER_IDX_I64_CONST_I64_LOAD] = handle_i64_const_i64_load;
-        table[HANDLER_IDX_I64_CONST_F32_LOAD] = handle_i64_const_f32_load;
-        table[HANDLER_IDX_I64_CONST_F64_LOAD] = handle_i64_const_f64_load;
-        table[HANDLER_IDX_I32_STORE_CONST] = handle_i32_store_const;
-        table[HANDLER_IDX_I64_STORE_CONST] = handle_i64_store_const;
-        table[HANDLER_IDX_I32_CONST_I64_STORE] = handle_i32_const_i64_store;
-        table[HANDLER_IDX_I32_CONST_F32_STORE] = handle_i32_const_f32_store;
-        table[HANDLER_IDX_I32_CONST_F64_STORE] = handle_i32_const_f64_store;
-        table[HANDLER_IDX_I64_CONST_I32_STORE] = handle_i64_const_i32_store;
-        table[HANDLER_IDX_I64_CONST_I64_STORE] = handle_i64_const_i64_store;
-        table[HANDLER_IDX_I64_CONST_F32_STORE] = handle_i64_const_f32_store;
-        table[HANDLER_IDX_I64_CONST_F64_STORE] = handle_i64_const_f64_store;
         table[HANDLER_IDX_LOCAL_TEE] = handle_local_tee;
         table[HANDLER_IDX_GLOBAL_GET] = handle_global_get;
         table[HANDLER_IDX_GLOBAL_SET] = handle_global_set;
@@ -5075,6 +5532,59 @@ lazy_static! {
         table[HANDLER_IDX_I64_TRUNC_SAT_F32_U] = handle_i64_trunc_sat_f32_u;
         table[HANDLER_IDX_I64_TRUNC_SAT_F64_S] = handle_i64_trunc_sat_f64_s;
         table[HANDLER_IDX_I64_TRUNC_SAT_F64_U] = handle_i64_trunc_sat_f64_u;
+
+        // === Superinstructions ===
+        // const + local.set superinstructions
+        table[HANDLER_IDX_LOCAL_SET_I32_CONST] = handle_local_set_i32_const;
+        table[HANDLER_IDX_LOCAL_SET_I64_CONST] = handle_local_set_i64_const;
+        table[HANDLER_IDX_LOCAL_SET_F32_CONST] = handle_local_set_f32_const;
+        table[HANDLER_IDX_LOCAL_SET_F64_CONST] = handle_local_set_f64_const;
+
+        // const + load superinstructions
+        table[HANDLER_IDX_I32_LOAD_CONST] = handle_i32_load_const;
+        table[HANDLER_IDX_I64_LOAD_CONST] = handle_i64_load_const;
+        table[HANDLER_IDX_I32_CONST_I64_LOAD] = handle_i32_const_i64_load;
+        table[HANDLER_IDX_I32_CONST_F32_LOAD] = handle_i32_const_f32_load;
+        table[HANDLER_IDX_I32_CONST_F64_LOAD] = handle_i32_const_f64_load;
+        table[HANDLER_IDX_I64_CONST_I32_LOAD] = handle_i64_const_i32_load;
+        table[HANDLER_IDX_I64_CONST_I64_LOAD] = handle_i64_const_i64_load;
+        table[HANDLER_IDX_I64_CONST_F32_LOAD] = handle_i64_const_f32_load;
+        table[HANDLER_IDX_I64_CONST_F64_LOAD] = handle_i64_const_f64_load;
+
+        // const + store superinstructions
+        table[HANDLER_IDX_I32_STORE_CONST] = handle_i32_store_const;
+        table[HANDLER_IDX_I64_STORE_CONST] = handle_i64_store_const;
+        table[HANDLER_IDX_I32_CONST_I64_STORE] = handle_i32_const_i64_store;
+        table[HANDLER_IDX_I32_CONST_F32_STORE] = handle_i32_const_f32_store;
+        table[HANDLER_IDX_I32_CONST_F64_STORE] = handle_i32_const_f64_store;
+        table[HANDLER_IDX_I64_CONST_I32_STORE] = handle_i64_const_i32_store;
+        table[HANDLER_IDX_I64_CONST_I64_STORE] = handle_i64_const_i64_store;
+        table[HANDLER_IDX_I64_CONST_F32_STORE] = handle_i64_const_f32_store;
+        table[HANDLER_IDX_I64_CONST_F64_STORE] = handle_i64_const_f64_store;
+
+        // const + arithmetic superinstructions
+        table[HANDLER_IDX_I32_ADD_CONST] = handle_i32_add_const;
+        table[HANDLER_IDX_I32_SUB_CONST] = handle_i32_sub_const;
+        table[HANDLER_IDX_I32_MUL_CONST] = handle_i32_mul_const;
+        table[HANDLER_IDX_I32_DIV_S_CONST] = handle_i32_div_s_const;
+        table[HANDLER_IDX_I32_DIV_U_CONST] = handle_i32_div_u_const;
+        table[HANDLER_IDX_I64_ADD_CONST] = handle_i64_add_const;
+        table[HANDLER_IDX_I64_SUB_CONST] = handle_i64_sub_const;
+        table[HANDLER_IDX_I64_MUL_CONST] = handle_i64_mul_const;
+        table[HANDLER_IDX_I64_DIV_S_CONST] = handle_i64_div_s_const;
+        table[HANDLER_IDX_I64_DIV_U_CONST] = handle_i64_div_u_const;
+        table[HANDLER_IDX_F32_ADD_CONST] = handle_f32_add_const;
+        table[HANDLER_IDX_F32_SUB_CONST] = handle_f32_sub_const;
+        table[HANDLER_IDX_F32_MUL_CONST] = handle_f32_mul_const;
+        table[HANDLER_IDX_F32_DIV_CONST] = handle_f32_div_const;
+        table[HANDLER_IDX_F64_ADD_CONST] = handle_f64_add_const;
+        table[HANDLER_IDX_F64_SUB_CONST] = handle_f64_sub_const;
+        table[HANDLER_IDX_F64_MUL_CONST] = handle_f64_mul_const;
+        table[HANDLER_IDX_F64_DIV_CONST] = handle_f64_div_const;
+        table[HANDLER_IDX_I32_REM_S_CONST] = handle_i32_rem_s_const;
+        table[HANDLER_IDX_I32_REM_U_CONST] = handle_i32_rem_u_const;
+        table[HANDLER_IDX_I64_REM_S_CONST] = handle_i64_rem_s_const;
+        table[HANDLER_IDX_I64_REM_U_CONST] = handle_i64_rem_u_const;
 
         table
     };
