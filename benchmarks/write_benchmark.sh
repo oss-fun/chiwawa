@@ -52,6 +52,7 @@ function run_write_benchmark() {
     local start_time=$(date +%s.%N)
     wasmtime --dir . "$CHIWAWA_WASM" "$WRITE_WASM" --enable-superinstructions --app-args "--size $size --iterations $iterations" 2>/dev/null
     local end_time=$(date +%s.%N)
+    rm -f bench_test_file.dat_* 2>/dev/null || true
     
     # Calculate chiwawa superinstructions execution time and throughput
     local chiwawa_super_time=$(echo "$end_time - $start_time" | bc)
@@ -67,6 +68,7 @@ function run_write_benchmark() {
     local start_time=$(date +%s.%N)
     wasmtime --dir . "$CHIWAWA_WASM" "$WRITE_WASM" --app-args "--size $size --iterations $iterations" 2>/dev/null
     local end_time=$(date +%s.%N)
+    rm -f bench_test_file.dat_* 2>/dev/null || true
     
     # Calculate chiwawa baseline execution time and throughput
     local chiwawa_time=$(echo "$end_time - $start_time" | bc)
@@ -82,6 +84,7 @@ function run_write_benchmark() {
     local start_time=$(date +%s.%N)
     wasmtime --dir . "$WRITE_WASM" --size $size --iterations $iterations >/dev/null 2>&1
     local end_time=$(date +%s.%N)
+    rm -f bench_test_file.dat_* 2>/dev/null || true
     
     # Calculate wasmtime execution time and throughput
     local wasmtime_time=$(echo "$end_time - $start_time" | bc)
