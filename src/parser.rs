@@ -2004,6 +2004,80 @@ fn try_superinstructions_const(
         }
     }
 
+    fn try_consume_store_type(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+        const_type: ConstType,
+    ) -> Option<(usize, Memarg)> {
+        if let Some(Ok((next_op, _))) = ops.peek() {
+            let result = match (const_type, next_op) {
+                (ConstType::I32, wasmparser::Operator::I32Store { memarg }) => Some((
+                    HANDLER_IDX_I32_STORE_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I32, wasmparser::Operator::I64Store { memarg }) => Some((
+                    HANDLER_IDX_I32_CONST_I64_STORE,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I32, wasmparser::Operator::F32Store { memarg }) => Some((
+                    HANDLER_IDX_I32_CONST_F32_STORE,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I32, wasmparser::Operator::F64Store { memarg }) => Some((
+                    HANDLER_IDX_I32_CONST_F64_STORE,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I64, wasmparser::Operator::I32Store { memarg }) => Some((
+                    HANDLER_IDX_I64_CONST_I32_STORE,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I64, wasmparser::Operator::I64Store { memarg }) => Some((
+                    HANDLER_IDX_I64_STORE_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I64, wasmparser::Operator::F32Store { memarg }) => Some((
+                    HANDLER_IDX_I64_CONST_F32_STORE,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I64, wasmparser::Operator::F64Store { memarg }) => Some((
+                    HANDLER_IDX_I64_CONST_F64_STORE,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                _ => None,
+            };
+
+            if result.is_some() {
+                let _ = ops.next().unwrap().unwrap();
+            }
+            result
+        } else {
+            None
+        }
+    }
+
     match op {
         wasmparser::Operator::I32Const { value } => {
             if let Some(local_idx) = try_consume_local_set(ops) {
@@ -2011,8 +2085,14 @@ fn try_superinstructions_const(
                     handler_index: HANDLER_IDX_LOCAL_SET_I32_CONST,
                     operand: Operand::LocalIdxI32(LocalIdx(local_idx), *value),
                 })
+            } else if let Some((handler_index, memarg)) = try_consume_load_type(ops, ConstType::I32)
+            {
+                Some(ProcessedInstr {
+                    handler_index,
+                    operand: Operand::MemArgI32(*value, memarg),
+                })
             } else {
-                try_consume_load_type(ops, ConstType::I32).map(|(handler_index, memarg)| {
+                try_consume_store_type(ops, ConstType::I32).map(|(handler_index, memarg)| {
                     ProcessedInstr {
                         handler_index,
                         operand: Operand::MemArgI32(*value, memarg),
@@ -2026,8 +2106,14 @@ fn try_superinstructions_const(
                     handler_index: HANDLER_IDX_LOCAL_SET_I64_CONST,
                     operand: Operand::LocalIdxI64(LocalIdx(local_idx), *value),
                 })
+            } else if let Some((handler_index, memarg)) = try_consume_load_type(ops, ConstType::I64)
+            {
+                Some(ProcessedInstr {
+                    handler_index,
+                    operand: Operand::MemArgI64(*value, memarg),
+                })
             } else {
-                try_consume_load_type(ops, ConstType::I64).map(|(handler_index, memarg)| {
+                try_consume_store_type(ops, ConstType::I64).map(|(handler_index, memarg)| {
                     ProcessedInstr {
                         handler_index,
                         operand: Operand::MemArgI64(*value, memarg),
