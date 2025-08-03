@@ -2116,6 +2116,12 @@ fn try_superinstructions_const(
                 (ConstType::I64, wasmparser::Operator::I64RemU) => {
                     Some(HANDLER_IDX_I64_REM_U_CONST)
                 }
+                (ConstType::I32, wasmparser::Operator::I32And) => Some(HANDLER_IDX_I32_AND_CONST),
+                (ConstType::I32, wasmparser::Operator::I32Or) => Some(HANDLER_IDX_I32_OR_CONST),
+                (ConstType::I32, wasmparser::Operator::I32Xor) => Some(HANDLER_IDX_I32_XOR_CONST),
+                (ConstType::I64, wasmparser::Operator::I64And) => Some(HANDLER_IDX_I64_AND_CONST),
+                (ConstType::I64, wasmparser::Operator::I64Or) => Some(HANDLER_IDX_I64_OR_CONST),
+                (ConstType::I64, wasmparser::Operator::I64Xor) => Some(HANDLER_IDX_I64_XOR_CONST),
                 (ConstType::F32, wasmparser::Operator::F32Add) => Some(HANDLER_IDX_F32_ADD_CONST),
                 (ConstType::F32, wasmparser::Operator::F32Sub) => Some(HANDLER_IDX_F32_SUB_CONST),
                 (ConstType::F32, wasmparser::Operator::F32Mul) => Some(HANDLER_IDX_F32_MUL_CONST),
@@ -2143,15 +2149,12 @@ fn try_superinstructions_const(
                     handler_index: HANDLER_IDX_LOCAL_SET_I32_CONST,
                     operand: Operand::LocalIdxI32(LocalIdx(local_idx), *value),
                 })
-            } else if let Some((handler_index, memarg)) = try_consume_load(ops, ConstType::I32)
-            {
+            } else if let Some((handler_index, memarg)) = try_consume_load(ops, ConstType::I32) {
                 Some(ProcessedInstr {
                     handler_index,
                     operand: Operand::MemArgI32(*value, memarg),
                 })
-            } else if let Some((handler_index, memarg)) =
-                try_consume_store(ops, ConstType::I32)
-            {
+            } else if let Some((handler_index, memarg)) = try_consume_store(ops, ConstType::I32) {
                 Some(ProcessedInstr {
                     handler_index,
                     operand: Operand::MemArgI32(*value, memarg),
@@ -2169,15 +2172,12 @@ fn try_superinstructions_const(
                     handler_index: HANDLER_IDX_LOCAL_SET_I64_CONST,
                     operand: Operand::LocalIdxI64(LocalIdx(local_idx), *value),
                 })
-            } else if let Some((handler_index, memarg)) = try_consume_load(ops, ConstType::I64)
-            {
+            } else if let Some((handler_index, memarg)) = try_consume_load(ops, ConstType::I64) {
                 Some(ProcessedInstr {
                     handler_index,
                     operand: Operand::MemArgI64(*value, memarg),
                 })
-            } else if let Some((handler_index, memarg)) =
-                try_consume_store(ops, ConstType::I64)
-            {
+            } else if let Some((handler_index, memarg)) = try_consume_store(ops, ConstType::I64) {
                 Some(ProcessedInstr {
                     handler_index,
                     operand: Operand::MemArgI64(*value, memarg),

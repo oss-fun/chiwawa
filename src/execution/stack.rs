@@ -358,7 +358,15 @@ pub const HANDLER_IDX_I32_REM_S_CONST: usize = 0x100;
 pub const HANDLER_IDX_I32_REM_U_CONST: usize = 0x101;
 pub const HANDLER_IDX_I64_REM_S_CONST: usize = 0x102;
 pub const HANDLER_IDX_I64_REM_U_CONST: usize = 0x103;
-pub const MAX_HANDLER_INDEX: usize = 0x104;
+// and/or/xor superinstructions
+pub const HANDLER_IDX_I32_AND_CONST: usize = 0x104;
+pub const HANDLER_IDX_I32_OR_CONST: usize = 0x105;
+pub const HANDLER_IDX_I32_XOR_CONST: usize = 0x106;
+pub const HANDLER_IDX_I64_AND_CONST: usize = 0x107;
+pub const HANDLER_IDX_I64_OR_CONST: usize = 0x108;
+pub const HANDLER_IDX_I64_XOR_CONST: usize = 0x109;
+
+pub const MAX_HANDLER_INDEX: usize = 0x10A;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stacks {
@@ -3840,6 +3848,120 @@ fn handle_i64_rem_u_const(
     }
 }
 
+fn handle_i32_and_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I32(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i32()?;
+            let result = operand & const_val;
+            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i32_or_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I32(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i32()?;
+            let result = operand | const_val;
+            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i32_xor_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I32(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i32()?;
+            let result = operand ^ const_val;
+            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i64_and_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I64(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i64()?;
+            let result = operand & const_val;
+            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i64_or_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I64(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i64()?;
+            let result = operand | const_val;
+            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
+fn handle_i64_xor_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    match operand {
+        Operand::I64(const_val) => {
+            let operand_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let operand = operand_val.to_i64()?;
+            let result = operand ^ const_val;
+            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => Err(RuntimeError::InvalidOperand),
+    }
+}
+
 fn handle_local_tee(
     ctx: &mut ExecutionContext,
     operand: &Operand,
@@ -5585,6 +5707,12 @@ lazy_static! {
         table[HANDLER_IDX_I32_REM_U_CONST] = handle_i32_rem_u_const;
         table[HANDLER_IDX_I64_REM_S_CONST] = handle_i64_rem_s_const;
         table[HANDLER_IDX_I64_REM_U_CONST] = handle_i64_rem_u_const;
+        table[HANDLER_IDX_I32_AND_CONST] = handle_i32_and_const;
+        table[HANDLER_IDX_I32_OR_CONST] = handle_i32_or_const;
+        table[HANDLER_IDX_I32_XOR_CONST] = handle_i32_xor_const;
+        table[HANDLER_IDX_I64_AND_CONST] = handle_i64_and_const;
+        table[HANDLER_IDX_I64_OR_CONST] = handle_i64_or_const;
+        table[HANDLER_IDX_I64_XOR_CONST] = handle_i64_xor_const;
 
         table
     };

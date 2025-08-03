@@ -411,6 +411,12 @@ pub enum Instr {
     I32RemUConst(i32),
     I64RemSConst(i64),
     I64RemUConst(i64),
+    I32AndConst(i32),
+    I32OrConst(i32),
+    I32XorConst(i32),
+    I64AndConst(i64),
+    I64OrConst(i64),
+    I64XorConst(i64),
     /* Table Instructions */
     TableGet(TableIdx),
     TableSet(TableIdx),
