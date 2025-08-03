@@ -1932,7 +1932,7 @@ fn try_superinstructions_const(
         None
     }
 
-    fn try_consume_load_type(
+    fn try_consume_load(
         ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
         const_type: ConstType,
     ) -> Option<(usize, Memarg)> {
@@ -2006,7 +2006,7 @@ fn try_superinstructions_const(
         }
     }
 
-    fn try_consume_store_type(
+    fn try_consume_store(
         ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
         const_type: ConstType,
     ) -> Option<(usize, Memarg)> {
@@ -2143,14 +2143,14 @@ fn try_superinstructions_const(
                     handler_index: HANDLER_IDX_LOCAL_SET_I32_CONST,
                     operand: Operand::LocalIdxI32(LocalIdx(local_idx), *value),
                 })
-            } else if let Some((handler_index, memarg)) = try_consume_load_type(ops, ConstType::I32)
+            } else if let Some((handler_index, memarg)) = try_consume_load(ops, ConstType::I32)
             {
                 Some(ProcessedInstr {
                     handler_index,
                     operand: Operand::MemArgI32(*value, memarg),
                 })
             } else if let Some((handler_index, memarg)) =
-                try_consume_store_type(ops, ConstType::I32)
+                try_consume_store(ops, ConstType::I32)
             {
                 Some(ProcessedInstr {
                     handler_index,
@@ -2169,14 +2169,14 @@ fn try_superinstructions_const(
                     handler_index: HANDLER_IDX_LOCAL_SET_I64_CONST,
                     operand: Operand::LocalIdxI64(LocalIdx(local_idx), *value),
                 })
-            } else if let Some((handler_index, memarg)) = try_consume_load_type(ops, ConstType::I64)
+            } else if let Some((handler_index, memarg)) = try_consume_load(ops, ConstType::I64)
             {
                 Some(ProcessedInstr {
                     handler_index,
                     operand: Operand::MemArgI64(*value, memarg),
                 })
             } else if let Some((handler_index, memarg)) =
-                try_consume_store_type(ops, ConstType::I64)
+                try_consume_store(ops, ConstType::I64)
             {
                 Some(ProcessedInstr {
                     handler_index,
