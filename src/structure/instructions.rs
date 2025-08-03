@@ -369,8 +369,8 @@ pub enum Instr {
     LocalSetF32Const(LocalIdx, f32),
     LocalSetF64Const(LocalIdx, f64),
     /* const + load superinstructions */
-    I32LoadConst(i32, Memarg),
-    I64LoadConst(i64, Memarg),
+    I32LoadI32Const(i32, Memarg),
+    I64LoadI64Const(i64, Memarg),
     I32ConstI64Load(i32, Memarg), // i32.const + i64.load
     I32ConstF32Load(i32, Memarg), // i32.const + f32.load
     I32ConstF64Load(i32, Memarg), // i32.const + f64.load
@@ -379,8 +379,8 @@ pub enum Instr {
     I64ConstF32Load(i64, Memarg), // i64.const + f32.load
     I64ConstF64Load(i64, Memarg), // i64.const + f64.load
     /* const + store superinstructions */
-    I32StoreConst(i32, Memarg),
-    I64StoreConst(i64, Memarg),
+    I32StoreI32Const(i32, Memarg),
+    I64StoreI64Const(i64, Memarg),
     I32ConstI64Store(i32, Memarg), // i32.const + i64.store
     I32ConstF32Store(i32, Memarg), // i32.const + f32.store
     I32ConstF64Store(i32, Memarg), // i32.const + f64.store

@@ -317,8 +317,8 @@ pub const HANDLER_IDX_LOCAL_SET_I32_CONST: usize = 0xD8;
 pub const HANDLER_IDX_LOCAL_SET_I64_CONST: usize = 0xD9;
 pub const HANDLER_IDX_LOCAL_SET_F32_CONST: usize = 0xDA;
 pub const HANDLER_IDX_LOCAL_SET_F64_CONST: usize = 0xDB;
-pub const HANDLER_IDX_I32_LOAD_CONST: usize = 0xDC;
-pub const HANDLER_IDX_I64_LOAD_CONST: usize = 0xDD;
+pub const HANDLER_IDX_I32_LOAD_I32_CONST: usize = 0xDC;
+pub const HANDLER_IDX_I64_LOAD_I64_CONST: usize = 0xDD;
 pub const HANDLER_IDX_I32_CONST_I64_LOAD: usize = 0xDE;
 pub const HANDLER_IDX_I32_CONST_F32_LOAD: usize = 0xDF;
 pub const HANDLER_IDX_I32_CONST_F64_LOAD: usize = 0xE0;
@@ -326,8 +326,8 @@ pub const HANDLER_IDX_I64_CONST_I32_LOAD: usize = 0xE1;
 pub const HANDLER_IDX_I64_CONST_I64_LOAD: usize = 0xE2;
 pub const HANDLER_IDX_I64_CONST_F32_LOAD: usize = 0xE3;
 pub const HANDLER_IDX_I64_CONST_F64_LOAD: usize = 0xE4;
-pub const HANDLER_IDX_I32_STORE_CONST: usize = 0xE5;
-pub const HANDLER_IDX_I64_STORE_CONST: usize = 0xE6;
+pub const HANDLER_IDX_I32_STORE_I32_CONST: usize = 0xE5;
+pub const HANDLER_IDX_I64_STORE_I64_CONST: usize = 0xE6;
 pub const HANDLER_IDX_I32_CONST_I64_STORE: usize = 0xE7;
 pub const HANDLER_IDX_I32_CONST_F32_STORE: usize = 0xE8;
 pub const HANDLER_IDX_I32_CONST_F64_STORE: usize = 0xE9;
@@ -2877,1091 +2877,6 @@ fn handle_local_set(
     }
 }
 
-fn handle_local_set_i32_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::LocalIdxI32(local_idx, immediate_val) => {
-            let index = local_idx.0 as usize;
-            if index >= ctx.frame.locals.len() {
-                return Err(RuntimeError::LocalIndexOutOfBounds);
-            }
-            ctx.frame.locals[index] = Val::Num(Num::I32(*immediate_val));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_local_set_i64_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    if let &Operand::LocalIdxI64(LocalIdx(index_val), immediate_val) = operand {
-        let index = index_val as usize;
-        if index >= ctx.frame.locals.len() {
-            return Err(RuntimeError::LocalIndexOutOfBounds);
-        }
-        ctx.frame.locals[index] = Val::Num(Num::I64(immediate_val));
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
-}
-
-fn handle_local_set_f32_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    if let &Operand::LocalIdxF32(LocalIdx(index_val), immediate_val) = operand {
-        let index = index_val as usize;
-        if index >= ctx.frame.locals.len() {
-            return Err(RuntimeError::LocalIndexOutOfBounds);
-        }
-        ctx.frame.locals[index] = Val::Num(Num::F32(immediate_val));
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
-}
-
-fn handle_local_set_f64_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    if let &Operand::LocalIdxF64(LocalIdx(index_val), immediate_val) = operand {
-        let index = index_val as usize;
-        if index >= ctx.frame.locals.len() {
-            return Err(RuntimeError::LocalIndexOutOfBounds);
-        }
-        ctx.frame.locals[index] = Val::Num(Num::F64(immediate_val));
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
-}
-
-fn handle_i32_load_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::MemArgI32(offset, memarg) => {
-            let module_inst = ctx
-                .frame
-                .module
-                .upgrade()
-                .ok_or(RuntimeError::ModuleInstanceGone)?;
-            if module_inst.mem_addrs.is_empty() {
-                return Err(RuntimeError::MemoryNotFound);
-            }
-            let mem_addr = &module_inst.mem_addrs[0];
-            let val = mem_addr.load::<i32>(&memarg, *offset)?;
-            ctx.value_stack.push(Val::Num(Num::I32(val)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_load_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::MemArgI64(offset, memarg) => {
-            let module_inst = ctx
-                .frame
-                .module
-                .upgrade()
-                .ok_or(RuntimeError::ModuleInstanceGone)?;
-            if module_inst.mem_addrs.is_empty() {
-                return Err(RuntimeError::MemoryNotFound);
-            }
-            let mem_addr = &module_inst.mem_addrs[0];
-            let val = mem_addr.load::<i64>(&memarg, *offset as i32)?;
-            ctx.value_stack.push(Val::Num(Num::I64(val)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i32_const_i64_load(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::MemArgI32(offset, memarg) => {
-            let module_inst = ctx
-                .frame
-                .module
-                .upgrade()
-                .ok_or(RuntimeError::ModuleInstanceGone)?;
-            if module_inst.mem_addrs.is_empty() {
-                return Err(RuntimeError::MemoryNotFound);
-            }
-            let mem_addr = &module_inst.mem_addrs[0];
-            let val = mem_addr.load::<i64>(&memarg, *offset)?;
-            ctx.value_stack.push(Val::Num(Num::I64(val)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i32_const_f32_load(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::MemArgI32(offset, memarg) => {
-            let module_inst = ctx
-                .frame
-                .module
-                .upgrade()
-                .ok_or(RuntimeError::ModuleInstanceGone)?;
-            if module_inst.mem_addrs.is_empty() {
-                return Err(RuntimeError::MemoryNotFound);
-            }
-            let mem_addr = &module_inst.mem_addrs[0];
-            let val = mem_addr.load::<f32>(&memarg, *offset)?;
-            ctx.value_stack.push(Val::Num(Num::F32(val)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i32_const_f64_load(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::MemArgI32(offset, memarg) => {
-            let module_inst = ctx
-                .frame
-                .module
-                .upgrade()
-                .ok_or(RuntimeError::ModuleInstanceGone)?;
-            if module_inst.mem_addrs.is_empty() {
-                return Err(RuntimeError::MemoryNotFound);
-            }
-            let mem_addr = &module_inst.mem_addrs[0];
-            let val = mem_addr.load::<f64>(&memarg, *offset)?;
-            ctx.value_stack.push(Val::Num(Num::F64(val)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_const_i32_load(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::MemArgI64(offset, memarg) => {
-            let module_inst = ctx
-                .frame
-                .module
-                .upgrade()
-                .ok_or(RuntimeError::ModuleInstanceGone)?;
-            if module_inst.mem_addrs.is_empty() {
-                return Err(RuntimeError::MemoryNotFound);
-            }
-            let mem_addr = &module_inst.mem_addrs[0];
-            let val = mem_addr.load::<i32>(&memarg, *offset as i32)?;
-            ctx.value_stack.push(Val::Num(Num::I32(val)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_const_i64_load(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::MemArgI64(offset, memarg) => {
-            let module_inst = ctx
-                .frame
-                .module
-                .upgrade()
-                .ok_or(RuntimeError::ModuleInstanceGone)?;
-            if module_inst.mem_addrs.is_empty() {
-                return Err(RuntimeError::MemoryNotFound);
-            }
-            let mem_addr = &module_inst.mem_addrs[0];
-            let val = mem_addr.load::<i64>(&memarg, *offset as i32)?;
-            ctx.value_stack.push(Val::Num(Num::I64(val)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_const_f32_load(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::MemArgI64(offset, memarg) => {
-            let module_inst = ctx
-                .frame
-                .module
-                .upgrade()
-                .ok_or(RuntimeError::ModuleInstanceGone)?;
-            if module_inst.mem_addrs.is_empty() {
-                return Err(RuntimeError::MemoryNotFound);
-            }
-            let mem_addr = &module_inst.mem_addrs[0];
-            let val = mem_addr.load::<f32>(&memarg, *offset as i32)?;
-            ctx.value_stack.push(Val::Num(Num::F32(val)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_const_f64_load(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::MemArgI64(offset, memarg) => {
-            let module_inst = ctx
-                .frame
-                .module
-                .upgrade()
-                .ok_or(RuntimeError::ModuleInstanceGone)?;
-            if module_inst.mem_addrs.is_empty() {
-                return Err(RuntimeError::MemoryNotFound);
-            }
-            let mem_addr = &module_inst.mem_addrs[0];
-            let val = mem_addr.load::<f64>(&memarg, *offset as i32)?;
-            ctx.value_stack.push(Val::Num(Num::F64(val)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i32_store_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::MemArgI32(val_to_store, memarg) => {
-            let ptr_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let ptr = ptr_val.to_i32()?;
-            let module_inst = ctx
-                .frame
-                .module
-                .upgrade()
-                .ok_or(RuntimeError::ModuleInstanceGone)?;
-            if module_inst.mem_addrs.is_empty() {
-                return Err(RuntimeError::MemoryNotFound);
-            }
-            let mem_addr = &module_inst.mem_addrs[0];
-            mem_addr.store::<i32>(&memarg, ptr, *val_to_store)?;
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_store_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::MemArgI64(val_to_store, memarg) => {
-            let ptr_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let ptr = ptr_val.to_i32()?;
-            let module_inst = ctx
-                .frame
-                .module
-                .upgrade()
-                .ok_or(RuntimeError::ModuleInstanceGone)?;
-            if module_inst.mem_addrs.is_empty() {
-                return Err(RuntimeError::MemoryNotFound);
-            }
-            let mem_addr = &module_inst.mem_addrs[0];
-            mem_addr.store::<i64>(&memarg, ptr, *val_to_store)?;
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i32_const_i64_store(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::MemArgI32(ptr, memarg) => {
-            let val_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let val_to_store = val_val.to_i64()?;
-            let module_inst = ctx
-                .frame
-                .module
-                .upgrade()
-                .ok_or(RuntimeError::ModuleInstanceGone)?;
-            if module_inst.mem_addrs.is_empty() {
-                return Err(RuntimeError::MemoryNotFound);
-            }
-            let mem_addr = &module_inst.mem_addrs[0];
-            mem_addr.store::<i64>(&memarg, *ptr, val_to_store)?;
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i32_const_f32_store(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::MemArgI32(ptr, memarg) => {
-            let val_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let val_to_store = val_val.to_f32()?;
-            let module_inst = ctx
-                .frame
-                .module
-                .upgrade()
-                .ok_or(RuntimeError::ModuleInstanceGone)?;
-            if module_inst.mem_addrs.is_empty() {
-                return Err(RuntimeError::MemoryNotFound);
-            }
-            let mem_addr = &module_inst.mem_addrs[0];
-            mem_addr.store::<f32>(&memarg, *ptr, val_to_store)?;
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i32_const_f64_store(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::MemArgI32(ptr, memarg) => {
-            let val_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let val_to_store = val_val.to_f64()?;
-            let module_inst = ctx
-                .frame
-                .module
-                .upgrade()
-                .ok_or(RuntimeError::ModuleInstanceGone)?;
-            if module_inst.mem_addrs.is_empty() {
-                return Err(RuntimeError::MemoryNotFound);
-            }
-            let mem_addr = &module_inst.mem_addrs[0];
-            mem_addr.store::<f64>(&memarg, *ptr, val_to_store)?;
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_const_i32_store(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::MemArgI64(ptr, memarg) => {
-            let val_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let val_to_store = val_val.to_i32()?;
-            let module_inst = ctx
-                .frame
-                .module
-                .upgrade()
-                .ok_or(RuntimeError::ModuleInstanceGone)?;
-            if module_inst.mem_addrs.is_empty() {
-                return Err(RuntimeError::MemoryNotFound);
-            }
-            let mem_addr = &module_inst.mem_addrs[0];
-            mem_addr.store::<i32>(&memarg, *ptr as i32, val_to_store)?;
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_const_i64_store(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::MemArgI64(ptr, memarg) => {
-            let val_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let val_to_store = val_val.to_i64()?;
-            let module_inst = ctx
-                .frame
-                .module
-                .upgrade()
-                .ok_or(RuntimeError::ModuleInstanceGone)?;
-            if module_inst.mem_addrs.is_empty() {
-                return Err(RuntimeError::MemoryNotFound);
-            }
-            let mem_addr = &module_inst.mem_addrs[0];
-            mem_addr.store::<i64>(&memarg, *ptr as i32, val_to_store)?;
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_const_f32_store(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::MemArgI64(ptr, memarg) => {
-            let val_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let val_to_store = val_val.to_f32()?;
-            let module_inst = ctx
-                .frame
-                .module
-                .upgrade()
-                .ok_or(RuntimeError::ModuleInstanceGone)?;
-            if module_inst.mem_addrs.is_empty() {
-                return Err(RuntimeError::MemoryNotFound);
-            }
-            let mem_addr = &module_inst.mem_addrs[0];
-            mem_addr.store::<f32>(&memarg, *ptr as i32, val_to_store)?;
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_const_f64_store(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::MemArgI64(ptr, memarg) => {
-            let val_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let val_to_store = val_val.to_f64()?;
-            let module_inst = ctx
-                .frame
-                .module
-                .upgrade()
-                .ok_or(RuntimeError::ModuleInstanceGone)?;
-            if module_inst.mem_addrs.is_empty() {
-                return Err(RuntimeError::MemoryNotFound);
-            }
-            let mem_addr = &module_inst.mem_addrs[0];
-            mem_addr.store::<f64>(&memarg, *ptr as i32, val_to_store)?;
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i32_add_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I32(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i32()?;
-            let result = operand.wrapping_add(*const_val);
-            ctx.value_stack.push(Val::Num(Num::I32(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i32_sub_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I32(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i32()?;
-            let result = operand.wrapping_sub(*const_val);
-            ctx.value_stack.push(Val::Num(Num::I32(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i32_mul_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I32(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i32()?;
-            let result = operand.wrapping_mul(*const_val);
-            ctx.value_stack.push(Val::Num(Num::I32(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i32_div_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I32(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i32()?;
-            if *const_val == 0 {
-                return Err(RuntimeError::ZeroDivideError);
-            }
-            if operand == i32::MIN && *const_val == -1 {
-                return Err(RuntimeError::IntegerOverflow);
-            }
-            let result = operand / *const_val;
-            ctx.value_stack.push(Val::Num(Num::I32(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i32_div_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I32(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i32()?;
-            if *const_val == 0 {
-                return Err(RuntimeError::ZeroDivideError);
-            }
-            let result = (operand as u32) / (*const_val as u32);
-            ctx.value_stack.push(Val::Num(Num::I32(result as i32)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_add_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I64(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i64()?;
-            let result = operand.wrapping_add(*const_val);
-            ctx.value_stack.push(Val::Num(Num::I64(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_sub_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I64(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i64()?;
-            let result = operand.wrapping_sub(*const_val);
-            ctx.value_stack.push(Val::Num(Num::I64(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_mul_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I64(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i64()?;
-            let result = operand.wrapping_mul(*const_val);
-            ctx.value_stack.push(Val::Num(Num::I64(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_div_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I64(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i64()?;
-            if *const_val == 0 {
-                return Err(RuntimeError::ZeroDivideError);
-            }
-            if operand == i64::MIN && *const_val == -1 {
-                return Err(RuntimeError::IntegerOverflow);
-            }
-            let result = operand / *const_val;
-            ctx.value_stack.push(Val::Num(Num::I64(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_div_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I64(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i64()?;
-            if *const_val == 0 {
-                return Err(RuntimeError::ZeroDivideError);
-            }
-            let result = (operand as u64) / (*const_val as u64);
-            ctx.value_stack.push(Val::Num(Num::I64(result as i64)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_f32_add_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::F32(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_f32()?;
-            let result = operand + *const_val;
-            ctx.value_stack.push(Val::Num(Num::F32(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_f32_sub_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::F32(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_f32()?;
-            let result = operand - *const_val;
-            ctx.value_stack.push(Val::Num(Num::F32(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_f32_mul_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::F32(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_f32()?;
-            let result = operand * *const_val;
-            ctx.value_stack.push(Val::Num(Num::F32(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_f32_div_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::F32(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_f32()?;
-            let result = operand / *const_val;
-            ctx.value_stack.push(Val::Num(Num::F32(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_f64_add_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::F64(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_f64()?;
-            let result = operand + *const_val;
-            ctx.value_stack.push(Val::Num(Num::F64(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_f64_sub_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::F64(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_f64()?;
-            let result = operand - *const_val;
-            ctx.value_stack.push(Val::Num(Num::F64(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_f64_mul_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::F64(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_f64()?;
-            let result = operand * *const_val;
-            ctx.value_stack.push(Val::Num(Num::F64(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_f64_div_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::F64(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_f64()?;
-            let result = operand / *const_val;
-            ctx.value_stack.push(Val::Num(Num::F64(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i32_rem_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I32(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i32()?;
-            if *const_val == 0 {
-                return Err(RuntimeError::ZeroDivideError);
-            }
-            let result = if operand == i32::MIN && *const_val == -1 {
-                0
-            } else {
-                operand % *const_val
-            };
-            ctx.value_stack.push(Val::Num(Num::I32(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i32_rem_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I32(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i32()?;
-            if *const_val == 0 {
-                return Err(RuntimeError::ZeroDivideError);
-            }
-            let result = (operand as u32) % (*const_val as u32);
-            ctx.value_stack.push(Val::Num(Num::I32(result as i32)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_rem_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I64(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i64()?;
-            if *const_val == 0 {
-                return Err(RuntimeError::ZeroDivideError);
-            }
-            let result = if operand == i64::MIN && *const_val == -1 {
-                0
-            } else {
-                operand % *const_val
-            };
-            ctx.value_stack.push(Val::Num(Num::I64(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_rem_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I64(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i64()?;
-            if *const_val == 0 {
-                return Err(RuntimeError::ZeroDivideError);
-            }
-            let result = (operand as u64) % (*const_val as u64);
-            ctx.value_stack.push(Val::Num(Num::I64(result as i64)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i32_and_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I32(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i32()?;
-            let result = operand & const_val;
-            ctx.value_stack.push(Val::Num(Num::I32(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i32_or_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I32(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i32()?;
-            let result = operand | const_val;
-            ctx.value_stack.push(Val::Num(Num::I32(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i32_xor_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I32(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i32()?;
-            let result = operand ^ const_val;
-            ctx.value_stack.push(Val::Num(Num::I32(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_and_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I64(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i64()?;
-            let result = operand & const_val;
-            ctx.value_stack.push(Val::Num(Num::I64(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_or_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I64(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i64()?;
-            let result = operand | const_val;
-            ctx.value_stack.push(Val::Num(Num::I64(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
-fn handle_i64_xor_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    match operand {
-        Operand::I64(const_val) => {
-            let operand_val = ctx
-                .value_stack
-                .pop()
-                .ok_or(RuntimeError::ValueStackUnderflow)?;
-            let operand = operand_val.to_i64()?;
-            let result = operand ^ const_val;
-            ctx.value_stack.push(Val::Num(Num::I64(result)));
-            Ok(HandlerResult::Continue(ctx.ip + 1))
-        }
-        _ => Err(RuntimeError::InvalidOperand),
-    }
-}
-
 fn handle_local_tee(
     ctx: &mut ExecutionContext,
     operand: &Operand,
@@ -5458,6 +4373,517 @@ fn handle_i64_trunc_sat_f64_u(
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 
+/*Superinstructions*/
+
+macro_rules! local_set_const {
+    ($ctx:ident, $operand:ident, $operand_type:ident, $num_variant:ident) => {{
+        match $operand {
+            Operand::$operand_type(local_idx, immediate_val) => {
+                let index = local_idx.0 as usize;
+                if index >= $ctx.frame.locals.len() {
+                    return Err(RuntimeError::LocalIndexOutOfBounds);
+                }
+                $ctx.frame.locals[index] = Val::Num(Num::$num_variant(*immediate_val));
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => Err(RuntimeError::InvalidOperand),
+        }
+    }};
+}
+
+fn handle_local_set_i32_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    local_set_const!(ctx, operand, LocalIdxI32, I32)
+}
+
+fn handle_local_set_i64_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    local_set_const!(ctx, operand, LocalIdxI64, I64)
+}
+
+fn handle_local_set_f32_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    local_set_const!(ctx, operand, LocalIdxF32, F32)
+}
+
+fn handle_local_set_f64_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    local_set_const!(ctx, operand, LocalIdxF64, F64)
+}
+
+macro_rules! load_const {
+    ($ctx:ident, $operand:ident, $operand_type:ident, $load_type:ident, $num_variant:ident) => {{
+        match $operand {
+            Operand::$operand_type(offset, memarg) => {
+                let module_inst = $ctx
+                    .frame
+                    .module
+                    .upgrade()
+                    .ok_or(RuntimeError::ModuleInstanceGone)?;
+                if module_inst.mem_addrs.is_empty() {
+                    return Err(RuntimeError::MemoryNotFound);
+                }
+                let mem_addr = &module_inst.mem_addrs[0];
+                let val = mem_addr.load::<$load_type>(&memarg, *offset as i32)?;
+                $ctx.value_stack.push(Val::Num(Num::$num_variant(val)));
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => Err(RuntimeError::InvalidOperand),
+        }
+    }};
+}
+
+macro_rules! store_const {
+    // Pattern 1: Type-matching store (e.g., I32StoreI32Const, I64StoreI64Const)
+    // WebAssembly semantics: const value is stored, address comes from stack
+    // Stack layout: [i32_address] → [] (const value stored at address)
+    ($ctx:ident, $operand:ident, $operand_type:ident, $store_type:ident) => {{
+        match $operand {
+            Operand::$operand_type(val_to_store, memarg) => {
+                let ptr_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let ptr = ptr_val.to_i32()?;
+                let module_inst = $ctx
+                    .frame
+                    .module
+                    .upgrade()
+                    .ok_or(RuntimeError::ModuleInstanceGone)?;
+                if module_inst.mem_addrs.is_empty() {
+                    return Err(RuntimeError::MemoryNotFound);
+                }
+                let mem_addr = &module_inst.mem_addrs[0];
+                mem_addr.store::<$store_type>(&memarg, ptr, *val_to_store)?;
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => Err(RuntimeError::InvalidOperand),
+        }
+    }};
+    // Pattern 2: Type-mismatching store (e.g., I32ConstI64Store, I64ConstI32Store)
+    // WebAssembly semantics: const value is address, stored value comes from stack
+    // Stack layout: [typed_value] → [] (stack value stored at const address)
+    ($ctx:ident, $operand:ident, $operand_type:ident, $val_to_store_method:ident, $store_type:ident) => {{
+        match $operand {
+            Operand::$operand_type(ptr, memarg) => {
+                let val_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let val_to_store = val_val.$val_to_store_method()?;
+                let module_inst = $ctx
+                    .frame
+                    .module
+                    .upgrade()
+                    .ok_or(RuntimeError::ModuleInstanceGone)?;
+                if module_inst.mem_addrs.is_empty() {
+                    return Err(RuntimeError::MemoryNotFound);
+                }
+                let mem_addr = &module_inst.mem_addrs[0];
+                mem_addr.store::<$store_type>(&memarg, *ptr as i32, val_to_store)?;
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => Err(RuntimeError::InvalidOperand),
+        }
+    }};
+}
+
+fn handle_i32_load_i32_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_const!(ctx, operand, MemArgI32, i32, I32)
+}
+
+fn handle_i64_load_i64_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_const!(ctx, operand, MemArgI64, i64, I64)
+}
+
+fn handle_i32_const_i64_load(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_const!(ctx, operand, MemArgI32, i64, I64)
+}
+
+fn handle_i32_const_f32_load(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_const!(ctx, operand, MemArgI32, f32, F32)
+}
+
+fn handle_i32_const_f64_load(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_const!(ctx, operand, MemArgI32, f64, F64)
+}
+
+fn handle_i64_const_i32_load(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_const!(ctx, operand, MemArgI64, i32, I32)
+}
+
+fn handle_i64_const_i64_load(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_const!(ctx, operand, MemArgI64, i64, I64)
+}
+
+fn handle_i64_const_f32_load(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_const!(ctx, operand, MemArgI64, f32, F32)
+}
+
+fn handle_i64_const_f64_load(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_const!(ctx, operand, MemArgI64, f64, F64)
+}
+
+fn handle_i32_store_i32_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    store_const!(ctx, operand, MemArgI32, i32)
+}
+
+fn handle_i64_store_i64_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    store_const!(ctx, operand, MemArgI64, i64)
+}
+
+fn handle_i32_const_i64_store(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    store_const!(ctx, operand, MemArgI32, to_i64, i64)
+}
+
+fn handle_i32_const_f32_store(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    store_const!(ctx, operand, MemArgI32, to_f32, f32)
+}
+
+fn handle_i32_const_f64_store(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    store_const!(ctx, operand, MemArgI32, to_f64, f64)
+}
+
+fn handle_i64_const_i32_store(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    store_const!(ctx, operand, MemArgI64, to_i32, i32)
+}
+
+fn handle_i64_const_i64_store(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    store_const!(ctx, operand, MemArgI64, to_i64, i64)
+}
+
+fn handle_i64_const_f32_store(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    store_const!(ctx, operand, MemArgI64, to_f32, f32)
+}
+
+fn handle_i64_const_f64_store(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    store_const!(ctx, operand, MemArgI64, to_f64, f64)
+}
+
+macro_rules! binop_const {
+    ($ctx:ident, $operand:ident, $operand_type:ident, $val_type:ident, $num_type:ident, $op:ident) => {{
+        match $operand {
+            Operand::$operand_type(const_val) => {
+                let operand_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let operand = operand_val.$val_type()?;
+                let result = operand.$op(*const_val);
+                $ctx.value_stack.push(Val::Num(Num::$num_type(result)));
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => Err(RuntimeError::InvalidOperand),
+        }
+    }};
+    ($ctx:ident, $operand:ident, $operand_type:ident, $val_type:ident, $num_type:ident, $op:tt) => {{
+        match $operand {
+            Operand::$operand_type(const_val) => {
+                let operand_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let operand = operand_val.$val_type()?;
+                let result = operand $op *const_val;
+                $ctx.value_stack.push(Val::Num(Num::$num_type(result)));
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => Err(RuntimeError::InvalidOperand),
+        }
+    }};
+}
+
+macro_rules! divrem_const {
+    ($ctx:ident, $operand:ident, $operand_type:ident, $val_type:ident, $primitive_type:ident, $num_variant:ident, $signed:expr, $op:tt) => {{
+        match $operand {
+            Operand::$operand_type(const_val) => {
+                let operand_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let operand = operand_val.$val_type()?;
+                if *const_val == 0 {
+                    return Err(RuntimeError::ZeroDivideError);
+                }
+                let result = if $signed {
+                    if operand == <$primitive_type>::MIN && *const_val == -1 {
+                        if stringify!($op) == "/" {
+                            return Err(RuntimeError::IntegerOverflow);
+                        } else {
+                            0  // rem case
+                        }
+                    } else {
+                        operand $op *const_val
+                    }
+                } else {
+                    ((operand as u64) $op (*const_val as u64)) as $primitive_type
+                };
+                $ctx.value_stack.push(Val::Num(Num::$num_variant(result)));
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => Err(RuntimeError::InvalidOperand),
+        }
+    }};
+}
+
+fn handle_i32_add_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, I32, to_i32, I32, wrapping_add)
+}
+
+fn handle_i32_sub_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, I32, to_i32, I32, wrapping_sub)
+}
+
+fn handle_i32_mul_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, I32, to_i32, I32, wrapping_mul)
+}
+
+fn handle_i32_div_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    divrem_const!(ctx, operand, I32, to_i32, i32, I32, true, /)
+}
+
+fn handle_i32_div_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    divrem_const!(ctx, operand, I32, to_i32, i32, I32, false, /)
+}
+
+fn handle_i64_add_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, I64, to_i64, I64, wrapping_add)
+}
+
+fn handle_i64_sub_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, I64, to_i64, I64, wrapping_sub)
+}
+
+fn handle_i64_mul_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, I64, to_i64, I64, wrapping_mul)
+}
+
+fn handle_i64_div_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    divrem_const!(ctx, operand, I64, to_i64, i64, I64, true, /)
+}
+
+fn handle_i64_div_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    divrem_const!(ctx, operand, I64, to_i64, i64, I64, false, /)
+}
+
+fn handle_f32_add_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, F32, to_f32, F32, +)
+}
+
+fn handle_f32_sub_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, F32, to_f32, F32, -)
+}
+
+fn handle_f32_mul_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, F32, to_f32, F32, *)
+}
+
+fn handle_f32_div_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, F32, to_f32, F32, /)
+}
+
+fn handle_f64_add_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, F64, to_f64, F64, +)
+}
+
+fn handle_f64_sub_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, F64, to_f64, F64, -)
+}
+
+fn handle_f64_mul_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, F64, to_f64, F64, *)
+}
+
+fn handle_f64_div_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, F64, to_f64, F64, /)
+}
+
+fn handle_i32_rem_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    divrem_const!(ctx, operand, I32, to_i32, i32, I32, true, %)
+}
+
+fn handle_i32_rem_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    divrem_const!(ctx, operand, I32, to_i32, i32, I32, false, %)
+}
+
+fn handle_i64_rem_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    divrem_const!(ctx, operand, I64, to_i64, i64, I64, true, %)
+}
+
+fn handle_i64_rem_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    divrem_const!(ctx, operand, I64, to_i64, i64, I64, false, %)
+}
+
+fn handle_i32_and_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, I32, to_i32, I32, &)
+}
+
+fn handle_i32_or_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, I32, to_i32, I32, |)
+}
+
+fn handle_i32_xor_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, I32, to_i32, I32, ^)
+}
+
+fn handle_i64_and_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, I64, to_i64, I64, &)
+}
+
+fn handle_i64_or_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, I64, to_i64, I64, |)
+}
+
+fn handle_i64_xor_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    binop_const!(ctx, operand, I64, to_i64, I64, ^)
+}
+
 lazy_static! {
     static ref HANDLER_TABLE: Vec<HandlerFn> = {
         let mut table: Vec<HandlerFn> = vec![handle_unimplemented; MAX_HANDLER_INDEX];
@@ -5663,8 +5089,8 @@ lazy_static! {
         table[HANDLER_IDX_LOCAL_SET_F64_CONST] = handle_local_set_f64_const;
 
         // const + load superinstructions
-        table[HANDLER_IDX_I32_LOAD_CONST] = handle_i32_load_const;
-        table[HANDLER_IDX_I64_LOAD_CONST] = handle_i64_load_const;
+        table[HANDLER_IDX_I32_LOAD_I32_CONST] = handle_i32_load_i32_const;
+        table[HANDLER_IDX_I64_LOAD_I64_CONST] = handle_i64_load_i64_const;
         table[HANDLER_IDX_I32_CONST_I64_LOAD] = handle_i32_const_i64_load;
         table[HANDLER_IDX_I32_CONST_F32_LOAD] = handle_i32_const_f32_load;
         table[HANDLER_IDX_I32_CONST_F64_LOAD] = handle_i32_const_f64_load;
@@ -5674,8 +5100,8 @@ lazy_static! {
         table[HANDLER_IDX_I64_CONST_F64_LOAD] = handle_i64_const_f64_load;
 
         // const + store superinstructions
-        table[HANDLER_IDX_I32_STORE_CONST] = handle_i32_store_const;
-        table[HANDLER_IDX_I64_STORE_CONST] = handle_i64_store_const;
+        table[HANDLER_IDX_I32_STORE_I32_CONST] = handle_i32_store_i32_const;
+        table[HANDLER_IDX_I64_STORE_I64_CONST] = handle_i64_store_i64_const;
         table[HANDLER_IDX_I32_CONST_I64_STORE] = handle_i32_const_i64_store;
         table[HANDLER_IDX_I32_CONST_F32_STORE] = handle_i32_const_f32_store;
         table[HANDLER_IDX_I32_CONST_F64_STORE] = handle_i32_const_f64_store;

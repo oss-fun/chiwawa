@@ -1939,7 +1939,7 @@ fn try_superinstructions_const(
         if let Some(Ok((next_op, _))) = ops.peek() {
             let result = match (const_type, next_op) {
                 (ConstType::I32, wasmparser::Operator::I32Load { memarg }) => Some((
-                    HANDLER_IDX_I32_LOAD_CONST,
+                    HANDLER_IDX_I32_LOAD_I32_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
@@ -2013,7 +2013,7 @@ fn try_superinstructions_const(
         if let Some(Ok((next_op, _))) = ops.peek() {
             let result = match (const_type, next_op) {
                 (ConstType::I32, wasmparser::Operator::I32Store { memarg }) => Some((
-                    HANDLER_IDX_I32_STORE_CONST,
+                    HANDLER_IDX_I32_STORE_I32_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
@@ -2048,7 +2048,7 @@ fn try_superinstructions_const(
                     },
                 )),
                 (ConstType::I64, wasmparser::Operator::I64Store { memarg }) => Some((
-                    HANDLER_IDX_I64_STORE_CONST,
+                    HANDLER_IDX_I64_STORE_I64_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
