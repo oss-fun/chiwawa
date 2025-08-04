@@ -2141,6 +2141,54 @@ fn try_superinstructions_const(
             None
         }
     }
+    fn try_consume_comparison(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+        const_type: ConstType,
+    ) -> Option<usize> {
+        if let Some(Ok((next_op, _))) = ops.peek() {
+            let result = match (const_type, next_op) {
+                (ConstType::I32, wasmparser::Operator::I32Eq) => Some(HANDLER_IDX_I32_EQ_CONST),
+                (ConstType::I32, wasmparser::Operator::I32Ne) => Some(HANDLER_IDX_I32_NE_CONST),
+                (ConstType::I32, wasmparser::Operator::I32LtS) => Some(HANDLER_IDX_I32_LT_S_CONST),
+                (ConstType::I32, wasmparser::Operator::I32LtU) => Some(HANDLER_IDX_I32_LT_U_CONST),
+                (ConstType::I32, wasmparser::Operator::I32GtS) => Some(HANDLER_IDX_I32_GT_S_CONST),
+                (ConstType::I32, wasmparser::Operator::I32GtU) => Some(HANDLER_IDX_I32_GT_U_CONST),
+                (ConstType::I32, wasmparser::Operator::I32LeS) => Some(HANDLER_IDX_I32_LE_S_CONST),
+                (ConstType::I32, wasmparser::Operator::I32LeU) => Some(HANDLER_IDX_I32_LE_U_CONST),
+                (ConstType::I32, wasmparser::Operator::I32GeS) => Some(HANDLER_IDX_I32_GE_S_CONST),
+                (ConstType::I32, wasmparser::Operator::I32GeU) => Some(HANDLER_IDX_I32_GE_U_CONST),
+                (ConstType::I64, wasmparser::Operator::I64Eq) => Some(HANDLER_IDX_I64_EQ_CONST),
+                (ConstType::I64, wasmparser::Operator::I64Ne) => Some(HANDLER_IDX_I64_NE_CONST),
+                (ConstType::I64, wasmparser::Operator::I64LtS) => Some(HANDLER_IDX_I64_LT_S_CONST),
+                (ConstType::I64, wasmparser::Operator::I64LtU) => Some(HANDLER_IDX_I64_LT_U_CONST),
+                (ConstType::I64, wasmparser::Operator::I64GtS) => Some(HANDLER_IDX_I64_GT_S_CONST),
+                (ConstType::I64, wasmparser::Operator::I64GtU) => Some(HANDLER_IDX_I64_GT_U_CONST),
+                (ConstType::I64, wasmparser::Operator::I64LeS) => Some(HANDLER_IDX_I64_LE_S_CONST),
+                (ConstType::I64, wasmparser::Operator::I64LeU) => Some(HANDLER_IDX_I64_LE_U_CONST),
+                (ConstType::I64, wasmparser::Operator::I64GeS) => Some(HANDLER_IDX_I64_GE_S_CONST),
+                (ConstType::I64, wasmparser::Operator::I64GeU) => Some(HANDLER_IDX_I64_GE_U_CONST),
+                (ConstType::F32, wasmparser::Operator::F32Eq) => Some(HANDLER_IDX_F32_EQ_CONST),
+                (ConstType::F32, wasmparser::Operator::F32Ne) => Some(HANDLER_IDX_F32_NE_CONST),
+                (ConstType::F32, wasmparser::Operator::F32Lt) => Some(HANDLER_IDX_F32_LT_CONST),
+                (ConstType::F32, wasmparser::Operator::F32Gt) => Some(HANDLER_IDX_F32_GT_CONST),
+                (ConstType::F32, wasmparser::Operator::F32Le) => Some(HANDLER_IDX_F32_LE_CONST),
+                (ConstType::F32, wasmparser::Operator::F32Ge) => Some(HANDLER_IDX_F32_GE_CONST),
+                (ConstType::F64, wasmparser::Operator::F64Eq) => Some(HANDLER_IDX_F64_EQ_CONST),
+                (ConstType::F64, wasmparser::Operator::F64Ne) => Some(HANDLER_IDX_F64_NE_CONST),
+                (ConstType::F64, wasmparser::Operator::F64Lt) => Some(HANDLER_IDX_F64_LT_CONST),
+                (ConstType::F64, wasmparser::Operator::F64Gt) => Some(HANDLER_IDX_F64_GT_CONST),
+                (ConstType::F64, wasmparser::Operator::F64Le) => Some(HANDLER_IDX_F64_LE_CONST),
+                (ConstType::F64, wasmparser::Operator::F64Ge) => Some(HANDLER_IDX_F64_GE_CONST),
+                _ => None,
+            };
+            if result.is_some() {
+                let _ = ops.next().unwrap().unwrap();
+            }
+            result
+        } else {
+            None
+        }
+    }
 
     match op {
         wasmparser::Operator::I32Const { value } => {
@@ -2158,6 +2206,11 @@ fn try_superinstructions_const(
                 Some(ProcessedInstr {
                     handler_index,
                     operand: Operand::MemArgI32(*value, memarg),
+                })
+            } else if let Some(handler_index) = try_consume_comparison(ops, ConstType::I32) {
+                Some(ProcessedInstr {
+                    handler_index,
+                    operand: Operand::I32(*value),
                 })
             } else {
                 try_consume_arithmetic(ops, ConstType::I32).map(|handler_index| ProcessedInstr {
@@ -2182,6 +2235,11 @@ fn try_superinstructions_const(
                     handler_index,
                     operand: Operand::MemArgI64(*value, memarg),
                 })
+            } else if let Some(handler_index) = try_consume_comparison(ops, ConstType::I64) {
+                Some(ProcessedInstr {
+                    handler_index,
+                    operand: Operand::I64(*value),
+                })
             } else {
                 try_consume_arithmetic(ops, ConstType::I64).map(|handler_index| ProcessedInstr {
                     handler_index,
@@ -2198,6 +2256,11 @@ fn try_superinstructions_const(
                         f32::from_bits(value.bits()),
                     ),
                 })
+            } else if let Some(handler_index) = try_consume_comparison(ops, ConstType::F32) {
+                Some(ProcessedInstr {
+                    handler_index,
+                    operand: Operand::F32(f32::from_bits(value.bits())),
+                })
             } else {
                 try_consume_arithmetic(ops, ConstType::F32).map(|handler_index| ProcessedInstr {
                     handler_index,
@@ -2213,6 +2276,11 @@ fn try_superinstructions_const(
                         LocalIdx(local_idx),
                         f64::from_bits(value.bits()),
                     ),
+                })
+            } else if let Some(handler_index) = try_consume_comparison(ops, ConstType::F64) {
+                Some(ProcessedInstr {
+                    handler_index,
+                    operand: Operand::F64(f64::from_bits(value.bits())),
                 })
             } else {
                 try_consume_arithmetic(ops, ConstType::F64).map(|handler_index| ProcessedInstr {

@@ -354,19 +354,53 @@ pub const HANDLER_IDX_F64_ADD_CONST: usize = 0xFC;
 pub const HANDLER_IDX_F64_SUB_CONST: usize = 0xFD;
 pub const HANDLER_IDX_F64_MUL_CONST: usize = 0xFE;
 pub const HANDLER_IDX_F64_DIV_CONST: usize = 0xFF;
-pub const HANDLER_IDX_I32_REM_S_CONST: usize = 0x100;
-pub const HANDLER_IDX_I32_REM_U_CONST: usize = 0x101;
-pub const HANDLER_IDX_I64_REM_S_CONST: usize = 0x102;
-pub const HANDLER_IDX_I64_REM_U_CONST: usize = 0x103;
-// and/or/xor superinstructions
-pub const HANDLER_IDX_I32_AND_CONST: usize = 0x104;
-pub const HANDLER_IDX_I32_OR_CONST: usize = 0x105;
-pub const HANDLER_IDX_I32_XOR_CONST: usize = 0x106;
-pub const HANDLER_IDX_I64_AND_CONST: usize = 0x107;
-pub const HANDLER_IDX_I64_OR_CONST: usize = 0x108;
-pub const HANDLER_IDX_I64_XOR_CONST: usize = 0x109;
 
-pub const MAX_HANDLER_INDEX: usize = 0x10A;
+// Comparison with const superinstructions
+pub const HANDLER_IDX_I32_EQ_CONST: usize = 0x101;
+pub const HANDLER_IDX_I32_NE_CONST: usize = 0x102;
+pub const HANDLER_IDX_I32_LT_S_CONST: usize = 0x103;
+pub const HANDLER_IDX_I32_LT_U_CONST: usize = 0x104;
+pub const HANDLER_IDX_I32_GT_S_CONST: usize = 0x105;
+pub const HANDLER_IDX_I32_GT_U_CONST: usize = 0x106;
+pub const HANDLER_IDX_I32_LE_S_CONST: usize = 0x107;
+pub const HANDLER_IDX_I32_LE_U_CONST: usize = 0x108;
+pub const HANDLER_IDX_I32_GE_S_CONST: usize = 0x109;
+pub const HANDLER_IDX_I32_GE_U_CONST: usize = 0x10A;
+pub const HANDLER_IDX_I64_EQ_CONST: usize = 0x10C;
+pub const HANDLER_IDX_I64_NE_CONST: usize = 0x10D;
+pub const HANDLER_IDX_I64_LT_S_CONST: usize = 0x10E;
+pub const HANDLER_IDX_I64_LT_U_CONST: usize = 0x10F;
+pub const HANDLER_IDX_I64_GT_S_CONST: usize = 0x110;
+pub const HANDLER_IDX_I64_GT_U_CONST: usize = 0x111;
+pub const HANDLER_IDX_I64_LE_S_CONST: usize = 0x112;
+pub const HANDLER_IDX_I64_LE_U_CONST: usize = 0x113;
+pub const HANDLER_IDX_I64_GE_S_CONST: usize = 0x114;
+pub const HANDLER_IDX_I64_GE_U_CONST: usize = 0x115;
+pub const HANDLER_IDX_F32_EQ_CONST: usize = 0x116;
+pub const HANDLER_IDX_F32_NE_CONST: usize = 0x117;
+pub const HANDLER_IDX_F32_LT_CONST: usize = 0x118;
+pub const HANDLER_IDX_F32_GT_CONST: usize = 0x119;
+pub const HANDLER_IDX_F32_LE_CONST: usize = 0x11A;
+pub const HANDLER_IDX_F32_GE_CONST: usize = 0x11B;
+pub const HANDLER_IDX_F64_EQ_CONST: usize = 0x11C;
+pub const HANDLER_IDX_F64_NE_CONST: usize = 0x11D;
+pub const HANDLER_IDX_F64_LT_CONST: usize = 0x11E;
+pub const HANDLER_IDX_F64_GT_CONST: usize = 0x11F;
+pub const HANDLER_IDX_F64_LE_CONST: usize = 0x120;
+pub const HANDLER_IDX_F64_GE_CONST: usize = 0x121;
+pub const HANDLER_IDX_I32_REM_S_CONST: usize = 0x122;
+pub const HANDLER_IDX_I32_REM_U_CONST: usize = 0x123;
+pub const HANDLER_IDX_I64_REM_S_CONST: usize = 0x124;
+pub const HANDLER_IDX_I64_REM_U_CONST: usize = 0x125;
+// and/or/xor superinstructions
+pub const HANDLER_IDX_I32_AND_CONST: usize = 0x126;
+pub const HANDLER_IDX_I32_OR_CONST: usize = 0x127;
+pub const HANDLER_IDX_I32_XOR_CONST: usize = 0x128;
+pub const HANDLER_IDX_I64_AND_CONST: usize = 0x129;
+pub const HANDLER_IDX_I64_OR_CONST: usize = 0x12A;
+pub const HANDLER_IDX_I64_XOR_CONST: usize = 0x12B;
+
+pub const MAX_HANDLER_INDEX: usize = 0x12C;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stacks {
@@ -4496,6 +4530,45 @@ macro_rules! store_const {
     }};
 }
 
+// Comparison with const superinstructions
+// WebAssembly semantics: compare stack value with const value
+
+macro_rules! cmpop_const {
+    // Pattern for binary comparison operations
+    ($ctx:ident, $operand:ident, $operand_type:ident, $val_method:ident, $op:tt) => {{
+        match $operand {
+            Operand::$operand_type(const_val) => {
+                let stack_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let stack_value = stack_val.$val_method()?;
+                let result = (stack_value $op *const_val) as i32;
+                $ctx.value_stack.push(Val::Num(Num::I32(result)));
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => Err(RuntimeError::InvalidOperand),
+        }
+    }};
+    // Pattern for unsigned comparison (with cast)
+    ($ctx:ident, $operand:ident, $operand_type:ident, $val_method:ident, $op:tt, $cast_type:ty) => {{
+        match $operand {
+            Operand::$operand_type(const_val) => {
+                let stack_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let stack_value = stack_val.$val_method()? as $cast_type;
+                let const_value = *const_val as $cast_type;
+                let result = (stack_value $op const_value) as i32;
+                $ctx.value_stack.push(Val::Num(Num::I32(result)));
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => Err(RuntimeError::InvalidOperand),
+        }
+    }};
+}
+
 fn handle_i32_load_i32_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
@@ -4884,6 +4957,200 @@ fn handle_i64_xor_const(
     binop_const!(ctx, operand, I64, to_i64, I64, ^)
 }
 
+// Comparison superinstruction handlers
+fn handle_i32_eq_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I32, to_i32, ==)
+}
+fn handle_i32_ne_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I32, to_i32, !=)
+}
+fn handle_i32_lt_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I32, to_i32, <)
+}
+fn handle_i32_lt_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I32, to_i32, <, u32)
+}
+fn handle_i32_gt_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I32, to_i32, >)
+}
+fn handle_i32_gt_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I32, to_i32, >, u32)
+}
+fn handle_i32_le_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I32, to_i32, <=)
+}
+fn handle_i32_le_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I32, to_i32, <=, u32)
+}
+fn handle_i32_ge_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I32, to_i32, >=)
+}
+fn handle_i32_ge_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I32, to_i32, >=, u32)
+}
+fn handle_i64_eq_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I64, to_i64, ==)
+}
+fn handle_i64_ne_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I64, to_i64, !=)
+}
+fn handle_i64_lt_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I64, to_i64, <)
+}
+fn handle_i64_lt_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I64, to_i64, <, u64)
+}
+fn handle_i64_gt_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I64, to_i64, >)
+}
+fn handle_i64_gt_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I64, to_i64, >, u64)
+}
+fn handle_i64_le_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I64, to_i64, <=)
+}
+fn handle_i64_le_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I64, to_i64, <=, u64)
+}
+fn handle_i64_ge_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I64, to_i64, >=)
+}
+fn handle_i64_ge_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, I64, to_i64, >=, u64)
+}
+fn handle_f32_eq_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, F32, to_f32, ==)
+}
+fn handle_f32_ne_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, F32, to_f32, !=)
+}
+fn handle_f32_lt_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, F32, to_f32, <)
+}
+fn handle_f32_gt_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, F32, to_f32, >)
+}
+fn handle_f32_le_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, F32, to_f32, <=)
+}
+fn handle_f32_ge_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, F32, to_f32, >=)
+}
+fn handle_f64_eq_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, F64, to_f64, ==)
+}
+fn handle_f64_ne_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, F64, to_f64, !=)
+}
+fn handle_f64_lt_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, F64, to_f64, <)
+}
+fn handle_f64_gt_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, F64, to_f64, >)
+}
+fn handle_f64_le_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, F64, to_f64, <=)
+}
+fn handle_f64_ge_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    cmpop_const!(ctx, operand, F64, to_f64, >=)
+}
+
 lazy_static! {
     static ref HANDLER_TABLE: Vec<HandlerFn> = {
         let mut table: Vec<HandlerFn> = vec![handle_unimplemented; MAX_HANDLER_INDEX];
@@ -5139,6 +5406,40 @@ lazy_static! {
         table[HANDLER_IDX_I64_AND_CONST] = handle_i64_and_const;
         table[HANDLER_IDX_I64_OR_CONST] = handle_i64_or_const;
         table[HANDLER_IDX_I64_XOR_CONST] = handle_i64_xor_const;
+
+        // const + comparison superinstructions
+        table[HANDLER_IDX_I32_EQ_CONST] = handle_i32_eq_const;
+        table[HANDLER_IDX_I32_NE_CONST] = handle_i32_ne_const;
+        table[HANDLER_IDX_I32_LT_S_CONST] = handle_i32_lt_s_const;
+        table[HANDLER_IDX_I32_LT_U_CONST] = handle_i32_lt_u_const;
+        table[HANDLER_IDX_I32_GT_S_CONST] = handle_i32_gt_s_const;
+        table[HANDLER_IDX_I32_GT_U_CONST] = handle_i32_gt_u_const;
+        table[HANDLER_IDX_I32_LE_S_CONST] = handle_i32_le_s_const;
+        table[HANDLER_IDX_I32_LE_U_CONST] = handle_i32_le_u_const;
+        table[HANDLER_IDX_I32_GE_S_CONST] = handle_i32_ge_s_const;
+        table[HANDLER_IDX_I32_GE_U_CONST] = handle_i32_ge_u_const;
+        table[HANDLER_IDX_I64_EQ_CONST] = handle_i64_eq_const;
+        table[HANDLER_IDX_I64_NE_CONST] = handle_i64_ne_const;
+        table[HANDLER_IDX_I64_LT_S_CONST] = handle_i64_lt_s_const;
+        table[HANDLER_IDX_I64_LT_U_CONST] = handle_i64_lt_u_const;
+        table[HANDLER_IDX_I64_GT_S_CONST] = handle_i64_gt_s_const;
+        table[HANDLER_IDX_I64_GT_U_CONST] = handle_i64_gt_u_const;
+        table[HANDLER_IDX_I64_LE_S_CONST] = handle_i64_le_s_const;
+        table[HANDLER_IDX_I64_LE_U_CONST] = handle_i64_le_u_const;
+        table[HANDLER_IDX_I64_GE_S_CONST] = handle_i64_ge_s_const;
+        table[HANDLER_IDX_I64_GE_U_CONST] = handle_i64_ge_u_const;
+        table[HANDLER_IDX_F32_EQ_CONST] = handle_f32_eq_const;
+        table[HANDLER_IDX_F32_NE_CONST] = handle_f32_ne_const;
+        table[HANDLER_IDX_F32_LT_CONST] = handle_f32_lt_const;
+        table[HANDLER_IDX_F32_GT_CONST] = handle_f32_gt_const;
+        table[HANDLER_IDX_F32_LE_CONST] = handle_f32_le_const;
+        table[HANDLER_IDX_F32_GE_CONST] = handle_f32_ge_const;
+        table[HANDLER_IDX_F64_EQ_CONST] = handle_f64_eq_const;
+        table[HANDLER_IDX_F64_NE_CONST] = handle_f64_ne_const;
+        table[HANDLER_IDX_F64_LT_CONST] = handle_f64_lt_const;
+        table[HANDLER_IDX_F64_GT_CONST] = handle_f64_gt_const;
+        table[HANDLER_IDX_F64_LE_CONST] = handle_f64_le_const;
+        table[HANDLER_IDX_F64_GE_CONST] = handle_f64_ge_const;
 
         table
     };
