@@ -400,7 +400,15 @@ pub const HANDLER_IDX_I64_AND_CONST: usize = 0x129;
 pub const HANDLER_IDX_I64_OR_CONST: usize = 0x12A;
 pub const HANDLER_IDX_I64_XOR_CONST: usize = 0x12B;
 
-pub const MAX_HANDLER_INDEX: usize = 0x12C;
+// Shift with const superinstructions
+pub const HANDLER_IDX_I32_SHL_CONST: usize = 0x12C;
+pub const HANDLER_IDX_I32_SHR_S_CONST: usize = 0x12D;
+pub const HANDLER_IDX_I32_SHR_U_CONST: usize = 0x12E;
+pub const HANDLER_IDX_I64_SHL_CONST: usize = 0x12F;
+pub const HANDLER_IDX_I64_SHR_S_CONST: usize = 0x130;
+pub const HANDLER_IDX_I64_SHR_U_CONST: usize = 0x131;
+
+pub const MAX_HANDLER_INDEX: usize = 0x132;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stacks {
@@ -4569,6 +4577,41 @@ macro_rules! cmpop_const {
     }};
 }
 
+macro_rules! shiftop_const {
+    ($ctx:ident, $operand:ident, $operand_type:ident, $val_method:ident, $result_type:ident, $shift_op:tt, $mask:expr) => {{
+        match $operand {
+            Operand::$operand_type(const_val) => {
+                let stack_val = $ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?;
+                let left = stack_val.$val_method()?;
+                let shift_amount = (*const_val as u32) & $mask;
+                let result = left $shift_op shift_amount;
+                $ctx.value_stack.push(Val::Num(Num::$result_type(result)));
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => Err(RuntimeError::InvalidOperand),
+        }
+    }};
+}
+
+macro_rules! shiftop_const_unsigned {
+    ($ctx:ident, $operand:ident, $operand_type:ident, $val_method:ident, $result_type:ident, $unsigned_type:ident, $cast_result_type:ident, $mask:expr) => {{
+        match $operand {
+            Operand::$operand_type(const_val) => {
+                let stack_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let left = stack_val.$val_method()? as $unsigned_type;
+                let shift_amount = (*const_val as u32) & $mask;
+                let result = (left >> shift_amount) as $cast_result_type;
+                $ctx.value_stack.push(Val::Num(Num::$result_type(result)));
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => Err(RuntimeError::InvalidOperand),
+        }
+    }};
+}
+
 fn handle_i32_load_i32_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
@@ -5151,6 +5194,43 @@ fn handle_f64_ge_const(
     cmpop_const!(ctx, operand, F64, to_f64, >=)
 }
 
+fn handle_i32_shl_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    shiftop_const!(ctx, operand, I32, to_i32, I32, <<, 0x1f)
+}
+fn handle_i32_shr_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    shiftop_const!(ctx, operand, I32, to_i32, I32, >>, 0x1f)
+}
+fn handle_i32_shr_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    shiftop_const_unsigned!(ctx, operand, I32, to_i32, I32, u32, i32, 0x1f)
+}
+fn handle_i64_shl_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    shiftop_const!(ctx, operand, I64, to_i64, I64, <<, 0x3f)
+}
+fn handle_i64_shr_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    shiftop_const!(ctx, operand, I64, to_i64, I64, >>, 0x3f)
+}
+fn handle_i64_shr_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    shiftop_const_unsigned!(ctx, operand, I64, to_i64, I64, u64, i64, 0x3f)
+}
+
 lazy_static! {
     static ref HANDLER_TABLE: Vec<HandlerFn> = {
         let mut table: Vec<HandlerFn> = vec![handle_unimplemented; MAX_HANDLER_INDEX];
@@ -5440,6 +5520,14 @@ lazy_static! {
         table[HANDLER_IDX_F64_GT_CONST] = handle_f64_gt_const;
         table[HANDLER_IDX_F64_LE_CONST] = handle_f64_le_const;
         table[HANDLER_IDX_F64_GE_CONST] = handle_f64_ge_const;
+
+        // const + shift superinstructions
+        table[HANDLER_IDX_I32_SHL_CONST] = handle_i32_shl_const;
+        table[HANDLER_IDX_I32_SHR_S_CONST] = handle_i32_shr_s_const;
+        table[HANDLER_IDX_I32_SHR_U_CONST] = handle_i32_shr_u_const;
+        table[HANDLER_IDX_I64_SHL_CONST] = handle_i64_shl_const;
+        table[HANDLER_IDX_I64_SHR_S_CONST] = handle_i64_shr_s_const;
+        table[HANDLER_IDX_I64_SHR_U_CONST] = handle_i64_shr_u_const;
 
         table
     };

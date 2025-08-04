@@ -450,6 +450,13 @@ pub enum Instr {
     F64GtConst(f64),
     F64LeConst(f64),
     F64GeConst(f64),
+    /* const + shift superinstructions */
+    I32ShlConst(i32),
+    I32ShrSConst(i32),
+    I32ShrUConst(i32),
+    I64ShlConst(i64),
+    I64ShrSConst(i64),
+    I64ShrUConst(i64),
     /* Table Instructions */
     TableGet(TableIdx),
     TableSet(TableIdx),

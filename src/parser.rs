@@ -2141,6 +2141,36 @@ fn try_superinstructions_const(
             None
         }
     }
+    fn try_consume_shift(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+        const_type: ConstType,
+    ) -> Option<usize> {
+        if let Some(Ok((next_op, _))) = ops.peek() {
+            let result = match (const_type, next_op) {
+                (ConstType::I32, wasmparser::Operator::I32Shl) => Some(HANDLER_IDX_I32_SHL_CONST),
+                (ConstType::I32, wasmparser::Operator::I32ShrS) => {
+                    Some(HANDLER_IDX_I32_SHR_S_CONST)
+                }
+                (ConstType::I32, wasmparser::Operator::I32ShrU) => {
+                    Some(HANDLER_IDX_I32_SHR_U_CONST)
+                }
+                (ConstType::I64, wasmparser::Operator::I64Shl) => Some(HANDLER_IDX_I64_SHL_CONST),
+                (ConstType::I64, wasmparser::Operator::I64ShrS) => {
+                    Some(HANDLER_IDX_I64_SHR_S_CONST)
+                }
+                (ConstType::I64, wasmparser::Operator::I64ShrU) => {
+                    Some(HANDLER_IDX_I64_SHR_U_CONST)
+                }
+                _ => None,
+            };
+            if result.is_some() {
+                let _ = ops.next().unwrap().unwrap();
+            }
+            result
+        } else {
+            None
+        }
+    }
     fn try_consume_comparison(
         ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
         const_type: ConstType,
@@ -2212,6 +2242,11 @@ fn try_superinstructions_const(
                     handler_index,
                     operand: Operand::I32(*value),
                 })
+            } else if let Some(handler_index) = try_consume_shift(ops, ConstType::I32) {
+                Some(ProcessedInstr {
+                    handler_index,
+                    operand: Operand::I32(*value),
+                })
             } else {
                 try_consume_arithmetic(ops, ConstType::I32).map(|handler_index| ProcessedInstr {
                     handler_index,
@@ -2236,6 +2271,11 @@ fn try_superinstructions_const(
                     operand: Operand::MemArgI64(*value, memarg),
                 })
             } else if let Some(handler_index) = try_consume_comparison(ops, ConstType::I64) {
+                Some(ProcessedInstr {
+                    handler_index,
+                    operand: Operand::I64(*value),
+                })
+            } else if let Some(handler_index) = try_consume_shift(ops, ConstType::I64) {
                 Some(ProcessedInstr {
                     handler_index,
                     operand: Operand::I64(*value),
