@@ -4538,9 +4538,6 @@ macro_rules! store_const {
     }};
 }
 
-// Comparison with const superinstructions
-// WebAssembly semantics: compare stack value with const value
-
 macro_rules! cmpop_const {
     // Pattern for binary comparison operations
     ($ctx:ident, $operand:ident, $operand_type:ident, $val_method:ident, $op:tt) => {{
@@ -4578,14 +4575,14 @@ macro_rules! cmpop_const {
 }
 
 macro_rules! shiftop_const {
-    ($ctx:ident, $operand:ident, $operand_type:ident, $val_method:ident, $result_type:ident, $shift_op:tt, $mask:expr) => {{
+    ($ctx:ident, $operand:ident, $type:ident, $val_method:ident, $shift_op:tt, $mask:expr) => {{
         match $operand {
-            Operand::$operand_type(const_val) => {
+            Operand::$type(const_val) => {
                 let stack_val = $ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?;
                 let left = stack_val.$val_method()?;
                 let shift_amount = (*const_val as u32) & $mask;
                 let result = left $shift_op shift_amount;
-                $ctx.value_stack.push(Val::Num(Num::$result_type(result)));
+                $ctx.value_stack.push(Val::Num(Num::$type(result)));
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => Err(RuntimeError::InvalidOperand),
@@ -4594,9 +4591,9 @@ macro_rules! shiftop_const {
 }
 
 macro_rules! shiftop_const_unsigned {
-    ($ctx:ident, $operand:ident, $operand_type:ident, $val_method:ident, $result_type:ident, $unsigned_type:ident, $cast_result_type:ident, $mask:expr) => {{
+    ($ctx:ident, $operand:ident, $type:ident, $val_method:ident, $unsigned_type:ident, $cast_result_type:ident, $mask:expr) => {{
         match $operand {
-            Operand::$operand_type(const_val) => {
+            Operand::$type(const_val) => {
                 let stack_val = $ctx
                     .value_stack
                     .pop()
@@ -4604,7 +4601,7 @@ macro_rules! shiftop_const_unsigned {
                 let left = stack_val.$val_method()? as $unsigned_type;
                 let shift_amount = (*const_val as u32) & $mask;
                 let result = (left >> shift_amount) as $cast_result_type;
-                $ctx.value_stack.push(Val::Num(Num::$result_type(result)));
+                $ctx.value_stack.push(Val::Num(Num::$type(result)));
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => Err(RuntimeError::InvalidOperand),
@@ -4739,31 +4736,31 @@ fn handle_i64_const_f64_store(
 }
 
 macro_rules! binop_const {
-    ($ctx:ident, $operand:ident, $operand_type:ident, $val_type:ident, $num_type:ident, $op:ident) => {{
+    ($ctx:ident, $operand:ident, $type:ident, $val_type:ident, $op:ident) => {{
         match $operand {
-            Operand::$operand_type(const_val) => {
+            Operand::$type(const_val) => {
                 let operand_val = $ctx
                     .value_stack
                     .pop()
                     .ok_or(RuntimeError::ValueStackUnderflow)?;
                 let operand = operand_val.$val_type()?;
                 let result = operand.$op(*const_val);
-                $ctx.value_stack.push(Val::Num(Num::$num_type(result)));
+                $ctx.value_stack.push(Val::Num(Num::$type(result)));
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => Err(RuntimeError::InvalidOperand),
         }
     }};
-    ($ctx:ident, $operand:ident, $operand_type:ident, $val_type:ident, $num_type:ident, $op:tt) => {{
+    ($ctx:ident, $operand:ident, $type:ident, $val_type:ident, $op:tt) => {{
         match $operand {
-            Operand::$operand_type(const_val) => {
+            Operand::$type(const_val) => {
                 let operand_val = $ctx
                     .value_stack
                     .pop()
                     .ok_or(RuntimeError::ValueStackUnderflow)?;
                 let operand = operand_val.$val_type()?;
                 let result = operand $op *const_val;
-                $ctx.value_stack.push(Val::Num(Num::$num_type(result)));
+                $ctx.value_stack.push(Val::Num(Num::$type(result)));
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => Err(RuntimeError::InvalidOperand),
@@ -4772,9 +4769,9 @@ macro_rules! binop_const {
 }
 
 macro_rules! divrem_const {
-    ($ctx:ident, $operand:ident, $operand_type:ident, $val_type:ident, $primitive_type:ident, $num_variant:ident, $signed:expr, $op:tt) => {{
+    ($ctx:ident, $operand:ident, $type:ident, $val_type:ident, $primitive_type:ident, $signed:expr, $op:tt) => {{
         match $operand {
-            Operand::$operand_type(const_val) => {
+            Operand::$type(const_val) => {
                 let operand_val = $ctx
                     .value_stack
                     .pop()
@@ -4796,7 +4793,7 @@ macro_rules! divrem_const {
                 } else {
                     ((operand as u64) $op (*const_val as u64)) as $primitive_type
                 };
-                $ctx.value_stack.push(Val::Num(Num::$num_variant(result)));
+                $ctx.value_stack.push(Val::Num(Num::$type(result)));
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => Err(RuntimeError::InvalidOperand),
@@ -4808,196 +4805,196 @@ fn handle_i32_add_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I32, to_i32, I32, wrapping_add)
+    binop_const!(ctx, operand, I32, to_i32, wrapping_add)
 }
 
 fn handle_i32_sub_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I32, to_i32, I32, wrapping_sub)
+    binop_const!(ctx, operand, I32, to_i32, wrapping_sub)
 }
 
 fn handle_i32_mul_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I32, to_i32, I32, wrapping_mul)
+    binop_const!(ctx, operand, I32, to_i32, wrapping_mul)
 }
 
 fn handle_i32_div_s_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    divrem_const!(ctx, operand, I32, to_i32, i32, I32, true, /)
+    divrem_const!(ctx, operand, I32, to_i32, i32, true, /)
 }
 
 fn handle_i32_div_u_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    divrem_const!(ctx, operand, I32, to_i32, i32, I32, false, /)
+    divrem_const!(ctx, operand, I32, to_i32, i32, false, /)
 }
 
 fn handle_i64_add_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I64, to_i64, I64, wrapping_add)
+    binop_const!(ctx, operand, I64, to_i64, wrapping_add)
 }
 
 fn handle_i64_sub_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I64, to_i64, I64, wrapping_sub)
+    binop_const!(ctx, operand, I64, to_i64, wrapping_sub)
 }
 
 fn handle_i64_mul_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I64, to_i64, I64, wrapping_mul)
+    binop_const!(ctx, operand, I64, to_i64, wrapping_mul)
 }
 
 fn handle_i64_div_s_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    divrem_const!(ctx, operand, I64, to_i64, i64, I64, true, /)
+    divrem_const!(ctx, operand, I64, to_i64, i64, true, /)
 }
 
 fn handle_i64_div_u_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    divrem_const!(ctx, operand, I64, to_i64, i64, I64, false, /)
+    divrem_const!(ctx, operand, I64, to_i64, i64, false, /)
 }
 
 fn handle_f32_add_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, F32, to_f32, F32, +)
+    binop_const!(ctx, operand, F32, to_f32, +)
 }
 
 fn handle_f32_sub_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, F32, to_f32, F32, -)
+    binop_const!(ctx, operand, F32, to_f32, -)
 }
 
 fn handle_f32_mul_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, F32, to_f32, F32, *)
+    binop_const!(ctx, operand, F32, to_f32, *)
 }
 
 fn handle_f32_div_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, F32, to_f32, F32, /)
+    binop_const!(ctx, operand, F32, to_f32, /)
 }
 
 fn handle_f64_add_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, F64, to_f64, F64, +)
+    binop_const!(ctx, operand, F64, to_f64, +)
 }
 
 fn handle_f64_sub_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, F64, to_f64, F64, -)
+    binop_const!(ctx, operand, F64, to_f64, -)
 }
 
 fn handle_f64_mul_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, F64, to_f64, F64, *)
+    binop_const!(ctx, operand, F64, to_f64, *)
 }
 
 fn handle_f64_div_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, F64, to_f64, F64, /)
+    binop_const!(ctx, operand, F64, to_f64, /)
 }
 
 fn handle_i32_rem_s_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    divrem_const!(ctx, operand, I32, to_i32, i32, I32, true, %)
+    divrem_const!(ctx, operand, I32, to_i32, i32, true, %)
 }
 
 fn handle_i32_rem_u_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    divrem_const!(ctx, operand, I32, to_i32, i32, I32, false, %)
+    divrem_const!(ctx, operand, I32, to_i32, i32, false, %)
 }
 
 fn handle_i64_rem_s_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    divrem_const!(ctx, operand, I64, to_i64, i64, I64, true, %)
+    divrem_const!(ctx, operand, I64, to_i64, i64, true, %)
 }
 
 fn handle_i64_rem_u_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    divrem_const!(ctx, operand, I64, to_i64, i64, I64, false, %)
+    divrem_const!(ctx, operand, I64, to_i64, i64, false, %)
 }
 
 fn handle_i32_and_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I32, to_i32, I32, &)
+    binop_const!(ctx, operand, I32, to_i32, &)
 }
 
 fn handle_i32_or_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I32, to_i32, I32, |)
+    binop_const!(ctx, operand, I32, to_i32, |)
 }
 
 fn handle_i32_xor_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I32, to_i32, I32, ^)
+    binop_const!(ctx, operand, I32, to_i32, ^)
 }
 
 fn handle_i64_and_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I64, to_i64, I64, &)
+    binop_const!(ctx, operand, I64, to_i64, &)
 }
 
 fn handle_i64_or_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I64, to_i64, I64, |)
+    binop_const!(ctx, operand, I64, to_i64, |)
 }
 
 fn handle_i64_xor_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I64, to_i64, I64, ^)
+    binop_const!(ctx, operand, I64, to_i64, ^)
 }
 
 // Comparison superinstruction handlers
@@ -5198,37 +5195,37 @@ fn handle_i32_shl_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    shiftop_const!(ctx, operand, I32, to_i32, I32, <<, 0x1f)
+    shiftop_const!(ctx, operand, I32, to_i32, <<, 0x1f)
 }
 fn handle_i32_shr_s_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    shiftop_const!(ctx, operand, I32, to_i32, I32, >>, 0x1f)
+    shiftop_const!(ctx, operand, I32, to_i32, >>, 0x1f)
 }
 fn handle_i32_shr_u_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    shiftop_const_unsigned!(ctx, operand, I32, to_i32, I32, u32, i32, 0x1f)
+    shiftop_const_unsigned!(ctx, operand, I32, to_i32, u32, i32, 0x1f)
 }
 fn handle_i64_shl_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    shiftop_const!(ctx, operand, I64, to_i64, I64, <<, 0x3f)
+    shiftop_const!(ctx, operand, I64, to_i64, <<, 0x3f)
 }
 fn handle_i64_shr_s_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    shiftop_const!(ctx, operand, I64, to_i64, I64, >>, 0x3f)
+    shiftop_const!(ctx, operand, I64, to_i64, >>, 0x3f)
 }
 fn handle_i64_shr_u_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    shiftop_const_unsigned!(ctx, operand, I64, to_i64, I64, u64, i64, 0x3f)
+    shiftop_const_unsigned!(ctx, operand, I64, to_i64, u64, i64, 0x3f)
 }
 
 lazy_static! {
