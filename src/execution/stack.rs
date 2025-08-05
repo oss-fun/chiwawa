@@ -422,8 +422,12 @@ pub const HANDLER_IDX_I32_STORE16_CONST: usize = 0x13D;
 pub const HANDLER_IDX_I64_STORE8_CONST: usize = 0x13E;
 pub const HANDLER_IDX_I64_STORE16_CONST: usize = 0x13F;
 pub const HANDLER_IDX_I64_STORE32_CONST: usize = 0x140;
+pub const HANDLER_IDX_I32_ROTL_CONST: usize = 0x141;
+pub const HANDLER_IDX_I32_ROTR_CONST: usize = 0x142;
+pub const HANDLER_IDX_I64_ROTL_CONST: usize = 0x143;
+pub const HANDLER_IDX_I64_ROTR_CONST: usize = 0x144;
 
-pub const MAX_HANDLER_INDEX: usize = 0x141;
+pub const MAX_HANDLER_INDEX: usize = 0x145;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stacks {
@@ -4672,6 +4676,24 @@ macro_rules! shiftop_const_unsigned {
     }};
 }
 
+macro_rules! rotop_const {
+    ($ctx:ident, $operand:ident, $type:ident, $val_method:ident, $rotate_method:ident) => {{
+        match $operand {
+            Operand::$type(const_val) => {
+                let operand_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let operand = operand_val.$val_method()?;
+                let result = operand.$rotate_method(*const_val as u32);
+                $ctx.value_stack.push(Val::Num(Num::$type(result)));
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => Err(RuntimeError::InvalidOperand),
+        }
+    }};
+}
+
 fn handle_i32_load_i32_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
@@ -5398,6 +5420,34 @@ fn handle_i64_shr_u_const(
     shiftop_const_unsigned!(ctx, operand, I64, to_i64, u64, i64, 0x3f)
 }
 
+fn handle_i32_rotl_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    rotop_const!(ctx, operand, I32, to_i32, rotate_left)
+}
+
+fn handle_i32_rotr_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    rotop_const!(ctx, operand, I32, to_i32, rotate_right)
+}
+
+fn handle_i64_rotl_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    rotop_const!(ctx, operand, I64, to_i64, rotate_left)
+}
+
+fn handle_i64_rotr_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    rotop_const!(ctx, operand, I64, to_i64, rotate_right)
+}
+
 lazy_static! {
     static ref HANDLER_TABLE: Vec<HandlerFn> = {
         let mut table: Vec<HandlerFn> = vec![handle_unimplemented; MAX_HANDLER_INDEX];
@@ -5710,6 +5760,12 @@ lazy_static! {
         table[HANDLER_IDX_I64_SHL_CONST] = handle_i64_shl_const;
         table[HANDLER_IDX_I64_SHR_S_CONST] = handle_i64_shr_s_const;
         table[HANDLER_IDX_I64_SHR_U_CONST] = handle_i64_shr_u_const;
+        
+        // const + rotation superinstructions
+        table[HANDLER_IDX_I32_ROTL_CONST] = handle_i32_rotl_const;
+        table[HANDLER_IDX_I32_ROTR_CONST] = handle_i32_rotr_const;
+        table[HANDLER_IDX_I64_ROTL_CONST] = handle_i64_rotl_const;
+        table[HANDLER_IDX_I64_ROTR_CONST] = handle_i64_rotr_const;
 
         table
     };

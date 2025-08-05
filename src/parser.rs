@@ -1933,6 +1933,10 @@ trait ConstHandler {
     fn supports_shift() -> bool {
         false
     }
+    
+    fn supports_rotation() -> bool {
+        false
+    }
 
     fn try_consume_arithmetic(
         ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
@@ -1959,6 +1963,12 @@ trait ConstHandler {
     }
 
     fn try_consume_shift(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+    ) -> Option<usize> {
+        None
+    }
+    
+    fn try_consume_rotation(
         ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
     ) -> Option<usize> {
         None
@@ -1995,6 +2005,10 @@ impl ConstHandler for I32Handler {
     }
 
     fn supports_shift() -> bool {
+        true
+    }
+    
+    fn supports_rotation() -> bool {
         true
     }
 
@@ -2201,6 +2215,24 @@ impl ConstHandler for I32Handler {
             None
         }
     }
+    
+    fn try_consume_rotation(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+    ) -> Option<usize> {
+        if let Some(Ok((next_op, _))) = ops.peek() {
+            let result = match next_op {
+                wasmparser::Operator::I32Rotl => Some(HANDLER_IDX_I32_ROTL_CONST),
+                wasmparser::Operator::I32Rotr => Some(HANDLER_IDX_I32_ROTR_CONST),
+                _ => None,
+            };
+            if result.is_some() {
+                let _ = ops.next().unwrap().unwrap();
+            }
+            result
+        } else {
+            None
+        }
+    }
 }
 
 struct I64Handler;
@@ -2233,6 +2265,10 @@ impl ConstHandler for I64Handler {
     }
 
     fn supports_shift() -> bool {
+        true
+    }
+    
+    fn supports_rotation() -> bool {
         true
     }
 
@@ -2460,6 +2496,24 @@ impl ConstHandler for I64Handler {
             None
         }
     }
+    
+    fn try_consume_rotation(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+    ) -> Option<usize> {
+        if let Some(Ok((next_op, _))) = ops.peek() {
+            let result = match next_op {
+                wasmparser::Operator::I64Rotl => Some(HANDLER_IDX_I64_ROTL_CONST),
+                wasmparser::Operator::I64Rotr => Some(HANDLER_IDX_I64_ROTR_CONST),
+                _ => None,
+            };
+            if result.is_some() {
+                let _ = ops.next().unwrap().unwrap();
+            }
+            result
+        } else {
+            None
+        }
+    }
 }
 
 struct F32Handler;
@@ -2649,6 +2703,15 @@ fn handle_const_patterns<H: ConstHandler>(
 
     if H::supports_shift() {
         if let Some(handler_index) = H::try_consume_shift(ops) {
+            return Some(ProcessedInstr {
+                handler_index,
+                operand: H::create_value_operand(value),
+            });
+        }
+    }
+
+    if H::supports_rotation() {
+        if let Some(handler_index) = H::try_consume_rotation(ops) {
             return Some(ProcessedInstr {
                 handler_index,
                 operand: H::create_value_operand(value),

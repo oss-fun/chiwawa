@@ -474,6 +474,11 @@ pub enum Instr {
     I64ShlConst(i64),
     I64ShrSConst(i64),
     I64ShrUConst(i64),
+    /* const + rotation superinstructions */
+    I32RotlConst(i32),
+    I32RotrConst(i32),
+    I64RotlConst(i64),
+    I64RotrConst(i64),
     /* Table Instructions */
     TableGet(TableIdx),
     TableSet(TableIdx),
