@@ -1,9 +1,7 @@
 use std::fs::File;
 use std::io::Read;
-use std::iter::Peekable;
 use wasmparser::{
-    ExternalKind, FunctionBody, OperatorsIteratorWithOffsets, Parser, Payload::*, SectionLimited,
-    TypeRef, ValType,
+    ExternalKind, FunctionBody, Parser, Payload::*, SectionLimited, TypeRef, ValType,
 };
 
 use crate::error::{ParserError, RuntimeError};
@@ -1908,157 +1906,432 @@ fn map_operator_to_initial_instr_and_fixup(
     Ok((processed_instr, fixup_info))
 }
 
-fn try_superinstructions_const(
-    op: &wasmparser::Operator,
-    ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
-) -> Option<ProcessedInstr> {
-    enum ConstType {
-        I32,
-        I64,
-        F32,
-        F64,
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ConstType {
+    I32,
+    I64,
+    F32,
+    F64,
+}
+
+trait ConstHandler {
+    type ValueType: Copy;
+
+    fn create_local_set_operand(local_idx: u32, value: Self::ValueType) -> Operand;
+    fn create_value_operand(value: Self::ValueType) -> Operand;
+    fn get_const_type() -> ConstType;
+    fn get_local_set_handler_idx() -> usize;
+
+    fn create_memarg_operand(value: Self::ValueType, memarg: Memarg) -> Option<Operand> {
+        None // Default: not supported
     }
 
-    fn try_consume_local_set(
+    fn supports_load_store() -> bool {
+        false
+    }
+
+    fn supports_shift() -> bool {
+        false
+    }
+
+    fn try_consume_arithmetic(
         ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
-    ) -> Option<u32> {
-        if let Some(Ok((next_op, _))) = ops.peek() {
-            if let wasmparser::Operator::LocalSet { local_index } = next_op {
-                let local_idx = *local_index;
-                let _ = ops.next().unwrap().unwrap();
-                return Some(local_idx);
-            }
-        }
-        None
+    ) -> Option<usize> {
+        None // Default: no arithmetic operations
     }
 
     fn try_consume_load(
         ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
-        const_type: ConstType,
+    ) -> Option<(usize, Memarg)> {
+        None
+    }
+
+    fn try_consume_comparison(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+    ) -> Option<usize> {
+        None
+    }
+
+    fn try_consume_store(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+    ) -> Option<(usize, Memarg)> {
+        None
+    }
+
+    fn try_consume_shift(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+    ) -> Option<usize> {
+        None
+    }
+}
+
+struct I32Handler;
+
+impl ConstHandler for I32Handler {
+    type ValueType = i32;
+
+    fn create_local_set_operand(local_idx: u32, value: i32) -> Operand {
+        Operand::LocalIdxI32(LocalIdx(local_idx), value)
+    }
+
+    fn create_value_operand(value: i32) -> Operand {
+        Operand::I32(value)
+    }
+
+    fn create_memarg_operand(value: i32, memarg: Memarg) -> Option<Operand> {
+        Some(Operand::MemArgI32(value, memarg))
+    }
+
+    fn get_const_type() -> ConstType {
+        ConstType::I32
+    }
+
+    fn get_local_set_handler_idx() -> usize {
+        HANDLER_IDX_LOCAL_SET_I32_CONST
+    }
+
+    fn supports_load_store() -> bool {
+        true
+    }
+
+    fn supports_shift() -> bool {
+        true
+    }
+
+    fn try_consume_arithmetic(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+    ) -> Option<usize> {
+        if let Some(Ok((next_op, _))) = ops.peek() {
+            let result = match next_op {
+                wasmparser::Operator::I32Add => Some(HANDLER_IDX_I32_ADD_CONST),
+                wasmparser::Operator::I32Sub => Some(HANDLER_IDX_I32_SUB_CONST),
+                wasmparser::Operator::I32Mul => Some(HANDLER_IDX_I32_MUL_CONST),
+                wasmparser::Operator::I32DivS => Some(HANDLER_IDX_I32_DIV_S_CONST),
+                wasmparser::Operator::I32DivU => Some(HANDLER_IDX_I32_DIV_U_CONST),
+                wasmparser::Operator::I32RemS => Some(HANDLER_IDX_I32_REM_S_CONST),
+                wasmparser::Operator::I32RemU => Some(HANDLER_IDX_I32_REM_U_CONST),
+                wasmparser::Operator::I32And => Some(HANDLER_IDX_I32_AND_CONST),
+                wasmparser::Operator::I32Or => Some(HANDLER_IDX_I32_OR_CONST),
+                wasmparser::Operator::I32Xor => Some(HANDLER_IDX_I32_XOR_CONST),
+                _ => None,
+            };
+
+            if result.is_some() {
+                let _ = ops.next().unwrap().unwrap();
+            }
+            result
+        } else {
+            None
+        }
+    }
+
+    fn try_consume_load(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
     ) -> Option<(usize, Memarg)> {
         if let Some(Ok((next_op, _))) = ops.peek() {
-            let result = match (const_type, next_op) {
-                (ConstType::I32, wasmparser::Operator::I32Load { memarg }) => Some((
+            let result = match next_op {
+                wasmparser::Operator::I32Load { memarg } => Some((
                     HANDLER_IDX_I32_LOAD_I32_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                (ConstType::I32, wasmparser::Operator::I64Load { memarg }) => Some((
+                wasmparser::Operator::I64Load { memarg } => Some((
                     HANDLER_IDX_I32_CONST_I64_LOAD,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                (ConstType::I32, wasmparser::Operator::F32Load { memarg }) => Some((
+                wasmparser::Operator::F32Load { memarg } => Some((
                     HANDLER_IDX_I32_CONST_F32_LOAD,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                (ConstType::I32, wasmparser::Operator::F64Load { memarg }) => Some((
+                wasmparser::Operator::F64Load { memarg } => Some((
                     HANDLER_IDX_I32_CONST_F64_LOAD,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                (ConstType::I64, wasmparser::Operator::I32Load { memarg }) => Some((
-                    HANDLER_IDX_I64_CONST_I32_LOAD,
-                    Memarg {
-                        offset: memarg.offset as u32,
-                        align: memarg.align as u32,
-                    },
-                )),
-                (ConstType::I64, wasmparser::Operator::I64Load { memarg }) => Some((
-                    HANDLER_IDX_I64_CONST_I64_LOAD,
-                    Memarg {
-                        offset: memarg.offset as u32,
-                        align: memarg.align as u32,
-                    },
-                )),
-                (ConstType::I64, wasmparser::Operator::F32Load { memarg }) => Some((
-                    HANDLER_IDX_I64_CONST_F32_LOAD,
-                    Memarg {
-                        offset: memarg.offset as u32,
-                        align: memarg.align as u32,
-                    },
-                )),
-                (ConstType::I64, wasmparser::Operator::F64Load { memarg }) => Some((
-                    HANDLER_IDX_I64_CONST_F64_LOAD,
-                    Memarg {
-                        offset: memarg.offset as u32,
-                        align: memarg.align as u32,
-                    },
-                )),
-                // Load8/16/32 const patterns
-                (ConstType::I32, wasmparser::Operator::I32Load8S { memarg }) => Some((
+                wasmparser::Operator::I32Load8S { memarg } => Some((
                     HANDLER_IDX_I32_LOAD8_S_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                (ConstType::I32, wasmparser::Operator::I32Load8U { memarg }) => Some((
+                wasmparser::Operator::I32Load8U { memarg } => Some((
                     HANDLER_IDX_I32_LOAD8_U_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                (ConstType::I32, wasmparser::Operator::I32Load16S { memarg }) => Some((
+                wasmparser::Operator::I32Load16S { memarg } => Some((
                     HANDLER_IDX_I32_LOAD16_S_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                (ConstType::I32, wasmparser::Operator::I32Load16U { memarg }) => Some((
+                wasmparser::Operator::I32Load16U { memarg } => Some((
                     HANDLER_IDX_I32_LOAD16_U_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                (ConstType::I64, wasmparser::Operator::I64Load8S { memarg }) => Some((
+                _ => None,
+            };
+
+            if result.is_some() {
+                let _ = ops.next().unwrap().unwrap();
+            }
+            result
+        } else {
+            None
+        }
+    }
+
+    fn try_consume_comparison(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+    ) -> Option<usize> {
+        if let Some(Ok((next_op, _))) = ops.peek() {
+            let result = match next_op {
+                wasmparser::Operator::I32Eq => Some(HANDLER_IDX_I32_EQ_CONST),
+                wasmparser::Operator::I32Ne => Some(HANDLER_IDX_I32_NE_CONST),
+                wasmparser::Operator::I32LtS => Some(HANDLER_IDX_I32_LT_S_CONST),
+                wasmparser::Operator::I32LtU => Some(HANDLER_IDX_I32_LT_U_CONST),
+                wasmparser::Operator::I32GtS => Some(HANDLER_IDX_I32_GT_S_CONST),
+                wasmparser::Operator::I32GtU => Some(HANDLER_IDX_I32_GT_U_CONST),
+                wasmparser::Operator::I32LeS => Some(HANDLER_IDX_I32_LE_S_CONST),
+                wasmparser::Operator::I32LeU => Some(HANDLER_IDX_I32_LE_U_CONST),
+                wasmparser::Operator::I32GeS => Some(HANDLER_IDX_I32_GE_S_CONST),
+                wasmparser::Operator::I32GeU => Some(HANDLER_IDX_I32_GE_U_CONST),
+                _ => None,
+            };
+
+            if result.is_some() {
+                let _ = ops.next().unwrap().unwrap();
+            }
+            result
+        } else {
+            None
+        }
+    }
+
+    fn try_consume_store(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+    ) -> Option<(usize, Memarg)> {
+        if let Some(Ok((next_op, _))) = ops.peek() {
+            let result = match next_op {
+                wasmparser::Operator::I32Store { memarg } => Some((
+                    HANDLER_IDX_I32_STORE_I32_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                wasmparser::Operator::I64Store { memarg } => Some((
+                    HANDLER_IDX_I32_CONST_I64_STORE,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                wasmparser::Operator::F32Store { memarg } => Some((
+                    HANDLER_IDX_I32_CONST_F32_STORE,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                wasmparser::Operator::F64Store { memarg } => Some((
+                    HANDLER_IDX_I32_CONST_F64_STORE,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                wasmparser::Operator::I32Store8 { memarg } => Some((
+                    HANDLER_IDX_I32_STORE8_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                wasmparser::Operator::I32Store16 { memarg } => Some((
+                    HANDLER_IDX_I32_STORE16_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                _ => None,
+            };
+            if result.is_some() {
+                let _ = ops.next().unwrap().unwrap();
+            }
+            result
+        } else {
+            None
+        }
+    }
+
+    fn try_consume_shift(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+    ) -> Option<usize> {
+        if let Some(Ok((next_op, _))) = ops.peek() {
+            let result = match next_op {
+                wasmparser::Operator::I32Shl => Some(HANDLER_IDX_I32_SHL_CONST),
+                wasmparser::Operator::I32ShrS => Some(HANDLER_IDX_I32_SHR_S_CONST),
+                wasmparser::Operator::I32ShrU => Some(HANDLER_IDX_I32_SHR_U_CONST),
+                _ => None,
+            };
+            if result.is_some() {
+                let _ = ops.next().unwrap().unwrap();
+            }
+            result
+        } else {
+            None
+        }
+    }
+}
+
+struct I64Handler;
+
+impl ConstHandler for I64Handler {
+    type ValueType = i64;
+
+    fn create_local_set_operand(local_idx: u32, value: i64) -> Operand {
+        Operand::LocalIdxI64(LocalIdx(local_idx), value)
+    }
+
+    fn create_value_operand(value: i64) -> Operand {
+        Operand::I64(value)
+    }
+
+    fn create_memarg_operand(value: i64, memarg: Memarg) -> Option<Operand> {
+        Some(Operand::MemArgI64(value, memarg))
+    }
+
+    fn get_const_type() -> ConstType {
+        ConstType::I64
+    }
+
+    fn get_local_set_handler_idx() -> usize {
+        HANDLER_IDX_LOCAL_SET_I64_CONST
+    }
+
+    fn supports_load_store() -> bool {
+        true
+    }
+
+    fn supports_shift() -> bool {
+        true
+    }
+
+    fn try_consume_arithmetic(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+    ) -> Option<usize> {
+        if let Some(Ok((next_op, _))) = ops.peek() {
+            let result = match next_op {
+                wasmparser::Operator::I64Add => Some(HANDLER_IDX_I64_ADD_CONST),
+                wasmparser::Operator::I64Sub => Some(HANDLER_IDX_I64_SUB_CONST),
+                wasmparser::Operator::I64Mul => Some(HANDLER_IDX_I64_MUL_CONST),
+                wasmparser::Operator::I64DivS => Some(HANDLER_IDX_I64_DIV_S_CONST),
+                wasmparser::Operator::I64DivU => Some(HANDLER_IDX_I64_DIV_U_CONST),
+                wasmparser::Operator::I64RemS => Some(HANDLER_IDX_I64_REM_S_CONST),
+                wasmparser::Operator::I64RemU => Some(HANDLER_IDX_I64_REM_U_CONST),
+                wasmparser::Operator::I64And => Some(HANDLER_IDX_I64_AND_CONST),
+                wasmparser::Operator::I64Or => Some(HANDLER_IDX_I64_OR_CONST),
+                wasmparser::Operator::I64Xor => Some(HANDLER_IDX_I64_XOR_CONST),
+                _ => None,
+            };
+
+            if result.is_some() {
+                let _ = ops.next().unwrap().unwrap();
+            }
+            result
+        } else {
+            None
+        }
+    }
+
+    fn try_consume_load(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+    ) -> Option<(usize, Memarg)> {
+        if let Some(Ok((next_op, _))) = ops.peek() {
+            let result = match next_op {
+                wasmparser::Operator::I32Load { memarg } => Some((
+                    HANDLER_IDX_I64_CONST_I32_LOAD,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                wasmparser::Operator::I64Load { memarg } => Some((
+                    HANDLER_IDX_I64_CONST_I64_LOAD,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                wasmparser::Operator::F32Load { memarg } => Some((
+                    HANDLER_IDX_I64_CONST_F32_LOAD,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                wasmparser::Operator::F64Load { memarg } => Some((
+                    HANDLER_IDX_I64_CONST_F64_LOAD,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                wasmparser::Operator::I64Load8S { memarg } => Some((
                     HANDLER_IDX_I64_LOAD8_S_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                (ConstType::I64, wasmparser::Operator::I64Load8U { memarg }) => Some((
+                wasmparser::Operator::I64Load8U { memarg } => Some((
                     HANDLER_IDX_I64_LOAD8_U_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                (ConstType::I64, wasmparser::Operator::I64Load16S { memarg }) => Some((
+                wasmparser::Operator::I64Load16S { memarg } => Some((
                     HANDLER_IDX_I64_LOAD16_S_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                (ConstType::I64, wasmparser::Operator::I64Load16U { memarg }) => Some((
+                wasmparser::Operator::I64Load16U { memarg } => Some((
                     HANDLER_IDX_I64_LOAD16_U_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                (ConstType::I64, wasmparser::Operator::I64Load32S { memarg }) => Some((
+                wasmparser::Operator::I64Load32S { memarg } => Some((
                     HANDLER_IDX_I64_LOAD32_S_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                (ConstType::I64, wasmparser::Operator::I64Load32U { memarg }) => Some((
+                wasmparser::Operator::I64Load32U { memarg } => Some((
                     HANDLER_IDX_I64_LOAD32_U_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
@@ -2077,98 +2350,81 @@ fn try_superinstructions_const(
         }
     }
 
+    fn try_consume_comparison(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+    ) -> Option<usize> {
+        if let Some(Ok((next_op, _))) = ops.peek() {
+            let result = match next_op {
+                wasmparser::Operator::I64Eq => Some(HANDLER_IDX_I64_EQ_CONST),
+                wasmparser::Operator::I64Ne => Some(HANDLER_IDX_I64_NE_CONST),
+                wasmparser::Operator::I64LtS => Some(HANDLER_IDX_I64_LT_S_CONST),
+                wasmparser::Operator::I64LtU => Some(HANDLER_IDX_I64_LT_U_CONST),
+                wasmparser::Operator::I64GtS => Some(HANDLER_IDX_I64_GT_S_CONST),
+                wasmparser::Operator::I64GtU => Some(HANDLER_IDX_I64_GT_U_CONST),
+                wasmparser::Operator::I64LeS => Some(HANDLER_IDX_I64_LE_S_CONST),
+                wasmparser::Operator::I64LeU => Some(HANDLER_IDX_I64_LE_U_CONST),
+                wasmparser::Operator::I64GeS => Some(HANDLER_IDX_I64_GE_S_CONST),
+                wasmparser::Operator::I64GeU => Some(HANDLER_IDX_I64_GE_U_CONST),
+                _ => None,
+            };
+
+            if result.is_some() {
+                let _ = ops.next().unwrap().unwrap();
+            }
+            result
+        } else {
+            None
+        }
+    }
+
     fn try_consume_store(
         ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
-        const_type: ConstType,
     ) -> Option<(usize, Memarg)> {
         if let Some(Ok((next_op, _))) = ops.peek() {
-            let result = match (const_type, next_op) {
-                (ConstType::I32, wasmparser::Operator::I32Store { memarg }) => Some((
-                    HANDLER_IDX_I32_STORE_I32_CONST,
-                    Memarg {
-                        offset: memarg.offset as u32,
-                        align: memarg.align as u32,
-                    },
-                )),
-                (ConstType::I32, wasmparser::Operator::I64Store { memarg }) => Some((
-                    HANDLER_IDX_I32_CONST_I64_STORE,
-                    Memarg {
-                        offset: memarg.offset as u32,
-                        align: memarg.align as u32,
-                    },
-                )),
-                (ConstType::I32, wasmparser::Operator::F32Store { memarg }) => Some((
-                    HANDLER_IDX_I32_CONST_F32_STORE,
-                    Memarg {
-                        offset: memarg.offset as u32,
-                        align: memarg.align as u32,
-                    },
-                )),
-                (ConstType::I32, wasmparser::Operator::F64Store { memarg }) => Some((
-                    HANDLER_IDX_I32_CONST_F64_STORE,
-                    Memarg {
-                        offset: memarg.offset as u32,
-                        align: memarg.align as u32,
-                    },
-                )),
-                (ConstType::I64, wasmparser::Operator::I32Store { memarg }) => Some((
+            let result = match next_op {
+                wasmparser::Operator::I32Store { memarg } => Some((
                     HANDLER_IDX_I64_CONST_I32_STORE,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                (ConstType::I64, wasmparser::Operator::I64Store { memarg }) => Some((
+                wasmparser::Operator::I64Store { memarg } => Some((
                     HANDLER_IDX_I64_STORE_I64_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                (ConstType::I64, wasmparser::Operator::F32Store { memarg }) => Some((
+                wasmparser::Operator::F32Store { memarg } => Some((
                     HANDLER_IDX_I64_CONST_F32_STORE,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                (ConstType::I64, wasmparser::Operator::F64Store { memarg }) => Some((
+                wasmparser::Operator::F64Store { memarg } => Some((
                     HANDLER_IDX_I64_CONST_F64_STORE,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                // Store8/16/32 const patterns
-                (ConstType::I32, wasmparser::Operator::I32Store8 { memarg }) => Some((
-                    HANDLER_IDX_I32_STORE8_CONST,
-                    Memarg {
-                        offset: memarg.offset as u32,
-                        align: memarg.align as u32,
-                    },
-                )),
-                (ConstType::I32, wasmparser::Operator::I32Store16 { memarg }) => Some((
-                    HANDLER_IDX_I32_STORE16_CONST,
-                    Memarg {
-                        offset: memarg.offset as u32,
-                        align: memarg.align as u32,
-                    },
-                )),
-                (ConstType::I64, wasmparser::Operator::I64Store8 { memarg }) => Some((
+                wasmparser::Operator::I64Store8 { memarg } => Some((
                     HANDLER_IDX_I64_STORE8_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                (ConstType::I64, wasmparser::Operator::I64Store16 { memarg }) => Some((
+                wasmparser::Operator::I64Store16 { memarg } => Some((
                     HANDLER_IDX_I64_STORE16_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
                     },
                 )),
-                (ConstType::I64, wasmparser::Operator::I64Store32 { memarg }) => Some((
+                wasmparser::Operator::I64Store32 { memarg } => Some((
                     HANDLER_IDX_I64_STORE32_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
@@ -2177,7 +2433,6 @@ fn try_superinstructions_const(
                 )),
                 _ => None,
             };
-
             if result.is_some() {
                 let _ = ops.next().unwrap().unwrap();
             }
@@ -2185,58 +2440,58 @@ fn try_superinstructions_const(
         } else {
             None
         }
+    }
+
+    fn try_consume_shift(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+    ) -> Option<usize> {
+        if let Some(Ok((next_op, _))) = ops.peek() {
+            let result = match next_op {
+                wasmparser::Operator::I64Shl => Some(HANDLER_IDX_I64_SHL_CONST),
+                wasmparser::Operator::I64ShrS => Some(HANDLER_IDX_I64_SHR_S_CONST),
+                wasmparser::Operator::I64ShrU => Some(HANDLER_IDX_I64_SHR_U_CONST),
+                _ => None,
+            };
+            if result.is_some() {
+                let _ = ops.next().unwrap().unwrap();
+            }
+            result
+        } else {
+            None
+        }
+    }
+}
+
+struct F32Handler;
+
+impl ConstHandler for F32Handler {
+    type ValueType = f32;
+
+    fn create_local_set_operand(local_idx: u32, value: f32) -> Operand {
+        Operand::LocalIdxF32(LocalIdx(local_idx), value)
+    }
+
+    fn create_value_operand(value: f32) -> Operand {
+        Operand::F32(value)
+    }
+
+    fn get_const_type() -> ConstType {
+        ConstType::F32
+    }
+
+    fn get_local_set_handler_idx() -> usize {
+        HANDLER_IDX_LOCAL_SET_F32_CONST
     }
 
     fn try_consume_arithmetic(
         ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
-        const_type: ConstType,
     ) -> Option<usize> {
         if let Some(Ok((next_op, _))) = ops.peek() {
-            let result = match (const_type, next_op) {
-                (ConstType::I32, wasmparser::Operator::I32Add) => Some(HANDLER_IDX_I32_ADD_CONST),
-                (ConstType::I32, wasmparser::Operator::I32Sub) => Some(HANDLER_IDX_I32_SUB_CONST),
-                (ConstType::I32, wasmparser::Operator::I32Mul) => Some(HANDLER_IDX_I32_MUL_CONST),
-                (ConstType::I32, wasmparser::Operator::I32DivS) => {
-                    Some(HANDLER_IDX_I32_DIV_S_CONST)
-                }
-                (ConstType::I32, wasmparser::Operator::I32DivU) => {
-                    Some(HANDLER_IDX_I32_DIV_U_CONST)
-                }
-                (ConstType::I32, wasmparser::Operator::I32RemS) => {
-                    Some(HANDLER_IDX_I32_REM_S_CONST)
-                }
-                (ConstType::I32, wasmparser::Operator::I32RemU) => {
-                    Some(HANDLER_IDX_I32_REM_U_CONST)
-                }
-                (ConstType::I64, wasmparser::Operator::I64Add) => Some(HANDLER_IDX_I64_ADD_CONST),
-                (ConstType::I64, wasmparser::Operator::I64Sub) => Some(HANDLER_IDX_I64_SUB_CONST),
-                (ConstType::I64, wasmparser::Operator::I64Mul) => Some(HANDLER_IDX_I64_MUL_CONST),
-                (ConstType::I64, wasmparser::Operator::I64DivS) => {
-                    Some(HANDLER_IDX_I64_DIV_S_CONST)
-                }
-                (ConstType::I64, wasmparser::Operator::I64DivU) => {
-                    Some(HANDLER_IDX_I64_DIV_U_CONST)
-                }
-                (ConstType::I64, wasmparser::Operator::I64RemS) => {
-                    Some(HANDLER_IDX_I64_REM_S_CONST)
-                }
-                (ConstType::I64, wasmparser::Operator::I64RemU) => {
-                    Some(HANDLER_IDX_I64_REM_U_CONST)
-                }
-                (ConstType::I32, wasmparser::Operator::I32And) => Some(HANDLER_IDX_I32_AND_CONST),
-                (ConstType::I32, wasmparser::Operator::I32Or) => Some(HANDLER_IDX_I32_OR_CONST),
-                (ConstType::I32, wasmparser::Operator::I32Xor) => Some(HANDLER_IDX_I32_XOR_CONST),
-                (ConstType::I64, wasmparser::Operator::I64And) => Some(HANDLER_IDX_I64_AND_CONST),
-                (ConstType::I64, wasmparser::Operator::I64Or) => Some(HANDLER_IDX_I64_OR_CONST),
-                (ConstType::I64, wasmparser::Operator::I64Xor) => Some(HANDLER_IDX_I64_XOR_CONST),
-                (ConstType::F32, wasmparser::Operator::F32Add) => Some(HANDLER_IDX_F32_ADD_CONST),
-                (ConstType::F32, wasmparser::Operator::F32Sub) => Some(HANDLER_IDX_F32_SUB_CONST),
-                (ConstType::F32, wasmparser::Operator::F32Mul) => Some(HANDLER_IDX_F32_MUL_CONST),
-                (ConstType::F32, wasmparser::Operator::F32Div) => Some(HANDLER_IDX_F32_DIV_CONST),
-                (ConstType::F64, wasmparser::Operator::F64Add) => Some(HANDLER_IDX_F64_ADD_CONST),
-                (ConstType::F64, wasmparser::Operator::F64Sub) => Some(HANDLER_IDX_F64_SUB_CONST),
-                (ConstType::F64, wasmparser::Operator::F64Mul) => Some(HANDLER_IDX_F64_MUL_CONST),
-                (ConstType::F64, wasmparser::Operator::F64Div) => Some(HANDLER_IDX_F64_DIV_CONST),
+            let result = match next_op {
+                wasmparser::Operator::F32Add => Some(HANDLER_IDX_F32_ADD_CONST),
+                wasmparser::Operator::F32Sub => Some(HANDLER_IDX_F32_SUB_CONST),
+                wasmparser::Operator::F32Mul => Some(HANDLER_IDX_F32_MUL_CONST),
+                wasmparser::Operator::F32Div => Some(HANDLER_IDX_F32_DIV_CONST),
                 _ => None,
             };
 
@@ -2248,76 +2503,64 @@ fn try_superinstructions_const(
             None
         }
     }
-    fn try_consume_shift(
-        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
-        const_type: ConstType,
-    ) -> Option<usize> {
-        if let Some(Ok((next_op, _))) = ops.peek() {
-            let result = match (const_type, next_op) {
-                (ConstType::I32, wasmparser::Operator::I32Shl) => Some(HANDLER_IDX_I32_SHL_CONST),
-                (ConstType::I32, wasmparser::Operator::I32ShrS) => {
-                    Some(HANDLER_IDX_I32_SHR_S_CONST)
-                }
-                (ConstType::I32, wasmparser::Operator::I32ShrU) => {
-                    Some(HANDLER_IDX_I32_SHR_U_CONST)
-                }
-                (ConstType::I64, wasmparser::Operator::I64Shl) => Some(HANDLER_IDX_I64_SHL_CONST),
-                (ConstType::I64, wasmparser::Operator::I64ShrS) => {
-                    Some(HANDLER_IDX_I64_SHR_S_CONST)
-                }
-                (ConstType::I64, wasmparser::Operator::I64ShrU) => {
-                    Some(HANDLER_IDX_I64_SHR_U_CONST)
-                }
-                _ => None,
-            };
-            if result.is_some() {
-                let _ = ops.next().unwrap().unwrap();
-            }
-            result
-        } else {
-            None
-        }
-    }
+
     fn try_consume_comparison(
         ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
-        const_type: ConstType,
     ) -> Option<usize> {
         if let Some(Ok((next_op, _))) = ops.peek() {
-            let result = match (const_type, next_op) {
-                (ConstType::I32, wasmparser::Operator::I32Eq) => Some(HANDLER_IDX_I32_EQ_CONST),
-                (ConstType::I32, wasmparser::Operator::I32Ne) => Some(HANDLER_IDX_I32_NE_CONST),
-                (ConstType::I32, wasmparser::Operator::I32LtS) => Some(HANDLER_IDX_I32_LT_S_CONST),
-                (ConstType::I32, wasmparser::Operator::I32LtU) => Some(HANDLER_IDX_I32_LT_U_CONST),
-                (ConstType::I32, wasmparser::Operator::I32GtS) => Some(HANDLER_IDX_I32_GT_S_CONST),
-                (ConstType::I32, wasmparser::Operator::I32GtU) => Some(HANDLER_IDX_I32_GT_U_CONST),
-                (ConstType::I32, wasmparser::Operator::I32LeS) => Some(HANDLER_IDX_I32_LE_S_CONST),
-                (ConstType::I32, wasmparser::Operator::I32LeU) => Some(HANDLER_IDX_I32_LE_U_CONST),
-                (ConstType::I32, wasmparser::Operator::I32GeS) => Some(HANDLER_IDX_I32_GE_S_CONST),
-                (ConstType::I32, wasmparser::Operator::I32GeU) => Some(HANDLER_IDX_I32_GE_U_CONST),
-                (ConstType::I64, wasmparser::Operator::I64Eq) => Some(HANDLER_IDX_I64_EQ_CONST),
-                (ConstType::I64, wasmparser::Operator::I64Ne) => Some(HANDLER_IDX_I64_NE_CONST),
-                (ConstType::I64, wasmparser::Operator::I64LtS) => Some(HANDLER_IDX_I64_LT_S_CONST),
-                (ConstType::I64, wasmparser::Operator::I64LtU) => Some(HANDLER_IDX_I64_LT_U_CONST),
-                (ConstType::I64, wasmparser::Operator::I64GtS) => Some(HANDLER_IDX_I64_GT_S_CONST),
-                (ConstType::I64, wasmparser::Operator::I64GtU) => Some(HANDLER_IDX_I64_GT_U_CONST),
-                (ConstType::I64, wasmparser::Operator::I64LeS) => Some(HANDLER_IDX_I64_LE_S_CONST),
-                (ConstType::I64, wasmparser::Operator::I64LeU) => Some(HANDLER_IDX_I64_LE_U_CONST),
-                (ConstType::I64, wasmparser::Operator::I64GeS) => Some(HANDLER_IDX_I64_GE_S_CONST),
-                (ConstType::I64, wasmparser::Operator::I64GeU) => Some(HANDLER_IDX_I64_GE_U_CONST),
-                (ConstType::F32, wasmparser::Operator::F32Eq) => Some(HANDLER_IDX_F32_EQ_CONST),
-                (ConstType::F32, wasmparser::Operator::F32Ne) => Some(HANDLER_IDX_F32_NE_CONST),
-                (ConstType::F32, wasmparser::Operator::F32Lt) => Some(HANDLER_IDX_F32_LT_CONST),
-                (ConstType::F32, wasmparser::Operator::F32Gt) => Some(HANDLER_IDX_F32_GT_CONST),
-                (ConstType::F32, wasmparser::Operator::F32Le) => Some(HANDLER_IDX_F32_LE_CONST),
-                (ConstType::F32, wasmparser::Operator::F32Ge) => Some(HANDLER_IDX_F32_GE_CONST),
-                (ConstType::F64, wasmparser::Operator::F64Eq) => Some(HANDLER_IDX_F64_EQ_CONST),
-                (ConstType::F64, wasmparser::Operator::F64Ne) => Some(HANDLER_IDX_F64_NE_CONST),
-                (ConstType::F64, wasmparser::Operator::F64Lt) => Some(HANDLER_IDX_F64_LT_CONST),
-                (ConstType::F64, wasmparser::Operator::F64Gt) => Some(HANDLER_IDX_F64_GT_CONST),
-                (ConstType::F64, wasmparser::Operator::F64Le) => Some(HANDLER_IDX_F64_LE_CONST),
-                (ConstType::F64, wasmparser::Operator::F64Ge) => Some(HANDLER_IDX_F64_GE_CONST),
+            let result = match next_op {
+                wasmparser::Operator::F32Eq => Some(HANDLER_IDX_F32_EQ_CONST),
+                wasmparser::Operator::F32Ne => Some(HANDLER_IDX_F32_NE_CONST),
+                wasmparser::Operator::F32Lt => Some(HANDLER_IDX_F32_LT_CONST),
+                wasmparser::Operator::F32Gt => Some(HANDLER_IDX_F32_GT_CONST),
+                wasmparser::Operator::F32Le => Some(HANDLER_IDX_F32_LE_CONST),
+                wasmparser::Operator::F32Ge => Some(HANDLER_IDX_F32_GE_CONST),
                 _ => None,
             };
+
+            if result.is_some() {
+                let _ = ops.next().unwrap().unwrap();
+            }
+            result
+        } else {
+            None
+        }
+    }
+}
+
+struct F64Handler;
+
+impl ConstHandler for F64Handler {
+    type ValueType = f64;
+
+    fn create_local_set_operand(local_idx: u32, value: f64) -> Operand {
+        Operand::LocalIdxF64(LocalIdx(local_idx), value)
+    }
+
+    fn create_value_operand(value: f64) -> Operand {
+        Operand::F64(value)
+    }
+
+    fn get_const_type() -> ConstType {
+        ConstType::F64
+    }
+
+    fn get_local_set_handler_idx() -> usize {
+        HANDLER_IDX_LOCAL_SET_F64_CONST
+    }
+
+    fn try_consume_arithmetic(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+    ) -> Option<usize> {
+        if let Some(Ok((next_op, _))) = ops.peek() {
+            let result = match next_op {
+                wasmparser::Operator::F64Add => Some(HANDLER_IDX_F64_ADD_CONST),
+                wasmparser::Operator::F64Sub => Some(HANDLER_IDX_F64_SUB_CONST),
+                wasmparser::Operator::F64Mul => Some(HANDLER_IDX_F64_MUL_CONST),
+                wasmparser::Operator::F64Div => Some(HANDLER_IDX_F64_DIV_CONST),
+                _ => None,
+            };
+
             if result.is_some() {
                 let _ = ops.next().unwrap().unwrap();
             }
@@ -2327,114 +2570,114 @@ fn try_superinstructions_const(
         }
     }
 
+    fn try_consume_comparison(
+        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+    ) -> Option<usize> {
+        if let Some(Ok((next_op, _))) = ops.peek() {
+            let result = match next_op {
+                wasmparser::Operator::F64Eq => Some(HANDLER_IDX_F64_EQ_CONST),
+                wasmparser::Operator::F64Ne => Some(HANDLER_IDX_F64_NE_CONST),
+                wasmparser::Operator::F64Lt => Some(HANDLER_IDX_F64_LT_CONST),
+                wasmparser::Operator::F64Gt => Some(HANDLER_IDX_F64_GT_CONST),
+                wasmparser::Operator::F64Le => Some(HANDLER_IDX_F64_LE_CONST),
+                wasmparser::Operator::F64Ge => Some(HANDLER_IDX_F64_GE_CONST),
+                _ => None,
+            };
+
+            if result.is_some() {
+                let _ = ops.next().unwrap().unwrap();
+            }
+            result
+        } else {
+            None
+        }
+    }
+}
+
+fn try_consume_local_set(
+    ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+) -> Option<u32> {
+    if let Some(Ok((next_op, _))) = ops.peek() {
+        if let wasmparser::Operator::LocalSet { local_index } = next_op {
+            let local_idx = *local_index;
+            let _ = ops.next().unwrap().unwrap();
+            return Some(local_idx);
+        }
+    }
+    None
+}
+
+fn handle_const_patterns<H: ConstHandler>(
+    value: H::ValueType,
+    ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+) -> Option<ProcessedInstr> {
+    if let Some(local_idx) = try_consume_local_set(ops) {
+        return Some(ProcessedInstr {
+            handler_index: H::get_local_set_handler_idx(),
+            operand: H::create_local_set_operand(local_idx, value),
+        });
+    }
+
+    if H::supports_load_store() {
+        if let Some((handler_index, memarg)) = H::try_consume_load(ops) {
+            if let Some(operand) = H::create_memarg_operand(value, memarg) {
+                return Some(ProcessedInstr {
+                    handler_index,
+                    operand,
+                });
+            }
+        }
+    }
+
+    if H::supports_load_store() {
+        if let Some((handler_index, memarg)) = H::try_consume_store(ops) {
+            if let Some(operand) = H::create_memarg_operand(value, memarg) {
+                return Some(ProcessedInstr {
+                    handler_index,
+                    operand,
+                });
+            }
+        }
+    }
+
+    if let Some(handler_index) = H::try_consume_comparison(ops) {
+        return Some(ProcessedInstr {
+            handler_index,
+            operand: H::create_value_operand(value),
+        });
+    }
+
+    if H::supports_shift() {
+        if let Some(handler_index) = H::try_consume_shift(ops) {
+            return Some(ProcessedInstr {
+                handler_index,
+                operand: H::create_value_operand(value),
+            });
+        }
+    }
+
+    H::try_consume_arithmetic(ops).map(|handler_index| ProcessedInstr {
+        handler_index,
+        operand: H::create_value_operand(value),
+    })
+}
+
+fn try_superinstructions_const(
+    op: &wasmparser::Operator,
+    ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+) -> Option<ProcessedInstr> {
     match op {
         wasmparser::Operator::I32Const { value } => {
-            if let Some(local_idx) = try_consume_local_set(ops) {
-                Some(ProcessedInstr {
-                    handler_index: HANDLER_IDX_LOCAL_SET_I32_CONST,
-                    operand: Operand::LocalIdxI32(LocalIdx(local_idx), *value),
-                })
-            } else if let Some((handler_index, memarg)) = try_consume_load(ops, ConstType::I32) {
-                Some(ProcessedInstr {
-                    handler_index,
-                    operand: Operand::MemArgI32(*value, memarg),
-                })
-            } else if let Some((handler_index, memarg)) = try_consume_store(ops, ConstType::I32) {
-                Some(ProcessedInstr {
-                    handler_index,
-                    operand: Operand::MemArgI32(*value, memarg),
-                })
-            } else if let Some(handler_index) = try_consume_comparison(ops, ConstType::I32) {
-                Some(ProcessedInstr {
-                    handler_index,
-                    operand: Operand::I32(*value),
-                })
-            } else if let Some(handler_index) = try_consume_shift(ops, ConstType::I32) {
-                Some(ProcessedInstr {
-                    handler_index,
-                    operand: Operand::I32(*value),
-                })
-            } else {
-                try_consume_arithmetic(ops, ConstType::I32).map(|handler_index| ProcessedInstr {
-                    handler_index,
-                    operand: Operand::I32(*value),
-                })
-            }
+            handle_const_patterns::<I32Handler>(*value, ops)
         }
         wasmparser::Operator::I64Const { value } => {
-            if let Some(local_idx) = try_consume_local_set(ops) {
-                Some(ProcessedInstr {
-                    handler_index: HANDLER_IDX_LOCAL_SET_I64_CONST,
-                    operand: Operand::LocalIdxI64(LocalIdx(local_idx), *value),
-                })
-            } else if let Some((handler_index, memarg)) = try_consume_load(ops, ConstType::I64) {
-                Some(ProcessedInstr {
-                    handler_index,
-                    operand: Operand::MemArgI64(*value, memarg),
-                })
-            } else if let Some((handler_index, memarg)) = try_consume_store(ops, ConstType::I64) {
-                Some(ProcessedInstr {
-                    handler_index,
-                    operand: Operand::MemArgI64(*value, memarg),
-                })
-            } else if let Some(handler_index) = try_consume_comparison(ops, ConstType::I64) {
-                Some(ProcessedInstr {
-                    handler_index,
-                    operand: Operand::I64(*value),
-                })
-            } else if let Some(handler_index) = try_consume_shift(ops, ConstType::I64) {
-                Some(ProcessedInstr {
-                    handler_index,
-                    operand: Operand::I64(*value),
-                })
-            } else {
-                try_consume_arithmetic(ops, ConstType::I64).map(|handler_index| ProcessedInstr {
-                    handler_index,
-                    operand: Operand::I64(*value),
-                })
-            }
+            handle_const_patterns::<I64Handler>(*value, ops)
         }
         wasmparser::Operator::F32Const { value } => {
-            if let Some(local_idx) = try_consume_local_set(ops) {
-                Some(ProcessedInstr {
-                    handler_index: HANDLER_IDX_LOCAL_SET_F32_CONST,
-                    operand: Operand::LocalIdxF32(
-                        LocalIdx(local_idx),
-                        f32::from_bits(value.bits()),
-                    ),
-                })
-            } else if let Some(handler_index) = try_consume_comparison(ops, ConstType::F32) {
-                Some(ProcessedInstr {
-                    handler_index,
-                    operand: Operand::F32(f32::from_bits(value.bits())),
-                })
-            } else {
-                try_consume_arithmetic(ops, ConstType::F32).map(|handler_index| ProcessedInstr {
-                    handler_index,
-                    operand: Operand::F32(f32::from_bits(value.bits())),
-                })
-            }
+            handle_const_patterns::<F32Handler>(f32::from_bits(value.bits()), ops)
         }
         wasmparser::Operator::F64Const { value } => {
-            if let Some(local_idx) = try_consume_local_set(ops) {
-                Some(ProcessedInstr {
-                    handler_index: HANDLER_IDX_LOCAL_SET_F64_CONST,
-                    operand: Operand::LocalIdxF64(
-                        LocalIdx(local_idx),
-                        f64::from_bits(value.bits()),
-                    ),
-                })
-            } else if let Some(handler_index) = try_consume_comparison(ops, ConstType::F64) {
-                Some(ProcessedInstr {
-                    handler_index,
-                    operand: Operand::F64(f64::from_bits(value.bits())),
-                })
-            } else {
-                try_consume_arithmetic(ops, ConstType::F64).map(|handler_index| ProcessedInstr {
-                    handler_index,
-                    operand: Operand::F64(f64::from_bits(value.bits())),
-                })
-            }
+            handle_const_patterns::<F64Handler>(f64::from_bits(value.bits()), ops)
         }
         _ => None,
     }
