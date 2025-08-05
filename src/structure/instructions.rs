@@ -378,6 +378,17 @@ pub enum Instr {
     I64ConstI64Load(i64, Memarg), // i64.const + i64.load
     I64ConstF32Load(i64, Memarg), // i64.const + f32.load
     I64ConstF64Load(i64, Memarg), // i64.const + f64.load
+    /* load8/16/32 + const superinstructions */
+    I32Load8SConst(i32, Memarg),  // i32.const + i32.load8_s
+    I32Load8UConst(i32, Memarg),  // i32.const + i32.load8_u
+    I32Load16SConst(i32, Memarg), // i32.const + i32.load16_s
+    I32Load16UConst(i32, Memarg), // i32.const + i32.load16_u
+    I64Load8SConst(i64, Memarg),  // i64.const + i64.load8_s
+    I64Load8UConst(i64, Memarg),  // i64.const + i64.load8_u
+    I64Load16SConst(i64, Memarg), // i64.const + i64.load16_s
+    I64Load16UConst(i64, Memarg), // i64.const + i64.load16_u
+    I64Load32SConst(i64, Memarg), // i64.const + i64.load32_s
+    I64Load32UConst(i64, Memarg), // i64.const + i64.load32_u
     /* const + store superinstructions */
     I32StoreI32Const(i32, Memarg),
     I64StoreI64Const(i64, Memarg),
@@ -386,6 +397,12 @@ pub enum Instr {
     I32ConstF64Store(i32, Memarg), // i32.const + f64.store
     I64ConstI32Store(i64, Memarg), // i64.const + i32.store
     I64ConstI64Store(i64, Memarg), // i64.const + i64.store
+    /* store8/16/32 + const superinstructions */
+    I32Store8Const(i32, Memarg),   // i32.const + i32.store8
+    I32Store16Const(i32, Memarg),  // i32.const + i32.store16
+    I64Store8Const(i64, Memarg),   // i64.const + i64.store8
+    I64Store16Const(i64, Memarg),  // i64.const + i64.store16
+    I64Store32Const(i64, Memarg),  // i64.const + i64.store32
     I64ConstF32Store(i64, Memarg), // i64.const + f32.store
     I64ConstF64Store(i64, Memarg), // i64.const + f64.store
     /* const + arithmetic superinstructions */

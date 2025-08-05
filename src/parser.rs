@@ -1994,6 +1994,77 @@ fn try_superinstructions_const(
                         align: memarg.align as u32,
                     },
                 )),
+                // Load8/16/32 const patterns
+                (ConstType::I32, wasmparser::Operator::I32Load8S { memarg }) => Some((
+                    HANDLER_IDX_I32_LOAD8_S_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I32, wasmparser::Operator::I32Load8U { memarg }) => Some((
+                    HANDLER_IDX_I32_LOAD8_U_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I32, wasmparser::Operator::I32Load16S { memarg }) => Some((
+                    HANDLER_IDX_I32_LOAD16_S_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I32, wasmparser::Operator::I32Load16U { memarg }) => Some((
+                    HANDLER_IDX_I32_LOAD16_U_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I64, wasmparser::Operator::I64Load8S { memarg }) => Some((
+                    HANDLER_IDX_I64_LOAD8_S_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I64, wasmparser::Operator::I64Load8U { memarg }) => Some((
+                    HANDLER_IDX_I64_LOAD8_U_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I64, wasmparser::Operator::I64Load16S { memarg }) => Some((
+                    HANDLER_IDX_I64_LOAD16_S_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I64, wasmparser::Operator::I64Load16U { memarg }) => Some((
+                    HANDLER_IDX_I64_LOAD16_U_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I64, wasmparser::Operator::I64Load32S { memarg }) => Some((
+                    HANDLER_IDX_I64_LOAD32_S_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I64, wasmparser::Operator::I64Load32U { memarg }) => Some((
+                    HANDLER_IDX_I64_LOAD32_U_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
                 _ => None,
             };
 
@@ -2063,6 +2134,42 @@ fn try_superinstructions_const(
                 )),
                 (ConstType::I64, wasmparser::Operator::F64Store { memarg }) => Some((
                     HANDLER_IDX_I64_CONST_F64_STORE,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                // Store8/16/32 const patterns
+                (ConstType::I32, wasmparser::Operator::I32Store8 { memarg }) => Some((
+                    HANDLER_IDX_I32_STORE8_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I32, wasmparser::Operator::I32Store16 { memarg }) => Some((
+                    HANDLER_IDX_I32_STORE16_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I64, wasmparser::Operator::I64Store8 { memarg }) => Some((
+                    HANDLER_IDX_I64_STORE8_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I64, wasmparser::Operator::I64Store16 { memarg }) => Some((
+                    HANDLER_IDX_I64_STORE16_CONST,
+                    Memarg {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    },
+                )),
+                (ConstType::I64, wasmparser::Operator::I64Store32 { memarg }) => Some((
+                    HANDLER_IDX_I64_STORE32_CONST,
                     Memarg {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,

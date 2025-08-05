@@ -407,8 +407,23 @@ pub const HANDLER_IDX_I32_SHR_U_CONST: usize = 0x12E;
 pub const HANDLER_IDX_I64_SHL_CONST: usize = 0x12F;
 pub const HANDLER_IDX_I64_SHR_S_CONST: usize = 0x130;
 pub const HANDLER_IDX_I64_SHR_U_CONST: usize = 0x131;
+pub const HANDLER_IDX_I32_LOAD8_S_CONST: usize = 0x132;
+pub const HANDLER_IDX_I32_LOAD8_U_CONST: usize = 0x133;
+pub const HANDLER_IDX_I32_LOAD16_S_CONST: usize = 0x134;
+pub const HANDLER_IDX_I32_LOAD16_U_CONST: usize = 0x135;
+pub const HANDLER_IDX_I64_LOAD8_S_CONST: usize = 0x136;
+pub const HANDLER_IDX_I64_LOAD8_U_CONST: usize = 0x137;
+pub const HANDLER_IDX_I64_LOAD16_S_CONST: usize = 0x138;
+pub const HANDLER_IDX_I64_LOAD16_U_CONST: usize = 0x139;
+pub const HANDLER_IDX_I64_LOAD32_S_CONST: usize = 0x13A;
+pub const HANDLER_IDX_I64_LOAD32_U_CONST: usize = 0x13B;
+pub const HANDLER_IDX_I32_STORE8_CONST: usize = 0x13C;
+pub const HANDLER_IDX_I32_STORE16_CONST: usize = 0x13D;
+pub const HANDLER_IDX_I64_STORE8_CONST: usize = 0x13E;
+pub const HANDLER_IDX_I64_STORE16_CONST: usize = 0x13F;
+pub const HANDLER_IDX_I64_STORE32_CONST: usize = 0x140;
 
-pub const MAX_HANDLER_INDEX: usize = 0x132;
+pub const MAX_HANDLER_INDEX: usize = 0x141;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stacks {
@@ -4483,6 +4498,27 @@ macro_rules! load_const {
     }};
 }
 
+macro_rules! load_sized_const {
+    ($ctx:ident, $operand:ident, $operand_type:ident, $load_type:ident, $result_type:ident, $num_variant:ident) => {{
+        match $operand {
+            Operand::$operand_type(offset, memarg) => {
+                let module_inst = $ctx
+                    .frame
+                    .module
+                    .upgrade()
+                    .ok_or(RuntimeError::ModuleInstanceGone)?;
+                let mem_addr = &module_inst.mem_addrs[0];
+                let loaded_val = mem_addr.load::<$load_type>(&memarg, *offset as i32)?;
+                let result_val = loaded_val as $result_type;
+                $ctx.value_stack
+                    .push(Val::Num(Num::$num_variant(result_val)));
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => Err(RuntimeError::InvalidOperand),
+        }
+    }};
+}
+
 macro_rules! store_const {
     // Pattern 1: Type-matching store (e.g., I32StoreI32Const, I64StoreI64Const)
     // WebAssembly semantics: const value is stored, address comes from stack
@@ -4531,6 +4567,33 @@ macro_rules! store_const {
                 }
                 let mem_addr = &module_inst.mem_addrs[0];
                 mem_addr.store::<$store_type>(&memarg, *ptr as i32, val_to_store)?;
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => Err(RuntimeError::InvalidOperand),
+        }
+    }};
+}
+
+macro_rules! store_sized_const {
+    ($ctx:ident, $operand:ident, $operand_type:ident, $input_type:ident, $store_type:ident) => {{
+        match $operand {
+            Operand::$operand_type(val_to_store, memarg) => {
+                let ptr_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let ptr = ptr_val.to_i32()?;
+                let module_inst = $ctx
+                    .frame
+                    .module
+                    .upgrade()
+                    .ok_or(RuntimeError::ModuleInstanceGone)?;
+                if module_inst.mem_addrs.is_empty() {
+                    return Err(RuntimeError::MemoryNotFound);
+                }
+                let mem_addr = &module_inst.mem_addrs[0];
+                let truncated_val = *val_to_store as $store_type;
+                mem_addr.store::<$store_type>(&memarg, ptr, truncated_val)?;
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => Err(RuntimeError::InvalidOperand),
@@ -4672,6 +4735,77 @@ fn handle_i64_const_f64_load(
     load_const!(ctx, operand, MemArgI64, f64, F64)
 }
 
+// Load8/16/32 const handlers
+fn handle_i32_load8_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_sized_const!(ctx, operand, MemArgI32, i8, i32, I32)
+}
+
+fn handle_i32_load8_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_sized_const!(ctx, operand, MemArgI32, u8, i32, I32)
+}
+
+fn handle_i32_load16_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_sized_const!(ctx, operand, MemArgI32, i16, i32, I32)
+}
+
+fn handle_i32_load16_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_sized_const!(ctx, operand, MemArgI32, u16, i32, I32)
+}
+
+fn handle_i64_load8_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_sized_const!(ctx, operand, MemArgI64, i8, i64, I64)
+}
+
+fn handle_i64_load8_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_sized_const!(ctx, operand, MemArgI64, u8, i64, I64)
+}
+
+fn handle_i64_load16_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_sized_const!(ctx, operand, MemArgI64, i16, i64, I64)
+}
+
+fn handle_i64_load16_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_sized_const!(ctx, operand, MemArgI64, u16, i64, I64)
+}
+
+fn handle_i64_load32_s_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_sized_const!(ctx, operand, MemArgI64, i32, i64, I64)
+}
+
+fn handle_i64_load32_u_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    load_sized_const!(ctx, operand, MemArgI64, u32, i64, I64)
+}
+
 fn handle_i32_store_i32_const(
     ctx: &mut ExecutionContext,
     operand: &Operand,
@@ -4733,6 +4867,42 @@ fn handle_i64_const_f64_store(
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     store_const!(ctx, operand, MemArgI64, to_f64, f64)
+}
+
+// Store8/16/32 const handlers
+fn handle_i32_store8_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    store_sized_const!(ctx, operand, MemArgI32, i32, u8)
+}
+
+fn handle_i32_store16_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    store_sized_const!(ctx, operand, MemArgI32, i32, u16)
+}
+
+fn handle_i64_store8_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    store_sized_const!(ctx, operand, MemArgI64, i64, u8)
+}
+
+fn handle_i64_store16_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    store_sized_const!(ctx, operand, MemArgI64, i64, u16)
+}
+
+fn handle_i64_store32_const(
+    ctx: &mut ExecutionContext,
+    operand: &Operand,
+) -> Result<HandlerResult, RuntimeError> {
+    store_sized_const!(ctx, operand, MemArgI64, i64, u32)
 }
 
 macro_rules! binop_const {
@@ -5442,6 +5612,16 @@ lazy_static! {
         table[HANDLER_IDX_I64_CONST_I64_LOAD] = handle_i64_const_i64_load;
         table[HANDLER_IDX_I64_CONST_F32_LOAD] = handle_i64_const_f32_load;
         table[HANDLER_IDX_I64_CONST_F64_LOAD] = handle_i64_const_f64_load;
+        table[HANDLER_IDX_I32_LOAD8_S_CONST] = handle_i32_load8_s_const;
+        table[HANDLER_IDX_I32_LOAD8_U_CONST] = handle_i32_load8_u_const;
+        table[HANDLER_IDX_I32_LOAD16_S_CONST] = handle_i32_load16_s_const;
+        table[HANDLER_IDX_I32_LOAD16_U_CONST] = handle_i32_load16_u_const;
+        table[HANDLER_IDX_I64_LOAD8_S_CONST] = handle_i64_load8_s_const;
+        table[HANDLER_IDX_I64_LOAD8_U_CONST] = handle_i64_load8_u_const;
+        table[HANDLER_IDX_I64_LOAD16_S_CONST] = handle_i64_load16_s_const;
+        table[HANDLER_IDX_I64_LOAD16_U_CONST] = handle_i64_load16_u_const;
+        table[HANDLER_IDX_I64_LOAD32_S_CONST] = handle_i64_load32_s_const;
+        table[HANDLER_IDX_I64_LOAD32_U_CONST] = handle_i64_load32_u_const;
 
         // const + store superinstructions
         table[HANDLER_IDX_I32_STORE_I32_CONST] = handle_i32_store_i32_const;
@@ -5453,6 +5633,11 @@ lazy_static! {
         table[HANDLER_IDX_I64_CONST_I64_STORE] = handle_i64_const_i64_store;
         table[HANDLER_IDX_I64_CONST_F32_STORE] = handle_i64_const_f32_store;
         table[HANDLER_IDX_I64_CONST_F64_STORE] = handle_i64_const_f64_store;
+        table[HANDLER_IDX_I32_STORE8_CONST] = handle_i32_store8_const;
+        table[HANDLER_IDX_I32_STORE16_CONST] = handle_i32_store16_const;
+        table[HANDLER_IDX_I64_STORE8_CONST] = handle_i64_store8_const;
+        table[HANDLER_IDX_I64_STORE16_CONST] = handle_i64_store16_const;
+        table[HANDLER_IDX_I64_STORE32_CONST] = handle_i64_store32_const;
 
         // const + arithmetic superinstructions
         table[HANDLER_IDX_I32_ADD_CONST] = handle_i32_add_const;
