@@ -72,7 +72,7 @@ pub enum ImportDesc {
     WasiFunc(WasiFuncType),
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Copy)]
 pub enum WasiFuncType {
     ProcExit,
     FdWrite,
