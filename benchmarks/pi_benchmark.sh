@@ -41,11 +41,34 @@ function run_pi_benchmark() {
     echo "Runs: $runs"
     
     echo ""
-    echo "Running with chiwawa runtime:"
+    echo "Running with chiwawa runtime (superinstructions enabled):"
+    
+    local total_chiwawa_super_time=0
+    
+    # Run chiwawa pi benchmark with superinstructions multiple times
+    for i in $(seq 1 $runs); do
+        local start_time=$(date +%s.%N)
+        wasmtime --dir . "$CHIWAWA_WASM" "$PI_WASM" --enable-superinstructions 2>/dev/null
+        local end_time=$(date +%s.%N)
+        
+        local run_time=$(echo "$end_time - $start_time" | bc)
+        total_chiwawa_super_time=$(echo "$total_chiwawa_super_time + $run_time" | bc)
+        
+        echo "Run $i: ${run_time}s"
+    done
+    
+    # Calculate chiwawa superinstructions average execution time
+    local chiwawa_super_avg_time=$(echo "scale=6; $total_chiwawa_super_time / $runs" | bc)
+    
+    echo "chiwawa (superinstructions) average time: ${chiwawa_super_avg_time}s"
+    echo "chiwawa (superinstructions) total time: ${total_chiwawa_super_time}s"
+    
+    echo ""
+    echo "Running with chiwawa runtime (superinstructions disabled):"
     
     local total_chiwawa_time=0
     
-    # Run chiwawa pi benchmark multiple times
+    # Run chiwawa pi benchmark without superinstructions multiple times
     for i in $(seq 1 $runs); do
         local start_time=$(date +%s.%N)
         wasmtime --dir . "$CHIWAWA_WASM" "$PI_WASM" 2>/dev/null
@@ -57,11 +80,11 @@ function run_pi_benchmark() {
         echo "Run $i: ${run_time}s"
     done
     
-    # Calculate chiwawa average execution time
+    # Calculate chiwawa baseline average execution time
     local chiwawa_avg_time=$(echo "scale=6; $total_chiwawa_time / $runs" | bc)
     
-    echo "chiwawa average time: ${chiwawa_avg_time}s"
-    echo "chiwawa total time: ${total_chiwawa_time}s"
+    echo "chiwawa (baseline) average time: ${chiwawa_avg_time}s"
+    echo "chiwawa (baseline) total time: ${total_chiwawa_time}s"
     
     echo ""
     echo "Running with wasmtime (native):"
@@ -86,13 +109,23 @@ function run_pi_benchmark() {
     echo "wasmtime average time: ${wasmtime_avg_time}s"
     echo "wasmtime total time: ${total_wasmtime_time}s"
     
-    # Calculate performance ratio
-    local speed_ratio=$(echo "scale=2; $chiwawa_avg_time / $wasmtime_avg_time" | bc)
+    # Calculate performance ratios
+    local super_vs_wasmtime_ratio=$(echo "scale=2; $chiwawa_super_avg_time / $wasmtime_avg_time" | bc)
+    local baseline_vs_wasmtime_ratio=$(echo "scale=2; $chiwawa_avg_time / $wasmtime_avg_time" | bc)
+    local super_vs_baseline_ratio=$(echo "scale=2; $chiwawa_avg_time / $chiwawa_super_avg_time" | bc)
     
     echo ""
     echo "Performance comparison:"
-    echo "chiwawa takes ${speed_ratio}x longer than wasmtime"
     echo "Iterations per benchmark: 100,000"
+    echo ""
+    echo "chiwawa (superinstructions) vs wasmtime:"
+    echo "  chiwawa (superinstructions) takes ${super_vs_wasmtime_ratio}x longer than wasmtime"
+    echo ""
+    echo "chiwawa (baseline) vs wasmtime:"
+    echo "  chiwawa (baseline) takes ${baseline_vs_wasmtime_ratio}x longer than wasmtime"
+    echo ""
+    echo "chiwawa superinstructions vs baseline:"
+    echo "  superinstructions reduces execution time by ${super_vs_baseline_ratio}x"
     echo ""
 }
 

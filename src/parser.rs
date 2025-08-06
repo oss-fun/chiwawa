@@ -1,14 +1,13 @@
 use std::fs::File;
 use std::io::Read;
-use std::iter::Peekable;
 use wasmparser::{
-    ExternalKind, FunctionBody, OperatorsIteratorWithOffsets, Parser, Payload::*, SectionLimited,
-    TypeRef, ValType,
+    ExternalKind, FunctionBody, Parser, Payload::*, SectionLimited, TypeRef, ValType,
 };
 
 use crate::error::{ParserError, RuntimeError};
 use crate::execution::stack::*;
 use crate::structure::{instructions::*, module::*, types::*};
+use crate::superinstructions::*;
 use std::collections::HashMap;
 
 fn match_value_type(t: ValType) -> ValueType {
@@ -446,6 +445,7 @@ fn decode_code_section(
     body: FunctionBody<'_>,
     module: &mut Module,
     func_index: usize,
+    enable_superinstructions: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut locals: Vec<(u32, ValueType)> = Vec::new();
     for pair in body.get_locals_reader()? {
@@ -469,7 +469,7 @@ fn decode_code_section(
 
     // Phase 1: Decode instructions and get necessary info for preprocessing
     let (mut processed_instrs, mut fixups, block_end_map, if_else_map, block_type_map) =
-        decode_processed_instrs_and_fixups(&mut ops_iter, module)?;
+        decode_processed_instrs_and_fixups(&mut ops_iter, module, enable_superinstructions)?;
 
     // Phase 2 & 3: Preprocess instructions for this function
     preprocess_instructions(
@@ -876,9 +876,10 @@ fn preprocess_instructions(
     Ok(())
 }
 
-fn decode_processed_instrs_and_fixups(
-    ops: &mut Peekable<OperatorsIteratorWithOffsets<'_>>,
+fn decode_processed_instrs_and_fixups<'a>(
+    ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'a>>,
     module: &Module,
+    enable_superinstructions: bool,
 ) -> Result<
     (
         Vec<ProcessedInstr>,
@@ -909,6 +910,15 @@ fn decode_processed_instrs_and_fixups(
             Some(Err(e)) => return Err(Box::new(e)),
             None => break,
         };
+
+        // Try to use superinstructions optimization at parse time
+        if enable_superinstructions {
+            if let Some(superinstr) = try_superinstructions_const(&op, ops) {
+                initial_processed_instrs.push(superinstr);
+                current_processed_pc += 1;
+                continue;
+            }
+        }
 
         let (processed_instr_template, fixup_info_opt) = map_operator_to_initial_instr_and_fixup(
             &op,
@@ -1900,6 +1910,7 @@ fn map_operator_to_initial_instr_and_fixup(
 pub fn parse_bytecode(
     mut module: &mut Module,
     path: &str,
+    enable_superinstructions: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut current_func_index = module.num_imported_funcs;
 
@@ -1969,7 +1980,12 @@ pub fn parse_bytecode(
 
             CodeSectionStart { .. } => { /* ... */ }
             CodeSectionEntry(body) => {
-                decode_code_section(body, &mut module, current_func_index)?;
+                decode_code_section(
+                    body,
+                    &mut module,
+                    current_func_index,
+                    enable_superinstructions,
+                )?;
                 current_func_index += 1;
             }
 
