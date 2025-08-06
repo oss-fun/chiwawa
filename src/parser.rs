@@ -9,6 +9,98 @@ use crate::execution::stack::*;
 use crate::structure::{instructions::*, module::*, types::*};
 use crate::superinstructions::*;
 use std::collections::HashMap;
+use std::sync::LazyLock;
+
+// Cache key for block type arity calculations
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum BlockTypeKey {
+    Empty,
+    SingleType(ValueType),
+    FuncType(TypeIdx),
+}
+
+impl From<&wasmparser::BlockType> for BlockTypeKey {
+    fn from(block_type: &wasmparser::BlockType) -> Self {
+        match block_type {
+            wasmparser::BlockType::Empty => BlockTypeKey::Empty,
+            wasmparser::BlockType::Type(val_type) => {
+                BlockTypeKey::SingleType(match_value_type(*val_type))
+            }
+            wasmparser::BlockType::FuncType(type_idx) => BlockTypeKey::FuncType(TypeIdx(*type_idx)),
+        }
+    }
+}
+
+// Cache for block arity calculations
+struct BlockArityCache {
+    block_arity_cache: HashMap<BlockTypeKey, usize>,
+    loop_parameter_arity_cache: HashMap<BlockTypeKey, usize>,
+    block_parameter_count_cache: HashMap<BlockTypeKey, usize>,
+}
+
+impl BlockArityCache {
+    fn new() -> Self {
+        Self {
+            block_arity_cache: HashMap::new(),
+            loop_parameter_arity_cache: HashMap::new(),
+            block_parameter_count_cache: HashMap::new(),
+        }
+    }
+}
+
+static WASI_FUNCTION_MAP: LazyLock<HashMap<&'static str, WasiFuncType>> = LazyLock::new(|| {
+    let mut map = HashMap::new();
+    map.insert("proc_exit", WasiFuncType::ProcExit);
+    map.insert("fd_write", WasiFuncType::FdWrite);
+    map.insert("fd_read", WasiFuncType::FdRead);
+    map.insert("random_get", WasiFuncType::RandomGet);
+    map.insert("fd_prestat_get", WasiFuncType::FdPrestatGet);
+    map.insert("fd_prestat_dir_name", WasiFuncType::FdPrestatDirName);
+    map.insert("fd_close", WasiFuncType::FdClose);
+    map.insert("environ_get", WasiFuncType::EnvironGet);
+    map.insert("environ_sizes_get", WasiFuncType::EnvironSizesGet);
+    map.insert("args_get", WasiFuncType::ArgsGet);
+    map.insert("args_sizes_get", WasiFuncType::ArgsSizesGet);
+    map.insert("clock_time_get", WasiFuncType::ClockTimeGet);
+    map.insert("clock_res_get", WasiFuncType::ClockResGet);
+    map.insert("sched_yield", WasiFuncType::SchedYield);
+    map.insert("fd_fdstat_get", WasiFuncType::FdFdstatGet);
+    map.insert("path_open", WasiFuncType::PathOpen);
+    map.insert("fd_seek", WasiFuncType::FdSeek);
+    map.insert("fd_tell", WasiFuncType::FdTell);
+    map.insert("fd_sync", WasiFuncType::FdSync);
+    map.insert("fd_filestat_get", WasiFuncType::FdFilestatGet);
+    map.insert("fd_readdir", WasiFuncType::FdReaddir);
+    map.insert("fd_pread", WasiFuncType::FdPread);
+    map.insert("fd_datasync", WasiFuncType::FdDatasync);
+    map.insert("fd_fdstat_set_flags", WasiFuncType::FdFdstatSetFlags);
+    map.insert("fd_filestat_set_size", WasiFuncType::FdFilestatSetSize);
+    map.insert("fd_pwrite", WasiFuncType::FdPwrite);
+    map.insert("path_create_directory", WasiFuncType::PathCreateDirectory);
+    map.insert("path_filestat_get", WasiFuncType::PathFilestatGet);
+    map.insert(
+        "path_filestat_set_times",
+        WasiFuncType::PathFilestatSetTimes,
+    );
+    map.insert("path_readlink", WasiFuncType::PathReadlink);
+    map.insert("path_remove_directory", WasiFuncType::PathRemoveDirectory);
+    map.insert("path_unlink_file", WasiFuncType::PathUnlinkFile);
+    map.insert("poll_oneoff", WasiFuncType::PollOneoff);
+    map.insert("proc_raise", WasiFuncType::ProcRaise);
+    map.insert("fd_advise", WasiFuncType::FdAdvise);
+    map.insert("fd_allocate", WasiFuncType::FdAllocate);
+    map.insert("fd_fdstat_set_rights", WasiFuncType::FdFdstatSetRights);
+    map.insert("fd_renumber", WasiFuncType::FdRenumber);
+    map.insert("fd_filestat_set_times", WasiFuncType::FdFilestatSetTimes);
+    map.insert("path_link", WasiFuncType::PathLink);
+    map.insert("path_rename", WasiFuncType::PathRename);
+    map.insert("path_symlink", WasiFuncType::PathSymlink);
+    map.insert("sock_accept", WasiFuncType::SockAccept);
+    map.insert("sock_recv", WasiFuncType::SockRecv);
+    map.insert("sock_send", WasiFuncType::SockSend);
+    map.insert("sock_shutdown", WasiFuncType::SockShutdown);
+    map
+});
 
 fn match_value_type(t: ValType) -> ValueType {
     match t {
@@ -33,8 +125,18 @@ fn types_to_vec(types: &[ValType], vec: &mut Vec<ValueType>) {
     }
 }
 
-fn calculate_block_arity(block_type: &wasmparser::BlockType, module: &Module) -> usize {
-    match block_type {
+fn calculate_block_arity(
+    block_type: &wasmparser::BlockType,
+    module: &Module,
+    cache: &mut BlockArityCache,
+) -> usize {
+    let key = BlockTypeKey::from(block_type);
+
+    if let Some(&arity) = cache.block_arity_cache.get(&key) {
+        return arity;
+    }
+
+    let arity = match block_type {
         wasmparser::BlockType::Empty => 0,
         wasmparser::BlockType::Type(_) => 1,
         wasmparser::BlockType::FuncType(type_idx) => {
@@ -44,11 +146,24 @@ fn calculate_block_arity(block_type: &wasmparser::BlockType, module: &Module) ->
                 0 // Fallback to 0 if invalid type index
             }
         }
-    }
+    };
+
+    cache.block_arity_cache.insert(key, arity);
+    arity
 }
 
-fn calculate_loop_parameter_arity(block_type: &wasmparser::BlockType, module: &Module) -> usize {
-    match block_type {
+fn calculate_loop_parameter_arity(
+    block_type: &wasmparser::BlockType,
+    module: &Module,
+    cache: &mut BlockArityCache,
+) -> usize {
+    let key = BlockTypeKey::from(block_type);
+
+    if let Some(&arity) = cache.loop_parameter_arity_cache.get(&key) {
+        return arity;
+    }
+
+    let arity = match block_type {
         wasmparser::BlockType::Empty => 0,
         wasmparser::BlockType::Type(_) => 0, // Single type means no parameters for loop
         wasmparser::BlockType::FuncType(type_idx) => {
@@ -58,11 +173,24 @@ fn calculate_loop_parameter_arity(block_type: &wasmparser::BlockType, module: &M
                 0 // Fallback to 0 if invalid type index
             }
         }
-    }
+    };
+
+    cache.loop_parameter_arity_cache.insert(key, arity);
+    arity
 }
 
-fn calculate_block_parameter_count(block_type: &wasmparser::BlockType, module: &Module) -> usize {
-    match block_type {
+fn calculate_block_parameter_count(
+    block_type: &wasmparser::BlockType,
+    module: &Module,
+    cache: &mut BlockArityCache,
+) -> usize {
+    let key = BlockTypeKey::from(block_type);
+
+    if let Some(&count) = cache.block_parameter_count_cache.get(&key) {
+        return count;
+    }
+
+    let count = match block_type {
         wasmparser::BlockType::Empty => 0,
         wasmparser::BlockType::Type(_) => 0, // Single type means no parameters for block
         wasmparser::BlockType::FuncType(type_idx) => {
@@ -72,7 +200,10 @@ fn calculate_block_parameter_count(block_type: &wasmparser::BlockType, module: &
                 0 // Fallback to 0 if invalid type index
             }
         }
-    }
+    };
+
+    cache.block_parameter_count_cache.insert(key, count);
+    count
 }
 
 fn decode_type_section(
@@ -177,55 +308,7 @@ fn decode_import_section(
 }
 
 fn parse_wasi_function(name: &str) -> Option<WasiFuncType> {
-    match name {
-        "proc_exit" => Some(WasiFuncType::ProcExit),
-        "fd_write" => Some(WasiFuncType::FdWrite),
-        "fd_read" => Some(WasiFuncType::FdRead),
-        "random_get" => Some(WasiFuncType::RandomGet),
-        "fd_prestat_get" => Some(WasiFuncType::FdPrestatGet),
-        "fd_prestat_dir_name" => Some(WasiFuncType::FdPrestatDirName),
-        "fd_close" => Some(WasiFuncType::FdClose),
-        "environ_get" => Some(WasiFuncType::EnvironGet),
-        "environ_sizes_get" => Some(WasiFuncType::EnvironSizesGet),
-        "args_get" => Some(WasiFuncType::ArgsGet),
-        "args_sizes_get" => Some(WasiFuncType::ArgsSizesGet),
-        "clock_time_get" => Some(WasiFuncType::ClockTimeGet),
-        "clock_res_get" => Some(WasiFuncType::ClockResGet),
-        "sched_yield" => Some(WasiFuncType::SchedYield),
-        "fd_fdstat_get" => Some(WasiFuncType::FdFdstatGet),
-        "path_open" => Some(WasiFuncType::PathOpen),
-        "fd_seek" => Some(WasiFuncType::FdSeek),
-        "fd_tell" => Some(WasiFuncType::FdTell),
-        "fd_sync" => Some(WasiFuncType::FdSync),
-        "fd_filestat_get" => Some(WasiFuncType::FdFilestatGet),
-        "fd_readdir" => Some(WasiFuncType::FdReaddir),
-        "fd_pread" => Some(WasiFuncType::FdPread),
-        "fd_datasync" => Some(WasiFuncType::FdDatasync),
-        "fd_fdstat_set_flags" => Some(WasiFuncType::FdFdstatSetFlags),
-        "fd_filestat_set_size" => Some(WasiFuncType::FdFilestatSetSize),
-        "fd_pwrite" => Some(WasiFuncType::FdPwrite),
-        "path_create_directory" => Some(WasiFuncType::PathCreateDirectory),
-        "path_filestat_get" => Some(WasiFuncType::PathFilestatGet),
-        "path_filestat_set_times" => Some(WasiFuncType::PathFilestatSetTimes),
-        "path_readlink" => Some(WasiFuncType::PathReadlink),
-        "path_remove_directory" => Some(WasiFuncType::PathRemoveDirectory),
-        "path_unlink_file" => Some(WasiFuncType::PathUnlinkFile),
-        "poll_oneoff" => Some(WasiFuncType::PollOneoff),
-        "proc_raise" => Some(WasiFuncType::ProcRaise),
-        "fd_advise" => Some(WasiFuncType::FdAdvise),
-        "fd_allocate" => Some(WasiFuncType::FdAllocate),
-        "fd_fdstat_set_rights" => Some(WasiFuncType::FdFdstatSetRights),
-        "fd_renumber" => Some(WasiFuncType::FdRenumber),
-        "fd_filestat_set_times" => Some(WasiFuncType::FdFilestatSetTimes),
-        "path_link" => Some(WasiFuncType::PathLink),
-        "path_rename" => Some(WasiFuncType::PathRename),
-        "path_symlink" => Some(WasiFuncType::PathSymlink),
-        "sock_accept" => Some(WasiFuncType::SockAccept),
-        "sock_recv" => Some(WasiFuncType::SockRecv),
-        "sock_send" => Some(WasiFuncType::SockSend),
-        "sock_shutdown" => Some(WasiFuncType::SockShutdown),
-        _ => None,
-    }
+    WASI_FUNCTION_MAP.get(name).copied()
 }
 
 fn decode_export_section(
@@ -446,6 +529,7 @@ fn decode_code_section(
     module: &mut Module,
     func_index: usize,
     enable_superinstructions: bool,
+    cache: &mut BlockArityCache,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut locals: Vec<(u32, ValueType)> = Vec::new();
     for pair in body.get_locals_reader()? {
@@ -479,6 +563,7 @@ fn decode_code_section(
         &if_else_map,
         &block_type_map,
         module,
+        cache,
     )
     .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
@@ -510,6 +595,7 @@ fn preprocess_instructions(
     if_else_map: &HashMap<usize, usize>,
     block_type_map: &HashMap<usize, wasmparser::BlockType>,
     module: &Module,
+    cache: &mut BlockArityCache,
 ) -> Result<(), RuntimeError> {
     // --- Phase 2: Resolve Br, BrIf, If, Else jumps ---
 
@@ -608,9 +694,9 @@ fn preprocess_instructions(
         };
 
         let target_arity = if is_loop {
-            calculate_loop_parameter_arity(&target_block_type, module)
+            calculate_loop_parameter_arity(&target_block_type, module, cache)
         } else {
-            calculate_block_arity(&target_block_type, module)
+            calculate_block_arity(&target_block_type, module, cache)
         };
         // Branch to parent level: if target block is at index N, unwind to N-1
         let target_label_stack_idx = if target_runtime_idx > 0 {
@@ -630,7 +716,7 @@ fn preprocess_instructions(
                     .get(&current_fixup_pc)
                     .cloned()
                     .unwrap_or(wasmparser::BlockType::Empty);
-                let if_arity = calculate_block_arity(&if_block_type, module);
+                let if_arity = calculate_block_arity(&if_block_type, module, cache);
 
                 instr_to_patch.operand = Operand::LabelIdx {
                     target_ip: else_target,
@@ -645,7 +731,7 @@ fn preprocess_instructions(
                     .get(&current_fixup_pc)
                     .cloned()
                     .unwrap_or(wasmparser::BlockType::Empty);
-                let else_arity = calculate_block_arity(&else_block_type, module);
+                let else_arity = calculate_block_arity(&else_block_type, module, cache);
                 instr_to_patch.operand = Operand::LabelIdx {
                     target_ip: target_ip,
                     arity: else_arity,
@@ -767,10 +853,10 @@ fn preprocess_instructions(
                     };
                     let target_arity = if is_loop {
                         // For loops: Branch provides parameters (input types)
-                        calculate_loop_parameter_arity(&target_block_type, module)
+                        calculate_loop_parameter_arity(&target_block_type, module, cache)
                     } else {
                         // For blocks: Branch provides results (output types)
-                        calculate_block_arity(&target_block_type, module)
+                        calculate_block_arity(&target_block_type, module, cache)
                     };
                     // Branch to parent level: if target block is at index N, unwind to N-1
                     let target_label_stack_idx = if target_runtime_idx > 0 {
@@ -821,9 +907,9 @@ fn preprocess_instructions(
                             end_ip
                         };
                         let target_arity = if is_loop {
-                            calculate_loop_parameter_arity(&target_block_type, module)
+                            calculate_loop_parameter_arity(&target_block_type, module, cache)
                         } else {
-                            calculate_block_arity(&target_block_type, module)
+                            calculate_block_arity(&target_block_type, module, cache)
                         };
                         // Branch to parent level: if target block is at index N, unwind to N-1
                         let target_label_stack_idx = if target_runtime_idx > 0 {
@@ -926,6 +1012,7 @@ fn decode_processed_instrs_and_fixups<'a>(
             &control_info_stack,
             module,
             &HashMap::new(), // Empty map for first pass - will be updated later
+            &mut BlockArityCache::new(), // Create cache for each instruction
         )?;
 
         // --- Update Maps and Stacks based on operator ---
@@ -1068,6 +1155,7 @@ fn map_operator_to_initial_instr_and_fixup(
     _control_info_stack: &[(wasmparser::BlockType, usize)],
     module: &Module,
     block_end_map: &HashMap<usize, usize>,
+    cache: &mut BlockArityCache,
 ) -> Result<(ProcessedInstr, Option<FixupInfo>), Box<dyn std::error::Error>> {
     let handler_index;
     let mut operand = Operand::None;
@@ -1082,8 +1170,8 @@ fn map_operator_to_initial_instr_and_fixup(
         }
         wasmparser::Operator::Block { blockty } => {
             handler_index = HANDLER_IDX_BLOCK;
-            let arity = calculate_block_arity(&blockty, module);
-            let param_count = calculate_block_parameter_count(&blockty, module);
+            let arity = calculate_block_arity(&blockty, module, cache);
+            let param_count = calculate_block_parameter_count(&blockty, module, cache);
             operand = Operand::Block {
                 arity,
                 param_count,
@@ -1094,8 +1182,8 @@ fn map_operator_to_initial_instr_and_fixup(
         }
         wasmparser::Operator::Loop { blockty } => {
             handler_index = HANDLER_IDX_LOOP;
-            let arity = calculate_block_arity(&blockty, module); // Use block arity for loop results
-            let param_count = calculate_block_parameter_count(&blockty, module);
+            let arity = calculate_block_arity(&blockty, module, cache); // Use block arity for loop results
+            let param_count = calculate_block_parameter_count(&blockty, module, cache);
             operand = Operand::Block {
                 arity,
                 param_count,
@@ -1106,7 +1194,7 @@ fn map_operator_to_initial_instr_and_fixup(
         }
         wasmparser::Operator::If { blockty } => {
             handler_index = HANDLER_IDX_IF;
-            let arity = calculate_block_arity(&blockty, module);
+            let arity = calculate_block_arity(&blockty, module, cache);
 
             fixup_info = Some(FixupInfo {
                 pc: current_processed_pc,
@@ -1913,6 +2001,7 @@ pub fn parse_bytecode(
     enable_superinstructions: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut current_func_index = module.num_imported_funcs;
+    let mut arity_cache = BlockArityCache::new();
 
     let mut buf = Vec::new();
     let parser = Parser::new(0);
@@ -1985,6 +2074,7 @@ pub fn parse_bytecode(
                     &mut module,
                     current_func_index,
                     enable_superinstructions,
+                    &mut arity_cache,
                 )?;
                 current_func_index += 1;
             }
