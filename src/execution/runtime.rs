@@ -5,17 +5,259 @@ use crate::execution::module::ModuleInst;
 use crate::execution::stack::{Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, Stacks};
 use crate::execution::value::{Num, Val, Vec_};
 use crate::structure::module::WasiFuncType;
-use crate::structure::types::{NumType, ValueType, VecType};
+use crate::structure::types::{GetIdx, NumType, ValueType, VecType};
 use crate::wasi::{WasiError, WasiResult};
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::Arc;
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct MemoizationKey {
+    pub func_idx: usize,
+    pub block_start_pos: usize,
+    pub locals_hash: u64,
+    pub stack_hash: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedResult {
+    pub stack_values: Vec<Val>,
+    pub updated_locals: HashMap<usize, Val>,
+    pub next_instruction_pos: usize,
+}
+
+#[derive(Debug, Clone)]
+struct LocalsSnapshot {
+    locals: Vec<Val>,
+}
+
+type MemoizationCache = HashMap<MemoizationKey, Option<CachedResult>>;
 
 pub struct Runtime {
     module_inst: Arc<ModuleInst>,
     stacks: Stacks,
+    memoization_cache: MemoizationCache,
 }
 
 impl Runtime {
+    pub fn check_memoization_cache(&self, key: &MemoizationKey) -> Option<&CachedResult> {
+        self.memoization_cache.get(key).and_then(|opt| opt.as_ref())
+    }
+
+    pub fn store_memoization_result(&mut self, key: MemoizationKey, result: CachedResult) {
+        self.memoization_cache.insert(key, Some(result));
+    }
+
+    pub fn mark_non_memoizable(&mut self, key: MemoizationKey) {
+        self.memoization_cache.insert(key, None);
+    }
+
+    fn capture_locals_snapshot(
+        &self,
+        frame: &crate::execution::stack::FrameStack,
+    ) -> LocalsSnapshot {
+        LocalsSnapshot {
+            locals: frame.frame.locals.clone(),
+        }
+    }
+
+    fn create_memoization_key(
+        &self,
+        frame_stack_idx: usize,
+        frame: &crate::execution::stack::FrameStack,
+    ) -> MemoizationKey {
+        let func_idx = frame_stack_idx;
+
+        //Current PC
+        let block_start_pos = if let Some(label_stack) = frame.label_stack.last() {
+            label_stack.ip
+        } else {
+            0
+        };
+
+        let mut locals_hasher = DefaultHasher::new();
+        frame.frame.locals.hash(&mut locals_hasher);
+        frame_stack_idx.hash(&mut locals_hasher);
+        let locals_hash = locals_hasher.finish();
+
+        //Stack hash
+        let mut stack_hasher = DefaultHasher::new();
+        if let Some(label_stack) = frame.label_stack.last() {
+            label_stack.value_stack.hash(&mut stack_hasher);
+            label_stack.ip.hash(&mut stack_hasher);
+        }
+        for global_addr in &self.module_inst.global_addrs {
+            let global_value = global_addr.get();
+            global_value.hash(&mut stack_hasher);
+        }
+
+        let stack_hash = stack_hasher.finish();
+
+        MemoizationKey {
+            func_idx,
+            block_start_pos,
+            locals_hash,
+            stack_hash,
+        }
+    }
+
+    fn skip_with_cache(
+        &mut self,
+        frame_stack_idx: usize,
+        cached_result: &CachedResult,
+    ) -> Result<Option<super::stack::ModuleLevelInstr>, RuntimeError> {
+        let frame = &mut self.stacks.activation_frame_stack[frame_stack_idx];
+
+        if let Some(label_stack) = frame.label_stack.last_mut() {
+            // Clear current stack and apply cached stack values
+            label_stack.value_stack.clear();
+            label_stack
+                .value_stack
+                .extend(cached_result.stack_values.iter().cloned());
+
+            // Update instruction pointer
+            label_stack.ip = cached_result.next_instruction_pos;
+        }
+
+        // Apply local variable updates
+        for (local_idx, value) in &cached_result.updated_locals {
+            if *local_idx < frame.frame.locals.len() {
+                frame.frame.locals[*local_idx] = value.clone();
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn is_memoizable(&self, frame_stack_idx: usize) -> bool {
+        let current_frame = &self.stacks.activation_frame_stack[frame_stack_idx];
+        if let Some(current_label) = current_frame.label_stack.last() {
+            for instr in &current_label.processed_instrs {
+                if !self.is_blocksafe(&instr.operand) {
+                    return false;
+                }
+            }
+        } else {
+            return false;
+        }
+        true
+    }
+
+    fn is_blocksafe(&self, operand: &crate::execution::stack::Operand) -> bool {
+        match operand {
+            crate::execution::stack::Operand::I32(_)
+            | crate::execution::stack::Operand::I64(_)
+            | crate::execution::stack::Operand::F32(_)
+            | crate::execution::stack::Operand::F64(_)
+            | crate::execution::stack::Operand::None => true,
+
+            crate::execution::stack::Operand::LocalIdx(_)
+            | crate::execution::stack::Operand::LocalIdxI32(_, _)
+            | crate::execution::stack::Operand::LocalIdxI64(_, _)
+            | crate::execution::stack::Operand::LocalIdxF32(_, _)
+            | crate::execution::stack::Operand::LocalIdxF64(_, _) => false,
+            crate::execution::stack::Operand::Block { .. } => false,
+            crate::execution::stack::Operand::MemArg(_)
+            | crate::execution::stack::Operand::MemArgI32(_, _)
+            | crate::execution::stack::Operand::MemArgI64(_, _)
+            | crate::execution::stack::Operand::GlobalIdx(_)
+            | crate::execution::stack::Operand::FuncIdx(_)
+            | crate::execution::stack::Operand::CallIndirect { .. }
+            | crate::execution::stack::Operand::BrTable { .. }
+            | crate::execution::stack::Operand::LabelIdx { .. }
+            | crate::execution::stack::Operand::TableIdx(_)
+            | crate::execution::stack::Operand::TypeIdx(_)
+            | crate::execution::stack::Operand::RefType(_) => false,
+        }
+    }
+
+    fn create_cached_result(
+        &self,
+        pre_locals: &LocalsSnapshot,
+        frame_stack_idx: usize,
+    ) -> CachedResult {
+        let current_frame = &self.stacks.activation_frame_stack[frame_stack_idx];
+
+        // Capture actual local variable changes
+        let mut updated_locals = std::collections::HashMap::new();
+        let min_len = std::cmp::min(pre_locals.locals.len(), current_frame.frame.locals.len());
+        for idx in 0..min_len {
+            if pre_locals.locals[idx] != current_frame.frame.locals[idx] {
+                updated_locals.insert(idx, current_frame.frame.locals[idx].clone());
+            }
+        }
+
+        // Handle case where locals array length changed
+        for idx in min_len..current_frame.frame.locals.len() {
+            updated_locals.insert(idx, current_frame.frame.locals[idx].clone());
+        }
+
+        // Capture actual stack values from current label stack
+        let stack_values = if let Some(current_label) = current_frame.label_stack.last() {
+            current_label.value_stack.clone()
+        } else {
+            vec![]
+        };
+
+        // Capture actual instruction pointer
+        let next_instruction_pos = if let Some(current_label) = current_frame.label_stack.last() {
+            current_label.ip
+        } else {
+            0
+        };
+
+        CachedResult {
+            stack_values,
+            updated_locals,
+            next_instruction_pos,
+        }
+    }
+
+    fn execute_with_memoization(
+        &mut self,
+        frame_stack_idx: usize,
+        called_func_addr: &mut Option<FuncAddr>,
+    ) -> Result<Option<super::stack::ModuleLevelInstr>, RuntimeError> {
+        let current_frame = &self.stacks.activation_frame_stack[frame_stack_idx];
+
+        if current_frame.label_stack.is_empty() {
+            return self.stacks.activation_frame_stack[frame_stack_idx]
+                .run_dtc_loop(called_func_addr)?;
+        }
+
+        let current_label = current_frame.label_stack.last().unwrap();
+        let memoization_key = self.create_memoization_key(frame_stack_idx, current_frame);
+
+        if let Some(cache_entry) = self.memoization_cache.get(&memoization_key).cloned() {
+            match cache_entry {
+                Some(cached_result) => {
+                    //  println!("キャッシュヒット: func_idx={}, block_pos={}",
+                    //     memoization_key.func_idx, memoization_key.block_start_pos);
+                    return self.skip_with_cache(frame_stack_idx, &cached_result);
+                }
+                None => {
+                    return self.stacks.activation_frame_stack[frame_stack_idx]
+                        .run_dtc_loop(called_func_addr)?;
+                }
+            }
+        }
+
+        let frame = &self.stacks.activation_frame_stack[frame_stack_idx];
+        let pre_locals = self.capture_locals_snapshot(frame);
+        let execution_result =
+            self.stacks.activation_frame_stack[frame_stack_idx].run_dtc_loop(called_func_addr)?;
+
+        if self.is_memoizable(frame_stack_idx) {
+            let cached_result = self.create_cached_result(&pre_locals, frame_stack_idx);
+            self.store_memoization_result(memoization_key, cached_result);
+        } else {
+            self.mark_non_memoizable(memoization_key);
+        }
+
+        execution_result
+    }
     pub fn new(
         module_inst: Arc<ModuleInst>,
         func_addr: &FuncAddr,
@@ -26,6 +268,7 @@ impl Runtime {
         Ok(Runtime {
             module_inst,
             stacks,
+            memoization_cache: HashMap::new(),
         })
     }
 
@@ -33,6 +276,7 @@ impl Runtime {
         Runtime {
             module_inst,
             stacks,
+            memoization_cache: HashMap::new(),
         }
     }
 
@@ -41,10 +285,8 @@ impl Runtime {
             let frame_stack_idx = self.stacks.activation_frame_stack.len() - 1;
             let mut called_func_addr: Option<FuncAddr> = None;
 
-            let module_level_instr_result = {
-                let current_frame_stack = &mut self.stacks.activation_frame_stack[frame_stack_idx];
-                current_frame_stack.run_dtc_loop(&mut called_func_addr)?
-            };
+            let module_level_instr_result =
+                self.execute_with_memoization(frame_stack_idx, &mut called_func_addr);
 
             match module_level_instr_result {
                 Err(RuntimeError::CheckpointRequested) => {

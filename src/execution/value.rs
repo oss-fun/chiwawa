@@ -5,7 +5,7 @@ use crate::structure::types::{NumType, RefType, ValueType, VecType};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Hash)]
 pub enum Val {
     Num(Num),
     Vec_(Vec_),
@@ -59,7 +59,30 @@ pub enum Num {
     F64(f64),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+impl Hash for Num {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Num::I32(v) => {
+                0.hash(state);
+                v.hash(state);
+            }
+            Num::I64(v) => {
+                1.hash(state);
+                v.hash(state);
+            }
+            Num::F32(v) => {
+                2.hash(state);
+                v.to_bits().hash(state);
+            }
+            Num::F64(v) => {
+                3.hash(state);
+                v.to_bits().hash(state);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Hash)]
 pub enum Vec_ {
     V128(i128),
 }
@@ -71,6 +94,26 @@ pub enum Ref {
     FuncAddr(FuncAddr),
     #[serde(skip)]
     RefExtern(ExternAddr),
+}
+
+use std::hash::{Hash, Hasher};
+
+impl Hash for Ref {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Ref::RefNull => 0.hash(state),
+            Ref::FuncAddr(addr) => {
+                1.hash(state);
+                // Hash the pointer address for FuncAddr
+                (addr as *const _ as usize).hash(state);
+            }
+            Ref::RefExtern(addr) => {
+                2.hash(state);
+                // Hash the Arc pointer address for ExternAddr
+                Arc::as_ptr(&addr.0).hash(state);
+            }
+        }
+    }
 }
 
 impl PartialEq for Ref {

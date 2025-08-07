@@ -1,6 +1,7 @@
 use crate::execution::stack::ProcessedInstr;
 use crate::structure::instructions::*;
 use crate::structure::types::*;
+use std::collections::HashSet;
 
 #[derive(Clone, Debug)]
 pub struct Func {
@@ -538,6 +539,7 @@ pub struct Module {
     pub num_imported_funcs: usize,
     pub code_index: usize,
     pub exports: Vec<Export>,
+    pub memoizable_blocks: Vec<HashSet<usize>>,
 }
 
 impl Module {
@@ -556,6 +558,7 @@ impl Module {
             num_imported_funcs: 0,
             code_index: 0,
             exports: Vec::new(),
+            memoizable_blocks: Vec::new(),
         }
     }
 }
