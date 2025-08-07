@@ -39,6 +39,7 @@ pub struct Runtime {
     module_inst: Arc<ModuleInst>,
     stacks: Stacks,
     memoization_cache: MemoizationCache,
+    memoization_enabled: bool,
 }
 
 impl Runtime {
@@ -52,6 +53,16 @@ impl Runtime {
 
     pub fn mark_non_memoizable(&mut self, key: MemoizationKey) {
         self.memoization_cache.insert(key, None);
+    }
+
+    /// Enable or disable runtime memoization
+    pub fn set_memoization_enabled(&mut self, enabled: bool) {
+        self.memoization_enabled = enabled;
+    }
+
+    /// Check if memoization is currently enabled
+    pub fn is_memoization_enabled(&self) -> bool {
+        self.memoization_enabled
     }
 
     fn capture_locals_snapshot(
@@ -230,6 +241,12 @@ impl Runtime {
         let current_label = current_frame.label_stack.last().unwrap();
         let memoization_key = self.create_memoization_key(frame_stack_idx, current_frame);
 
+        // Check if memoization is enabled
+        if !self.memoization_enabled {
+            return self.stacks.activation_frame_stack[frame_stack_idx]
+                .run_dtc_loop(called_func_addr)?;
+        }
+
         if let Some(cache_entry) = self.memoization_cache.get(&memoization_key).cloned() {
             match cache_entry {
                 Some(cached_result) => {
@@ -249,11 +266,14 @@ impl Runtime {
         let execution_result =
             self.stacks.activation_frame_stack[frame_stack_idx].run_dtc_loop(called_func_addr)?;
 
-        if self.is_memoizable(frame_stack_idx) {
-            let cached_result = self.create_cached_result(&pre_locals, frame_stack_idx);
-            self.store_memoization_result(memoization_key, cached_result);
-        } else {
-            self.mark_non_memoizable(memoization_key);
+        // Only perform memoization if enabled
+        if self.memoization_enabled {
+            if self.is_memoizable(frame_stack_idx) {
+                let cached_result = self.create_cached_result(&pre_locals, frame_stack_idx);
+                self.store_memoization_result(memoization_key, cached_result);
+            } else {
+                self.mark_non_memoizable(memoization_key);
+            }
         }
 
         execution_result
@@ -269,6 +289,7 @@ impl Runtime {
             module_inst,
             stacks,
             memoization_cache: HashMap::new(),
+            memoization_enabled: false,
         })
     }
 
@@ -277,6 +298,7 @@ impl Runtime {
             module_inst,
             stacks,
             memoization_cache: HashMap::new(),
+            memoization_enabled: false,
         }
     }
 

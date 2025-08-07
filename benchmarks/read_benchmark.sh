@@ -47,14 +47,34 @@ function run_read_benchmark() {
     local total_mb=$(echo "scale=2; $total_bytes / 1024 / 1024" | bc)
     
     echo ""
-    echo "Running with chiwawa runtime (superinstructions enabled):"
+    echo "Running with chiwawa runtime (superinstructions + memoization):"
+    
+    # Clean environment and create test files for chiwawa superinstructions + memoization test
+    rm -f bench_test_file.dat_* 2>/dev/null || true
+    echo "Creating test files for chiwawa superinstructions + memoization test..."
+    wasmtime --dir . "$WRITE_WASM" --size $size --iterations $iterations >/dev/null 2>&1
+    
+    # Run chiwawa read benchmark with superinstructions and memoization and capture timing
+    local start_time=$(date +%s.%N)
+    wasmtime --dir . "$CHIWAWA_WASM" "$READ_WASM" --enable-superinstructions --enable-memoization --app-args "--size $size --iterations $iterations" 2>/dev/null
+    local end_time=$(date +%s.%N)
+    
+    # Calculate chiwawa superinstructions + memoization execution time and throughput
+    local chiwawa_super_memo_time=$(echo "$end_time - $start_time" | bc)
+    local chiwawa_super_memo_throughput=$(echo "scale=2; $total_mb / $chiwawa_super_memo_time" | bc)
+    
+    echo "chiwawa (superinstructions + memoization) read time: ${chiwawa_super_memo_time}s"
+    echo "chiwawa (superinstructions + memoization) read throughput: ${chiwawa_super_memo_throughput} MB/s"
     
     # Clean environment and create test files for chiwawa superinstructions test
     rm -f bench_test_file.dat_* 2>/dev/null || true
     echo "Creating test files for chiwawa superinstructions test..."
     wasmtime --dir . "$WRITE_WASM" --size $size --iterations $iterations >/dev/null 2>&1
     
-    # Run chiwawa read benchmark with superinstructions and capture timing
+    echo ""
+    echo "Running with chiwawa runtime (superinstructions only):"
+    
+    # Run chiwawa read benchmark with superinstructions only and capture timing
     local start_time=$(date +%s.%N)
     wasmtime --dir . "$CHIWAWA_WASM" "$READ_WASM" --enable-superinstructions --app-args "--size $size --iterations $iterations" 2>/dev/null
     local end_time=$(date +%s.%N)
@@ -72,9 +92,9 @@ function run_read_benchmark() {
     wasmtime --dir . "$WRITE_WASM" --size $size --iterations $iterations >/dev/null 2>&1
     
     echo ""
-    echo "Running with chiwawa runtime (superinstructions disabled):"
+    echo "Running with chiwawa runtime (baseline):"
     
-    # Run chiwawa read benchmark without superinstructions and capture timing
+    # Run chiwawa read benchmark without superinstructions and memoization and capture timing
     local start_time=$(date +%s.%N)
     wasmtime --dir . "$CHIWAWA_WASM" "$READ_WASM" --app-args "--size $size --iterations $iterations" 2>/dev/null
     local end_time=$(date +%s.%N)
@@ -107,16 +127,26 @@ function run_read_benchmark() {
     echo "wasmtime read throughput: ${wasmtime_throughput} MB/s"
     
     # Calculate performance ratios
+    local super_memo_vs_wasmtime_speed=$(echo "scale=2; $wasmtime_throughput / $chiwawa_super_memo_throughput" | bc)
     local super_vs_wasmtime_speed=$(echo "scale=2; $wasmtime_throughput / $chiwawa_super_throughput" | bc)
     local baseline_vs_wasmtime_speed=$(echo "scale=2; $wasmtime_throughput / $chiwawa_throughput" | bc)
+    local super_memo_vs_super_speed=$(echo "scale=2; $chiwawa_super_memo_throughput / $chiwawa_super_throughput" | bc)
     local super_vs_baseline_speed=$(echo "scale=2; $chiwawa_super_throughput / $chiwawa_throughput" | bc)
+    local super_memo_vs_baseline_speed=$(echo "scale=2; $chiwawa_super_memo_throughput / $chiwawa_throughput" | bc)
+    local super_memo_vs_wasmtime_time=$(echo "scale=2; $chiwawa_super_memo_time / $wasmtime_time" | bc)
     local super_vs_wasmtime_time=$(echo "scale=2; $chiwawa_super_time / $wasmtime_time" | bc)
     local baseline_vs_wasmtime_time=$(echo "scale=2; $chiwawa_time / $wasmtime_time" | bc)
+    local super_memo_vs_super_time=$(echo "scale=2; $chiwawa_super_time / $chiwawa_super_memo_time" | bc)
     local super_vs_baseline_time=$(echo "scale=2; $chiwawa_time / $chiwawa_super_time" | bc)
+    local super_memo_vs_baseline_time=$(echo "scale=2; $chiwawa_time / $chiwawa_super_memo_time" | bc)
     
     echo ""
     echo "Read performance comparison:"
     echo "Total data read: ${total_mb} MB"
+    echo ""
+    echo "chiwawa (superinstructions + memoization) vs wasmtime:"
+    echo "  wasmtime is ${super_memo_vs_wasmtime_speed}x faster in throughput"
+    echo "  chiwawa (superinstructions + memoization) takes ${super_memo_vs_wasmtime_time}x longer"
     echo ""
     echo "chiwawa (superinstructions) vs wasmtime:"
     echo "  wasmtime is ${super_vs_wasmtime_speed}x faster in throughput"
@@ -126,9 +156,17 @@ function run_read_benchmark() {
     echo "  wasmtime is ${baseline_vs_wasmtime_speed}x faster in throughput"
     echo "  chiwawa (baseline) takes ${baseline_vs_wasmtime_time}x longer"
     echo ""
+    echo "chiwawa memoization impact:"
+    echo "  superinstructions + memoization is ${super_memo_vs_super_speed}x faster than superinstructions only"
+    echo "  memoization reduces superinstructions execution time by ${super_memo_vs_super_time}x"
+    echo ""
     echo "chiwawa superinstructions vs baseline:"
     echo "  superinstructions is ${super_vs_baseline_speed}x faster than baseline"
     echo "  superinstructions reduces execution time by ${super_vs_baseline_time}x"
+    echo ""
+    echo "chiwawa full optimization vs baseline:"
+    echo "  superinstructions + memoization is ${super_memo_vs_baseline_speed}x faster than baseline"
+    echo "  full optimization reduces execution time by ${super_memo_vs_baseline_time}x"
     
     # Cleanup test files
     echo "Cleaning up test files..."
