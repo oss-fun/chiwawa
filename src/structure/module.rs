@@ -26,6 +26,7 @@ pub struct Global {
     pub init: Expr,
 }
 
+#[derive(Clone)]
 pub struct Elem {
     pub type_: RefType,
     pub init: Option<Vec<Expr>>,
@@ -35,13 +36,14 @@ pub struct Elem {
     pub offset: Option<Expr>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ElemMode {
     Passive,
     Active,
     Declarative,
 }
 
+#[derive(Clone)]
 pub struct Data {
     pub init: Vec<Byte>,
     pub mode: DataMode,
@@ -49,22 +51,24 @@ pub struct Data {
     pub offset: Option<Expr>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum DataMode {
     Passive,
     Active,
 }
+#[derive(Clone)]
 pub struct Start {
     pub func: FuncIdx,
 }
 
+#[derive(Clone)]
 pub struct Import {
     pub module: Name,
     pub name: Name,
     pub desc: ImportDesc,
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum ImportDesc {
     Func(TypeIdx),
     Table(TableType),
@@ -512,6 +516,7 @@ impl WasiFuncType {
     }
 }
 
+#[derive(Clone)]
 pub struct Export {
     pub name: Name,
     pub desc: ExportDesc,
@@ -525,6 +530,7 @@ pub enum ExportDesc {
     Global(GlobalIdx),
 }
 
+#[derive(Clone)]
 pub struct Module {
     _name: String,
     pub types: Vec<FuncType>,
