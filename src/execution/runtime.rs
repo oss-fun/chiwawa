@@ -5,7 +5,7 @@ use crate::execution::module::ModuleInst;
 use crate::execution::stack::{Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, Stacks};
 use crate::execution::value::{Num, Val, Vec_};
 use crate::structure::module::WasiFuncType;
-use crate::structure::types::{NumType, ValueType, VecType};
+use crate::structure::types::{GetIdx, NumType, ValueType, VecType};
 use crate::wasi::{WasiError, WasiResult};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -39,7 +39,6 @@ pub struct Runtime {
     module_inst: Arc<ModuleInst>,
     stacks: Stacks,
     memoization_cache: MemoizationCache,
-    memoization_enabled: bool,
 }
 
 impl Runtime {
@@ -53,16 +52,6 @@ impl Runtime {
 
     pub fn mark_non_memoizable(&mut self, key: MemoizationKey) {
         self.memoization_cache.insert(key, None);
-    }
-
-    /// Enable or disable runtime memoization
-    pub fn set_memoization_enabled(&mut self, enabled: bool) {
-        self.memoization_enabled = enabled;
-    }
-
-    /// Check if memoization is currently enabled
-    pub fn is_memoization_enabled(&self) -> bool {
-        self.memoization_enabled
     }
 
     fn capture_locals_snapshot(
@@ -79,6 +68,8 @@ impl Runtime {
         frame_stack_idx: usize,
         frame: &crate::execution::stack::FrameStack,
     ) -> MemoizationKey {
+        let func_idx = frame_stack_idx;
+
         //Current PC
         let block_start_pos = if let Some(label_stack) = frame.label_stack.last() {
             label_stack.ip
@@ -105,7 +96,7 @@ impl Runtime {
         let stack_hash = stack_hasher.finish();
 
         MemoizationKey {
-            func_idx: frame_stack_idx,
+            func_idx,
             block_start_pos,
             locals_hash,
             stack_hash,
@@ -142,18 +133,43 @@ impl Runtime {
 
     fn is_memoizable(&self, frame_stack_idx: usize) -> bool {
         let current_frame = &self.stacks.activation_frame_stack[frame_stack_idx];
-
-        let current_label = match current_frame.label_stack.last() {
-            Some(label) => label,
-            None => return false,
-        };
-
-        if frame_stack_idx < self.module_inst.module.memoizable_blocks.len() {
-            let memoizable_blocks = &self.module_inst.module.memoizable_blocks[frame_stack_idx];
-
-            return memoizable_blocks.contains(&current_label.ip);
+        if let Some(current_label) = current_frame.label_stack.last() {
+            for instr in &current_label.processed_instrs {
+                if !self.is_blocksafe(&instr.operand) {
+                    return false;
+                }
+            }
         } else {
             return false;
+        }
+        true
+    }
+
+    fn is_blocksafe(&self, operand: &crate::execution::stack::Operand) -> bool {
+        match operand {
+            crate::execution::stack::Operand::I32(_)
+            | crate::execution::stack::Operand::I64(_)
+            | crate::execution::stack::Operand::F32(_)
+            | crate::execution::stack::Operand::F64(_)
+            | crate::execution::stack::Operand::None => true,
+
+            crate::execution::stack::Operand::LocalIdx(_)
+            | crate::execution::stack::Operand::LocalIdxI32(_, _)
+            | crate::execution::stack::Operand::LocalIdxI64(_, _)
+            | crate::execution::stack::Operand::LocalIdxF32(_, _)
+            | crate::execution::stack::Operand::LocalIdxF64(_, _) => false,
+            crate::execution::stack::Operand::Block { .. } => false,
+            crate::execution::stack::Operand::MemArg(_)
+            | crate::execution::stack::Operand::MemArgI32(_, _)
+            | crate::execution::stack::Operand::MemArgI64(_, _)
+            | crate::execution::stack::Operand::GlobalIdx(_)
+            | crate::execution::stack::Operand::FuncIdx(_)
+            | crate::execution::stack::Operand::CallIndirect { .. }
+            | crate::execution::stack::Operand::BrTable { .. }
+            | crate::execution::stack::Operand::LabelIdx { .. }
+            | crate::execution::stack::Operand::TableIdx(_)
+            | crate::execution::stack::Operand::TypeIdx(_)
+            | crate::execution::stack::Operand::RefType(_) => false,
         }
     }
 
@@ -214,12 +230,6 @@ impl Runtime {
         let current_label = current_frame.label_stack.last().unwrap();
         let memoization_key = self.create_memoization_key(frame_stack_idx, current_frame);
 
-        // Check if memoization is enabled
-        if !self.memoization_enabled {
-            return self.stacks.activation_frame_stack[frame_stack_idx]
-                .run_dtc_loop(called_func_addr)?;
-        }
-
         if let Some(cache_entry) = self.memoization_cache.get(&memoization_key).cloned() {
             match cache_entry {
                 Some(cached_result) => {
@@ -239,14 +249,11 @@ impl Runtime {
         let execution_result =
             self.stacks.activation_frame_stack[frame_stack_idx].run_dtc_loop(called_func_addr)?;
 
-        // Only perform memoization if enabled
-        if self.memoization_enabled {
-            if self.is_memoizable(frame_stack_idx) {
-                let cached_result = self.create_cached_result(&pre_locals, frame_stack_idx);
-                self.store_memoization_result(memoization_key, cached_result);
-            } else {
-                self.mark_non_memoizable(memoization_key);
-            }
+        if self.is_memoizable(frame_stack_idx) {
+            let cached_result = self.create_cached_result(&pre_locals, frame_stack_idx);
+            self.store_memoization_result(memoization_key, cached_result);
+        } else {
+            self.mark_non_memoizable(memoization_key);
         }
 
         execution_result
@@ -262,7 +269,6 @@ impl Runtime {
             module_inst,
             stacks,
             memoization_cache: HashMap::new(),
-            memoization_enabled: false,
         })
     }
 
@@ -271,7 +277,6 @@ impl Runtime {
             module_inst,
             stacks,
             memoization_cache: HashMap::new(),
-            memoization_enabled: false,
         }
     }
 

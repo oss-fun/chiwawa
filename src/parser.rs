@@ -54,7 +54,6 @@ struct ConservativePurityChecker {
     safe_comparison_ops: HashSet<usize>,
     safe_stack_ops: HashSet<usize>,
     safe_local_read_ops: HashSet<usize>,
-    safe_local_write_ops: HashSet<usize>,
     safe_control_ops: HashSet<usize>,
 }
 
@@ -121,14 +120,6 @@ impl ConservativePurityChecker {
         let mut safe_local_read_ops = HashSet::new();
         safe_local_read_ops.insert(HANDLER_IDX_LOCAL_GET);
 
-        let mut safe_local_write_ops = HashSet::new();
-        safe_local_write_ops.insert(HANDLER_IDX_LOCAL_SET);
-        safe_local_write_ops.insert(HANDLER_IDX_LOCAL_TEE);
-        safe_local_write_ops.insert(HANDLER_IDX_LOCAL_SET_I32_CONST);
-        safe_local_write_ops.insert(HANDLER_IDX_LOCAL_SET_I64_CONST);
-        safe_local_write_ops.insert(HANDLER_IDX_LOCAL_SET_F32_CONST);
-        safe_local_write_ops.insert(HANDLER_IDX_LOCAL_SET_F64_CONST);
-
         let mut safe_control_ops = HashSet::new();
         safe_control_ops.insert(HANDLER_IDX_BLOCK);
         safe_control_ops.insert(HANDLER_IDX_LOOP);
@@ -142,7 +133,6 @@ impl ConservativePurityChecker {
             safe_comparison_ops,
             safe_stack_ops,
             safe_local_read_ops,
-            safe_local_write_ops,
             safe_control_ops,
         }
     }
@@ -153,7 +143,6 @@ impl ConservativePurityChecker {
             || self.safe_comparison_ops.contains(&handler_idx)
             || self.safe_stack_ops.contains(&handler_idx)
             || self.safe_local_read_ops.contains(&handler_idx)
-            || self.safe_local_write_ops.contains(&handler_idx)
             || self.safe_control_ops.contains(&handler_idx)
     }
 

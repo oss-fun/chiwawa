@@ -11,7 +11,7 @@ pub extern "C" fn calculate_pi(iter: i64) -> f64 {
     4.0 * pi
 }
 
-fn main() {
+fn main(){
     let result: f64 = calculate_pi(100000);
     println!("{}", result);
 }

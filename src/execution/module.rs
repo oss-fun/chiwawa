@@ -28,7 +28,6 @@ pub struct ModuleInst {
     pub wasi_impl: Option<Arc<PassthroughWasiImpl>>,
     #[cfg(not(target_os = "wasi"))]
     pub wasi_impl: Option<Arc<StandardWasiImpl>>,
-    pub module: Arc<Module>,
 }
 
 pub trait GetInstanceByIdx<Idx>
@@ -67,7 +66,6 @@ impl ModuleInst {
             exports: Vec::new(),
             wasi_func_addrs: Vec::new(),
             wasi_impl: None,
-            module: Arc::new(module.clone()),
         };
 
         // Check if we need WASI support
