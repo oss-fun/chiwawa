@@ -496,6 +496,7 @@ impl Stacks {
                             return_ip: 0,    // No return needed for function level
                             start_ip: 0,     // Function level starts at 0
                             end_ip: code.body.len(), // Function level ends at body length
+                            input_stack: vec![], // Function level has empty input
                         },
                         processed_instrs: code.body.clone(),
                         value_stack: vec![],
@@ -536,7 +537,6 @@ pub struct FrameStack {
     pub frame: Frame,
     pub label_stack: Vec<LabelStack>,
     pub void: bool,
-    #[serde(default)]
     pub instruction_count: u64,
     // Global value stack shared across all label stacks
     pub global_value_stack: Vec<Val>,
@@ -574,12 +574,12 @@ impl FrameStack {
     /// DTC execution loop with block memoization callbacks
     ///
     /// Uses callback functions to access Runtime's cache from Stack without borrowing conflicts.
-    /// - `check_block_cache`: Check if block result is cached (returns Some if hit)
+    /// - `get_block_cache`: Get block result from cache (returns Some if hit)
     /// - `store_block_cache`: Store block execution result in cache
     pub fn run_dtc_loop<F, G>(
         &mut self,
         _called_func_addr_out: &mut Option<FuncAddr>,
-        mut check_block_cache: F,
+        mut get_block_cache: F,
         mut store_block_cache: G,
     ) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError>
     where
@@ -614,7 +614,7 @@ impl FrameStack {
             }
 
             let current_label_stack = &mut self.label_stack[current_label_stack_idx];
-            let processed_code = current_label_stack.processed_instrs.clone();
+            let processed_code = &current_label_stack.processed_instrs;
             let ip = current_label_stack.ip;
 
             if ip >= processed_code.len() {
@@ -747,23 +747,33 @@ impl FrameStack {
                             start_ip,
                             end_ip,
                         } => {
-                            if let Some(cached_result) =
-                                check_block_cache(start_ip, end_ip, &self.global_value_stack)
-                            {
-                                // Cache hit: use cached result and skip block execution
-                                self.global_value_stack = cached_result;
-                                continue;
+                            let mut cache_hit = false;
+                            let mut cached_result_values = Vec::new();
+
+                            if current_label_stack_idx > 0 {
+                                if let Some(cached_result) =
+                                    get_block_cache(start_ip, end_ip, &label.input_stack)
+                                {
+                                    cached_result_values = cached_result;
+                                    cache_hit = true;
+                                }
                             }
 
-                            // Cache miss - execute the block normally
+                            // Apply cache result if hit
+                            if cache_hit {
+                                let block_start_height = label.stack_height;
+                                self.global_value_stack.truncate(block_start_height);
+                                self.global_value_stack.extend(cached_result_values);
+                            }
+
+                            // Create new label stack
                             let current_instrs =
                                 &self.label_stack[current_label_stack_idx].processed_instrs;
-
                             let new_label_stack = LabelStack {
                                 label,
                                 processed_instrs: current_instrs.clone(),
                                 value_stack: vec![],
-                                ip: next_ip,
+                                ip: if cache_hit { end_ip } else { next_ip },
                             };
 
                             self.label_stack.push(new_label_stack);
@@ -778,27 +788,18 @@ impl FrameStack {
                                 let stack_height = current_label.stack_height;
                                 let arity = current_label.arity;
 
-                                // Store input stack state for caching (stack state when block started)
-                                let input_stack: Vec<Val> =
-                                    if stack_height <= self.global_value_stack.len() {
-                                        self.global_value_stack[..stack_height].to_vec()
-                                    } else {
-                                        self.global_value_stack.clone()
-                                    };
+                                let input_stack = &current_label.input_stack;
 
                                 // Extract the result values from the global stack
                                 let result_values = if arity > 0 {
                                     if self.global_value_stack.len() >= arity {
                                         let start_idx = self.global_value_stack.len() - arity;
-                                        let values = self.global_value_stack[start_idx..].to_vec();
-                                        values
+                                        self.global_value_stack[start_idx..].to_vec()
                                     } else {
                                         // Not enough values on stack for the required arity
                                         if self.global_value_stack.len() > stack_height {
-                                            // Use all available values that were added after this block started
                                             self.global_value_stack[stack_height..].to_vec()
                                         } else {
-                                            // No new values available
                                             Vec::new()
                                         }
                                     }
@@ -822,16 +823,37 @@ impl FrameStack {
                                     self.global_value_stack.extend(result_values);
                                 }
 
-                                // Store block result in cache for memoization
                                 let start_ip = current_label.start_ip;
                                 let end_ip = current_label.end_ip;
-                                let final_stack_state = self.global_value_stack.clone();
-                                store_block_cache(
-                                    start_ip,
-                                    end_ip,
-                                    &input_stack,
-                                    final_stack_state,
-                                );
+
+                                // Only cache nested blocks, not function level (index 0)
+                                if current_label_stack_idx > 0 {
+                                    // Check if block is pure before caching
+                                    let current_instrs =
+                                        &self.label_stack[current_label_stack_idx].processed_instrs;
+                                    if BlockMemoizationCache::is_vm_immutable_block(current_instrs)
+                                    {
+                                        // Save block results from block start height
+                                        // For blocks (not functions), we always save from block_start_height
+                                        let block_start_height = current_label.stack_height;
+                                        let final_stack_state = if block_start_height
+                                            <= self.global_value_stack.len()
+                                        {
+                                            self.global_value_stack[block_start_height..].to_vec()
+                                        } else {
+                                            Vec::new()
+                                        };
+                                        if get_block_cache(start_ip, end_ip, &input_stack).is_none()
+                                        {
+                                            store_block_cache(
+                                                start_ip,
+                                                end_ip,
+                                                input_stack,
+                                                final_stack_state,
+                                            );
+                                        }
+                                    }
+                                }
 
                                 self.label_stack.pop();
                                 current_label_stack_idx = self.label_stack.len() - 1;
@@ -846,8 +868,7 @@ impl FrameStack {
                                     if self.global_value_stack.len() >= function_arity {
                                         let start_idx =
                                             self.global_value_stack.len() - function_arity;
-                                        let values = self.global_value_stack[start_idx..].to_vec();
-                                        values
+                                        self.global_value_stack[start_idx..].to_vec()
                                     } else {
                                         return Err(RuntimeError::ValueStackUnderflow);
                                     }
@@ -877,6 +898,7 @@ pub struct Label {
     pub return_ip: usize,
     pub start_ip: usize,
     pub end_ip: usize,
+    pub input_stack: Vec<Val>, // Cache input stack state at block start
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1023,6 +1045,7 @@ fn handle_block(
             return_ip: *end_ip + 1, // IP to return to after this block (after the end instruction)
             start_ip: *start_ip,
             end_ip: *end_ip,
+            input_stack: ctx.value_stack[..current_stack_height].to_vec(),
         };
 
         Ok(HandlerResult::PushLabelStack {
@@ -1057,6 +1080,7 @@ fn handle_loop(
             return_ip: *end_ip + 1, // IP to return to after this loop (after the end instruction)
             start_ip: *start_ip,
             end_ip: *end_ip,
+            input_stack: ctx.value_stack[..current_stack_height].to_vec(),
         };
 
         // Signal to the main execution loop to create a new label stack
@@ -1101,6 +1125,7 @@ fn handle_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
             return_ip: target_ip, // IP after the if block (either else or end)
             start_ip: ctx.ip,     // Current IP as start
             end_ip: target_ip,    // Target IP as end
+            input_stack: ctx.value_stack[..current_stack_height].to_vec(),
         };
 
         // WebAssembly if: 0 = false (else/skip), non-zero = true (then)

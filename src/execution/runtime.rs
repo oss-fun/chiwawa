@@ -6,7 +6,6 @@ use crate::execution::stack::{
     Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, ProcessedInstr, Stacks,
 };
 use crate::execution::value::{Num, Val, Vec_};
-use crate::structure::instructions::Instr;
 use crate::structure::module::WasiFuncType;
 use crate::structure::types::{NumType, ValueType, VecType};
 use crate::wasi::{WasiError, WasiResult};
@@ -71,87 +70,10 @@ impl BlockMemoizationCache {
         hasher.finish()
     }
 
-    pub fn is_pure_block(instructions: &[Instr]) -> bool {
-        for instr in instructions {
-            if Self::has_side_effect(instr) {
-                return false;
-            }
-        }
-        true
-    }
-
-    /// Check if an instruction has side effects
-    fn has_side_effect(instr: &Instr) -> bool {
-        match instr {
-            // Memory operations (side effects: modify memory)
-            Instr::I32Store(_)
-            | Instr::I64Store(_)
-            | Instr::F32Store(_)
-            | Instr::F64Store(_)
-            | Instr::V128Store(_)
-            | Instr::I32Store8(_)
-            | Instr::I64Store8(_)
-            | Instr::I32Store16(_)
-            | Instr::I64Store16(_)
-            | Instr::I64Store32(_)
-            | Instr::V128Store8lane(_, _)
-            | Instr::V128Store16lane(_, _)
-            | Instr::V128Store32lane(_, _)
-            | Instr::V128Store64lane(_, _) => true,
-
-            // Superinstruction store variants
-            Instr::I32StoreI32Const(_, _)
-            | Instr::I64StoreI64Const(_, _)
-            | Instr::I32ConstI64Store(_, _)
-            | Instr::I32ConstF32Store(_, _)
-            | Instr::I32ConstF64Store(_, _)
-            | Instr::I64ConstI32Store(_, _)
-            | Instr::I64ConstI64Store(_, _)
-            | Instr::I32Store8Const(_, _)
-            | Instr::I32Store16Const(_, _)
-            | Instr::I64Store8Const(_, _)
-            | Instr::I64Store16Const(_, _)
-            | Instr::I64Store32Const(_, _)
-            | Instr::I64ConstF32Store(_, _)
-            | Instr::I64ConstF64Store(_, _) => true,
-
-            // Global variable modifications (side effects: modify global state)
-            Instr::GlobalSet(_) => true,
-
-            // Function calls (side effects: unknown, assume yes for safety)
-            Instr::Call(_) | Instr::CallIndirect(_, _) => true,
-
-            // Memory management (side effects: modify memory layout)
-            Instr::MemorySize
-            | Instr::MemoryGrow
-            | Instr::MemoryCopy
-            | Instr::MemoryFill
-            | Instr::MemoryInit(_)
-            | Instr::DataDrop(_) => true,
-
-            // Table operations (side effects: modify table state)
-            Instr::TableGet(_)
-            | Instr::TableSet(_)
-            | Instr::TableSize(_)
-            | Instr::TableGrow(_)
-            | Instr::TableFill(_)
-            | Instr::TableCopy(_, _)
-            | Instr::TableInit(_, _)
-            | Instr::ElemDrop(_) => true,
-
-            // Pure operations (no side effects)
-            // Loads are considered pure as they don't modify state
-            // Constants, arithmetic, comparisons, conversions are pure
-            _ => false,
-        }
-    }
-
-    /// Check if ProcessedInstr has side effects based on handler index
-    pub fn has_side_effect_processed(handler_index: usize) -> bool {
+    pub fn is_vm_mutable_instruction(handler_index: usize) -> bool {
         use crate::execution::stack::*;
 
         match handler_index {
-            // Memory store operations (side effects)
             HANDLER_IDX_I32_STORE
             | HANDLER_IDX_I64_STORE
             | HANDLER_IDX_F32_STORE
@@ -162,7 +84,6 @@ impl BlockMemoizationCache {
             | HANDLER_IDX_I64_STORE16
             | HANDLER_IDX_I64_STORE32 => true,
 
-            // Optimized store superinstructions (side effects)
             HANDLER_IDX_I32_STORE_I32_CONST
             | HANDLER_IDX_I64_STORE_I64_CONST
             | HANDLER_IDX_I32_CONST_I64_STORE
@@ -173,37 +94,39 @@ impl BlockMemoizationCache {
             | HANDLER_IDX_I64_CONST_F32_STORE
             | HANDLER_IDX_I64_CONST_F64_STORE => true,
 
-            // Global variable modifications (side effects)
             HANDLER_IDX_GLOBAL_SET => true,
 
-            // Function calls (side effects)
             HANDLER_IDX_CALL | HANDLER_IDX_CALL_INDIRECT => true,
 
-            // Memory management (side effects)
             HANDLER_IDX_MEMORY_SIZE
             | HANDLER_IDX_MEMORY_GROW
             | HANDLER_IDX_MEMORY_COPY
             | HANDLER_IDX_MEMORY_FILL
             | HANDLER_IDX_MEMORY_INIT => true,
 
-            // Table operations (side effects)
             HANDLER_IDX_TABLE_SET | HANDLER_IDX_TABLE_FILL => true,
 
-            // Pure operations: loads, constants, arithmetic, comparisons, conversions
-            // Local variable operations (get/set/tee are pure in this context)
+            HANDLER_IDX_IF
+            | HANDLER_IDX_ELSE
+            | HANDLER_IDX_BR
+            | HANDLER_IDX_BR_IF
+            | HANDLER_IDX_BR_TABLE
+            | HANDLER_IDX_RETURN
+            | HANDLER_IDX_UNREACHABLE => true,
+
+            HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_END => true,
+
             _ => false,
         }
     }
 
-    /// Check if block is pure using ProcessedInstr format
-    pub fn is_pure_block_processed(instructions: &[ProcessedInstr]) -> bool {
-        let side_effect_count = instructions
-            .iter()
-            .filter(|instr| Self::has_side_effect_processed(instr.handler_index))
-            .count();
-
-        let is_pure = side_effect_count == 0;
-        is_pure
+    pub fn is_vm_immutable_block(instructions: &[ProcessedInstr]) -> bool {
+        for instr in instructions {
+            if Self::is_vm_mutable_instruction(instr.handler_index) {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -284,7 +207,7 @@ impl Runtime {
                 end_ip,
                 stack_hash,
             };
-            let value = BlockCacheValue::CachedResult(output_stack);
+            let value = BlockCacheValue::CachedResult(output_stack.clone());
             cache.insert(key, value);
         }
     }
@@ -301,8 +224,7 @@ impl Runtime {
         let result = {
             let frame_stack = &mut self.stacks.activation_frame_stack[frame_stack_idx];
 
-            // Capture cache_opt by reference in closure
-            let check_cache = |start_ip: usize, end_ip: usize, stack: &[Val]| -> Option<Vec<Val>> {
+            let get_cache = |start_ip: usize, end_ip: usize, stack: &[Val]| -> Option<Vec<Val>> {
                 cache_opt.as_ref().and_then(|cache| {
                     let stack_hash = BlockMemoizationCache::compute_stack_hash(stack);
                     let key = BlockCacheKey {
@@ -325,7 +247,7 @@ impl Runtime {
                 pending_cache_stores.push((start_ip, end_ip, input_stack.to_vec(), output_stack));
             };
 
-            frame_stack.run_dtc_loop(called_func_addr, check_cache, store_cache)
+            frame_stack.run_dtc_loop(called_func_addr, get_cache, store_cache)
         }?;
 
         // Process pending cache stores
@@ -440,6 +362,7 @@ impl Runtime {
                                                 return_ip: 0, // No return needed for function level
                                                 start_ip: 0,  // Function level starts at 0
                                                 end_ip: code.body.len(), // Function level ends at body length
+                                                input_stack: Vec::new(), // Function level has empty input
                                             },
                                             processed_instrs: code.body.clone(),
                                             value_stack: vec![],
