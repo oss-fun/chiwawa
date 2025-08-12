@@ -74,6 +74,23 @@ impl BlockMemoizationCache {
         use crate::execution::stack::*;
 
         match handler_index {
+            // Memory loads (depend on mutable memory state)
+            HANDLER_IDX_I32_LOAD
+            | HANDLER_IDX_I64_LOAD
+            | HANDLER_IDX_F32_LOAD
+            | HANDLER_IDX_F64_LOAD
+            | HANDLER_IDX_I32_LOAD8_S
+            | HANDLER_IDX_I32_LOAD8_U
+            | HANDLER_IDX_I32_LOAD16_S
+            | HANDLER_IDX_I32_LOAD16_U
+            | HANDLER_IDX_I64_LOAD8_S
+            | HANDLER_IDX_I64_LOAD8_U
+            | HANDLER_IDX_I64_LOAD16_S
+            | HANDLER_IDX_I64_LOAD16_U
+            | HANDLER_IDX_I64_LOAD32_S
+            | HANDLER_IDX_I64_LOAD32_U => true,
+
+            // Memory stores (mutate memory state)
             HANDLER_IDX_I32_STORE
             | HANDLER_IDX_I64_STORE
             | HANDLER_IDX_F32_STORE
@@ -84,6 +101,28 @@ impl BlockMemoizationCache {
             | HANDLER_IDX_I64_STORE16
             | HANDLER_IDX_I64_STORE32 => true,
 
+            // Load superinstructions (depend on mutable memory state)
+            HANDLER_IDX_I32_LOAD_I32_CONST
+            | HANDLER_IDX_I64_LOAD_I64_CONST
+            | HANDLER_IDX_I32_CONST_I64_LOAD
+            | HANDLER_IDX_I32_CONST_F32_LOAD
+            | HANDLER_IDX_I32_CONST_F64_LOAD
+            | HANDLER_IDX_I64_CONST_I32_LOAD
+            | HANDLER_IDX_I64_CONST_I64_LOAD
+            | HANDLER_IDX_I64_CONST_F32_LOAD
+            | HANDLER_IDX_I64_CONST_F64_LOAD
+            | HANDLER_IDX_I32_LOAD8_S_CONST
+            | HANDLER_IDX_I32_LOAD8_U_CONST
+            | HANDLER_IDX_I32_LOAD16_S_CONST
+            | HANDLER_IDX_I32_LOAD16_U_CONST
+            | HANDLER_IDX_I64_LOAD8_S_CONST
+            | HANDLER_IDX_I64_LOAD8_U_CONST
+            | HANDLER_IDX_I64_LOAD16_S_CONST
+            | HANDLER_IDX_I64_LOAD16_U_CONST
+            | HANDLER_IDX_I64_LOAD32_S_CONST
+            | HANDLER_IDX_I64_LOAD32_U_CONST => true,
+
+            // Store superinstructions
             HANDLER_IDX_I32_STORE_I32_CONST
             | HANDLER_IDX_I64_STORE_I64_CONST
             | HANDLER_IDX_I32_CONST_I64_STORE
@@ -92,7 +131,12 @@ impl BlockMemoizationCache {
             | HANDLER_IDX_I64_CONST_I32_STORE
             | HANDLER_IDX_I64_CONST_I64_STORE
             | HANDLER_IDX_I64_CONST_F32_STORE
-            | HANDLER_IDX_I64_CONST_F64_STORE => true,
+            | HANDLER_IDX_I64_CONST_F64_STORE
+            | HANDLER_IDX_I32_STORE8_CONST
+            | HANDLER_IDX_I32_STORE16_CONST
+            | HANDLER_IDX_I64_STORE8_CONST
+            | HANDLER_IDX_I64_STORE16_CONST
+            | HANDLER_IDX_I64_STORE32_CONST => true,
 
             HANDLER_IDX_GLOBAL_SET => true,
 
