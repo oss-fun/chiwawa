@@ -15,7 +15,7 @@ mod tests {
 
         let imports: ImportObjects = HashMap::new();
         let app_args = vec![];
-        ModuleInst::new(&module, imports, Vec::new(), app_args).unwrap()
+        ModuleInst::new(&module, imports, app_args).unwrap()
     }
 
     fn run_wasi_module(inst: &Arc<ModuleInst>) -> Result<Vec<Val>, chiwawa::error::RuntimeError> {
