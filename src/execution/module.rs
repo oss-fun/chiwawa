@@ -46,7 +46,6 @@ impl ModuleInst {
     pub fn new(
         module: &Module,
         imports: ImportObjects,
-        preopen_dirs: Vec<String>,
         argv: Vec<String>,
     ) -> Result<Arc<ModuleInst>, RuntimeError> {
         let mut module_inst = ModuleInst {

@@ -23,9 +23,6 @@ struct Cli {
     invoke: String,
     #[arg(short, long, value_delimiter = ',', num_args = 0..)]
     params: Option<Vec<String>>,
-    /// Preopen directories for WASI (format: "/path/to/dir")
-    #[arg(long, value_delimiter = ',', num_args = 0..)]
-    preopen: Option<Vec<String>>,
     /// Additional arguments to pass to WASM application (argv[1], argv[2], ...)
     /// Example: --app-args "--database test.db --iterations 1000"
     #[arg(long, allow_hyphen_values = true)]
@@ -123,7 +120,6 @@ fn main() -> Result<()> {
     let mut module = Module::new("test");
     let _ = parser::parse_bytecode(&mut module, &cli.wasm_file, cli.enable_superinstructions);
     let imports: ImportObjects = HashMap::new();
-    let preopen_dirs = cli.preopen.unwrap_or_default();
 
     let mut wasm_argv = vec![cli.wasm_file.clone()];
     if let Some(args_string) = cli.app_args {
@@ -131,7 +127,7 @@ fn main() -> Result<()> {
         wasm_argv.extend(additional_args);
     }
 
-    let inst = ModuleInst::new(&module, imports, preopen_dirs, wasm_argv).unwrap();
+    let inst = ModuleInst::new(&module, imports, wasm_argv).unwrap();
 
     if let Some(restore_path) = cli.restore {
         println!("Restoring from checkpoint: {}", restore_path);
