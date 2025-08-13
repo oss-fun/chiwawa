@@ -23,7 +23,7 @@ mod tests {
 
     fn run_wasi_module(inst: &Arc<ModuleInst>) -> Result<Vec<Val>, chiwawa::error::RuntimeError> {
         let func_addr = inst.get_export_func("_start")?;
-        let mut runtime = Runtime::new(Arc::clone(inst), &func_addr, vec![])?;
+        let mut runtime = Runtime::new(Arc::clone(inst), &func_addr, vec![], true)?;
         runtime.run()
     }
 

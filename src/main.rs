@@ -33,6 +33,9 @@ struct Cli {
     /// Enable superinstructions optimizations (const + local.set)
     #[arg(long, default_value = "false")]
     enable_superinstructions: bool,
+    /// Enable memoization optimizations for pure instructions
+    #[arg(long, default_value = "false")]
+    enable_memoization: bool,
 }
 
 fn parse_args_string(args: &str) -> Vec<String> {
@@ -142,7 +145,8 @@ fn main() -> Result<()> {
         };
         println!("State restored into module instance. Stacks obtained.");
 
-        let mut runtime = Runtime::new_restored(Arc::clone(&inst), restored_stacks);
+        let mut runtime =
+            Runtime::new_restored(Arc::clone(&inst), restored_stacks, cli.enable_memoization);
         println!("Runtime reconstructed. Resuming execution...");
 
         let result = runtime.run();
@@ -151,7 +155,12 @@ fn main() -> Result<()> {
         let func_addr = inst.get_export_func(&cli.invoke)?;
         let params = parse_params(cli.params.unwrap_or_default());
 
-        match Runtime::new(Arc::clone(&inst), &func_addr, params) {
+        match Runtime::new(
+            Arc::clone(&inst),
+            &func_addr,
+            params,
+            cli.enable_memoization,
+        ) {
             Ok(mut runtime) => {
                 let result = runtime.run();
                 handle_result(result);

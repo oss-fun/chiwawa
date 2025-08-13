@@ -8,7 +8,7 @@ use crate::error::{ParserError, RuntimeError};
 use crate::execution::stack::*;
 use crate::structure::{instructions::*, module::*, types::*};
 use crate::superinstructions::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 // Cache key for block type arity calculations
@@ -45,6 +45,182 @@ impl BlockArityCache {
             loop_parameter_arity_cache: HashMap::new(),
             block_parameter_count_cache: HashMap::new(),
         }
+    }
+}
+
+struct ConservativePurityChecker {
+    safe_arithmetic_ops: HashSet<usize>,
+    safe_const_ops: HashSet<usize>,
+    safe_comparison_ops: HashSet<usize>,
+    safe_stack_ops: HashSet<usize>,
+    safe_local_read_ops: HashSet<usize>,
+    safe_control_ops: HashSet<usize>,
+}
+
+impl ConservativePurityChecker {
+    fn new() -> Self {
+        let mut safe_arithmetic_ops = HashSet::new();
+        safe_arithmetic_ops.insert(HANDLER_IDX_I32_ADD);
+        safe_arithmetic_ops.insert(HANDLER_IDX_I32_SUB);
+        safe_arithmetic_ops.insert(HANDLER_IDX_I32_MUL);
+        safe_arithmetic_ops.insert(HANDLER_IDX_I64_ADD);
+        safe_arithmetic_ops.insert(HANDLER_IDX_I64_SUB);
+        safe_arithmetic_ops.insert(HANDLER_IDX_I64_MUL);
+        safe_arithmetic_ops.insert(HANDLER_IDX_F32_ADD);
+        safe_arithmetic_ops.insert(HANDLER_IDX_F32_SUB);
+        safe_arithmetic_ops.insert(HANDLER_IDX_F32_MUL);
+        safe_arithmetic_ops.insert(HANDLER_IDX_F64_ADD);
+        safe_arithmetic_ops.insert(HANDLER_IDX_F64_SUB);
+        safe_arithmetic_ops.insert(HANDLER_IDX_F64_MUL);
+
+        let mut safe_const_ops = HashSet::new();
+        safe_const_ops.insert(HANDLER_IDX_I32_CONST);
+        safe_const_ops.insert(HANDLER_IDX_I64_CONST);
+        safe_const_ops.insert(HANDLER_IDX_F32_CONST);
+        safe_const_ops.insert(HANDLER_IDX_F64_CONST);
+
+        let mut safe_comparison_ops = HashSet::new();
+        safe_comparison_ops.insert(HANDLER_IDX_I32_EQ);
+        safe_comparison_ops.insert(HANDLER_IDX_I32_NE);
+        safe_comparison_ops.insert(HANDLER_IDX_I32_LT_S);
+        safe_comparison_ops.insert(HANDLER_IDX_I32_LT_U);
+        safe_comparison_ops.insert(HANDLER_IDX_I32_GT_S);
+        safe_comparison_ops.insert(HANDLER_IDX_I32_GT_U);
+        safe_comparison_ops.insert(HANDLER_IDX_I32_LE_S);
+        safe_comparison_ops.insert(HANDLER_IDX_I32_LE_U);
+        safe_comparison_ops.insert(HANDLER_IDX_I32_GE_S);
+        safe_comparison_ops.insert(HANDLER_IDX_I32_GE_U);
+        safe_comparison_ops.insert(HANDLER_IDX_I64_EQ);
+        safe_comparison_ops.insert(HANDLER_IDX_I64_NE);
+        safe_comparison_ops.insert(HANDLER_IDX_I64_LT_S);
+        safe_comparison_ops.insert(HANDLER_IDX_I64_LT_U);
+        safe_comparison_ops.insert(HANDLER_IDX_I64_GT_S);
+        safe_comparison_ops.insert(HANDLER_IDX_I64_GT_U);
+        safe_comparison_ops.insert(HANDLER_IDX_I64_LE_S);
+        safe_comparison_ops.insert(HANDLER_IDX_I64_LE_U);
+        safe_comparison_ops.insert(HANDLER_IDX_I64_GE_S);
+        safe_comparison_ops.insert(HANDLER_IDX_I64_GE_U);
+        safe_comparison_ops.insert(HANDLER_IDX_F32_EQ);
+        safe_comparison_ops.insert(HANDLER_IDX_F32_NE);
+        safe_comparison_ops.insert(HANDLER_IDX_F32_LT);
+        safe_comparison_ops.insert(HANDLER_IDX_F32_GT);
+        safe_comparison_ops.insert(HANDLER_IDX_F32_LE);
+        safe_comparison_ops.insert(HANDLER_IDX_F32_GE);
+        safe_comparison_ops.insert(HANDLER_IDX_F64_EQ);
+        safe_comparison_ops.insert(HANDLER_IDX_F64_NE);
+        safe_comparison_ops.insert(HANDLER_IDX_F64_LT);
+        safe_comparison_ops.insert(HANDLER_IDX_F64_GT);
+        safe_comparison_ops.insert(HANDLER_IDX_F64_LE);
+        safe_comparison_ops.insert(HANDLER_IDX_F64_GE);
+
+        let mut safe_stack_ops = HashSet::new();
+        safe_stack_ops.insert(HANDLER_IDX_DROP);
+        safe_stack_ops.insert(HANDLER_IDX_SELECT);
+
+        let mut safe_local_read_ops = HashSet::new();
+        safe_local_read_ops.insert(HANDLER_IDX_LOCAL_GET);
+
+        let mut safe_control_ops = HashSet::new();
+        safe_control_ops.insert(HANDLER_IDX_BLOCK);
+        safe_control_ops.insert(HANDLER_IDX_LOOP);
+        safe_control_ops.insert(HANDLER_IDX_IF);
+        safe_control_ops.insert(HANDLER_IDX_ELSE);
+        safe_control_ops.insert(HANDLER_IDX_END);
+
+        Self {
+            safe_arithmetic_ops,
+            safe_const_ops,
+            safe_comparison_ops,
+            safe_stack_ops,
+            safe_local_read_ops,
+            safe_control_ops,
+        }
+    }
+
+    fn is_instruction_safe(&self, handler_idx: usize) -> bool {
+        self.safe_arithmetic_ops.contains(&handler_idx)
+            || self.safe_const_ops.contains(&handler_idx)
+            || self.safe_comparison_ops.contains(&handler_idx)
+            || self.safe_stack_ops.contains(&handler_idx)
+            || self.safe_local_read_ops.contains(&handler_idx)
+            || self.safe_control_ops.contains(&handler_idx)
+    }
+
+    fn is_block_memoizable(&self, instructions: &[ProcessedInstr]) -> bool {
+        for instr in instructions {
+            if !self.is_instruction_safe(instr.handler_index) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Analyzes a function to identify memoizable blocks
+    ///
+    /// This function performs static analysis to find top-level blocks that are safe
+    /// for memoization (i.e., pure functions without side effects).
+    ///
+    /// # Algorithm:
+    /// 1. Tracks block nesting depth using a counter
+    /// 2. Records start positions of top-level blocks (depth 0)
+    /// 3. When a top-level block ends, checks if entire block is pure
+    /// 4. Only includes blocks that contain exclusively safe operations
+    ///
+    /// # Conservative Approach:
+    /// - Only analyzes top-level blocks (ignores nested blocks)
+    /// - Any unsafe instruction disqualifies the entire block
+    /// - Nested blocks are considered part of their parent block
+    ///
+    /// # Example:
+    /// ```wasm
+    /// block (result i32)     ; <- Position 5: memoizable (pure arithmetic)
+    ///   i32.const 10
+    ///   i32.const 20
+    ///   i32.add
+    /// end
+    ///
+    /// block (result i32)     ; <- Position 12: not memoizable (has call)
+    ///   i32.const 5
+    ///   call $function       ; <- Unsafe operation
+    /// end
+    /// ```
+    ///
+    /// # Returns:
+    /// HashSet containing start positions of memoizable blocks (e.g., {5} for above example)
+    fn analyze_function(&self, instructions: &[ProcessedInstr]) -> HashSet<usize> {
+        let mut memoizable_blocks = HashSet::new();
+        let mut current_block_start = 0;
+        let mut block_depth = 0; // Track nesting level
+
+        for (i, instr) in instructions.iter().enumerate() {
+            match instr.handler_index {
+                HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_IF => {
+                    // Record start position only for top-level blocks
+                    if block_depth == 0 {
+                        current_block_start = i;
+                    }
+                    block_depth += 1; // Enter nested block
+                }
+                HANDLER_IDX_END => {
+                    if block_depth > 0 {
+                        block_depth -= 1; // Exit nested block
+
+                        // Analyze block only when returning to top level
+                        if block_depth == 0 {
+                            // Extract all instructions in this top-level block
+                            let block_instructions = &instructions[current_block_start..=i];
+
+                            if self.is_block_memoizable(block_instructions) {
+                                memoizable_blocks.insert(current_block_start);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        memoizable_blocks
     }
 }
 
@@ -530,6 +706,7 @@ fn decode_code_section(
     func_index: usize,
     enable_superinstructions: bool,
     cache: &mut BlockArityCache,
+    purity_checker: &ConservativePurityChecker,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut locals: Vec<(u32, ValueType)> = Vec::new();
     for pair in body.get_locals_reader()? {
@@ -568,7 +745,17 @@ fn decode_code_section(
     .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
     if let Some(func) = module.funcs.get_mut(relative_func_index) {
-        func.body = processed_instrs;
+        func.body = processed_instrs.clone();
+
+        let memoizable_blocks = purity_checker.analyze_function(&processed_instrs);
+
+        while module.memoizable_blocks.len() <= relative_func_index {
+            module.memoizable_blocks.push(HashSet::new());
+        }
+
+        if let Some(blocks) = module.memoizable_blocks.get_mut(relative_func_index) {
+            *blocks = memoizable_blocks;
+        }
     } else {
         return Err(Box::new(RuntimeError::InvalidWasm(
             "Invalid function index when storing body",
@@ -2002,6 +2189,7 @@ pub fn parse_bytecode(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut current_func_index = module.num_imported_funcs;
     let mut arity_cache = BlockArityCache::new();
+    let purity_checker = ConservativePurityChecker::new();
 
     let mut buf = Vec::new();
     let parser = Parser::new(0);
@@ -2075,6 +2263,7 @@ pub fn parse_bytecode(
                     current_func_index,
                     enable_superinstructions,
                     &mut arity_cache,
+                    &purity_checker,
                 )?;
                 current_func_index += 1;
             }
