@@ -18,7 +18,7 @@ mod tests {
             "path_filestat.wasm".to_string(),
             "tests/testdir".to_string(),
         ];
-        ModuleInst::new(&module, imports, Vec::new(), app_args).unwrap()
+        ModuleInst::new(&module, imports, app_args).unwrap()
     }
 
     fn run_wasi_module(inst: &Arc<ModuleInst>) -> Result<Vec<Val>, chiwawa::error::RuntimeError> {

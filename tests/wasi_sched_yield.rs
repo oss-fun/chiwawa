@@ -14,7 +14,7 @@ mod tests {
         let _ = parser::parse_bytecode(&mut module, wasm_path, true);
 
         let imports: ImportObjects = HashMap::new();
-        ModuleInst::new(&module, imports, Vec::new(), Vec::new()).unwrap()
+        ModuleInst::new(&module, imports, Vec::new()).unwrap()
     }
 
     fn run_wasi_module(inst: &Arc<ModuleInst>) -> Result<Vec<Val>, chiwawa::error::RuntimeError> {
