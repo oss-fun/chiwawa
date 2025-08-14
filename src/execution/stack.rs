@@ -1,6 +1,6 @@
 use super::value::*;
 use crate::error::RuntimeError;
-use crate::execution::{func::*, module::*, runtime::BlockMemoizationCache};
+use crate::execution::{func::*, module::*};
 use crate::structure::types::LabelIdx as StructureLabelIdx;
 use crate::structure::{instructions::*, types::*};
 use lazy_static::lazy_static;
@@ -827,8 +827,9 @@ impl FrameStack {
                                     // Check if block is pure before caching
                                     let current_instrs =
                                         &self.label_stack[current_label_stack_idx].processed_instrs;
-                                    if BlockMemoizationCache::is_vm_immutable_block(current_instrs)
-                                    {
+                                    if crate::execution::memoization::is_vm_immutable_block(
+                                        current_instrs,
+                                    ) {
                                         // Save block results from block start height
                                         // For blocks (not functions), we always save from block_start_height
                                         let block_start_height = current_label.stack_height;
