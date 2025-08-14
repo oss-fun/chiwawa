@@ -361,8 +361,6 @@ impl Runtime {
                             "Label stack empty during frame transition",
                         ));
                     }
-                    let cur_label_stack_mut =
-                        current_frame_stack_mut.label_stack.last_mut().unwrap();
 
                     match instr_option {
                         Some(ModuleLevelInstr::Invoke(func_addr)) => {
@@ -465,10 +463,6 @@ impl Runtime {
                                                     .activation_frame_stack
                                                     .last_mut()
                                                     .unwrap();
-                                                let cur_label_stack_mut = current_frame_stack_mut
-                                                    .label_stack
-                                                    .last_mut()
-                                                    .unwrap();
                                                 current_frame_stack_mut
                                                     .global_value_stack
                                                     .push(val);
@@ -494,9 +488,6 @@ impl Runtime {
                         }
                         Some(ModuleLevelInstr::Return) => {
                             let finished_frame = self.stacks.activation_frame_stack.pop().unwrap();
-                            let finished_label_stack = finished_frame.label_stack.last().ok_or(
-                                RuntimeError::StackError("Finished frame has no label stack"),
-                            )?;
                             let expected_n = finished_frame.frame.n;
 
                             if finished_frame.global_value_stack.len() < expected_n {
@@ -523,9 +514,6 @@ impl Runtime {
                         }
                         None => {
                             let finished_frame = self.stacks.activation_frame_stack.pop().unwrap();
-                            let finished_label_stack = finished_frame.label_stack.last().ok_or(
-                                RuntimeError::StackError("Finished frame has no label stack"),
-                            )?;
                             let expected_n = finished_frame.frame.n;
 
                             if finished_frame.global_value_stack.len() < expected_n {
