@@ -44,16 +44,6 @@ impl BlockMemoizationCache {
         self.cache.insert(key, value);
     }
 
-    #[allow(dead_code)]
-    fn mark_non_cacheable(&mut self, start_ip: usize, end_ip: usize, stack_hash: u64) {
-        let key = BlockCacheKey {
-            start_ip,
-            end_ip,
-            stack_hash,
-        };
-        self.insert(key, BlockCacheValue::NonCacheable);
-    }
-
     fn compute_stack_hash(stack: &[Val]) -> u64 {
         let mut hasher = DefaultHasher::new();
         stack.hash(&mut hasher);
