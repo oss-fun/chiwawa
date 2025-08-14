@@ -18,7 +18,7 @@ pub trait ConstHandler {
     fn get_const_type() -> ConstType;
     fn get_local_set_handler_idx() -> usize;
 
-    fn create_memarg_operand(value: Self::ValueType, memarg: Memarg) -> Option<Operand> {
+    fn create_memarg_operand(_value: Self::ValueType, _memarg: Memarg) -> Option<Operand> {
         None // Default: not supported
     }
 
@@ -35,43 +35,43 @@ pub trait ConstHandler {
     }
 
     fn try_consume_arithmetic(
-        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+        _ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
     ) -> Option<usize> {
         None // Default: no arithmetic operations
     }
 
     fn try_consume_load(
-        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+        _ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
     ) -> Option<(usize, Memarg)> {
         None // Default: no load operations
     }
 
     fn try_consume_comparison(
-        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+        _ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
     ) -> Option<usize> {
         None // Default: no comparison operations
     }
 
     fn try_consume_store(
-        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+        _ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
     ) -> Option<(usize, Memarg)> {
         None // Default: no store operations
     }
 
     fn try_consume_shift(
-        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+        _ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
     ) -> Option<usize> {
         None // Default: no shift operations
     }
 
     fn try_consume_rotation(
-        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+        _ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
     ) -> Option<usize> {
         None // Default: no rotation operations
     }
 
     fn try_consume_conversion(
-        ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
+        _ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'_>>,
     ) -> Option<usize> {
         None // Default: no conversion operations
     }

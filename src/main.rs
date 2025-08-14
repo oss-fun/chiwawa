@@ -10,7 +10,7 @@ use chiwawa::{
 use clap::Parser;
 use fancy_regex::Regex;
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]

@@ -787,9 +787,7 @@ fn preprocess_instructions(
     // --- Phase 2: Resolve Br, BrIf, If, Else jumps ---
 
     // Control stack stores: (pc, is_loop, block_type, runtime_label_stack_idx)
-    let mut current_control_stack_pass2: Vec<(usize, bool, wasmparser::BlockType, usize)> =
-        Vec::new();
-    let mut runtime_label_stack_idx_counter;
+    let mut current_control_stack_pass2: Vec<(usize, bool, wasmparser::BlockType)> = Vec::new();
 
     for fixup_index in 0..fixups.len() {
         let current_fixup_pc = fixups[fixup_index].pc;
@@ -807,7 +805,6 @@ fn preprocess_instructions(
 
         // --- Rebuild control stack state up to the fixup instruction ---
         current_control_stack_pass2.clear();
-        let mut runtime_label_stack_idx_counter = 0;
         for (pc, instr) in processed.iter().enumerate().take(current_fixup_pc + 1) {
             match instr.handler_index {
                 HANDLER_IDX_BLOCK | HANDLER_IDX_IF => {
@@ -815,26 +812,14 @@ fn preprocess_instructions(
                         .get(&pc)
                         .cloned()
                         .unwrap_or(wasmparser::BlockType::Empty);
-                    current_control_stack_pass2.push((
-                        pc,
-                        false,
-                        block_type,
-                        runtime_label_stack_idx_counter,
-                    ));
-                    runtime_label_stack_idx_counter += 1;
+                    current_control_stack_pass2.push((pc, false, block_type));
                 }
                 HANDLER_IDX_LOOP => {
                     let block_type = block_type_map
                         .get(&pc)
                         .cloned()
                         .unwrap_or(wasmparser::BlockType::Empty);
-                    current_control_stack_pass2.push((
-                        pc,
-                        true,
-                        block_type,
-                        runtime_label_stack_idx_counter,
-                    ));
-                    runtime_label_stack_idx_counter += 1;
+                    current_control_stack_pass2.push((pc, true, block_type));
                 }
                 HANDLER_IDX_END => {
                     if !current_control_stack_pass2.is_empty() {
@@ -868,7 +853,7 @@ fn preprocess_instructions(
             continue;
         }
 
-        let (target_start_pc, is_loop, target_block_type, target_runtime_idx) =
+        let (target_start_pc, is_loop, target_block_type) =
             current_control_stack_pass2[target_stack_level];
 
         // Calculate target IP
@@ -884,12 +869,6 @@ fn preprocess_instructions(
             calculate_loop_parameter_arity(&target_block_type, module, cache)
         } else {
             calculate_block_arity(&target_block_type, module, cache)
-        };
-        // Branch to parent level: if target block is at index N, unwind to N-1
-        let target_label_stack_idx = if target_runtime_idx > 0 {
-            target_runtime_idx - 1
-        } else {
-            0 // Branching out of function
         };
 
         // Patch the instruction operand
@@ -908,7 +887,6 @@ fn preprocess_instructions(
                 instr_to_patch.operand = Operand::LabelIdx {
                     target_ip: else_target,
                     arity: if_arity,
-                    target_label_stack_idx: 0,
                     original_wasm_depth: current_fixup_depth,
                     is_loop: false,
                 };
@@ -922,7 +900,6 @@ fn preprocess_instructions(
                 instr_to_patch.operand = Operand::LabelIdx {
                     target_ip: target_ip,
                     arity: else_arity,
-                    target_label_stack_idx: 0,
                     original_wasm_depth: current_fixup_depth,
                     is_loop: false,
                 };
@@ -931,7 +908,6 @@ fn preprocess_instructions(
                 instr_to_patch.operand = Operand::LabelIdx {
                     target_ip,
                     arity: target_arity,
-                    target_label_stack_idx,
                     original_wasm_depth: current_fixup_depth,
                     is_loop: is_loop,
                 };
@@ -946,9 +922,7 @@ fn preprocess_instructions(
 
     // --- Phase 3: Resolve BrTable targets ---
     // Reuse control stack simulation logic, including runtime index tracking
-    let mut current_control_stack_pass3: Vec<(usize, bool, wasmparser::BlockType, usize)> =
-        Vec::new();
-    runtime_label_stack_idx_counter = 0; // Reset counter
+    let mut current_control_stack_pass3: Vec<(usize, bool, wasmparser::BlockType)> = Vec::new();
 
     for pc in 0..processed.len() {
         if let Some(instr) = processed.get(pc) {
@@ -958,26 +932,14 @@ fn preprocess_instructions(
                         .get(&pc)
                         .cloned()
                         .unwrap_or(wasmparser::BlockType::Empty);
-                    current_control_stack_pass3.push((
-                        pc,
-                        false,
-                        block_type,
-                        runtime_label_stack_idx_counter,
-                    ));
-                    runtime_label_stack_idx_counter += 1;
+                    current_control_stack_pass3.push((pc, false, block_type));
                 }
                 HANDLER_IDX_LOOP => {
                     let block_type = block_type_map
                         .get(&pc)
                         .cloned()
                         .unwrap_or(wasmparser::BlockType::Empty);
-                    current_control_stack_pass3.push((
-                        pc,
-                        true,
-                        block_type,
-                        runtime_label_stack_idx_counter,
-                    ));
-                    runtime_label_stack_idx_counter += 1;
+                    current_control_stack_pass3.push((pc, true, block_type));
                 }
                 HANDLER_IDX_END => {
                     if !current_control_stack_pass3.is_empty() {
@@ -1026,7 +988,7 @@ fn preprocess_instructions(
                         return Err(RuntimeError::InvalidWasm("Internal Error: Invalid stack level calculated for BrTable default target"));
                     }
 
-                    let (target_start_pc, is_loop, target_block_type, target_runtime_idx) =
+                    let (target_start_pc, is_loop, target_block_type) =
                         current_control_stack_pass3[target_stack_level];
 
                     let target_ip = if is_loop {
@@ -1045,19 +1007,12 @@ fn preprocess_instructions(
                         // For blocks: Branch provides results (output types)
                         calculate_block_arity(&target_block_type, module, cache)
                     };
-                    // Branch to parent level: if target block is at index N, unwind to N-1
-                    let target_label_stack_idx = if target_runtime_idx > 0 {
-                        target_runtime_idx - 1
-                    } else {
-                        0 // Branching out of function
-                    };
 
                     fixups[default_fixup_idx].original_wasm_depth = usize::MAX;
 
                     Operand::LabelIdx {
                         target_ip,
                         arity: target_arity,
-                        target_label_stack_idx,
                         original_wasm_depth: fixup_depth,
                         is_loop: is_loop, // Use default target's loop/block information
                     }
@@ -1083,7 +1038,7 @@ fn preprocess_instructions(
                             ));
                         }
 
-                        let (target_start_pc, is_loop, target_block_type, target_runtime_idx) =
+                        let (target_start_pc, is_loop, target_block_type) =
                             current_control_stack_pass3[target_stack_level];
                         let target_ip = if is_loop {
                             target_start_pc
@@ -1099,18 +1054,12 @@ fn preprocess_instructions(
                             calculate_block_arity(&target_block_type, module, cache)
                         };
                         // Branch to parent level: if target block is at index N, unwind to N-1
-                        let target_label_stack_idx = if target_runtime_idx > 0 {
-                            target_runtime_idx - 1
-                        } else {
-                            0 // Branching out of function
-                        };
 
                         fixups[fixup_idx].original_wasm_depth = usize::MAX;
 
                         Operand::LabelIdx {
                             target_ip,
                             arity: target_arity,
-                            target_label_stack_idx,
                             original_wasm_depth: fixup_depth,
                             is_loop: is_loop,
                         }
@@ -1198,7 +1147,6 @@ fn decode_processed_instrs_and_fixups<'a>(
             current_processed_pc,
             &control_info_stack,
             module,
-            &HashMap::new(), // Empty map for first pass - will be updated later
             &mut BlockArityCache::new(), // Create cache for each instruction
         )?;
 
@@ -1341,7 +1289,6 @@ fn map_operator_to_initial_instr_and_fixup(
     current_processed_pc: usize,
     _control_info_stack: &[(wasmparser::BlockType, usize)],
     module: &Module,
-    block_end_map: &HashMap<usize, usize>,
     cache: &mut BlockArityCache,
 ) -> Result<(ProcessedInstr, Option<FixupInfo>), Box<dyn std::error::Error>> {
     let handler_index;
@@ -1392,7 +1339,6 @@ fn map_operator_to_initial_instr_and_fixup(
             operand = Operand::LabelIdx {
                 target_ip: usize::MAX,
                 arity,
-                target_label_stack_idx: 0,
                 original_wasm_depth: 0,
                 is_loop: false,
             };
@@ -1408,7 +1354,6 @@ fn map_operator_to_initial_instr_and_fixup(
             operand = Operand::LabelIdx {
                 target_ip: usize::MAX,
                 arity: 0,
-                target_label_stack_idx: 0,
                 original_wasm_depth: 0,
                 is_loop: false,
             };
@@ -1427,7 +1372,6 @@ fn map_operator_to_initial_instr_and_fixup(
             operand = Operand::LabelIdx {
                 target_ip: usize::MAX,
                 arity: 0,
-                target_label_stack_idx: 0,
                 original_wasm_depth: relative_depth as usize,
                 is_loop: false,
             };
@@ -1444,7 +1388,6 @@ fn map_operator_to_initial_instr_and_fixup(
             operand = Operand::LabelIdx {
                 target_ip: usize::MAX,
                 arity: 0,
-                target_label_stack_idx: 0,
                 original_wasm_depth: relative_depth as usize,
                 is_loop: false,
             };

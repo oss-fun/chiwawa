@@ -33,7 +33,6 @@ pub enum Operand {
     LabelIdx {
         target_ip: usize,
         arity: usize,
-        target_label_stack_idx: usize,
         original_wasm_depth: usize,
         is_loop: bool,
     },
@@ -74,7 +73,6 @@ enum HandlerResult {
     Invoke(FuncAddr),
     Branch {
         target_ip: usize,
-        target_label_stack_idx: usize,
         values_to_push: Vec<Val>,
         branch_depth: usize,
     },
@@ -687,7 +685,6 @@ impl FrameStack {
                         }
                         HandlerResult::Branch {
                             target_ip,
-                            target_label_stack_idx,
                             values_to_push,
                             branch_depth,
                         } => {
@@ -784,7 +781,6 @@ impl FrameStack {
                             if self.label_stack.len() > 1 {
                                 let current_label =
                                     &self.label_stack[current_label_stack_idx].label;
-                                let return_ip = current_label.return_ip;
                                 let stack_height = current_label.stack_height;
                                 let arity = current_label.arity;
 
@@ -1105,7 +1101,6 @@ fn handle_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
     if let &Operand::LabelIdx {
         target_ip,
         arity,
-        target_label_stack_idx: _,
         original_wasm_depth: _,
         is_loop: _,
     } = operand
@@ -1149,7 +1144,6 @@ fn handle_else(
     if let &Operand::LabelIdx {
         target_ip,
         arity: _,
-        target_label_stack_idx: _,
         original_wasm_depth: _,
         is_loop: _,
     } = operand
@@ -1178,7 +1172,6 @@ fn handle_br(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
     if let Operand::LabelIdx {
         target_ip,
         arity,
-        target_label_stack_idx,
         original_wasm_depth,
         is_loop: _,
     } = operand
@@ -1193,7 +1186,6 @@ fn handle_br(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
 
         Ok(HandlerResult::Branch {
             target_ip: *target_ip,
-            target_label_stack_idx: *target_label_stack_idx,
             values_to_push,
             branch_depth: *original_wasm_depth,
         })
@@ -1216,7 +1208,6 @@ fn handle_br_if(
         if let Operand::LabelIdx {
             target_ip,
             arity,
-            target_label_stack_idx,
             original_wasm_depth,
             is_loop: _,
         } = operand
@@ -1231,7 +1222,6 @@ fn handle_br_if(
 
             Ok(HandlerResult::Branch {
                 target_ip: *target_ip,
-                target_label_stack_idx: *target_label_stack_idx,
                 values_to_push,
                 branch_depth: *original_wasm_depth,
             })
@@ -2849,7 +2839,7 @@ fn handle_i64_trunc_f64_u(
 }
 
 fn handle_unimplemented(
-    ctx: &mut ExecutionContext,
+    _ctx: &mut ExecutionContext,
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     Err(RuntimeError::UnimplementedInstruction)
@@ -2876,7 +2866,6 @@ fn handle_br_table(
         if let Operand::LabelIdx {
             target_ip,
             arity,
-            target_label_stack_idx,
             original_wasm_depth,
             is_loop: _,
         } = chosen_operand
@@ -2896,7 +2885,6 @@ fn handle_br_table(
 
             Ok(HandlerResult::Branch {
                 target_ip: *target_ip,
-                target_label_stack_idx: *target_label_stack_idx,
                 values_to_push,
                 branch_depth: *original_wasm_depth,
             })
