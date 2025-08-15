@@ -18,18 +18,9 @@ mod tests {
     }
 
     fn run_wasi_module(inst: &Arc<ModuleInst>) -> Result<Vec<Val>, chiwawa::error::RuntimeError> {
-        match inst.get_export_func("_start") {
-            Ok(func_addr) => {
-                let mut runtime = Runtime::new(Arc::clone(inst), &func_addr, vec![], true)?;
-                runtime.run()
-            }
-            Err(_) => {
-                // If no _start function, try main
-                let func_addr = inst.get_export_func("main")?;
-                let mut runtime = Runtime::new(Arc::clone(inst), &func_addr, vec![], true)?;
-                runtime.run()
-            }
-        }
+        let func_addr = inst.get_export_func("_start")?;
+        let mut runtime = Runtime::new(Arc::clone(inst), &func_addr, vec![], true)?;
+        runtime.run()
     }
 
     #[test]
