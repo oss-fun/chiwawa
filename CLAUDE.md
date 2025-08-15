@@ -46,7 +46,7 @@ wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name 
 
 # チェックポイント・リストア実行
 touch ./checkpoint.trigger  # チェックポイントトリガー
-wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --restore checkpoint.trigger
+wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --restore checkpoint.bin
 
 # アプリケーション引数の指定
 wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --app-args "--help"

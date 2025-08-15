@@ -15,7 +15,7 @@ somethingWasmRuntime target/rwasm32-wasip1/release/chiwawa.wasm test.wasm --invo
 ```
 somethingWasmRuntime target/rwasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --params "I64(100)"
 touch  ./checkpoint.trigger # Trigger of Checkpointing
-somethingWasmRuntime target/rwasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --restore checkpoint.trigger
+somethingWasmRuntime target/rwasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --restore checkpoint.bin
 ```
 
 ## References
