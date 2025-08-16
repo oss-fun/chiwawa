@@ -28,13 +28,6 @@ mod tests {
         let inst = load_wasi_instance("tests/wasi/poll_oneoff_stdio.wasm");
         let result = run_wasi_module(&inst);
 
-        match result {
-            Ok(_) => {
-                // Test passed
-            }
-            Err(e) => {
-                panic!("poll_oneoff_stdio failed: {:?}", e);
-            }
-        }
+        result.expect("poll_oneoff_stdio should succeed");
     }
 }

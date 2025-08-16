@@ -35,13 +35,6 @@ mod tests {
         let inst = load_wasi_instance_with_args("tests/wasi/fd_readdir.wasm", args);
         let result = run_wasi_module(&inst);
 
-        match result {
-            Ok(_) => {
-                // Test passed
-            }
-            Err(e) => {
-                panic!("fd_readdir failed: {:?}", e);
-            }
-        }
+        result.expect("fd_readdir should succeed");
     }
 }

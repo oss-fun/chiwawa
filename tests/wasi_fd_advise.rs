@@ -24,24 +24,31 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(feature = "wasmtime", ignore = "fs_rights_base mismatch on wasmtime")]
-    fn test_path_link() {
+    #[cfg_attr(feature = "wasmtime", ignore = "fd_allocate not supported on wasmtime")]
+    fn test_fd_advise() {
         let scratch_dir = "tests/testdir";
 
-        // Clean up any existing path_link_dir.cleanup directory
-        let cleanup_dir = format!("{}/path_link_dir.cleanup", scratch_dir);
-        if std::path::Path::new(&cleanup_dir).exists() {
-            std::fs::remove_dir_all(&cleanup_dir).ok();
+        // Clean up any existing test files before AND after test
+        let cleanup_file = format!("{}/fd_advise_file.cleanup", scratch_dir);
+
+        // Clean before test
+        if std::path::Path::new(&cleanup_file).exists() {
+            std::fs::remove_file(&cleanup_file).ok();
         }
 
         let args = vec![
-            "path_link.wasm".to_string(), // argv[0] - program name
+            "fd_advise.wasm".to_string(), // argv[0] - program name
             scratch_dir.to_string(),      // argv[1] - scratch directory
         ];
 
-        let inst = load_wasi_instance_with_args("tests/wasi/path_link.wasm", args);
+        let inst = load_wasi_instance_with_args("tests/wasi/fd_advise.wasm", args);
         let result = run_wasi_module(&inst);
 
-        result.expect("path_link should succeed");
+        // Clean after test
+        if std::path::Path::new(&cleanup_file).exists() {
+            std::fs::remove_file(&cleanup_file).ok();
+        }
+
+        result.expect("fd_advise should succeed");
     }
 }

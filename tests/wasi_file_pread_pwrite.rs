@@ -32,13 +32,6 @@ mod tests {
         let inst = load_wasi_instance("tests/wasi/file_pread_pwrite.wasm");
         let result = run_wasi_module(&inst);
 
-        match result {
-            Ok(_) => {
-                println!("file_pread_pwrite test passed successfully");
-            }
-            Err(e) => {
-                panic!("file_pread_pwrite test failed: {:?}", e);
-            }
-        }
+        result.expect("file_pread_pwrite test should succeed");
     }
 }

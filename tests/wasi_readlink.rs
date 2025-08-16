@@ -33,13 +33,6 @@ mod tests {
         let inst = load_wasi_instance("tests/wasi/readlink.wasm");
         let result = run_wasi_module(&inst);
 
-        match result {
-            Ok(_) => {
-                println!("readlink test passed successfully");
-            }
-            Err(e) => {
-                panic!("readlink test failed: {:?}", e);
-            }
-        }
+        result.expect("readlink test should succeed");
     }
 }

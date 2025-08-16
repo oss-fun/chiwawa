@@ -28,27 +28,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "wasmtime", ignore = "NOTSUP error on wasmtime")]
     fn test_path_filestat() {
         let inst = load_wasi_instance("tests/wasi/path_filestat.wasm");
         let result = run_wasi_module(&inst);
 
-        match result {
-            Ok(_) => {
-                println!("path_filestat test passed successfully");
-            }
-            Err(e) => {
-                let error_msg = format!("{:?}", e);
-                // Check if error is NOTSUP (errno 58) which is expected on wasmtime
-                // The error manifests as "Unreachable" after a panic from NOTSUP errno
-                if error_msg.contains("NOTSUP")
-                    || error_msg.contains("Not supported")
-                    || error_msg.contains("Unreachable")
-                {
-                    println!("path_filestat test passed (NOTSUP error expected on wasmtime)");
-                } else {
-                    panic!("path_filestat test failed: {:?}", e);
-                }
-            }
-        }
+        result.expect("path_filestat should succeed");
     }
 }

@@ -45,7 +45,7 @@ jobs:
     - name: Run tests (wasm32-wasip1)
       run: |
         echo "Running wasm32-wasip1 tests with wasmtime "
-        cargo test --verbose --target wasm32-wasip1
+        cargo test --verbose --target wasm32-wasip1 --features wasmtime
     
     - name: Check formatting
       run: cargo fmt --all --check

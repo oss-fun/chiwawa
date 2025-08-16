@@ -41,13 +41,6 @@ mod tests {
         let inst = load_wasi_instance_with_args("tests/wasi/file_seek_tell.wasm", args);
         let result = run_wasi_module(&inst);
 
-        match result {
-            Ok(_) => {
-                // Test passed
-            }
-            Err(e) => {
-                panic!("file_seek_tell failed: {:?}", e);
-            }
-        }
+        result.expect("file_seek_tell should succeed");
     }
 }

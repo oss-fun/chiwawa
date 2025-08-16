@@ -32,13 +32,6 @@ mod tests {
         let inst = load_wasi_instance("tests/wasi/path_open_read_write.wasm");
         let result = run_wasi_module(&inst);
 
-        match result {
-            Ok(_) => {
-                println!("path_open_read_write test passed successfully");
-            }
-            Err(e) => {
-                panic!("path_open_read_write test failed: {:?}", e);
-            }
-        }
+        result.expect("path_open_read_write test should succeed");
     }
 }

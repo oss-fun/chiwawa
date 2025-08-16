@@ -32,13 +32,6 @@ mod tests {
         let inst = load_wasi_instance("tests/wasi/fd_filestat_set.wasm");
         let result = run_wasi_module(&inst);
 
-        match result {
-            Ok(_) => {
-                println!("fd_filestat_set test passed successfully");
-            }
-            Err(e) => {
-                panic!("fd_filestat_set test failed: {:?}", e);
-            }
-        }
+        result.expect("fd_filestat_set should succeed");
     }
 }

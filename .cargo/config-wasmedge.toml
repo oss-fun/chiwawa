@@ -1,2 +1,8 @@
 [target.wasm32-wasip1]
-runner = ["/home/chikuwait/WasmEdge/build-release/tools/wasmedge/wasmedge", "--dir", "."]
+runner = ["wasmedge", "--dir", ".", "--dir", "tests/testdir:tests/testdir"]
+
+[build]
+rustflags = [
+  "-C", "target-feature=+bulk-memory,+mutable-globals,+nontrapping-fptoint,+reference-types,+sign-ext",
+  "-C", "link-arg=-s",
+]
