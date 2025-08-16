@@ -36,13 +36,6 @@ mod tests {
         let inst = load_wasi_instance("tests/wasi/unlink_file_trailing_slashes.wasm");
         let result = run_wasi_module(&inst);
 
-        match result {
-            Ok(_) => {
-                println!("unlink_file_trailing_slashes test passed successfully");
-            }
-            Err(e) => {
-                panic!("unlink_file_trailing_slashes test failed: {:?}", e);
-            }
-        }
+        result.expect("unlink_file_trailing_slashes test should succeed");
     }
 }

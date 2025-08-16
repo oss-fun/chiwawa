@@ -29,13 +29,6 @@ mod tests {
         let inst = load_wasi_instance("tests/wasi/clock_time_get.wasm");
         let result = run_wasi_module(&inst);
 
-        match result {
-            Ok(_) => {
-                println!("clock_time_get test passed successfully");
-            }
-            Err(e) => {
-                panic!("clock_time_get test failed: {:?}", e);
-            }
-        }
+        result.expect("clock_time_get test should succeed");
     }
 }

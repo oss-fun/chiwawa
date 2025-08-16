@@ -28,13 +28,6 @@ mod tests {
         let inst = load_wasi_instance("tests/wasi/sched_yield.wasm");
         let result = run_wasi_module(&inst);
 
-        match result {
-            Ok(_) => {
-                // Test passed
-            }
-            Err(e) => {
-                panic!("sched_yield failed: {:?}", e);
-            }
-        }
+        result.expect("sched_yield should succeed");
     }
 }

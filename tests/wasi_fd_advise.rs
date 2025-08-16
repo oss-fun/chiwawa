@@ -24,6 +24,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "wasmtime", ignore = "fd_allocate not supported on wasmtime")]
     fn test_fd_advise() {
         let scratch_dir = "tests/testdir";
 
@@ -48,22 +49,6 @@ mod tests {
             std::fs::remove_file(&cleanup_file).ok();
         }
 
-        match result {
-            Ok(_) => {
-                // Test passed
-            }
-            Err(e) => {
-                // Check if this is due to fd_allocate not being supported
-                let error_msg = format!("{:?}", e);
-
-                // fd_allocate NOTSUP error can manifest as Unreachable when the test program panics
-                if error_msg.contains("Unreachable") {
-                    // This is expected on wasmtime which doesn't support fd_allocate
-                    eprintln!("Note: fd_advise test result: fd_allocate not supported by runtime (expected on wasmtime)");
-                } else {
-                    panic!("fd_advise failed with unexpected error: {:?}", e);
-                }
-            }
-        }
+        result.expect("fd_advise should succeed");
     }
 }

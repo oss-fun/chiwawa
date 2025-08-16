@@ -24,6 +24,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(feature = "wasmtime", ignore = "fs_rights_base mismatch on wasmtime")]
     fn test_path_link() {
         let scratch_dir = "tests/testdir";
 
@@ -41,20 +42,6 @@ mod tests {
         let inst = load_wasi_instance_with_args("tests/wasi/path_link.wasm", args);
         let result = run_wasi_module(&inst);
 
-        match result {
-            Ok(_) => {
-                // Test passed
-            }
-            Err(e) => {
-                // Check if this is the known wasmtime issue with fs_rights_base
-                if matches!(e, chiwawa::error::RuntimeError::Unreachable) {
-                    // This is expected on wasmtime due to different WASI rights implementation
-                    // wasmtime sets fs_rights_base without fd_write (0x40) permission for hard links
-                    eprintln!("Note: path_link failed with Unreachable error (known issue on wasmtime with fs_rights_base)");
-                } else {
-                    panic!("path_link failed with unexpected error: {:?}", e);
-                }
-            }
-        }
+        result.expect("path_link should succeed");
     }
 }
