@@ -106,10 +106,8 @@ extern "C" {
     fn __wasi_path_rename(
         old_fd: u32,
         old_path: *const u8,
-        old_path_len: u32,
         new_fd: u32,
         new_path: *const u8,
-        new_path_len: u32,
     ) -> u16;
     fn __wasi_path_symlink(old_path: *const u8, fd: u32, new_path: *const u8) -> u16;
     fn __wasi_sock_accept(fd: u32, flags: u32, fd_ptr: *mut u32) -> u16;
@@ -1193,14 +1191,31 @@ impl PassthroughWasiImpl {
         let memory_guard = memory.get_memory_direct_access();
         let memory_base = memory_guard.data.as_ptr();
 
+        // Create null-terminated strings for old and new paths
+        let old_path_slice = unsafe {
+            std::slice::from_raw_parts(
+                memory_base.add(old_path_ptr as usize),
+                old_path_len as usize,
+            )
+        };
+        let new_path_slice = unsafe {
+            std::slice::from_raw_parts(
+                memory_base.add(new_path_ptr as usize),
+                new_path_len as usize,
+            )
+        };
+
+        let mut old_path_cstr = old_path_slice.to_vec();
+        old_path_cstr.push(0);
+        let mut new_path_cstr = new_path_slice.to_vec();
+        new_path_cstr.push(0);
+
         let wasi_errno = unsafe {
             __wasi_path_rename(
                 old_fd,
-                memory_base.add(old_path_ptr as usize),
-                old_path_len,
+                old_path_cstr.as_ptr(),
                 new_fd,
-                memory_base.add(new_path_ptr as usize),
-                new_path_len,
+                new_path_cstr.as_ptr(),
             )
         };
 
