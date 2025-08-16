@@ -91,8 +91,8 @@ extern "C" {
         nwritten: *mut u32,
     ) -> u16;
     fn __wasi_proc_raise(signal: u32) -> u16;
-    fn __wasi_fd_advise(fd: u32, offset: u64, len: u64, advice: u32) -> u16;
-    fn __wasi_fd_allocate(fd: u32, offset: u64, len: u64) -> u16;
+    fn __wasi_fd_advise(fd: u32, offset: u64, len: u64, advice: u8) -> u16;
+    fn __wasi_fd_allocate(fd: i32, offset: u64, len: u64) -> u16;
     fn __wasi_fd_fdstat_set_rights(fd: u32, fs_rights_base: u64, fs_rights_inheriting: u64) -> u16;
     fn __wasi_fd_renumber(fd: u32, to: u32) -> u16;
     fn __wasi_fd_filestat_set_times(fd: u32, atim: u64, mtim: u64, fst_flags: u32) -> u16;
@@ -1081,7 +1081,7 @@ impl PassthroughWasiImpl {
         len: u64,
         advice: u32,
     ) -> WasiResult<i32> {
-        let wasi_errno = unsafe { __wasi_fd_advise(fd, offset, len, advice) };
+        let wasi_errno = unsafe { __wasi_fd_advise(fd, offset, len, advice as u8) };
 
         Ok(wasi_errno as i32)
     }
@@ -1093,7 +1093,7 @@ impl PassthroughWasiImpl {
         offset: u64,
         len: u64,
     ) -> WasiResult<i32> {
-        let wasi_errno = unsafe { __wasi_fd_allocate(fd, offset, len) };
+        let wasi_errno = unsafe { __wasi_fd_allocate(fd as i32, offset, len) };
 
         Ok(wasi_errno as i32)
     }

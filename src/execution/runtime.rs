@@ -898,6 +898,27 @@ impl Runtime {
                 )?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
+            WasiFuncType::FdAdvise => {
+                if params.len() != 4 {
+                    return Err(WasiError::Inval);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let offset = params[1].to_i64().map_err(|_| WasiError::Inval)? as u64;
+                let len = params[2].to_i64().map_err(|_| WasiError::Inval)? as u64;
+                let advice = params[3].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let result = wasi_impl.fd_advise(memory, fd, offset, len, advice)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::FdAllocate => {
+                if params.len() != 3 {
+                    return Err(WasiError::Inval);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let offset = params[1].to_i64().map_err(|_| WasiError::Inval)? as u64;
+                let len = params[2].to_i64().map_err(|_| WasiError::Inval)? as u64;
+                let result = wasi_impl.fd_allocate(memory, fd, offset, len)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
             _ => Err(WasiError::NoSys),
         }
     }
