@@ -94,7 +94,7 @@ extern "C" {
     fn __wasi_fd_advise(fd: u32, offset: u64, len: u64, advice: u8) -> u16;
     fn __wasi_fd_allocate(fd: i32, offset: u64, len: u64) -> u16;
     fn __wasi_fd_fdstat_set_rights(fd: u32, fs_rights_base: u64, fs_rights_inheriting: u64) -> u16;
-    fn __wasi_fd_renumber(fd: u32, to: u32) -> u16;
+    fn __wasi_fd_renumber(fd: i32, to: i32) -> u16;
     fn __wasi_fd_filestat_set_times(fd: u32, atim: u64, mtim: u64, fst_flags: u32) -> u16;
     fn __wasi_path_link(
         old_fd: u32,
@@ -1112,7 +1112,7 @@ impl PassthroughWasiImpl {
     }
 
     pub fn fd_renumber(&self, _memory: &MemAddr, fd: u32, to: u32) -> WasiResult<i32> {
-        let wasi_errno = unsafe { __wasi_fd_renumber(fd, to) };
+        let wasi_errno = unsafe { __wasi_fd_renumber(fd as i32, to as i32) };
 
         Ok(wasi_errno as i32)
     }

@@ -919,6 +919,15 @@ impl Runtime {
                 let result = wasi_impl.fd_allocate(memory, fd, offset, len)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
+            WasiFuncType::FdRenumber => {
+                if params.len() != 2 {
+                    return Err(WasiError::Inval);
+                }
+                let fd = params[0].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let to = params[1].to_i32().map_err(|_| WasiError::Inval)? as u32;
+                let result = wasi_impl.fd_renumber(memory, fd, to)?;
+                Ok(Some(Val::Num(Num::I32(result))))
+            }
             _ => Err(WasiError::NoSys),
         }
     }
