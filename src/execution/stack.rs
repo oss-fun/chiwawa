@@ -640,7 +640,11 @@ impl FrameStack {
                     // Continue execution at return point in parent level
                     if current_label_stack_idx < self.label_stack.len() {
                         let parent_label_stack = &mut self.label_stack[current_label_stack_idx];
-                        parent_label_stack.ip = return_ip;
+                        if is_loop {
+                            parent_label_stack.ip = ip + 1;
+                        } else {
+                            parent_label_stack.ip = return_ip;
+                        }
                     }
                     continue;
                 } else {
