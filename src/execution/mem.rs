@@ -2,7 +2,7 @@ use crate::error::RuntimeError;
 use crate::structure::{instructions::Memarg, types::*};
 use byteorder::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::sync::{Arc, RwLock};
 use typenum::*;
@@ -11,6 +11,7 @@ use typenum::*;
 pub struct MemAddr {
     mem_inst: Arc<RwLock<MemInst>>,
     page_versions: Arc<RwLock<HashMap<u32, u64>>>,
+    current_block_accessed_pages: Arc<RwLock<Option<HashSet<u32>>>>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MemInst {
@@ -35,6 +36,7 @@ impl MemAddr {
                 },
             })),
             page_versions: Arc::new(RwLock::new(HashMap::new())),
+            current_block_accessed_pages: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -45,6 +47,20 @@ impl MemAddr {
             let mut versions = self.page_versions.write().expect("RwLock poisoned");
             for page in start_page..=end_page {
                 *versions.entry(page as u32).or_insert(0) += 1;
+            }
+        }
+    }
+
+    fn record_page_access(&self, start_pos: usize, len: usize) {
+        if len > 0 {
+            if let Ok(mut access_lock) = self.current_block_accessed_pages.write() {
+                if let Some(ref mut pages) = *access_lock {
+                    let start_page = start_pos / 65536;
+                    let end_page = (start_pos + len - 1) / 65536;
+                    for page in start_page..=end_page {
+                        pages.insert(page as u32);
+                    }
+                }
             }
         }
     }
@@ -61,6 +77,7 @@ impl MemAddr {
             .checked_add(i32::try_from(arg.offset).ok().unwrap())
             .ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
         let len = <T>::len();
+        self.record_page_access(pos, len);
         let raw = &self.mem_inst.read().expect("RwLock poisoned").data;
         let data = Vec::from(&raw[pos..pos + len]);
         Ok(<T>::from_byte(data))
@@ -76,6 +93,7 @@ impl MemAddr {
         }
         let len = <T>::len();
         drop(raw);
+        self.record_page_access(pos, len);
         self.update_page_versions(pos, len);
 
         Ok(())
@@ -195,6 +213,32 @@ impl MemAddr {
         let mut result: Vec<(u32, u64)> = versions
             .iter()
             .map(|(&page, &version)| (page, version))
+            .collect();
+        result.sort_by_key(|&(page, _)| page);
+        result
+    }
+
+    pub fn start_tracking_access(&self) {
+        let mut access_lock = self
+            .current_block_accessed_pages
+            .write()
+            .expect("RwLock poisoned");
+        *access_lock = Some(HashSet::new());
+    }
+
+    pub fn get_and_stop_tracking_access(&self) -> Option<HashSet<u32>> {
+        let mut access_lock = self
+            .current_block_accessed_pages
+            .write()
+            .expect("RwLock poisoned");
+        access_lock.take()
+    }
+
+    pub fn get_page_versions_for_pages(&self, pages: &HashSet<u32>) -> Vec<(u32, u64)> {
+        let versions = self.page_versions.read().expect("RwLock poisoned");
+        let mut result: Vec<(u32, u64)> = pages
+            .iter()
+            .filter_map(|&page| versions.get(&page).map(|&version| (page, version)))
             .collect();
         result.sort_by_key(|&(page, _)| page);
         result

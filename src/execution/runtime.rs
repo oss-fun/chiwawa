@@ -59,18 +59,18 @@ impl Runtime {
     ) -> Result<Result<Option<super::stack::ModuleLevelInstr>, RuntimeError>, RuntimeError> {
         // Extract cache to avoid borrowing conflicts, will be restored later
         let mut cache_opt = self.block_cache.take();
-        let mut pending_cache_stores: Vec<(usize, usize, Vec<Val>, Vec<Val>, Vec<Val>)> =
-            Vec::new();
+        let mut pending_cache_stores: Vec<(
+            usize,
+            usize,
+            Vec<Val>,
+            Vec<Val>,
+            Vec<(u32, u64)>,
+            Vec<Val>,
+        )> = Vec::new();
 
         let result = {
             let frame_stack = &mut self.stacks.activation_frame_stack[frame_stack_idx];
-
-            // Get current memory page versions
-            let memory_pages = if !self.module_inst.mem_addrs.is_empty() {
-                self.module_inst.mem_addrs[0].get_all_page_versions()
-            } else {
-                vec![]
-            };
+            let module_inst = &self.module_inst;
 
             let get_cache = |start_ip: usize,
                              end_ip: usize,
@@ -78,7 +78,33 @@ impl Runtime {
                              locals: &[Val]|
              -> Option<Vec<Val>> {
                 cache_opt.as_ref().and_then(|cache| {
-                    cache.check_block(start_ip, end_ip, stack, locals, &memory_pages)
+                    if let Some(accessed_pages) = cache.get_access_pattern(start_ip, end_ip) {
+                        let memory_pages = if !module_inst.mem_addrs.is_empty() {
+                            module_inst.mem_addrs[0].get_page_versions_for_pages(accessed_pages)
+                        } else {
+                            vec![]
+                        };
+                        cache.check_block(start_ip, end_ip, stack, locals, &memory_pages)
+                    } else {
+                        // No access pattern known - check with all pages and start tracking
+                        let memory_pages = if !module_inst.mem_addrs.is_empty() {
+                            module_inst.mem_addrs[0].get_all_page_versions()
+                        } else {
+                            vec![]
+                        };
+
+                        let cache_result =
+                            cache.check_block(start_ip, end_ip, stack, locals, &memory_pages);
+
+                        if cache_result.is_none() {
+                            // Cache miss and no pattern - start tracking
+                            if !module_inst.mem_addrs.is_empty() {
+                                module_inst.mem_addrs[0].start_tracking_access();
+                            }
+                        }
+
+                        cache_result
+                    }
                 })
             };
 
@@ -87,13 +113,45 @@ impl Runtime {
                                input_stack: &[Val],
                                locals: &[Val],
                                output_stack: Vec<Val>| {
-                pending_cache_stores.push((
-                    start_ip,
-                    end_ip,
-                    input_stack.to_vec(),
-                    locals.to_vec(),
-                    output_stack,
-                ));
+                // Get accessed pages if tracking was enabled
+                let accessed_pages = if !module_inst.mem_addrs.is_empty() {
+                    module_inst.mem_addrs[0].get_and_stop_tracking_access()
+                } else {
+                    None
+                };
+
+                if let Some(pages) = accessed_pages {
+                    // Get versions for accessed pages
+                    let memory_pages = if !module_inst.mem_addrs.is_empty() {
+                        module_inst.mem_addrs[0].get_page_versions_for_pages(&pages)
+                    } else {
+                        vec![]
+                    };
+
+                    pending_cache_stores.push((
+                        start_ip,
+                        end_ip,
+                        input_stack.to_vec(),
+                        locals.to_vec(),
+                        memory_pages,
+                        output_stack,
+                    ));
+                } else {
+                    // If no tracking, use all pages (fallback)
+                    let memory_pages = if !module_inst.mem_addrs.is_empty() {
+                        module_inst.mem_addrs[0].get_all_page_versions()
+                    } else {
+                        vec![]
+                    };
+                    pending_cache_stores.push((
+                        start_ip,
+                        end_ip,
+                        input_stack.to_vec(),
+                        locals.to_vec(),
+                        memory_pages,
+                        output_stack,
+                    ));
+                }
             };
 
             frame_stack.run_dtc_loop(called_func_addr, get_cache, store_cache)
@@ -101,20 +159,15 @@ impl Runtime {
 
         // Process pending cache stores
         if let Some(ref mut cache) = cache_opt {
-            // Get current memory page versions for storing
-            let current_memory_pages = if !self.module_inst.mem_addrs.is_empty() {
-                self.module_inst.mem_addrs[0].get_all_page_versions()
-            } else {
-                vec![]
-            };
-
-            for (start_ip, end_ip, input_stack, locals, output_stack) in pending_cache_stores {
+            for (start_ip, end_ip, input_stack, locals, accessed_pages, output_stack) in
+                pending_cache_stores
+            {
                 cache.store_block(
                     start_ip,
                     end_ip,
                     &input_stack,
                     &locals,
-                    current_memory_pages.clone(),
+                    accessed_pages,
                     output_stack,
                 );
             }
