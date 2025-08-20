@@ -10,6 +10,7 @@ pub struct BlockCacheKey {
     pub end_ip: usize,
     pub stack_hash: u64,
     pub locals_hash: u64,
+    pub accessed_pages: Vec<(u32, u64)>, // (page_index, version)
 }
 
 #[derive(Clone, Debug)]
@@ -63,6 +64,7 @@ impl BlockMemoizationCache {
         end_ip: usize,
         stack: &[Val],
         locals: &[Val],
+        accessed_pages: &[(u32, u64)],
     ) -> Option<Vec<Val>> {
         let stack_hash = Self::compute_stack_hash(stack);
         let locals_hash = Self::compute_locals_hash(locals);
@@ -71,6 +73,7 @@ impl BlockMemoizationCache {
             end_ip,
             stack_hash,
             locals_hash,
+            accessed_pages: accessed_pages.to_vec(),
         };
         self.get(&key).and_then(|value| match value {
             BlockCacheValue::CachedResult(result) => Some(result.clone()),
@@ -84,6 +87,7 @@ impl BlockMemoizationCache {
         end_ip: usize,
         input_stack: &[Val],
         locals: &[Val],
+        accessed_pages: Vec<(u32, u64)>,
         output_stack: Vec<Val>,
     ) {
         let stack_hash = Self::compute_stack_hash(input_stack);
@@ -93,6 +97,7 @@ impl BlockMemoizationCache {
             end_ip,
             stack_hash,
             locals_hash,
+            accessed_pages,
         };
         let value = BlockCacheValue::CachedResult(output_stack);
         self.insert(key, value);
@@ -103,22 +108,6 @@ fn is_vm_mutable_instruction(handler_index: usize) -> bool {
     use crate::execution::stack::*;
 
     match handler_index {
-        // Memory loads (depend on mutable memory state)
-        HANDLER_IDX_I32_LOAD
-        | HANDLER_IDX_I64_LOAD
-        | HANDLER_IDX_F32_LOAD
-        | HANDLER_IDX_F64_LOAD
-        | HANDLER_IDX_I32_LOAD8_S
-        | HANDLER_IDX_I32_LOAD8_U
-        | HANDLER_IDX_I32_LOAD16_S
-        | HANDLER_IDX_I32_LOAD16_U
-        | HANDLER_IDX_I64_LOAD8_S
-        | HANDLER_IDX_I64_LOAD8_U
-        | HANDLER_IDX_I64_LOAD16_S
-        | HANDLER_IDX_I64_LOAD16_U
-        | HANDLER_IDX_I64_LOAD32_S
-        | HANDLER_IDX_I64_LOAD32_U => true,
-
         // Memory stores (mutate memory state)
         HANDLER_IDX_I32_STORE
         | HANDLER_IDX_I64_STORE
@@ -129,27 +118,6 @@ fn is_vm_mutable_instruction(handler_index: usize) -> bool {
         | HANDLER_IDX_I64_STORE8
         | HANDLER_IDX_I64_STORE16
         | HANDLER_IDX_I64_STORE32 => true,
-
-        // Load superinstructions (depend on mutable memory state)
-        HANDLER_IDX_I32_LOAD_I32_CONST
-        | HANDLER_IDX_I64_LOAD_I64_CONST
-        | HANDLER_IDX_I32_CONST_I64_LOAD
-        | HANDLER_IDX_I32_CONST_F32_LOAD
-        | HANDLER_IDX_I32_CONST_F64_LOAD
-        | HANDLER_IDX_I64_CONST_I32_LOAD
-        | HANDLER_IDX_I64_CONST_I64_LOAD
-        | HANDLER_IDX_I64_CONST_F32_LOAD
-        | HANDLER_IDX_I64_CONST_F64_LOAD
-        | HANDLER_IDX_I32_LOAD8_S_CONST
-        | HANDLER_IDX_I32_LOAD8_U_CONST
-        | HANDLER_IDX_I32_LOAD16_S_CONST
-        | HANDLER_IDX_I32_LOAD16_U_CONST
-        | HANDLER_IDX_I64_LOAD8_S_CONST
-        | HANDLER_IDX_I64_LOAD8_U_CONST
-        | HANDLER_IDX_I64_LOAD16_S_CONST
-        | HANDLER_IDX_I64_LOAD16_U_CONST
-        | HANDLER_IDX_I64_LOAD32_S_CONST
-        | HANDLER_IDX_I64_LOAD32_U_CONST => true,
 
         // Store superinstructions
         HANDLER_IDX_I32_STORE_I32_CONST

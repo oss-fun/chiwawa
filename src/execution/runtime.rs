@@ -65,14 +65,21 @@ impl Runtime {
         let result = {
             let frame_stack = &mut self.stacks.activation_frame_stack[frame_stack_idx];
 
+            // Get current memory page versions
+            let memory_pages = if !self.module_inst.mem_addrs.is_empty() {
+                self.module_inst.mem_addrs[0].get_all_page_versions()
+            } else {
+                vec![]
+            };
+
             let get_cache = |start_ip: usize,
                              end_ip: usize,
                              stack: &[Val],
                              locals: &[Val]|
              -> Option<Vec<Val>> {
-                cache_opt
-                    .as_ref()
-                    .and_then(|cache| cache.check_block(start_ip, end_ip, stack, locals))
+                cache_opt.as_ref().and_then(|cache| {
+                    cache.check_block(start_ip, end_ip, stack, locals, &memory_pages)
+                })
             };
 
             let store_cache = |start_ip: usize,
@@ -94,8 +101,22 @@ impl Runtime {
 
         // Process pending cache stores
         if let Some(ref mut cache) = cache_opt {
+            // Get current memory page versions for storing
+            let current_memory_pages = if !self.module_inst.mem_addrs.is_empty() {
+                self.module_inst.mem_addrs[0].get_all_page_versions()
+            } else {
+                vec![]
+            };
+
             for (start_ip, end_ip, input_stack, locals, output_stack) in pending_cache_stores {
-                cache.store_block(start_ip, end_ip, &input_stack, &locals, output_stack);
+                cache.store_block(
+                    start_ip,
+                    end_ip,
+                    &input_stack,
+                    &locals,
+                    current_memory_pages.clone(),
+                    output_stack,
+                );
             }
         }
 
