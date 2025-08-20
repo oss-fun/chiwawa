@@ -581,8 +581,8 @@ impl FrameStack {
         mut store_block_cache: G,
     ) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError>
     where
-        F: FnMut(usize, usize, &[Val]) -> Option<Vec<Val>>, // Cache lookup callback
-        G: FnMut(usize, usize, &[Val], Vec<Val>),           // Cache store callback
+        F: FnMut(usize, usize, &[Val], &[Val]) -> Option<Vec<Val>>, // Cache lookup callback with locals
+        G: FnMut(usize, usize, &[Val], &[Val], Vec<Val>), // Cache store callback with locals
     {
         let mut current_label_stack_idx = self
             .label_stack
@@ -752,9 +752,12 @@ impl FrameStack {
                             let mut cached_result_values = Vec::new();
 
                             if current_label_stack_idx > 0 {
-                                if let Some(cached_result) =
-                                    get_block_cache(start_ip, end_ip, &label.input_stack)
-                                {
+                                if let Some(cached_result) = get_block_cache(
+                                    start_ip,
+                                    end_ip,
+                                    &label.input_stack,
+                                    &self.frame.locals,
+                                ) {
                                     cached_result_values = cached_result;
                                     cache_hit = true;
                                 }
@@ -844,12 +847,19 @@ impl FrameStack {
                                         } else {
                                             Vec::new()
                                         };
-                                        if get_block_cache(start_ip, end_ip, &input_stack).is_none()
+                                        if get_block_cache(
+                                            start_ip,
+                                            end_ip,
+                                            &input_stack,
+                                            &self.frame.locals,
+                                        )
+                                        .is_none()
                                         {
                                             store_block_cache(
                                                 start_ip,
                                                 end_ip,
                                                 input_stack,
+                                                &self.frame.locals,
                                                 final_stack_state,
                                             );
                                         }

@@ -59,22 +59,34 @@ impl Runtime {
     ) -> Result<Result<Option<super::stack::ModuleLevelInstr>, RuntimeError>, RuntimeError> {
         // Extract cache to avoid borrowing conflicts, will be restored later
         let mut cache_opt = self.block_cache.take();
-        let mut pending_cache_stores: Vec<(usize, usize, Vec<Val>, Vec<Val>)> = Vec::new();
+        let mut pending_cache_stores: Vec<(usize, usize, Vec<Val>, Vec<Val>, Vec<Val>)> =
+            Vec::new();
 
         let result = {
             let frame_stack = &mut self.stacks.activation_frame_stack[frame_stack_idx];
 
-            let get_cache = |start_ip: usize, end_ip: usize, stack: &[Val]| -> Option<Vec<Val>> {
+            let get_cache = |start_ip: usize,
+                             end_ip: usize,
+                             stack: &[Val],
+                             locals: &[Val]|
+             -> Option<Vec<Val>> {
                 cache_opt
                     .as_ref()
-                    .and_then(|cache| cache.check_block(start_ip, end_ip, stack))
+                    .and_then(|cache| cache.check_block(start_ip, end_ip, stack, locals))
             };
 
             let store_cache = |start_ip: usize,
                                end_ip: usize,
                                input_stack: &[Val],
+                               locals: &[Val],
                                output_stack: Vec<Val>| {
-                pending_cache_stores.push((start_ip, end_ip, input_stack.to_vec(), output_stack));
+                pending_cache_stores.push((
+                    start_ip,
+                    end_ip,
+                    input_stack.to_vec(),
+                    locals.to_vec(),
+                    output_stack,
+                ));
             };
 
             frame_stack.run_dtc_loop(called_func_addr, get_cache, store_cache)
@@ -82,8 +94,8 @@ impl Runtime {
 
         // Process pending cache stores
         if let Some(ref mut cache) = cache_opt {
-            for (start_ip, end_ip, input_stack, output_stack) in pending_cache_stores {
-                cache.store_block(start_ip, end_ip, &input_stack, output_stack);
+            for (start_ip, end_ip, input_stack, locals, output_stack) in pending_cache_stores {
+                cache.store_block(start_ip, end_ip, &input_stack, &locals, output_stack);
             }
         }
 

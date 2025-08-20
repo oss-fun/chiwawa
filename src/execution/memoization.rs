@@ -9,6 +9,7 @@ pub struct BlockCacheKey {
     pub start_ip: usize,
     pub end_ip: usize,
     pub stack_hash: u64,
+    pub locals_hash: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -50,12 +51,26 @@ impl BlockMemoizationCache {
         hasher.finish()
     }
 
-    pub fn check_block(&self, start_ip: usize, end_ip: usize, stack: &[Val]) -> Option<Vec<Val>> {
+    fn compute_locals_hash(locals: &[Val]) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        locals.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    pub fn check_block(
+        &self,
+        start_ip: usize,
+        end_ip: usize,
+        stack: &[Val],
+        locals: &[Val],
+    ) -> Option<Vec<Val>> {
         let stack_hash = Self::compute_stack_hash(stack);
+        let locals_hash = Self::compute_locals_hash(locals);
         let key = BlockCacheKey {
             start_ip,
             end_ip,
             stack_hash,
+            locals_hash,
         };
         self.get(&key).and_then(|value| match value {
             BlockCacheValue::CachedResult(result) => Some(result.clone()),
@@ -68,13 +83,16 @@ impl BlockMemoizationCache {
         start_ip: usize,
         end_ip: usize,
         input_stack: &[Val],
+        locals: &[Val],
         output_stack: Vec<Val>,
     ) {
         let stack_hash = Self::compute_stack_hash(input_stack);
+        let locals_hash = Self::compute_locals_hash(locals);
         let key = BlockCacheKey {
             start_ip,
             end_ip,
             stack_hash,
+            locals_hash,
         };
         let value = BlockCacheValue::CachedResult(output_stack);
         self.insert(key, value);
@@ -150,6 +168,14 @@ fn is_vm_mutable_instruction(handler_index: usize) -> bool {
         | HANDLER_IDX_I64_STORE32_CONST => true,
 
         HANDLER_IDX_GLOBAL_SET => true,
+
+        // Local variable mutations (only writes are mutable)
+        HANDLER_IDX_LOCAL_SET
+        | HANDLER_IDX_LOCAL_TEE
+        | HANDLER_IDX_LOCAL_SET_I32_CONST
+        | HANDLER_IDX_LOCAL_SET_I64_CONST
+        | HANDLER_IDX_LOCAL_SET_F32_CONST
+        | HANDLER_IDX_LOCAL_SET_F64_CONST => true,
 
         HANDLER_IDX_CALL | HANDLER_IDX_CALL_INDIRECT => true,
 
