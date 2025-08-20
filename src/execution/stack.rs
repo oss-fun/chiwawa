@@ -9,7 +9,7 @@ use std::arch::asm;
 use std::fs;
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
 use std::path::Path;
-use std::sync::Weak as SyncWeak;
+use std::rc::Weak;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Operand {
@@ -454,7 +454,7 @@ pub struct Stacks {
 
 impl Stacks {
     pub fn new(funcaddr: &FuncAddr, params: Vec<Val>) -> Result<Stacks, RuntimeError> {
-        let func_inst_guard = funcaddr.read_lock().expect("RwLock poisoned");
+        let func_inst_guard = funcaddr.read_lock();
         match &*func_inst_guard {
             FuncInst::RuntimeFunc {
                 type_,
@@ -526,7 +526,7 @@ impl Stacks {
 pub struct Frame {
     pub locals: Vec<Val>,
     #[serde(skip)]
-    pub module: SyncWeak<ModuleInst>,
+    pub module: Weak<ModuleInst>,
     pub n: usize,
 }
 

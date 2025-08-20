@@ -1,9 +1,10 @@
 use super::{func::FuncAddr, module::*, value::Ref};
 use crate::structure::types::*;
-use std::sync::{Arc, RwLock};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 #[derive(Clone, Debug)]
-pub struct ElemAddr(Arc<RwLock<ElemInst>>);
+pub struct ElemAddr(Rc<RefCell<ElemInst>>);
 #[derive(Debug)]
 pub struct ElemInst {
     pub _type_: RefType,
@@ -16,7 +17,7 @@ impl ElemAddr {
             .into_iter()
             .map(|i| Ref::FuncAddr(funcs.get_by_idx(FuncIdx(*i as u32)).clone()))
             .collect();
-        ElemAddr(Arc::new(RwLock::new(ElemInst {
+        ElemAddr(Rc::new(RefCell::new(ElemInst {
             _type_: type_.clone(),
             _elem: elem,
         })))

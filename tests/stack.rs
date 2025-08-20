@@ -3,13 +3,13 @@ use chiwawa::{
     structure::module::Module,
 };
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::rc::Rc;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn load_instance(wasm_path: &str) -> Arc<ModuleInst> {
+    fn load_instance(wasm_path: &str) -> Rc<ModuleInst> {
         let mut module = Module::new("test");
         let _ = parser::parse_bytecode(&mut module, wasm_path, true);
         let imports: ImportObjects = HashMap::new();
@@ -17,12 +17,12 @@ mod tests {
     }
 
     fn call_function(
-        inst: &Arc<ModuleInst>,
+        inst: &Rc<ModuleInst>,
         func_name: &str,
         params: Vec<Val>,
     ) -> Result<Vec<Val>, chiwawa::error::RuntimeError> {
         let func_addr = inst.get_export_func(func_name)?;
-        let mut runtime = Runtime::new(Arc::clone(inst), &func_addr, params, true)?;
+        let mut runtime = Runtime::new(Rc::clone(inst), &func_addr, params, true)?;
         runtime.run()
     }
 

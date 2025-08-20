@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::Arc;
+use std::rc::Rc;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SerializableState {
@@ -46,13 +46,12 @@ pub fn checkpoint<P: AsRef<Path>>(
     let tables_data = table_addrs
         .iter()
         .map(|table_addr| -> Result<Vec<Option<u32>>, RuntimeError> {
-            let table_inst = table_addr.read_lock()
-                .map_err(|_| RuntimeError::SerializationError("Table RwLock poisoned".to_string()))?;
+            let table_inst = table_addr.read_lock();
             let mut table_indices = Vec::with_capacity(table_inst.elem.len());
             for val in table_inst.elem.iter() {
                 if let Val::Ref(Ref::FuncAddr(target_func_addr)) = val {
                     let found_index = module_inst.func_addrs.iter().position(|module_func_addr| {
-                        Arc::ptr_eq(target_func_addr.get_arc(), module_func_addr.get_arc())
+                        Rc::ptr_eq(target_func_addr.get_rc(), module_func_addr.get_rc())
                     });
                     if let Some(index) = found_index {
                         table_indices.push(Some(index as u32));
@@ -89,7 +88,7 @@ pub fn checkpoint<P: AsRef<Path>>(
 }
 
 pub fn restore<P: AsRef<Path>>(
-    module_inst: Arc<ModuleInst>,
+    module_inst: Rc<ModuleInst>,
     input_path: P,
 ) -> Result<Stacks, RuntimeError> {
     println!("Restoring state from {:?}...", input_path.as_ref());
@@ -164,7 +163,7 @@ pub fn restore<P: AsRef<Path>>(
 
     // 6. Reconstruct skipped fields in Stacks (Frame::module)
     for frame_stack in state.stacks.activation_frame_stack.iter_mut() {
-        frame_stack.frame.module = Arc::downgrade(&module_inst);
+        frame_stack.frame.module = Rc::downgrade(&module_inst);
     }
     println!("Frame module references restored.");
 

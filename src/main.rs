@@ -10,7 +10,7 @@ use chiwawa::{
 use clap::Parser;
 use fancy_regex::Regex;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::rc::Rc;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -132,7 +132,7 @@ fn main() -> Result<()> {
     if let Some(restore_path) = cli.restore {
         println!("Restoring from checkpoint: {}", restore_path);
 
-        let restored_stacks: Stacks = match migration::restore(Arc::clone(&inst), &restore_path) {
+        let restored_stacks: Stacks = match migration::restore(Rc::clone(&inst), &restore_path) {
             Ok(stacks) => stacks,
             Err(e) => {
                 eprintln!("Failed to restore state: {:?}", e);
@@ -142,7 +142,7 @@ fn main() -> Result<()> {
         println!("State restored into module instance. Stacks obtained.");
 
         let mut runtime =
-            Runtime::new_restored(Arc::clone(&inst), restored_stacks, cli.enable_memoization);
+            Runtime::new_restored(Rc::clone(&inst), restored_stacks, cli.enable_memoization);
         println!("Runtime reconstructed. Resuming execution...");
 
         let result = runtime.run();
@@ -151,12 +151,7 @@ fn main() -> Result<()> {
         let func_addr = inst.get_export_func(&cli.invoke)?;
         let params = parse_params(cli.params.unwrap_or_default());
 
-        match Runtime::new(
-            Arc::clone(&inst),
-            &func_addr,
-            params,
-            cli.enable_memoization,
-        ) {
+        match Runtime::new(Rc::clone(&inst), &func_addr, params, cli.enable_memoization) {
             Ok(mut runtime) => {
                 let result = runtime.run();
                 handle_result(result);

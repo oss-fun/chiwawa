@@ -7,6 +7,7 @@ use crate::error::RuntimeError;
 use crate::structure::{instructions::*, module::*, types::*};
 use crate::wasi::passthrough::PassthroughWasiImpl;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 pub struct Results(Option<Vec<Val>>);
@@ -47,7 +48,7 @@ impl ModuleInst {
         module: &Module,
         imports: ImportObjects,
         argv: Vec<String>,
-    ) -> Result<Arc<ModuleInst>, RuntimeError> {
+    ) -> Result<Rc<ModuleInst>, RuntimeError> {
         let mut module_inst = ModuleInst {
             types: module.types.clone(),
             func_addrs: Vec::new(),
@@ -205,7 +206,7 @@ impl ModuleInst {
                 },
             })
         }
-        let arc_module_inst = Arc::new(module_inst);
+        let arc_module_inst = Rc::new(module_inst);
 
         for (base, func) in module.funcs.iter().enumerate() {
             let index = base
@@ -219,7 +220,7 @@ impl ModuleInst {
                     })
                     .sum::<usize>();
             arc_module_inst.func_addrs[index]
-                .replace(func.clone(), Arc::downgrade(&arc_module_inst));
+                .replace(func.clone(), Rc::downgrade(&arc_module_inst));
         }
         if let Some(start) = &module.start {
             arc_module_inst.func_addrs.get_by_idx(start.func.clone());

@@ -9,17 +9,17 @@ use crate::structure::module::WasiFuncType;
 use crate::structure::types::{NumType, ValueType, VecType};
 use crate::wasi::{WasiError, WasiResult};
 use std::path::Path;
-use std::sync::Arc;
+use std::rc::Rc;
 
 pub struct Runtime {
-    module_inst: Arc<ModuleInst>,
+    module_inst: Rc<ModuleInst>,
     stacks: Stacks,
     block_cache: Option<BlockMemoizationCache>,
 }
 
 impl Runtime {
     pub fn new(
-        module_inst: Arc<ModuleInst>,
+        module_inst: Rc<ModuleInst>,
         func_addr: &FuncAddr,
         params: Vec<Val>,
         enable_memoization: bool,
@@ -37,7 +37,7 @@ impl Runtime {
     }
 
     pub fn new_restored(
-        module_inst: Arc<ModuleInst>,
+        module_inst: Rc<ModuleInst>,
         stacks: Stacks,
         enable_memoization: bool,
     ) -> Self {
@@ -229,7 +229,7 @@ impl Runtime {
 
                     match instr_option {
                         Some(ModuleLevelInstr::Invoke(func_addr)) => {
-                            let func_inst_guard = func_addr.read_lock().expect("RwLock poisoned");
+                            let func_inst_guard = func_addr.read_lock();
                             match &*func_inst_guard {
                                 FuncInst::RuntimeFunc {
                                     type_,

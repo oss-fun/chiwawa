@@ -2,16 +2,17 @@ use crate::error::RuntimeError;
 use crate::structure::{instructions::Memarg, types::*};
 use byteorder::*;
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
-use std::sync::{Arc, RwLock};
+use std::rc::Rc;
 use typenum::*;
 
 #[derive(Clone, Debug)]
 pub struct MemAddr {
-    mem_inst: Arc<RwLock<MemInst>>,
-    page_versions: Arc<RwLock<HashMap<u32, u64>>>,
-    current_block_accessed_pages: Arc<RwLock<Option<HashSet<u32>>>>,
+    mem_inst: Rc<RefCell<MemInst>>,
+    page_versions: Rc<RefCell<HashMap<u32, u64>>>,
+    current_block_accessed_pages: RefCell<Option<HashSet<u32>>>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MemInst {
@@ -24,7 +25,7 @@ impl MemAddr {
         let min = (type_.0.min * 65536) as usize;
         let max = type_.0.max.map(|max| max);
         MemAddr {
-            mem_inst: Arc::new(RwLock::new(MemInst {
+            mem_inst: Rc::new(RefCell::new(MemInst {
                 _type_: MemType(Limits {
                     min: min as u32,
                     max,
@@ -35,8 +36,8 @@ impl MemAddr {
                     vec
                 },
             })),
-            page_versions: Arc::new(RwLock::new(HashMap::new())),
-            current_block_accessed_pages: Arc::new(RwLock::new(None)),
+            page_versions: Rc::new(RefCell::new(HashMap::new())),
+            current_block_accessed_pages: RefCell::new(None),
         }
     }
 
@@ -44,7 +45,7 @@ impl MemAddr {
         if len > 0 {
             let start_page = start_pos / 65536;
             let end_page = (start_pos + len - 1) / 65536;
-            let mut versions = self.page_versions.write().expect("RwLock poisoned");
+            let mut versions = self.page_versions.borrow_mut();
             for page in start_page..=end_page {
                 *versions.entry(page as u32).or_insert(0) += 1;
             }
@@ -53,7 +54,7 @@ impl MemAddr {
 
     fn record_page_access(&self, start_pos: usize, len: usize) {
         if len > 0 {
-            if let Ok(mut access_lock) = self.current_block_accessed_pages.write() {
+            if let Ok(mut access_lock) = self.current_block_accessed_pages.try_borrow_mut() {
                 if let Some(ref mut pages) = *access_lock {
                     let start_page = start_pos / 65536;
                     let end_page = (start_pos + len - 1) / 65536;
@@ -66,7 +67,7 @@ impl MemAddr {
     }
 
     pub fn init(&self, offset: usize, init: &Vec<u8>) {
-        let mut addr_self = self.mem_inst.write().expect("RwLock poisoned");
+        let mut addr_self = self.mem_inst.borrow_mut();
         for (index, data) in init.iter().enumerate() {
             addr_self.data[index + offset] = *data;
         }
@@ -78,7 +79,7 @@ impl MemAddr {
             .ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
         let len = <T>::len();
         self.record_page_access(pos, len);
-        let raw = &self.mem_inst.read().expect("RwLock poisoned").data;
+        let raw = &self.mem_inst.borrow().data;
         let data = Vec::from(&raw[pos..pos + len]);
         Ok(<T>::from_byte(data))
     }
@@ -87,7 +88,7 @@ impl MemAddr {
             .checked_add(i32::try_from(arg.offset).ok().unwrap())
             .ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
         let buf = <T>::to_byte(data);
-        let mut raw = self.mem_inst.write().expect("RwLock poisoned");
+        let mut raw = self.mem_inst.borrow_mut();
         for (i, x) in buf.into_iter().enumerate() {
             raw.data[pos + i] = x;
         }
@@ -100,7 +101,7 @@ impl MemAddr {
     }
 
     pub fn mem_size(&self) -> i32 {
-        (self.mem_inst.read().expect("RwLock poisoned").data.len() / 65536) as i32
+        (self.mem_inst.borrow().data.len() / 65536) as i32
     }
 
     pub fn mem_grow(&self, size: i32) -> i32 {
@@ -108,7 +109,7 @@ impl MemAddr {
         let new = prev_size + size;
 
         let max_pages = {
-            let guard = self.mem_inst.read().expect("RwLock poisoned");
+            let guard = self.mem_inst.borrow();
             guard._type_.0.max
         };
 
@@ -122,8 +123,7 @@ impl MemAddr {
             -1
         } else {
             self.mem_inst
-                .write()
-                .expect("RwLock poisoned")
+                .borrow_mut()
                 .data
                 .resize(new as usize * 65536, 0);
             prev_size
@@ -131,17 +131,14 @@ impl MemAddr {
     }
 
     pub fn get_data(&self) -> Result<Vec<u8>, RuntimeError> {
-        let guard = self
-            .mem_inst
-            .read()
-            .map_err(|_| RuntimeError::ExecutionFailed("Memory RwLock poisoned"))?;
+        let guard = self.mem_inst.borrow();
         Ok(guard.data.clone())
     }
 
     /// Store multiple bytes at once (bulk operation)
     pub fn store_bytes(&self, ptr: i32, data: &[u8]) -> Result<(), RuntimeError> {
         let pos = ptr as usize;
-        let mut raw = self.mem_inst.write().expect("RwLock poisoned");
+        let mut raw = self.mem_inst.borrow_mut();
 
         // Bounds check
         if pos.checked_add(data.len()).unwrap_or(usize::MAX) > raw.data.len() {
@@ -158,10 +155,7 @@ impl MemAddr {
     }
 
     pub fn set_data(&self, data: Vec<u8>) -> Result<(), RuntimeError> {
-        let mut guard = self
-            .mem_inst
-            .write()
-            .map_err(|_| RuntimeError::ExecutionFailed("Memory RwLock poisoned"))?;
+        let mut guard = self.mem_inst.borrow_mut();
         guard.data = data;
         Ok(())
     }
@@ -170,7 +164,7 @@ impl MemAddr {
         let dest_pos = dest as usize;
         let src_pos = src as usize;
         let len_usize = len as usize;
-        let mut raw = self.mem_inst.write().expect("RwLock poisoned");
+        let mut raw = self.mem_inst.borrow_mut();
 
         if len_usize > 0 {
             raw.data.copy_within(src_pos..src_pos + len_usize, dest_pos);
@@ -185,7 +179,7 @@ impl MemAddr {
     pub fn memory_fill(&self, dest: i32, val: u8, len: i32) -> Result<(), RuntimeError> {
         let dest_pos = dest as usize;
         let len_usize = len as usize;
-        let mut raw = self.mem_inst.write().expect("RwLock poisoned");
+        let mut raw = self.mem_inst.borrow_mut();
 
         // Bounds check
         if dest_pos.checked_add(len_usize).unwrap_or(usize::MAX) > raw.data.len() {
@@ -204,12 +198,12 @@ impl MemAddr {
         Ok(())
     }
 
-    pub fn get_memory_direct_access(&self) -> std::sync::RwLockReadGuard<MemInst> {
-        self.mem_inst.read().expect("RwLock poisoned")
+    pub fn get_memory_direct_access(&self) -> std::cell::Ref<MemInst> {
+        self.mem_inst.borrow()
     }
 
     pub fn get_all_page_versions(&self) -> Vec<(u32, u64)> {
-        let versions = self.page_versions.read().expect("RwLock poisoned");
+        let versions = self.page_versions.borrow();
         let mut result: Vec<(u32, u64)> = versions
             .iter()
             .map(|(&page, &version)| (page, version))
@@ -219,23 +213,17 @@ impl MemAddr {
     }
 
     pub fn start_tracking_access(&self) {
-        let mut access_lock = self
-            .current_block_accessed_pages
-            .write()
-            .expect("RwLock poisoned");
+        let mut access_lock = self.current_block_accessed_pages.borrow_mut();
         *access_lock = Some(HashSet::new());
     }
 
     pub fn get_and_stop_tracking_access(&self) -> Option<HashSet<u32>> {
-        let mut access_lock = self
-            .current_block_accessed_pages
-            .write()
-            .expect("RwLock poisoned");
+        let mut access_lock = self.current_block_accessed_pages.borrow_mut();
         access_lock.take()
     }
 
     pub fn get_page_versions_for_pages(&self, pages: &HashSet<u32>) -> Vec<(u32, u64)> {
-        let versions = self.page_versions.read().expect("RwLock poisoned");
+        let versions = self.page_versions.borrow();
         let mut result: Vec<(u32, u64)> = pages
             .iter()
             .filter_map(|&page| versions.get(&page).map(|&version| (page, version)))
