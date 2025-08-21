@@ -270,10 +270,12 @@ impl Runtime {
                                                 start_ip: 0,  // Function level starts at 0
                                                 end_ip: code.body.len(), // Function level ends at body length
                                                 input_stack: Vec::new(), // Function level has empty input
+                                                is_immutable: None, // Will be determined during execution
                                             },
                                             processed_instrs: code.body.clone(),
                                             value_stack: vec![],
                                             ip: 0,
+                                            block_has_mutable_ops: false,
                                         }],
                                         void: type_.results.is_empty(),
                                         instruction_count: 0,

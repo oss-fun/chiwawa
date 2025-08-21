@@ -1,4 +1,3 @@
-use crate::execution::stack::ProcessedInstr;
 use crate::execution::value::Val;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -155,80 +154,4 @@ impl BlockMemoizationCache {
     ) {
         self.access_patterns.insert((start_ip, end_ip), pages);
     }
-}
-
-fn is_vm_mutable_instruction(handler_index: usize) -> bool {
-    use crate::execution::stack::*;
-
-    match handler_index {
-        // Memory stores (mutate memory state)
-        HANDLER_IDX_I32_STORE
-        | HANDLER_IDX_I64_STORE
-        | HANDLER_IDX_F32_STORE
-        | HANDLER_IDX_F64_STORE
-        | HANDLER_IDX_I32_STORE8
-        | HANDLER_IDX_I32_STORE16
-        | HANDLER_IDX_I64_STORE8
-        | HANDLER_IDX_I64_STORE16
-        | HANDLER_IDX_I64_STORE32 => true,
-
-        // Store superinstructions
-        HANDLER_IDX_I32_STORE_I32_CONST
-        | HANDLER_IDX_I64_STORE_I64_CONST
-        | HANDLER_IDX_I32_CONST_I64_STORE
-        | HANDLER_IDX_I32_CONST_F32_STORE
-        | HANDLER_IDX_I32_CONST_F64_STORE
-        | HANDLER_IDX_I64_CONST_I32_STORE
-        | HANDLER_IDX_I64_CONST_I64_STORE
-        | HANDLER_IDX_I64_CONST_F32_STORE
-        | HANDLER_IDX_I64_CONST_F64_STORE
-        | HANDLER_IDX_I32_STORE8_CONST
-        | HANDLER_IDX_I32_STORE16_CONST
-        | HANDLER_IDX_I64_STORE8_CONST
-        | HANDLER_IDX_I64_STORE16_CONST
-        | HANDLER_IDX_I64_STORE32_CONST => true,
-
-        HANDLER_IDX_GLOBAL_SET => true,
-
-        // Local variable mutations (only writes are mutable)
-        HANDLER_IDX_LOCAL_SET
-        | HANDLER_IDX_LOCAL_TEE
-        | HANDLER_IDX_LOCAL_SET_I32_CONST
-        | HANDLER_IDX_LOCAL_SET_I64_CONST
-        | HANDLER_IDX_LOCAL_SET_F32_CONST
-        | HANDLER_IDX_LOCAL_SET_F64_CONST => true,
-
-        HANDLER_IDX_CALL | HANDLER_IDX_CALL_INDIRECT => true,
-
-        HANDLER_IDX_MEMORY_SIZE
-        | HANDLER_IDX_MEMORY_GROW
-        | HANDLER_IDX_MEMORY_COPY
-        | HANDLER_IDX_MEMORY_FILL
-        | HANDLER_IDX_MEMORY_INIT => true,
-
-        HANDLER_IDX_TABLE_SET | HANDLER_IDX_TABLE_FILL => true,
-
-        // Control flow instructions (cannot be cached due to branching)
-        HANDLER_IDX_IF
-        | HANDLER_IDX_ELSE
-        | HANDLER_IDX_BR
-        | HANDLER_IDX_BR_IF
-        | HANDLER_IDX_BR_TABLE
-        | HANDLER_IDX_RETURN
-        | HANDLER_IDX_UNREACHABLE => true,
-
-        // Nested block structures (cannot be cached)
-        HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_END => true,
-
-        _ => false,
-    }
-}
-
-pub fn is_vm_immutable_block(instructions: &[ProcessedInstr]) -> bool {
-    for instr in instructions {
-        if is_vm_mutable_instruction(instr.handler_index) {
-            return false;
-        }
-    }
-    true
 }

@@ -64,6 +64,7 @@ pub struct ExecutionContext<'a> {
     pub frame: &'a mut crate::execution::stack::Frame,
     pub value_stack: &'a mut Vec<Val>,
     pub ip: usize,
+    pub block_has_mutable_op: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -495,10 +496,12 @@ impl Stacks {
                             start_ip: 0,     // Function level starts at 0
                             end_ip: code.body.len(), // Function level ends at body length
                             input_stack: vec![], // Function level has empty input
+                            is_immutable: None, // Will be determined during execution
                         },
                         processed_instrs: code.body.clone(),
                         value_stack: vec![],
                         ip: 0,
+                        block_has_mutable_ops: false,
                     }],
                     void: type_.results.is_empty(),
                     instruction_count: 0,
@@ -548,6 +551,7 @@ impl FrameStack {
             processed_instrs: Rc::new(instructions),
             value_stack: vec![],
             ip: 0,
+            block_has_mutable_ops: false,
         };
         self.label_stack.push(new_label_stack);
     }
@@ -663,9 +667,16 @@ impl FrameStack {
                 frame: &mut self.frame,
                 value_stack: &mut self.global_value_stack,
                 ip,
+                block_has_mutable_op: false,
             };
 
             let result = handler_fn(&mut context, &instruction_ref.operand);
+            let has_mutable_op = context.block_has_mutable_op;
+
+            // Track if this block executed a mutable operation
+            if has_mutable_op {
+                current_label_stack.block_has_mutable_ops = true;
+            }
 
             match result {
                 Err(e) => {
@@ -778,6 +789,7 @@ impl FrameStack {
                                 processed_instrs: current_instrs.clone(),
                                 value_stack: vec![],
                                 ip: if cache_hit { end_ip } else { next_ip },
+                                block_has_mutable_ops: false,
                             };
 
                             self.label_stack.push(new_label_stack);
@@ -786,12 +798,26 @@ impl FrameStack {
                         HandlerResult::PopLabelStack { next_ip } => {
                             // Pop the current label stack when ending a block/loop
                             if self.label_stack.len() > 1 {
-                                let current_label =
-                                    &self.label_stack[current_label_stack_idx].label;
-                                let stack_height = current_label.stack_height;
-                                let arity = current_label.arity;
+                                // Determine if the block was immutable based on whether any mutable operations were executed
+                                let block_was_mutable =
+                                    self.label_stack[current_label_stack_idx].block_has_mutable_ops;
 
-                                let input_stack = &current_label.input_stack;
+                                // Update the label's immutability status
+                                self.label_stack[current_label_stack_idx].label.is_immutable =
+                                    Some(!block_was_mutable);
+
+                                // Extract values before mutating
+                                let (stack_height, arity, input_stack, start_ip, end_ip) = {
+                                    let current_label =
+                                        &self.label_stack[current_label_stack_idx].label;
+                                    (
+                                        current_label.stack_height,
+                                        current_label.arity,
+                                        current_label.input_stack.clone(),
+                                        current_label.start_ip,
+                                        current_label.end_ip,
+                                    )
+                                };
 
                                 // Extract the result values from the global stack
                                 let result_values = if arity > 0 {
@@ -826,20 +852,31 @@ impl FrameStack {
                                     self.global_value_stack.extend(result_values);
                                 }
 
-                                let start_ip = current_label.start_ip;
-                                let end_ip = current_label.end_ip;
-
                                 // Only cache nested blocks, not function level (index 0)
                                 if current_label_stack_idx > 0 {
-                                    // Check if block is pure before caching
-                                    let current_instrs =
-                                        &self.label_stack[current_label_stack_idx].processed_instrs;
-                                    if crate::execution::memoization::is_vm_immutable_block(
-                                        current_instrs,
-                                    ) {
+                                    // Update immutability status if not yet determined
+                                    let block_is_mutable = self.label_stack
+                                        [current_label_stack_idx]
+                                        .block_has_mutable_ops;
+                                    let block_start_height = stack_height;
+
+                                    if self.label_stack[current_label_stack_idx]
+                                        .label
+                                        .is_immutable
+                                        .is_none()
+                                    {
+                                        self.label_stack[current_label_stack_idx]
+                                            .label
+                                            .is_immutable = Some(!block_is_mutable);
+                                    }
+
+                                    // Check if block is immutable before caching
+                                    let is_immutable = self.label_stack[current_label_stack_idx]
+                                        .label
+                                        .is_immutable;
+                                    if is_immutable == Some(true) {
                                         // Save block results from block start height
                                         // For blocks (not functions), we always save from block_start_height
-                                        let block_start_height = current_label.stack_height;
                                         let final_stack_state = if block_start_height
                                             <= self.global_value_stack.len()
                                         {
@@ -858,7 +895,7 @@ impl FrameStack {
                                             store_block_cache(
                                                 start_ip,
                                                 end_ip,
-                                                input_stack,
+                                                &input_stack,
                                                 &self.frame.locals,
                                                 final_stack_state,
                                             );
@@ -910,6 +947,7 @@ pub struct Label {
     pub start_ip: usize,
     pub end_ip: usize,
     pub input_stack: Vec<Val>, // Cache input stack state at block start
+    pub is_immutable: Option<bool>, // None = not determined yet, Some(true/false) = determined
 }
 
 #[derive(Clone, Debug)]
@@ -918,6 +956,7 @@ pub struct LabelStack {
     pub processed_instrs: Rc<Vec<ProcessedInstr>>,
     pub value_stack: Vec<Val>,
     pub ip: usize,
+    pub block_has_mutable_ops: bool, // Track if this block executed mutable operations
 }
 
 impl Serialize for LabelStack {
@@ -954,6 +993,7 @@ impl<'de> Deserialize<'de> for LabelStack {
             processed_instrs: Rc::new(data.processed_instrs),
             value_stack: data.value_stack,
             ip: data.ip,
+            block_has_mutable_ops: false, // Default to false when deserializing
         })
     }
 }
@@ -1059,9 +1099,10 @@ macro_rules! cmpop {
 }
 
 fn handle_unreachable(
-    _ctx: &mut ExecutionContext,
+    ctx: &mut ExecutionContext,
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
+    ctx.block_has_mutable_op = true;
     Err(RuntimeError::Unreachable)
 }
 
@@ -1095,8 +1136,10 @@ fn handle_block(
             start_ip: *start_ip,
             end_ip: *end_ip,
             input_stack: ctx.value_stack[..current_stack_height].to_vec(),
+            is_immutable: None, // Will be determined during execution
         };
 
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::PushLabelStack {
             label,
             next_ip: ctx.ip + 1,
@@ -1130,9 +1173,11 @@ fn handle_loop(
             start_ip: *start_ip,
             end_ip: *end_ip,
             input_stack: ctx.value_stack[..current_stack_height].to_vec(),
+            is_immutable: None, // Will be determined during execution
         };
 
         // Signal to the main execution loop to create a new label stack
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::PushLabelStack {
             label,
             next_ip: ctx.ip + 1,
@@ -1174,10 +1219,13 @@ fn handle_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
             start_ip: ctx.ip,     // Current IP as start
             end_ip: target_ip,    // Target IP as end
             input_stack: ctx.value_stack[..current_stack_height].to_vec(),
+            is_immutable: None, // Will be determined during execution
         };
 
         // WebAssembly if: 0 = false (else/skip), non-zero = true (then)
         let next_ip = if cond != 0 { ctx.ip + 1 } else { target_ip };
+
+        ctx.block_has_mutable_op = true;
 
         Ok(HandlerResult::PushLabelStack {
             label,
@@ -1191,7 +1239,7 @@ fn handle_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
 }
 
 fn handle_else(
-    _ctx: &mut ExecutionContext,
+    ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     if let &Operand::LabelIdx {
@@ -1206,6 +1254,7 @@ fn handle_else(
                 "Branch fixup not done for Else",
             ));
         }
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(target_ip))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -1216,6 +1265,7 @@ fn handle_end(
     ctx: &mut ExecutionContext,
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
+    ctx.block_has_mutable_op = true;
     Ok(HandlerResult::PopLabelStack {
         next_ip: ctx.ip + 1,
     })
@@ -1237,6 +1287,7 @@ fn handle_br(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
 
         let values_to_push = ctx.pop_n_values(*arity)?;
 
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Branch {
             target_ip: *target_ip,
             values_to_push,
@@ -1273,6 +1324,7 @@ fn handle_br_if(
 
             let values_to_push = ctx.pop_n_values(*arity)?;
 
+            ctx.block_has_mutable_op = true;
             Ok(HandlerResult::Branch {
                 target_ip: *target_ip,
                 values_to_push,
@@ -1297,6 +1349,7 @@ fn handle_call(
             .upgrade()
             .ok_or(RuntimeError::ModuleInstanceGone)?;
         let func_addr = instance.func_addrs[func_idx.0 as usize].clone();
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Invoke(func_addr))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -2936,6 +2989,7 @@ fn handle_br_table(
                 Vec::new()
             };
 
+            ctx.block_has_mutable_op = true;
             Ok(HandlerResult::Branch {
                 target_ip: *target_ip,
                 values_to_push,
@@ -2982,6 +3036,7 @@ fn handle_call_indirect(
             if actual_type != *expected_type {
                 return Err(RuntimeError::IndirectCallTypeMismatch);
             }
+            ctx.block_has_mutable_op = true;
             Ok(HandlerResult::Invoke(func_addr.clone()))
         } else {
             // TODO: Distinguish between UninitializedElement and TableOutOfBounds if necessary
@@ -3019,9 +3074,10 @@ fn handle_select(
 }
 
 fn handle_return(
-    _ctx: &mut ExecutionContext,
+    ctx: &mut ExecutionContext,
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
+    ctx.block_has_mutable_op = true;
     Ok(HandlerResult::Return)
 }
 
@@ -3067,6 +3123,7 @@ fn handle_local_set(
             .pop()
             .ok_or(RuntimeError::ValueStackUnderflow)?;
         ctx.frame.locals[index] = val;
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3088,6 +3145,7 @@ fn handle_local_tee(
             .ok_or(RuntimeError::ValueStackUnderflow)?
             .clone();
         ctx.frame.locals[index] = val;
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3134,6 +3192,7 @@ fn handle_global_set(
             .get_by_idx(GlobalIdx(index_val))
             .clone();
         global_addr.set(val)?;
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3552,6 +3611,7 @@ fn handle_i32_store(
         }
         let mem_addr = &module_inst.mem_addrs[0];
         mem_addr.store::<i32>(&arg, ptr, val.to_i32()?)?;
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3582,6 +3642,7 @@ fn handle_i64_store(
         }
         let mem_addr = &module_inst.mem_addrs[0];
         mem_addr.store::<i64>(&arg, ptr, val.to_i64()?)?;
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3612,6 +3673,7 @@ fn handle_f32_store(
         }
         let mem_addr = &module_inst.mem_addrs[0];
         mem_addr.store::<f32>(&arg, ptr, val.to_f32()?)?;
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3643,6 +3705,7 @@ fn handle_f64_store(
         }
         let mem_addr = &module_inst.mem_addrs[0];
         mem_addr.store::<f64>(&arg, ptr, data)?;
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3736,6 +3799,7 @@ fn handle_i64_store8(
         }
         let mem_addr = &module_inst.mem_addrs[0];
         mem_addr.store::<i8>(&arg, ptr, val_i64 as i8)?;
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3767,6 +3831,7 @@ fn handle_i64_store16(
         }
         let mem_addr = &module_inst.mem_addrs[0];
         mem_addr.store::<i16>(&arg, ptr, val_i64 as i16)?;
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3798,6 +3863,7 @@ fn handle_i64_store32(
         }
         let mem_addr = &module_inst.mem_addrs[0];
         mem_addr.store::<i32>(&arg, ptr, val_i64 as i32)?;
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3945,6 +4011,7 @@ fn handle_memory_grow(
             .map_err(|_| RuntimeError::InvalidParameterCount)?,
     );
     ctx.value_stack.push(Val::Num(Num::I32(prev_size as i32)));
+    ctx.block_has_mutable_op = true;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 
@@ -3982,6 +4049,7 @@ fn handle_memory_copy(
     let mem_addr = &module_inst.mem_addrs[0];
     mem_addr.memory_copy(dest, src, len)?;
 
+    ctx.block_has_mutable_op = true;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 
@@ -4040,6 +4108,7 @@ fn handle_memory_init(
         mem_addr.store(&memarg, (dest as usize + i) as i32, byte_value)?;
     }
 
+    ctx.block_has_mutable_op = true;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 
@@ -4079,6 +4148,7 @@ fn handle_memory_fill(
     // Fill memory with the specified value using the dedicated memory_fill method
     mem_addr.memory_fill(dest as i32, val, size as i32)?;
 
+    ctx.block_has_mutable_op = true;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 
@@ -4166,6 +4236,7 @@ fn handle_table_set(
             .ok_or(RuntimeError::InvalidTableIndex)?;
 
         table_addr.set(index, ref_val)?;
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -4211,6 +4282,7 @@ fn handle_table_fill(
             table_addr.set(index + i, fill_val.clone())?;
         }
 
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -4580,6 +4652,7 @@ macro_rules! local_set_const {
                     return Err(RuntimeError::LocalIndexOutOfBounds);
                 }
                 $ctx.frame.locals[index] = Val::Num(Num::$num_variant(*immediate_val));
+                $ctx.block_has_mutable_op = true;
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => Err(RuntimeError::InvalidOperand),
@@ -4680,6 +4753,7 @@ macro_rules! store_const {
                 }
                 let mem_addr = &module_inst.mem_addrs[0];
                 mem_addr.store::<$store_type>(&memarg, ptr, *val_to_store)?;
+                $ctx.block_has_mutable_op = true;
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => Err(RuntimeError::InvalidOperand),
@@ -4706,6 +4780,7 @@ macro_rules! store_const {
                 }
                 let mem_addr = &module_inst.mem_addrs[0];
                 mem_addr.store::<$store_type>(&memarg, *ptr as i32, val_to_store)?;
+                $ctx.block_has_mutable_op = true;
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => Err(RuntimeError::InvalidOperand),
@@ -4733,6 +4808,7 @@ macro_rules! store_sized_const {
                 let mem_addr = &module_inst.mem_addrs[0];
                 let truncated_val = *val_to_store as $store_type;
                 mem_addr.store::<$store_type>(&memarg, ptr, truncated_val)?;
+                $ctx.block_has_mutable_op = true;
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => Err(RuntimeError::InvalidOperand),
