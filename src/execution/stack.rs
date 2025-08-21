@@ -4,12 +4,12 @@ use crate::execution::{func::*, module::*};
 use crate::structure::types::LabelIdx as StructureLabelIdx;
 use crate::structure::{instructions::*, types::*};
 use lazy_static::lazy_static;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::arch::asm;
 use std::fs;
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
 use std::path::Path;
-use std::rc::Weak;
+use std::rc::{Rc, Weak};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Operand {
@@ -545,7 +545,7 @@ impl FrameStack {
     pub fn push_label_stack(&mut self, label: Label, instructions: Vec<ProcessedInstr>) {
         let new_label_stack = LabelStack {
             label,
-            processed_instrs: instructions,
+            processed_instrs: Rc::new(instructions),
             value_stack: vec![],
             ip: 0,
         };
@@ -875,20 +875,20 @@ impl FrameStack {
                                 let function_arity = current_label.arity;
 
                                 // Extract the function result values from the global stack
-                                let result_values = if function_arity > 0 {
+                                if function_arity > 0 {
                                     if self.global_value_stack.len() >= function_arity {
                                         let start_idx =
                                             self.global_value_stack.len() - function_arity;
-                                        self.global_value_stack[start_idx..].to_vec()
+                                        let result_values =
+                                            self.global_value_stack[start_idx..].to_vec();
+                                        self.global_value_stack.clear();
+                                        self.global_value_stack.extend(result_values);
                                     } else {
                                         return Err(RuntimeError::ValueStackUnderflow);
                                     }
                                 } else {
-                                    self.global_value_stack.clone()
+                                    // If arity is 0, keep the stack as is
                                 };
-
-                                self.global_value_stack.clear();
-                                self.global_value_stack.extend(result_values);
                                 break;
                             }
                         }
@@ -912,12 +912,50 @@ pub struct Label {
     pub input_stack: Vec<Val>, // Cache input stack state at block start
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct LabelStack {
     pub label: Label,
-    pub processed_instrs: Vec<ProcessedInstr>,
+    pub processed_instrs: Rc<Vec<ProcessedInstr>>,
     pub value_stack: Vec<Val>,
     pub ip: usize,
+}
+
+impl Serialize for LabelStack {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("LabelStack", 4)?;
+        state.serialize_field("label", &self.label)?;
+        state.serialize_field("processed_instrs", self.processed_instrs.as_ref())?;
+        state.serialize_field("value_stack", &self.value_stack)?;
+        state.serialize_field("ip", &self.ip)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for LabelStack {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct LabelStackData {
+            label: Label,
+            processed_instrs: Vec<ProcessedInstr>,
+            value_stack: Vec<Val>,
+            ip: usize,
+        }
+
+        let data = LabelStackData::deserialize(deserializer)?;
+        Ok(LabelStack {
+            label: data.label,
+            processed_instrs: Rc::new(data.processed_instrs),
+            value_stack: data.value_stack,
+            ip: data.ip,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1258,7 +1296,7 @@ fn handle_call(
             .module
             .upgrade()
             .ok_or(RuntimeError::ModuleInstanceGone)?;
-        let func_addr = instance.func_addrs.get_by_idx(func_idx.clone()).clone();
+        let func_addr = instance.func_addrs[func_idx.0 as usize].clone();
         Ok(HandlerResult::Invoke(func_addr))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -2939,7 +2977,7 @@ fn handle_call_indirect(
 
         if let Some(func_addr) = func_ref_option {
             let actual_type = func_addr.func_type();
-            let expected_type = module_inst.types.get_by_idx(expected_type_idx.clone());
+            let expected_type = &module_inst.types[expected_type_idx.0 as usize];
 
             if actual_type != *expected_type {
                 return Err(RuntimeError::IndirectCallTypeMismatch);
@@ -3008,7 +3046,7 @@ fn handle_local_get(
             return Err(RuntimeError::LocalIndexOutOfBounds);
         }
         let val = ctx.frame.locals[index].clone();
-        ctx.value_stack.push(val.clone());
+        ctx.value_stack.push(val);
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)

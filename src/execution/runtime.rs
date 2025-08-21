@@ -26,7 +26,7 @@ impl Runtime {
     ) -> Result<Self, RuntimeError> {
         let stacks = Stacks::new(func_addr, params)?;
         Ok(Runtime {
-            module_inst: module_inst.clone(),
+            module_inst,
             stacks,
             block_cache: if enable_memoization {
                 Some(BlockMemoizationCache::new())
@@ -42,7 +42,7 @@ impl Runtime {
         enable_memoization: bool,
     ) -> Self {
         Runtime {
-            module_inst: module_inst.clone(),
+            module_inst,
             stacks,
             block_cache: if enable_memoization {
                 Some(BlockMemoizationCache::new())

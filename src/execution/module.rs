@@ -13,7 +13,7 @@ use std::sync::Arc;
 pub struct Results(Option<Vec<Val>>);
 
 pub struct ModuleInst {
-    pub types: Vec<FuncType>,
+    pub types: Rc<Vec<FuncType>>,
     pub func_addrs: Vec<FuncAddr>,
     pub table_addrs: Vec<TableAddr>,
     pub mem_addrs: Vec<MemAddr>,
@@ -86,7 +86,7 @@ impl ModuleInst {
                             val.as_func()
                                 .filter(|func| {
                                     func.func_type()
-                                        .type_match(module_inst.types.get_by_idx(idx.clone()))
+                                        .type_match(&module_inst.types[idx.0 as usize])
                                 })
                                 .ok_or_else(|| RuntimeError::LinkError)?,
                         );
@@ -94,13 +94,10 @@ impl ModuleInst {
                     ImportDesc::WasiFunc(wasi_func_type) => {
                         // Create WASI function address
                         let wasi_func_addr = WasiFuncAddr::new(wasi_func_type.clone());
-                        module_inst.wasi_func_addrs.push(wasi_func_addr.clone());
-
-                        // Add to func_addrs as well for unified indexing
-                        // We'll create a special FuncAddr that points to WASI function
                         module_inst
                             .func_addrs
-                            .push(FuncAddr::alloc_wasi(wasi_func_addr));
+                            .push(FuncAddr::alloc_wasi(wasi_func_addr.clone()));
+                        module_inst.wasi_func_addrs.push(wasi_func_addr);
                     }
                     _ => todo!(),
                 }
@@ -192,16 +189,16 @@ impl ModuleInst {
                 name: export.name.0.clone(),
                 value: match &export.desc {
                     ExportDesc::Func(idx) => {
-                        Externval::Func(module_inst.func_addrs.get_by_idx(idx.clone()).clone())
+                        Externval::Func(module_inst.func_addrs[idx.0 as usize].clone())
                     }
                     ExportDesc::Table(idx) => {
-                        Externval::Table(module_inst.table_addrs.get_by_idx(idx.clone()).clone())
+                        Externval::Table(module_inst.table_addrs[idx.0 as usize].clone())
                     }
                     ExportDesc::Mem(idx) => {
-                        Externval::Mem(module_inst.mem_addrs.get_by_idx(idx.clone()).clone())
+                        Externval::Mem(module_inst.mem_addrs[idx.0 as usize].clone())
                     }
                     ExportDesc::Global(idx) => {
-                        Externval::Global(module_inst.global_addrs.get_by_idx(idx.clone()).clone())
+                        Externval::Global(module_inst.global_addrs[idx.0 as usize].clone())
                     }
                 },
             })
