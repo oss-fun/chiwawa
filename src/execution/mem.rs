@@ -47,23 +47,17 @@ impl MemAddr {
             let end_page = (start_pos + len - 1) / 65536;
             let mut versions = self.page_versions.borrow_mut();
 
-            // Also record in current_block_written_pages for caching
+            // Update page versions
+            for page in start_page..=end_page {
+                *versions.entry(page as u32).or_insert(0) += 1;
+            }
+
+            // Try to record in current_block_written_pages if tracking
             if let Ok(mut access_lock) = self.current_block_written_pages.try_borrow_mut() {
                 if let Some(ref mut pages) = *access_lock {
                     for page in start_page..=end_page {
-                        *versions.entry(page as u32).or_insert(0) += 1;
                         pages.insert(page as u32);
                     }
-                } else {
-                    // Just update versions if not tracking access
-                    for page in start_page..=end_page {
-                        *versions.entry(page as u32).or_insert(0) += 1;
-                    }
-                }
-            } else {
-                // Just update versions if can't get access lock
-                for page in start_page..=end_page {
-                    *versions.entry(page as u32).or_insert(0) += 1;
                 }
             }
         }
