@@ -83,18 +83,9 @@ impl Runtime {
                             module_inst.mem_addrs[0].get_page_versions_for_pages(written_pages);
                         cache.check_block(start_ip, end_ip, stack, locals, &memory_pages)
                     } else {
-                        // No access pattern known - check with all pages and start tracking
-                        let memory_pages = module_inst.mem_addrs[0].get_all_page_versions();
-
-                        let cache_result =
-                            cache.check_block(start_ip, end_ip, stack, locals, &memory_pages);
-
-                        if cache_result.is_none() {
-                            // Cache miss and no pattern - start tracking
-                            module_inst.mem_addrs[0].start_tracking_access();
-                        }
-
-                        cache_result
+                        // No write pattern known - just start tracking, don't check cache
+                        module_inst.mem_addrs[0].start_tracking_access();
+                        None
                     }
                 })
             };
