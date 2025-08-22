@@ -28,6 +28,7 @@ pub enum BlockCacheValue {
 pub struct BlockMemoizationCache {
     cache: HashMap<BlockCacheKey, BlockCacheValue>,
     write_patterns: HashMap<(usize, usize), std::collections::HashSet<u32>>, // (start_ip, end_ip) -> written_pages
+    cached_blocks: std::collections::HashSet<(usize, usize)>, // Track which blocks have cache entries
     max_entries: usize,
 }
 
@@ -36,6 +37,7 @@ impl BlockMemoizationCache {
         Self {
             cache: HashMap::new(),
             write_patterns: HashMap::new(),
+            cached_blocks: std::collections::HashSet::new(),
             max_entries: 1000, // Reasonable limit for block cache
         }
     }
@@ -49,6 +51,7 @@ impl BlockMemoizationCache {
         if self.cache.len() >= self.max_entries {
             self.cache.clear();
             self.write_patterns.clear();
+            self.cached_blocks.clear();
         }
 
         self.cache.insert(key, value);
@@ -56,7 +59,13 @@ impl BlockMemoizationCache {
 
     fn compute_stack_hash(stack: &[Val]) -> u64 {
         let mut hasher = DefaultHasher::new();
-        stack.hash(&mut hasher);
+        // Only hash the last 8 values for better performance
+        const MAX_HASH_VALUES: usize = 8;
+        if stack.len() <= MAX_HASH_VALUES {
+            stack.hash(&mut hasher);
+        } else {
+            stack[stack.len() - MAX_HASH_VALUES..].hash(&mut hasher);
+        }
         hasher.finish()
     }
 
@@ -74,6 +83,12 @@ impl BlockMemoizationCache {
         locals: &[Val],
         current_page_versions: &[(u32, u64)],
     ) -> Option<Vec<Val>> {
+        // Early exit if this block range has never been cached
+        if !self.cached_blocks.contains(&(start_ip, end_ip)) {
+            return None;
+        }
+
+        // Only compute hashes if block range exists in cache
         let stack_hash = Self::compute_stack_hash(stack);
         let locals_hash = Self::compute_locals_hash(locals);
         let key = BlockCacheKey {
@@ -126,6 +141,9 @@ impl BlockMemoizationCache {
         // Store write pattern separately for reuse
         self.write_patterns
             .insert((start_ip, end_ip), written_page_set.clone());
+
+        // Record that this block range now has cache entries
+        self.cached_blocks.insert((start_ip, end_ip));
 
         let cached_block = CachedBlock {
             result: output_stack,
