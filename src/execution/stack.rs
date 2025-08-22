@@ -710,6 +710,11 @@ impl FrameStack {
                                 let target_depth = current_label_stack_idx - branch_depth;
                                 let target_level = target_depth + 1;
 
+                                // Mark all blocks being exited as having executed a branch (early exit)
+                                for i in target_level..self.label_stack.len() {
+                                    self.label_stack[i].block_has_mutable_ops = true;
+                                }
+
                                 let current_label_stack =
                                     &self.label_stack[current_label_stack_idx];
                                 let current_stack_height = current_label_stack.label.stack_height;
@@ -762,7 +767,7 @@ impl FrameStack {
                             let mut cache_hit = false;
                             let mut cached_result_values = Vec::new();
 
-                            if current_label_stack_idx > 0 {
+                            if current_label_stack_idx > 0 && label.is_immutable != Some(false) {
                                 if let Some(cached_result) = get_block_cache(
                                     start_ip,
                                     end_ip,
@@ -784,12 +789,15 @@ impl FrameStack {
                             // Create new label stack
                             let current_instrs =
                                 &self.label_stack[current_label_stack_idx].processed_instrs;
+                            // Inherit parent's mutable status if this is a nested structure
+                            let parent_has_mutable_ops =
+                                self.label_stack[current_label_stack_idx].block_has_mutable_ops;
                             let new_label_stack = LabelStack {
                                 label,
                                 processed_instrs: current_instrs.clone(),
                                 value_stack: vec![],
                                 ip: if cache_hit { end_ip } else { next_ip },
-                                block_has_mutable_ops: false,
+                                block_has_mutable_ops: parent_has_mutable_ops,
                             };
 
                             self.label_stack.push(new_label_stack);
@@ -1099,10 +1107,9 @@ macro_rules! cmpop {
 }
 
 fn handle_unreachable(
-    ctx: &mut ExecutionContext,
+    _ctx: &mut ExecutionContext,
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    ctx.block_has_mutable_op = true;
     Err(RuntimeError::Unreachable)
 }
 
@@ -1139,7 +1146,6 @@ fn handle_block(
             is_immutable: None, // Will be determined during execution
         };
 
-        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::PushLabelStack {
             label,
             next_ip: ctx.ip + 1,
@@ -1177,7 +1183,6 @@ fn handle_loop(
         };
 
         // Signal to the main execution loop to create a new label stack
-        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::PushLabelStack {
             label,
             next_ip: ctx.ip + 1,
@@ -1225,8 +1230,6 @@ fn handle_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
         // WebAssembly if: 0 = false (else/skip), non-zero = true (then)
         let next_ip = if cond != 0 { ctx.ip + 1 } else { target_ip };
 
-        ctx.block_has_mutable_op = true;
-
         Ok(HandlerResult::PushLabelStack {
             label,
             next_ip,
@@ -1239,7 +1242,7 @@ fn handle_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
 }
 
 fn handle_else(
-    ctx: &mut ExecutionContext,
+    _ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     if let &Operand::LabelIdx {
@@ -1254,7 +1257,6 @@ fn handle_else(
                 "Branch fixup not done for Else",
             ));
         }
-        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(target_ip))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -1265,7 +1267,6 @@ fn handle_end(
     ctx: &mut ExecutionContext,
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    ctx.block_has_mutable_op = true;
     Ok(HandlerResult::PopLabelStack {
         next_ip: ctx.ip + 1,
     })
@@ -1287,7 +1288,6 @@ fn handle_br(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
 
         let values_to_push = ctx.pop_n_values(*arity)?;
 
-        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Branch {
             target_ip: *target_ip,
             values_to_push,
@@ -1324,7 +1324,6 @@ fn handle_br_if(
 
             let values_to_push = ctx.pop_n_values(*arity)?;
 
-            ctx.block_has_mutable_op = true;
             Ok(HandlerResult::Branch {
                 target_ip: *target_ip,
                 values_to_push,
@@ -2989,7 +2988,6 @@ fn handle_br_table(
                 Vec::new()
             };
 
-            ctx.block_has_mutable_op = true;
             Ok(HandlerResult::Branch {
                 target_ip: *target_ip,
                 values_to_push,
@@ -3074,10 +3072,9 @@ fn handle_select(
 }
 
 fn handle_return(
-    ctx: &mut ExecutionContext,
+    _ctx: &mut ExecutionContext,
     _operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    ctx.block_has_mutable_op = true;
     Ok(HandlerResult::Return)
 }
 
@@ -3167,6 +3164,7 @@ fn handle_global_get(
             .get_by_idx(GlobalIdx(index_val))
             .clone();
         ctx.value_stack.push(global_addr.get());
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3981,6 +3979,7 @@ fn handle_memory_size(
     let mem_addr = &module_inst.mem_addrs[0];
     let size = mem_addr.mem_size();
     ctx.value_stack.push(Val::Num(Num::I32(size as i32)));
+    ctx.block_has_mutable_op = true;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 

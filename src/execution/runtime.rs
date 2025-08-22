@@ -78,29 +78,20 @@ impl Runtime {
                              locals: &[Val]|
              -> Option<Vec<Val>> {
                 cache_opt.as_ref().and_then(|cache| {
-                    if let Some(accessed_pages) = cache.get_access_pattern(start_ip, end_ip) {
-                        let memory_pages = if !module_inst.mem_addrs.is_empty() {
-                            module_inst.mem_addrs[0].get_page_versions_for_pages(accessed_pages)
-                        } else {
-                            vec![]
-                        };
+                    if let Some(written_pages) = cache.get_write_pattern(start_ip, end_ip) {
+                        let memory_pages =
+                            module_inst.mem_addrs[0].get_page_versions_for_pages(written_pages);
                         cache.check_block(start_ip, end_ip, stack, locals, &memory_pages)
                     } else {
                         // No access pattern known - check with all pages and start tracking
-                        let memory_pages = if !module_inst.mem_addrs.is_empty() {
-                            module_inst.mem_addrs[0].get_all_page_versions()
-                        } else {
-                            vec![]
-                        };
+                        let memory_pages = module_inst.mem_addrs[0].get_all_page_versions();
 
                         let cache_result =
                             cache.check_block(start_ip, end_ip, stack, locals, &memory_pages);
 
                         if cache_result.is_none() {
                             // Cache miss and no pattern - start tracking
-                            if !module_inst.mem_addrs.is_empty() {
-                                module_inst.mem_addrs[0].start_tracking_access();
-                            }
+                            module_inst.mem_addrs[0].start_tracking_access();
                         }
 
                         cache_result
@@ -113,20 +104,12 @@ impl Runtime {
                                input_stack: &[Val],
                                locals: &[Val],
                                output_stack: Vec<Val>| {
-                // Get accessed pages if tracking was enabled
-                let accessed_pages = if !module_inst.mem_addrs.is_empty() {
-                    module_inst.mem_addrs[0].get_and_stop_tracking_access()
-                } else {
-                    None
-                };
+                // Get written pages if tracking was enabled
+                let written_pages = module_inst.mem_addrs[0].get_and_stop_tracking_access();
 
-                if let Some(pages) = accessed_pages {
+                if let Some(pages) = written_pages {
                     // Get versions for accessed pages
-                    let memory_pages = if !module_inst.mem_addrs.is_empty() {
-                        module_inst.mem_addrs[0].get_page_versions_for_pages(&pages)
-                    } else {
-                        vec![]
-                    };
+                    let memory_pages = module_inst.mem_addrs[0].get_page_versions_for_pages(&pages);
 
                     pending_cache_stores.push((
                         start_ip,
@@ -138,11 +121,7 @@ impl Runtime {
                     ));
                 } else {
                     // If no tracking, use all pages (fallback)
-                    let memory_pages = if !module_inst.mem_addrs.is_empty() {
-                        module_inst.mem_addrs[0].get_all_page_versions()
-                    } else {
-                        vec![]
-                    };
+                    let memory_pages = module_inst.mem_addrs[0].get_all_page_versions();
                     pending_cache_stores.push((
                         start_ip,
                         end_ip,
@@ -159,7 +138,7 @@ impl Runtime {
 
         // Process pending cache stores
         if let Some(ref mut cache) = cache_opt {
-            for (start_ip, end_ip, input_stack, locals, accessed_pages, output_stack) in
+            for (start_ip, end_ip, input_stack, locals, written_pages, output_stack) in
                 pending_cache_stores
             {
                 cache.store_block(
@@ -167,7 +146,7 @@ impl Runtime {
                     end_ip,
                     &input_stack,
                     &locals,
-                    accessed_pages,
+                    written_pages,
                     output_stack,
                 );
             }

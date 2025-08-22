@@ -12,7 +12,7 @@ use typenum::*;
 pub struct MemAddr {
     mem_inst: Rc<RefCell<MemInst>>,
     page_versions: Rc<RefCell<HashMap<u32, u64>>>,
-    current_block_accessed_pages: RefCell<Option<HashSet<u32>>>,
+    current_block_written_pages: RefCell<Option<HashSet<u32>>>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MemInst {
@@ -37,7 +37,7 @@ impl MemAddr {
                 },
             })),
             page_versions: Rc::new(RefCell::new(HashMap::new())),
-            current_block_accessed_pages: RefCell::new(None),
+            current_block_written_pages: RefCell::new(None),
         }
     }
 
@@ -46,21 +46,24 @@ impl MemAddr {
             let start_page = start_pos / 65536;
             let end_page = (start_pos + len - 1) / 65536;
             let mut versions = self.page_versions.borrow_mut();
-            for page in start_page..=end_page {
-                *versions.entry(page as u32).or_insert(0) += 1;
-            }
-        }
-    }
 
-    fn record_page_access(&self, start_pos: usize, len: usize) {
-        if len > 0 {
-            if let Ok(mut access_lock) = self.current_block_accessed_pages.try_borrow_mut() {
+            // Also record in current_block_written_pages for caching
+            if let Ok(mut access_lock) = self.current_block_written_pages.try_borrow_mut() {
                 if let Some(ref mut pages) = *access_lock {
-                    let start_page = start_pos / 65536;
-                    let end_page = (start_pos + len - 1) / 65536;
                     for page in start_page..=end_page {
+                        *versions.entry(page as u32).or_insert(0) += 1;
                         pages.insert(page as u32);
                     }
+                } else {
+                    // Just update versions if not tracking access
+                    for page in start_page..=end_page {
+                        *versions.entry(page as u32).or_insert(0) += 1;
+                    }
+                }
+            } else {
+                // Just update versions if can't get access lock
+                for page in start_page..=end_page {
+                    *versions.entry(page as u32).or_insert(0) += 1;
                 }
             }
         }
@@ -78,7 +81,6 @@ impl MemAddr {
             .checked_add(i32::try_from(arg.offset).ok().unwrap())
             .ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
         let len = <T>::len();
-        self.record_page_access(pos, len);
         let raw = &self.mem_inst.borrow().data;
         let data = Vec::from(&raw[pos..pos + len]);
         Ok(<T>::from_byte(data))
@@ -94,7 +96,6 @@ impl MemAddr {
         }
         let len = <T>::len();
         drop(raw);
-        self.record_page_access(pos, len);
         self.update_page_versions(pos, len);
 
         Ok(())
@@ -126,6 +127,15 @@ impl MemAddr {
                 .borrow_mut()
                 .data
                 .resize(new as usize * 65536, 0);
+
+            // Add new pages with version 0
+            if prev_size >= 0 && size > 0 {
+                let mut versions = self.page_versions.borrow_mut();
+                for page in (prev_size as u32)..(new as u32) {
+                    versions.insert(page, 0);
+                }
+            }
+
             prev_size
         }
     }
@@ -183,7 +193,7 @@ impl MemAddr {
 
         // Bounds check
         if dest_pos.checked_add(len_usize).unwrap_or(usize::MAX) > raw.data.len() {
-            return Err(RuntimeError::InstructionFailed);
+            return Err(RuntimeError::MemoryOutOfBounds);
         }
 
         if len_usize > 0 {
@@ -213,12 +223,12 @@ impl MemAddr {
     }
 
     pub fn start_tracking_access(&self) {
-        let mut access_lock = self.current_block_accessed_pages.borrow_mut();
+        let mut access_lock = self.current_block_written_pages.borrow_mut();
         *access_lock = Some(HashSet::new());
     }
 
     pub fn get_and_stop_tracking_access(&self) -> Option<HashSet<u32>> {
-        let mut access_lock = self.current_block_accessed_pages.borrow_mut();
+        let mut access_lock = self.current_block_written_pages.borrow_mut();
         access_lock.take()
     }
 
