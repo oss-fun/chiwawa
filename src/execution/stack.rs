@@ -6,6 +6,7 @@ use crate::structure::{instructions::*, types::*};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::arch::asm;
+use std::collections::HashSet;
 use std::fs;
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
 use std::path::Path;
@@ -65,6 +66,7 @@ pub struct ExecutionContext<'a> {
     pub value_stack: &'a mut Vec<Val>,
     pub ip: usize,
     pub block_has_mutable_op: bool,
+    pub accessed_globals: &'a mut Option<HashSet<u32>>,
 }
 
 #[derive(Clone, Debug)]
@@ -506,6 +508,7 @@ impl Stacks {
                     void: type_.results.is_empty(),
                     instruction_count: 0,
                     global_value_stack: vec![],
+                    current_block_accessed_globals: Some(HashSet::new()),
                 };
 
                 Ok(Stacks {
@@ -541,6 +544,8 @@ pub struct FrameStack {
     pub instruction_count: u64,
     // Global value stack shared across all label stacks
     pub global_value_stack: Vec<Val>,
+    #[serde(skip)]
+    pub current_block_accessed_globals: Option<HashSet<u32>>, // Track accessed globals when enabled
 }
 
 impl FrameStack {
@@ -586,7 +591,7 @@ impl FrameStack {
     ) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError>
     where
         F: FnMut(usize, usize, &[Val], &[Val]) -> Option<Vec<Val>>, // Cache lookup callback with locals
-        G: FnMut(usize, usize, &[Val], &[Val], Vec<Val>), // Cache store callback with locals
+        G: FnMut(usize, usize, &[Val], &[Val], Vec<Val>, HashSet<u32>), // Cache store callback with locals and globals
     {
         let mut current_label_stack_idx = self
             .label_stack
@@ -668,6 +673,7 @@ impl FrameStack {
                 value_stack: &mut self.global_value_stack,
                 ip,
                 block_has_mutable_op: false,
+                accessed_globals: &mut self.current_block_accessed_globals,
             };
 
             let result = handler_fn(&mut context, &instruction_ref.operand);
@@ -900,12 +906,18 @@ impl FrameStack {
                                         )
                                         .is_none()
                                         {
+                                            // Get tracked globals before storing
+                                            let tracked_globals = self
+                                                .current_block_accessed_globals
+                                                .take()
+                                                .unwrap_or_else(HashSet::new);
                                             store_block_cache(
                                                 start_ip,
                                                 end_ip,
                                                 &input_stack,
                                                 &self.frame.locals,
                                                 final_stack_state,
+                                                tracked_globals,
                                             );
                                         }
                                     }
@@ -3164,7 +3176,6 @@ fn handle_global_get(
             .get_by_idx(GlobalIdx(index_val))
             .clone();
         ctx.value_stack.push(global_addr.get());
-        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3190,6 +3201,7 @@ fn handle_global_set(
             .get_by_idx(GlobalIdx(index_val))
             .clone();
         global_addr.set(val)?;
+        ctx.accessed_globals.as_mut().unwrap().insert(index_val);
         ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {

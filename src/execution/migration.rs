@@ -116,7 +116,7 @@ pub fn restore<P: AsRef<Path>>(
     // 4. Restore global state into module_inst
     if module_inst.global_addrs.len() == state.global_values.len() {
         for (global_addr, value) in module_inst.global_addrs.iter().zip(state.global_values) {
-            global_addr.set_value_unchecked(value)?;
+            global_addr.set(value)?;
         }
         println!("Global state restored into module instance.");
     } else {

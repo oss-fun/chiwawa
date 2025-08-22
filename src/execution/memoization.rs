@@ -16,6 +16,8 @@ pub struct CachedBlock {
     pub result: Vec<Val>,
     pub written_pages: std::collections::HashSet<u32>, // Pages written during execution
     pub page_versions: Vec<(u32, u64)>,                // Version snapshot when cached
+    pub written_globals: std::collections::HashSet<u32>, // Globals written during execution
+    pub global_versions: Vec<(u32, u64)>,              // Global version snapshot when cached
 }
 
 #[derive(Clone, Debug)]
@@ -28,6 +30,7 @@ pub enum BlockCacheValue {
 pub struct BlockMemoizationCache {
     cache: HashMap<BlockCacheKey, BlockCacheValue>,
     write_patterns: HashMap<(usize, usize), std::collections::HashSet<u32>>, // (start_ip, end_ip) -> written_pages
+    global_write_patterns: HashMap<(usize, usize), std::collections::HashSet<u32>>, // (start_ip, end_ip) -> written_globals
     cached_blocks: std::collections::HashSet<(usize, usize)>, // Track which blocks have cache entries
     max_entries: usize,
 }
@@ -37,6 +40,7 @@ impl BlockMemoizationCache {
         Self {
             cache: HashMap::new(),
             write_patterns: HashMap::new(),
+            global_write_patterns: HashMap::new(),
             cached_blocks: std::collections::HashSet::new(),
             max_entries: 1000, // Reasonable limit for block cache
         }
@@ -82,6 +86,7 @@ impl BlockMemoizationCache {
         stack: &[Val],
         locals: &[Val],
         current_page_versions: &[(u32, u64)],
+        current_global_versions: &[(u32, u64)],
     ) -> Option<Vec<Val>> {
         // Early exit if this block range has never been cached
         if !self.cached_blocks.contains(&(start_ip, end_ip)) {
@@ -110,6 +115,19 @@ impl BlockMemoizationCache {
                         }
                     }
                 }
+
+                // Check if any accessed globals have changed
+                let current_global_versions_map: std::collections::HashMap<u32, u64> =
+                    current_global_versions.iter().cloned().collect();
+
+                for &(global_idx, cached_version) in &cached_block.global_versions {
+                    if let Some(&current_version) = current_global_versions_map.get(&global_idx) {
+                        if current_version != cached_version {
+                            return None; // Global version changed, cache invalid
+                        }
+                    }
+                }
+
                 Some(cached_block.result.clone())
             }
             BlockCacheValue::NonCacheable => None,
@@ -124,6 +142,8 @@ impl BlockMemoizationCache {
         locals: &[Val],
         written_pages: Vec<(u32, u64)>,
         output_stack: Vec<Val>,
+        written_globals: std::collections::HashSet<u32>,
+        global_versions: Vec<(u32, u64)>,
     ) {
         let stack_hash = Self::compute_stack_hash(input_stack);
         let locals_hash = Self::compute_locals_hash(locals);
@@ -138,9 +158,11 @@ impl BlockMemoizationCache {
         let written_page_set: std::collections::HashSet<u32> =
             written_pages.iter().map(|&(page, _)| page).collect();
 
-        // Store write pattern separately for reuse
+        // Store write patterns separately for reuse
         self.write_patterns
             .insert((start_ip, end_ip), written_page_set.clone());
+        self.global_write_patterns
+            .insert((start_ip, end_ip), written_globals.clone());
 
         // Record that this block range now has cache entries
         self.cached_blocks.insert((start_ip, end_ip));
@@ -149,6 +171,8 @@ impl BlockMemoizationCache {
             result: output_stack,
             written_pages: written_page_set,
             page_versions: written_pages,
+            written_globals,
+            global_versions,
         };
         let value = BlockCacheValue::CachedResult(cached_block);
         self.insert(key, value);
@@ -169,5 +193,13 @@ impl BlockMemoizationCache {
         pages: std::collections::HashSet<u32>,
     ) {
         self.write_patterns.insert((start_ip, end_ip), pages);
+    }
+
+    pub fn get_global_write_pattern(
+        &self,
+        start_ip: usize,
+        end_ip: usize,
+    ) -> Option<&std::collections::HashSet<u32>> {
+        self.global_write_patterns.get(&(start_ip, end_ip))
     }
 }

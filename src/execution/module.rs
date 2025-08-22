@@ -238,6 +238,24 @@ impl ModuleInst {
         }
     }
 
+    pub fn get_all_global_versions(&self) -> Vec<(u32, u64)> {
+        self.global_addrs
+            .iter()
+            .enumerate()
+            .map(|(idx, global_addr)| (idx as u32, global_addr.get_version()))
+            .collect()
+    }
+
+    pub fn get_global_versions_for_indices(
+        &self,
+        indices: &std::collections::HashSet<u32>,
+    ) -> Vec<(u32, u64)> {
+        indices
+            .iter()
+            .map(|&idx| (idx, self.global_addrs[idx as usize].get_version()))
+            .collect()
+    }
+
     fn expr_to_const(&self, expr: &Expr) -> Option<Val> {
         match &expr.0[..] {
             &[Instr::I32Const(i)] => Some(Val::Num(Num::I32(i))),

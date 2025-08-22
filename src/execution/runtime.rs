@@ -8,6 +8,7 @@ use crate::execution::value::{Num, Val, Vec_};
 use crate::structure::module::WasiFuncType;
 use crate::structure::types::{NumType, ValueType, VecType};
 use crate::wasi::{WasiError, WasiResult};
+use std::collections::HashSet;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -66,6 +67,8 @@ impl Runtime {
             Vec<Val>,
             Vec<(u32, u64)>,
             Vec<Val>,
+            std::collections::HashSet<u32>,
+            Vec<(u32, u64)>,
         )> = Vec::new();
 
         let result = {
@@ -81,7 +84,22 @@ impl Runtime {
                     if let Some(written_pages) = cache.get_write_pattern(start_ip, end_ip) {
                         let memory_pages =
                             module_inst.mem_addrs[0].get_page_versions_for_pages(written_pages);
-                        cache.check_block(start_ip, end_ip, stack, locals, &memory_pages)
+                        // Get global versions for written globals
+                        let global_versions = if let Some(written_globals) =
+                            cache.get_global_write_pattern(start_ip, end_ip)
+                        {
+                            module_inst.get_global_versions_for_indices(written_globals)
+                        } else {
+                            Vec::new()
+                        };
+                        cache.check_block(
+                            start_ip,
+                            end_ip,
+                            stack,
+                            locals,
+                            &memory_pages,
+                            &global_versions,
+                        )
                     } else {
                         // No write pattern known - just start tracking, don't check cache
                         module_inst.mem_addrs[0].start_tracking_access();
@@ -94,34 +112,31 @@ impl Runtime {
                                end_ip: usize,
                                input_stack: &[Val],
                                locals: &[Val],
-                               output_stack: Vec<Val>| {
+                               output_stack: Vec<Val>,
+                               accessed_globals: HashSet<u32>| {
                 // Get written pages if tracking was enabled
                 let written_pages = module_inst.mem_addrs[0].get_and_stop_tracking_access();
 
-                if let Some(pages) = written_pages {
-                    // Get versions for accessed pages
-                    let memory_pages = module_inst.mem_addrs[0].get_page_versions_for_pages(&pages);
+                // Get written pages (empty set if no writes occurred)
+                let pages = written_pages.unwrap_or_else(HashSet::new);
 
-                    pending_cache_stores.push((
-                        start_ip,
-                        end_ip,
-                        input_stack.to_vec(),
-                        locals.to_vec(),
-                        memory_pages,
-                        output_stack,
-                    ));
-                } else {
-                    // If no tracking, use all pages (fallback)
-                    let memory_pages = module_inst.mem_addrs[0].get_all_page_versions();
-                    pending_cache_stores.push((
-                        start_ip,
-                        end_ip,
-                        input_stack.to_vec(),
-                        locals.to_vec(),
-                        memory_pages,
-                        output_stack,
-                    ));
-                }
+                // Get versions for accessed pages
+                let memory_pages = module_inst.mem_addrs[0].get_page_versions_for_pages(&pages);
+
+                // Get versions for accessed globals
+                let global_versions =
+                    module_inst.get_global_versions_for_indices(&accessed_globals);
+
+                pending_cache_stores.push((
+                    start_ip,
+                    end_ip,
+                    input_stack.to_vec(),
+                    locals.to_vec(),
+                    memory_pages,
+                    output_stack,
+                    accessed_globals,
+                    global_versions,
+                ));
             };
 
             frame_stack.run_dtc_loop(called_func_addr, get_cache, store_cache)
@@ -129,8 +144,16 @@ impl Runtime {
 
         // Process pending cache stores
         if let Some(ref mut cache) = cache_opt {
-            for (start_ip, end_ip, input_stack, locals, written_pages, output_stack) in
-                pending_cache_stores
+            for (
+                start_ip,
+                end_ip,
+                input_stack,
+                locals,
+                written_pages,
+                output_stack,
+                written_globals,
+                global_versions,
+            ) in pending_cache_stores
             {
                 cache.store_block(
                     start_ip,
@@ -139,6 +162,8 @@ impl Runtime {
                     &locals,
                     written_pages,
                     output_stack,
+                    written_globals,
+                    global_versions,
                 );
             }
         }
@@ -250,6 +275,7 @@ impl Runtime {
                                         void: type_.results.is_empty(),
                                         instruction_count: 0,
                                         global_value_stack: vec![], // Will be set up after frame creation
+                                        current_block_accessed_globals: Some(HashSet::new()),
                                     };
                                     self.stacks.activation_frame_stack.push(new_frame);
                                 }
