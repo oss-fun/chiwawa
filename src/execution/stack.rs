@@ -759,6 +759,11 @@ impl FrameStack {
                                 self.global_value_stack.truncate(stack_height);
                                 self.global_value_stack.extend(values_to_push);
                                 target_label_stack.ip = target_ip;
+
+                                // Reset global tracking for new block after branch
+                                if self.current_block_accessed_globals.is_some() {
+                                    self.current_block_accessed_globals = Some(HashSet::new());
+                                }
                             } else {
                                 return Err(RuntimeError::InvalidBranchTarget);
                             }
@@ -808,6 +813,11 @@ impl FrameStack {
 
                             self.label_stack.push(new_label_stack);
                             current_label_stack_idx = self.label_stack.len() - 1;
+
+                            // Reset global tracking for new block
+                            if self.current_block_accessed_globals.is_some() {
+                                self.current_block_accessed_globals = Some(HashSet::new());
+                            }
                         }
                         HandlerResult::PopLabelStack { next_ip } => {
                             // Pop the current label stack when ending a block/loop
@@ -3201,7 +3211,10 @@ fn handle_global_set(
             .get_by_idx(GlobalIdx(index_val))
             .clone();
         global_addr.set(val)?;
-        ctx.accessed_globals.as_mut().unwrap().insert(index_val);
+        // Track global write
+        if let Some(ref mut globals) = ctx.accessed_globals.as_mut() {
+            globals.insert(index_val);
+        }
         ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {

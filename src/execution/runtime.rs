@@ -82,8 +82,11 @@ impl Runtime {
              -> Option<Vec<Val>> {
                 cache_opt.as_ref().and_then(|cache| {
                     if let Some(written_pages) = cache.get_write_pattern(start_ip, end_ip) {
-                        let memory_pages =
-                            module_inst.mem_addrs[0].get_page_versions_for_pages(written_pages);
+                        let memory_pages = if !module_inst.mem_addrs.is_empty() {
+                            module_inst.mem_addrs[0].get_page_versions_for_pages(written_pages)
+                        } else {
+                            Vec::new()
+                        };
                         // Get global versions for written globals
                         let global_versions = if let Some(written_globals) =
                             cache.get_global_write_pattern(start_ip, end_ip)
@@ -102,7 +105,9 @@ impl Runtime {
                         )
                     } else {
                         // No write pattern known - just start tracking, don't check cache
-                        module_inst.mem_addrs[0].start_tracking_access();
+                        if !module_inst.mem_addrs.is_empty() {
+                            module_inst.mem_addrs[0].start_tracking_access();
+                        }
                         None
                     }
                 })
@@ -115,13 +120,21 @@ impl Runtime {
                                output_stack: Vec<Val>,
                                accessed_globals: HashSet<u32>| {
                 // Get written pages if tracking was enabled
-                let written_pages = module_inst.mem_addrs[0].get_and_stop_tracking_access();
+                let written_pages = if !module_inst.mem_addrs.is_empty() {
+                    module_inst.mem_addrs[0].get_and_stop_tracking_access()
+                } else {
+                    None
+                };
 
                 // Get written pages (empty set if no writes occurred)
                 let pages = written_pages.unwrap_or_else(HashSet::new);
 
                 // Get versions for accessed pages
-                let memory_pages = module_inst.mem_addrs[0].get_page_versions_for_pages(&pages);
+                let memory_pages = if !module_inst.mem_addrs.is_empty() {
+                    module_inst.mem_addrs[0].get_page_versions_for_pages(&pages)
+                } else {
+                    Vec::new()
+                };
 
                 // Get versions for accessed globals
                 let global_versions =
