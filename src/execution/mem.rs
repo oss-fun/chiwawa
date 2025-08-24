@@ -8,11 +8,15 @@ use std::io::Cursor;
 use std::rc::Rc;
 use typenum::*;
 
+// Chunk size for memory version tracking (4KB chunks for fine-grained invalidation)
+// Note: This is different from WebAssembly page size (64KB)
+pub const CHUNK_SIZE: usize = 4096;
+
 #[derive(Clone, Debug)]
 pub struct MemAddr {
     mem_inst: Rc<RefCell<MemInst>>,
-    page_versions: Rc<RefCell<HashMap<u32, u64>>>,
-    current_block_written_pages: RefCell<Option<HashSet<u32>>>,
+    chunk_versions: Rc<RefCell<HashMap<u32, u64>>>,
+    current_block_written_chunks: RefCell<Option<HashSet<u32>>>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MemInst {
@@ -36,27 +40,27 @@ impl MemAddr {
                     vec
                 },
             })),
-            page_versions: Rc::new(RefCell::new(HashMap::new())),
-            current_block_written_pages: RefCell::new(None),
+            chunk_versions: Rc::new(RefCell::new(HashMap::new())),
+            current_block_written_chunks: RefCell::new(None),
         }
     }
 
-    fn update_page_versions(&self, start_pos: usize, len: usize) {
+    fn update_chunk_versions(&self, start_pos: usize, len: usize) {
         if len > 0 {
-            let start_page = start_pos / 65536;
-            let end_page = (start_pos + len - 1) / 65536;
-            let mut versions = self.page_versions.borrow_mut();
+            let start_chunk = start_pos / CHUNK_SIZE;
+            let end_chunk = (start_pos + len - 1) / CHUNK_SIZE;
+            let mut versions = self.chunk_versions.borrow_mut();
 
-            // Update page versions
-            for page in start_page..=end_page {
-                *versions.entry(page as u32).or_insert(0) += 1;
+            // Update chunk versions
+            for chunk in start_chunk..=end_chunk {
+                *versions.entry(chunk as u32).or_insert(0) += 1;
             }
 
-            // Try to record in current_block_written_pages if tracking
-            if let Ok(mut access_lock) = self.current_block_written_pages.try_borrow_mut() {
-                if let Some(ref mut pages) = *access_lock {
-                    for page in start_page..=end_page {
-                        pages.insert(page as u32);
+            // Try to record in current_block_written_chunks if tracking
+            if let Ok(mut access_lock) = self.current_block_written_chunks.try_borrow_mut() {
+                if let Some(ref mut chunks) = *access_lock {
+                    for chunk in start_chunk..=end_chunk {
+                        chunks.insert(chunk as u32);
                     }
                 }
             }
@@ -68,7 +72,7 @@ impl MemAddr {
         for (index, data) in init.iter().enumerate() {
             addr_self.data[index + offset] = *data;
         }
-        self.update_page_versions(offset, init.len());
+        self.update_chunk_versions(offset, init.len());
     }
     pub fn load<T: ByteMem>(&self, arg: &Memarg, ptr: i32) -> Result<T, RuntimeError> {
         let pos = ptr
@@ -90,7 +94,7 @@ impl MemAddr {
         }
         let len = <T>::len();
         drop(raw);
-        self.update_page_versions(pos, len);
+        self.update_chunk_versions(pos, len);
 
         Ok(())
     }
@@ -122,11 +126,14 @@ impl MemAddr {
                 .data
                 .resize(new as usize * 65536, 0);
 
-            // Add new pages with version 0
+            // Add new chunks with version 0
+            // Convert from WASM pages (64KB) to internal tracking chunks (4KB)
             if prev_size >= 0 && size > 0 {
-                let mut versions = self.page_versions.borrow_mut();
-                for page in (prev_size as u32)..(new as u32) {
-                    versions.insert(page, 0);
+                let mut versions = self.chunk_versions.borrow_mut();
+                let start_chunk = (prev_size as usize * 65536) / CHUNK_SIZE;
+                let end_chunk = (new as usize * 65536) / CHUNK_SIZE;
+                for chunk in start_chunk..end_chunk {
+                    versions.insert(chunk as u32, 0);
                 }
             }
 
@@ -153,7 +160,7 @@ impl MemAddr {
         raw.data[pos..pos + data.len()].copy_from_slice(data);
 
         drop(raw);
-        self.update_page_versions(pos, data.len());
+        self.update_chunk_versions(pos, data.len());
 
         Ok(())
     }
@@ -174,7 +181,7 @@ impl MemAddr {
             raw.data.copy_within(src_pos..src_pos + len_usize, dest_pos);
 
             drop(raw);
-            self.update_page_versions(dest_pos, len_usize);
+            self.update_chunk_versions(dest_pos, len_usize);
         }
 
         Ok(())
@@ -196,7 +203,7 @@ impl MemAddr {
             }
 
             drop(raw);
-            self.update_page_versions(dest_pos, len_usize);
+            self.update_chunk_versions(dest_pos, len_usize);
         }
 
         Ok(())
@@ -206,33 +213,33 @@ impl MemAddr {
         self.mem_inst.borrow()
     }
 
-    pub fn get_all_page_versions(&self) -> Vec<(u32, u64)> {
-        let versions = self.page_versions.borrow();
+    pub fn get_all_chunk_versions(&self) -> Vec<(u32, u64)> {
+        let versions = self.chunk_versions.borrow();
         let mut result: Vec<(u32, u64)> = versions
             .iter()
-            .map(|(&page, &version)| (page, version))
+            .map(|(&chunk, &version)| (chunk, version))
             .collect();
-        result.sort_by_key(|&(page, _)| page);
+        result.sort_by_key(|&(chunk, _)| chunk);
         result
     }
 
     pub fn start_tracking_access(&self) {
-        let mut access_lock = self.current_block_written_pages.borrow_mut();
+        let mut access_lock = self.current_block_written_chunks.borrow_mut();
         *access_lock = Some(HashSet::new());
     }
 
     pub fn get_and_stop_tracking_access(&self) -> Option<HashSet<u32>> {
-        let mut access_lock = self.current_block_written_pages.borrow_mut();
+        let mut access_lock = self.current_block_written_chunks.borrow_mut();
         access_lock.take()
     }
 
-    pub fn get_page_versions_for_pages(&self, pages: &HashSet<u32>) -> Vec<(u32, u64)> {
-        let versions = self.page_versions.borrow();
-        let mut result: Vec<(u32, u64)> = pages
+    pub fn get_chunk_versions_for_chunks(&self, chunks: &HashSet<u32>) -> Vec<(u32, u64)> {
+        let versions = self.chunk_versions.borrow();
+        let mut result: Vec<(u32, u64)> = chunks
             .iter()
-            .filter_map(|&page| versions.get(&page).map(|&version| (page, version)))
+            .filter_map(|&chunk| versions.get(&chunk).map(|&version| (chunk, version)))
             .collect();
-        result.sort_by_key(|&(page, _)| page);
+        result.sort_by_key(|&(chunk, _)| chunk);
         result
     }
 }

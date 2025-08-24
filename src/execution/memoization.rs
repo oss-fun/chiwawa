@@ -16,10 +16,10 @@ pub struct BlockCacheKey {
 #[derive(Clone, Debug)]
 pub struct CachedBlock {
     pub result: Vec<Val>,
-    pub written_pages: std::collections::HashSet<u32>, // Pages written during execution
-    pub page_versions: Vec<(u32, u64)>,                // Version snapshot when cached
+    pub written_chunks: std::collections::HashSet<u32>, // Chunks written during execution
+    pub chunk_versions: Vec<(u32, u64)>,                // Version snapshot when cached
     pub written_globals: std::collections::HashSet<u32>, // Globals written during execution
-    pub global_versions: Vec<(u32, u64)>,              // Global version snapshot when cached
+    pub global_versions: Vec<(u32, u64)>,               // Global version snapshot when cached
 }
 
 #[derive(Clone, Debug)]
@@ -45,8 +45,15 @@ impl CacheStats {
         let global_invalidations = self.invalidation_by_global.load(Ordering::Relaxed);
         let evictions = self.eviction_count.load(Ordering::Relaxed);
 
+        let total_accesses = hits + stores;
+        let hit_rate = if total_accesses > 0 {
+            (hits as f64 / total_accesses as f64) * 100.0
+        } else {
+            0.0
+        };
+
         eprintln!("=== Cache Statistics ===");
-        eprintln!("Cache hits: {}", hits);
+        eprintln!("Cache hits: {} ({:.1}% hit rate)", hits, hit_rate);
         eprintln!("Blocks cached: {}", stores);
         eprintln!(
             "Invalidations: {} (memory: {}, global: {})",
@@ -55,6 +62,7 @@ impl CacheStats {
             global_invalidations
         );
         eprintln!("Evictions: {}", evictions);
+        eprintln!("Chunk size: {} bytes", crate::execution::mem::CHUNK_SIZE);
         eprintln!("=======================");
     }
 }
@@ -62,7 +70,7 @@ impl CacheStats {
 #[derive(Debug)]
 pub struct BlockMemoizationCache {
     cache: LruCache<BlockCacheKey, BlockCacheValue>,
-    write_patterns: HashMap<(usize, usize), std::collections::HashSet<u32>>, // (start_ip, end_ip) -> written_pages
+    write_patterns: HashMap<(usize, usize), std::collections::HashSet<u32>>, // (start_ip, end_ip) -> written_chunks
     global_write_patterns: HashMap<(usize, usize), std::collections::HashSet<u32>>, // (start_ip, end_ip) -> written_globals
     cached_blocks: std::collections::HashSet<(usize, usize)>, // Track which blocks have cache entries
     pub stats: CacheStats,
@@ -113,7 +121,7 @@ impl BlockMemoizationCache {
         end_ip: usize,
         stack: &[Val],
         locals: &[Val],
-        current_page_versions: &[(u32, u64)],
+        current_chunk_versions: &[(u32, u64)],
         current_global_versions: &[(u32, u64)],
     ) -> Option<Vec<Val>> {
         // Early exit if this block range has never been cached
@@ -136,17 +144,17 @@ impl BlockMemoizationCache {
         if let Some(value) = cached_value {
             match value {
                 BlockCacheValue::CachedResult(cached_block) => {
-                    // Check if any accessed pages have changed
+                    // Check if any accessed chunks have changed
                     let current_versions_map: std::collections::HashMap<u32, u64> =
-                        current_page_versions.iter().cloned().collect();
+                        current_chunk_versions.iter().cloned().collect();
 
-                    for &(page, cached_version) in &cached_block.page_versions {
-                        if let Some(&current_version) = current_versions_map.get(&page) {
+                    for &(chunk, cached_version) in &cached_block.chunk_versions {
+                        if let Some(&current_version) = current_versions_map.get(&chunk) {
                             if current_version != cached_version {
                                 self.stats
                                     .invalidation_by_memory
                                     .fetch_add(1, Ordering::Relaxed);
-                                return None; // Page version changed, cache invalid
+                                return None; // Chunk version changed, cache invalid
                             }
                         }
                     }
@@ -183,7 +191,7 @@ impl BlockMemoizationCache {
         end_ip: usize,
         input_stack: &[Val],
         locals: &[Val],
-        written_pages: Vec<(u32, u64)>,
+        written_chunks: Vec<(u32, u64)>,
         output_stack: Vec<Val>,
         written_globals: std::collections::HashSet<u32>,
         global_versions: Vec<(u32, u64)>,
@@ -197,13 +205,13 @@ impl BlockMemoizationCache {
             locals_hash,
         };
 
-        // Extract page indices for written pages tracking
-        let written_page_set: std::collections::HashSet<u32> =
-            written_pages.iter().map(|&(page, _)| page).collect();
+        // Extract chunk indices for written chunks tracking
+        let written_chunk_set: std::collections::HashSet<u32> =
+            written_chunks.iter().map(|&(chunk, _)| chunk).collect();
 
         // Store write patterns separately for reuse
         self.write_patterns
-            .insert((start_ip, end_ip), written_page_set.clone());
+            .insert((start_ip, end_ip), written_chunk_set.clone());
         self.global_write_patterns
             .insert((start_ip, end_ip), written_globals.clone());
 
@@ -212,8 +220,8 @@ impl BlockMemoizationCache {
 
         let cached_block = CachedBlock {
             result: output_stack,
-            written_pages: written_page_set,
-            page_versions: written_pages,
+            written_chunks: written_chunk_set,
+            chunk_versions: written_chunks,
             written_globals,
             global_versions,
         };

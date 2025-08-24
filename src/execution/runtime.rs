@@ -96,9 +96,9 @@ impl Runtime {
                              locals: &[Val]|
              -> Option<Vec<Val>> {
                 cache_opt.as_mut().and_then(|cache| {
-                    if let Some(written_pages) = cache.get_write_pattern(start_ip, end_ip) {
-                        let memory_pages = if !module_inst.mem_addrs.is_empty() {
-                            module_inst.mem_addrs[0].get_page_versions_for_pages(written_pages)
+                    if let Some(written_chunks) = cache.get_write_pattern(start_ip, end_ip) {
+                        let memory_chunks = if !module_inst.mem_addrs.is_empty() {
+                            module_inst.mem_addrs[0].get_chunk_versions_for_chunks(written_chunks)
                         } else {
                             Vec::new()
                         };
@@ -115,7 +115,7 @@ impl Runtime {
                             end_ip,
                             stack,
                             locals,
-                            &memory_pages,
+                            &memory_chunks,
                             &global_versions,
                         )
                     } else {
@@ -135,19 +135,19 @@ impl Runtime {
                                locals: &[Val],
                                output_stack: Vec<Val>,
                                accessed_globals: HashSet<u32>| {
-                // Get written pages if tracking was enabled
-                let written_pages = if !module_inst.mem_addrs.is_empty() {
+                // Get written chunks if tracking was enabled
+                let written_chunks = if !module_inst.mem_addrs.is_empty() {
                     module_inst.mem_addrs[0].get_and_stop_tracking_access()
                 } else {
                     None
                 };
 
-                // Get written pages (empty set if no writes occurred)
-                let pages = written_pages.unwrap_or_else(HashSet::new);
+                // Get written chunks (empty set if no writes occurred)
+                let chunks = written_chunks.unwrap_or_else(HashSet::new);
 
-                // Get versions for accessed pages
-                let memory_pages = if !module_inst.mem_addrs.is_empty() {
-                    module_inst.mem_addrs[0].get_page_versions_for_pages(&pages)
+                // Get versions for accessed chunks
+                let memory_chunks = if !module_inst.mem_addrs.is_empty() {
+                    module_inst.mem_addrs[0].get_chunk_versions_for_chunks(&chunks)
                 } else {
                     Vec::new()
                 };
@@ -161,7 +161,7 @@ impl Runtime {
                     end_ip,
                     input_stack.to_vec(),
                     locals.to_vec(),
-                    memory_pages,
+                    memory_chunks,
                     output_stack,
                     accessed_globals,
                     global_versions,
@@ -178,7 +178,7 @@ impl Runtime {
                 end_ip,
                 input_stack,
                 locals,
-                written_pages,
+                written_chunks,
                 output_stack,
                 written_globals,
                 global_versions,
@@ -189,7 +189,7 @@ impl Runtime {
                     end_ip,
                     &input_stack,
                     &locals,
-                    written_pages,
+                    written_chunks,
                     output_stack,
                     written_globals,
                     global_versions,
