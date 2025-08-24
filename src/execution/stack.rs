@@ -3215,7 +3215,6 @@ fn handle_global_set(
         if let Some(ref mut globals) = ctx.accessed_globals.as_mut() {
             globals.insert(index_val);
         }
-        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3634,7 +3633,6 @@ fn handle_i32_store(
         }
         let mem_addr = &module_inst.mem_addrs[0];
         mem_addr.store::<i32>(&arg, ptr, val.to_i32()?)?;
-        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3665,7 +3663,6 @@ fn handle_i64_store(
         }
         let mem_addr = &module_inst.mem_addrs[0];
         mem_addr.store::<i64>(&arg, ptr, val.to_i64()?)?;
-        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3696,7 +3693,6 @@ fn handle_f32_store(
         }
         let mem_addr = &module_inst.mem_addrs[0];
         mem_addr.store::<f32>(&arg, ptr, val.to_f32()?)?;
-        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3728,7 +3724,6 @@ fn handle_f64_store(
         }
         let mem_addr = &module_inst.mem_addrs[0];
         mem_addr.store::<f64>(&arg, ptr, data)?;
-        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3822,7 +3817,6 @@ fn handle_i64_store8(
         }
         let mem_addr = &module_inst.mem_addrs[0];
         mem_addr.store::<i8>(&arg, ptr, val_i64 as i8)?;
-        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3854,7 +3848,6 @@ fn handle_i64_store16(
         }
         let mem_addr = &module_inst.mem_addrs[0];
         mem_addr.store::<i16>(&arg, ptr, val_i64 as i16)?;
-        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3886,7 +3879,6 @@ fn handle_i64_store32(
         }
         let mem_addr = &module_inst.mem_addrs[0];
         mem_addr.store::<i32>(&arg, ptr, val_i64 as i32)?;
-        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -4004,7 +3996,6 @@ fn handle_memory_size(
     let mem_addr = &module_inst.mem_addrs[0];
     let size = mem_addr.mem_size();
     ctx.value_stack.push(Val::Num(Num::I32(size as i32)));
-    ctx.block_has_mutable_op = true;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 
@@ -4035,7 +4026,6 @@ fn handle_memory_grow(
             .map_err(|_| RuntimeError::InvalidParameterCount)?,
     );
     ctx.value_stack.push(Val::Num(Num::I32(prev_size as i32)));
-    ctx.block_has_mutable_op = true;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 
@@ -4073,7 +4063,6 @@ fn handle_memory_copy(
     let mem_addr = &module_inst.mem_addrs[0];
     mem_addr.memory_copy(dest, src, len)?;
 
-    ctx.block_has_mutable_op = true;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 
@@ -4132,7 +4121,6 @@ fn handle_memory_init(
         mem_addr.store(&memarg, (dest as usize + i) as i32, byte_value)?;
     }
 
-    ctx.block_has_mutable_op = true;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 
@@ -4172,7 +4160,6 @@ fn handle_memory_fill(
     // Fill memory with the specified value using the dedicated memory_fill method
     mem_addr.memory_fill(dest as i32, val, size as i32)?;
 
-    ctx.block_has_mutable_op = true;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 
@@ -4777,7 +4764,6 @@ macro_rules! store_const {
                 }
                 let mem_addr = &module_inst.mem_addrs[0];
                 mem_addr.store::<$store_type>(&memarg, ptr, *val_to_store)?;
-                $ctx.block_has_mutable_op = true;
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => Err(RuntimeError::InvalidOperand),
@@ -4804,7 +4790,6 @@ macro_rules! store_const {
                 }
                 let mem_addr = &module_inst.mem_addrs[0];
                 mem_addr.store::<$store_type>(&memarg, *ptr as i32, val_to_store)?;
-                $ctx.block_has_mutable_op = true;
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => Err(RuntimeError::InvalidOperand),
@@ -4832,7 +4817,6 @@ macro_rules! store_sized_const {
                 let mem_addr = &module_inst.mem_addrs[0];
                 let truncated_val = *val_to_store as $store_type;
                 mem_addr.store::<$store_type>(&memarg, ptr, truncated_val)?;
-                $ctx.block_has_mutable_op = true;
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => Err(RuntimeError::InvalidOperand),
