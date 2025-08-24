@@ -16,6 +16,17 @@ pub struct Runtime {
     module_inst: Rc<ModuleInst>,
     stacks: Stacks,
     block_cache: Option<BlockMemoizationCache>,
+    enable_stats: bool,
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        if self.enable_stats {
+            if let Some(ref cache) = self.block_cache {
+                cache.stats.report();
+            }
+        }
+    }
 }
 
 impl Runtime {
@@ -24,6 +35,7 @@ impl Runtime {
         func_addr: &FuncAddr,
         params: Vec<Val>,
         enable_memoization: bool,
+        enable_stats: bool,
     ) -> Result<Self, RuntimeError> {
         let stacks = Stacks::new(func_addr, params)?;
         Ok(Runtime {
@@ -34,6 +46,7 @@ impl Runtime {
             } else {
                 None
             },
+            enable_stats,
         })
     }
 
@@ -41,6 +54,7 @@ impl Runtime {
         module_inst: Rc<ModuleInst>,
         stacks: Stacks,
         enable_memoization: bool,
+        enable_stats: bool,
     ) -> Self {
         Runtime {
             module_inst,
@@ -50,6 +64,7 @@ impl Runtime {
             } else {
                 None
             },
+            enable_stats,
         }
     }
 
@@ -105,6 +120,7 @@ impl Runtime {
                         )
                     } else {
                         // No write pattern known - just start tracking, don't check cache
+                        // Don't count as miss here - it will be counted in check_block
                         if !module_inst.mem_addrs.is_empty() {
                             module_inst.mem_addrs[0].start_tracking_access();
                         }

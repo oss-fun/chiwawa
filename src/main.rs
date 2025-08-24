@@ -33,6 +33,9 @@ struct Cli {
     /// Enable memoization optimizations for pure instructions
     #[arg(long, default_value = "false")]
     enable_memoization: bool,
+    /// Enable statistics output
+    #[arg(long, default_value = "false")]
+    enable_stats: bool,
 }
 
 fn parse_args_string(args: &str) -> Vec<String> {
@@ -141,8 +144,12 @@ fn main() -> Result<()> {
         };
         println!("State restored into module instance. Stacks obtained.");
 
-        let mut runtime =
-            Runtime::new_restored(Rc::clone(&inst), restored_stacks, cli.enable_memoization);
+        let mut runtime = Runtime::new_restored(
+            Rc::clone(&inst),
+            restored_stacks,
+            cli.enable_memoization,
+            cli.enable_stats,
+        );
         println!("Runtime reconstructed. Resuming execution...");
 
         let result = runtime.run();
@@ -151,7 +158,13 @@ fn main() -> Result<()> {
         let func_addr = inst.get_export_func(&cli.invoke)?;
         let params = parse_params(cli.params.unwrap_or_default());
 
-        match Runtime::new(Rc::clone(&inst), &func_addr, params, cli.enable_memoization) {
+        match Runtime::new(
+            Rc::clone(&inst),
+            &func_addr,
+            params,
+            cli.enable_memoization,
+            cli.enable_stats,
+        ) {
             Ok(mut runtime) => {
                 let result = runtime.run();
                 handle_result(result);
