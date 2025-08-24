@@ -95,7 +95,7 @@ impl Runtime {
                              stack: &[Val],
                              locals: &[Val]|
              -> Option<Vec<Val>> {
-                cache_opt.as_ref().and_then(|cache| {
+                cache_opt.as_mut().and_then(|cache| {
                     if let Some(written_pages) = cache.get_write_pattern(start_ip, end_ip) {
                         let memory_pages = if !module_inst.mem_addrs.is_empty() {
                             module_inst.mem_addrs[0].get_page_versions_for_pages(written_pages)

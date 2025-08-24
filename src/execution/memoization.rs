@@ -1,4 +1,5 @@
 use crate::execution::value::Val;
+use lru::LruCache;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -60,43 +61,32 @@ impl CacheStats {
 
 #[derive(Debug)]
 pub struct BlockMemoizationCache {
-    cache: HashMap<BlockCacheKey, BlockCacheValue>,
+    cache: LruCache<BlockCacheKey, BlockCacheValue>,
     write_patterns: HashMap<(usize, usize), std::collections::HashSet<u32>>, // (start_ip, end_ip) -> written_pages
     global_write_patterns: HashMap<(usize, usize), std::collections::HashSet<u32>>, // (start_ip, end_ip) -> written_globals
     cached_blocks: std::collections::HashSet<(usize, usize)>, // Track which blocks have cache entries
-    max_entries: usize,
     pub stats: CacheStats,
 }
 
 impl BlockMemoizationCache {
     pub fn new() -> Self {
         Self {
-            cache: HashMap::new(),
+            cache: LruCache::new(std::num::NonZeroUsize::new(5000).unwrap()),
             write_patterns: HashMap::new(),
             global_write_patterns: HashMap::new(),
             cached_blocks: std::collections::HashSet::new(),
-            max_entries: 1000, // Reasonable limit for block cache
             stats: CacheStats::default(),
         }
     }
 
-    fn get(&self, key: &BlockCacheKey) -> Option<&BlockCacheValue> {
+    fn get(&mut self, key: &BlockCacheKey) -> Option<&BlockCacheValue> {
         self.cache.get(key)
     }
 
     fn insert(&mut self, key: BlockCacheKey, value: BlockCacheValue) {
-        // Simple eviction: clear cache when limit is reached
-        if self.cache.len() >= self.max_entries {
-            let evicted = self.cache.len();
-            self.cache.clear();
-            self.write_patterns.clear();
-            self.cached_blocks.clear();
-            self.stats
-                .eviction_count
-                .fetch_add(evicted as u64, Ordering::Relaxed);
+        if let Some(_) = self.cache.push(key, value) {
+            self.stats.eviction_count.fetch_add(1, Ordering::Relaxed);
         }
-
-        self.cache.insert(key, value);
     }
 
     fn compute_stack_hash(stack: &[Val]) -> u64 {
@@ -118,7 +108,7 @@ impl BlockMemoizationCache {
     }
 
     pub fn check_block(
-        &self,
+        &mut self,
         start_ip: usize,
         end_ip: usize,
         stack: &[Val],
@@ -140,43 +130,51 @@ impl BlockMemoizationCache {
             stack_hash,
             locals_hash,
         };
-        self.get(&key).and_then(|value| match value {
-            BlockCacheValue::CachedResult(cached_block) => {
-                // Check if any accessed pages have changed
-                let current_versions_map: std::collections::HashMap<u32, u64> =
-                    current_page_versions.iter().cloned().collect();
 
-                for &(page, cached_version) in &cached_block.page_versions {
-                    if let Some(&current_version) = current_versions_map.get(&page) {
-                        if current_version != cached_version {
-                            self.stats
-                                .invalidation_by_memory
-                                .fetch_add(1, Ordering::Relaxed);
-                            return None; // Page version changed, cache invalid
+        let cached_value = self.get(&key).cloned();
+
+        if let Some(value) = cached_value {
+            match value {
+                BlockCacheValue::CachedResult(cached_block) => {
+                    // Check if any accessed pages have changed
+                    let current_versions_map: std::collections::HashMap<u32, u64> =
+                        current_page_versions.iter().cloned().collect();
+
+                    for &(page, cached_version) in &cached_block.page_versions {
+                        if let Some(&current_version) = current_versions_map.get(&page) {
+                            if current_version != cached_version {
+                                self.stats
+                                    .invalidation_by_memory
+                                    .fetch_add(1, Ordering::Relaxed);
+                                return None; // Page version changed, cache invalid
+                            }
                         }
                     }
-                }
 
-                // Check if any accessed globals have changed
-                let current_global_versions_map: std::collections::HashMap<u32, u64> =
-                    current_global_versions.iter().cloned().collect();
+                    // Check if any accessed globals have changed
+                    let current_global_versions_map: std::collections::HashMap<u32, u64> =
+                        current_global_versions.iter().cloned().collect();
 
-                for &(global_idx, cached_version) in &cached_block.global_versions {
-                    if let Some(&current_version) = current_global_versions_map.get(&global_idx) {
-                        if current_version != cached_version {
-                            self.stats
-                                .invalidation_by_global
-                                .fetch_add(1, Ordering::Relaxed);
-                            return None; // Global version changed, cache invalid
+                    for &(global_idx, cached_version) in &cached_block.global_versions {
+                        if let Some(&current_version) = current_global_versions_map.get(&global_idx)
+                        {
+                            if current_version != cached_version {
+                                self.stats
+                                    .invalidation_by_global
+                                    .fetch_add(1, Ordering::Relaxed);
+                                return None; // Global version changed, cache invalid
+                            }
                         }
                     }
-                }
 
-                self.stats.hit_count.fetch_add(1, Ordering::Relaxed);
-                Some(cached_block.result.clone())
+                    self.stats.hit_count.fetch_add(1, Ordering::Relaxed);
+                    Some(cached_block.result)
+                }
+                BlockCacheValue::NonCacheable => None,
             }
-            BlockCacheValue::NonCacheable => None,
-        })
+        } else {
+            None
+        }
     }
 
     pub fn store_block(
