@@ -5,6 +5,10 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+// Configuration constants
+const CACHE_EXECUTION_THRESHOLD: u32 = 3; // Number of executions before caching
+const CACHE_SIZE: usize = 5000; // Maximum number of cached blocks
+
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
 pub struct BlockCacheKey {
     pub start_ip: usize,
@@ -73,16 +77,18 @@ pub struct BlockMemoizationCache {
     write_patterns: HashMap<(usize, usize), std::collections::HashSet<u32>>, // (start_ip, end_ip) -> written_chunks
     global_write_patterns: HashMap<(usize, usize), std::collections::HashSet<u32>>, // (start_ip, end_ip) -> written_globals
     cached_blocks: std::collections::HashSet<(usize, usize)>, // Track which blocks have cache entries
+    block_execution_counts: HashMap<(usize, usize), u32>, // Track execution count for each block
     pub stats: CacheStats,
 }
 
 impl BlockMemoizationCache {
     pub fn new() -> Self {
         Self {
-            cache: LruCache::new(std::num::NonZeroUsize::new(5000).unwrap()),
+            cache: LruCache::new(std::num::NonZeroUsize::new(CACHE_SIZE).unwrap()),
             write_patterns: HashMap::new(),
             global_write_patterns: HashMap::new(),
             cached_blocks: std::collections::HashSet::new(),
+            block_execution_counts: HashMap::new(),
             stats: CacheStats::default(),
         }
     }
@@ -196,6 +202,25 @@ impl BlockMemoizationCache {
         written_globals: std::collections::HashSet<u32>,
         global_versions: Vec<(u32, u64)>,
     ) {
+        // Increment execution count
+        let count = self
+            .block_execution_counts
+            .entry((start_ip, end_ip))
+            .or_insert(0);
+        *count += 1;
+
+        // Only cache blocks that have been executed multiple times
+        if *count < CACHE_EXECUTION_THRESHOLD {
+            // Still track write patterns for future use
+            let written_chunk_set: std::collections::HashSet<u32> =
+                written_chunks.iter().map(|&(chunk, _)| chunk).collect();
+            self.write_patterns
+                .insert((start_ip, end_ip), written_chunk_set);
+            self.global_write_patterns
+                .insert((start_ip, end_ip), written_globals);
+            return;
+        }
+
         let stack_hash = Self::compute_stack_hash(input_stack);
         let locals_hash = Self::compute_locals_hash(locals);
         let key = BlockCacheKey {
