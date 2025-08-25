@@ -3,7 +3,8 @@ use crate::error::RuntimeError;
 use crate::structure::module::WasiFuncType;
 use crate::structure::types::{NumType, RefType, ValueType, VecType};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, RwLock};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Hash)]
 pub enum Val {
@@ -109,8 +110,8 @@ impl Hash for Ref {
             }
             Ref::RefExtern(addr) => {
                 2.hash(state);
-                // Hash the Arc pointer address for ExternAddr
-                Arc::as_ptr(&addr.0).hash(state);
+                // Hash the Rc pointer address for ExternAddr
+                Rc::as_ptr(&addr.0).hash(state);
             }
         }
     }
@@ -124,18 +125,18 @@ impl PartialEq for Ref {
                 // Compare FuncAddr by pointer equality
                 std::ptr::eq(a as *const _, b as *const _)
             }
-            (Ref::RefExtern(a), Ref::RefExtern(b)) => Arc::ptr_eq(&a.0, &b.0),
+            (Ref::RefExtern(a), Ref::RefExtern(b)) => Rc::ptr_eq(&a.0, &b.0),
             _ => false,
         }
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct ExternAddr(Arc<RwLock<Externval>>);
+pub struct ExternAddr(Rc<RefCell<Externval>>);
 
 impl ExternAddr {
     pub fn new(externval: Externval) -> Self {
-        ExternAddr(Arc::new(RwLock::new(externval)))
+        ExternAddr(Rc::new(RefCell::new(externval)))
     }
 }
 

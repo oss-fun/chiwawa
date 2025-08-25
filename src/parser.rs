@@ -9,6 +9,7 @@ use crate::execution::stack::*;
 use crate::structure::{instructions::*, module::*, types::*};
 use crate::superinstructions::*;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::LazyLock;
 
 // Cache key for block type arity calculations
@@ -394,8 +395,8 @@ fn decode_type_section(
         types_to_vec(functype.params(), &mut params);
         types_to_vec(functype.results(), &mut results);
 
-        module
-            .types
+        Rc::get_mut(&mut module.types)
+            .unwrap()
             .push(crate::structure::types::FuncType { params, results });
     }
     Ok(())
@@ -411,7 +412,7 @@ fn decode_func_section(
         module.funcs.push(Func {
             type_: typeidx,
             locals: Vec::new(),
-            body: Vec::new(),
+            body: Rc::new(Vec::new()),
         });
     }
 
@@ -744,10 +745,11 @@ fn decode_code_section(
     )
     .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
-    if let Some(func) = module.funcs.get_mut(relative_func_index) {
-        func.body = processed_instrs.clone();
+    let body_rc = Rc::new(processed_instrs);
 
-        let memoizable_blocks = purity_checker.analyze_function(&processed_instrs);
+    if let Some(func) = module.funcs.get_mut(relative_func_index) {
+        let memoizable_blocks = purity_checker.analyze_function(&body_rc);
+        func.body = body_rc;
 
         while module.memoizable_blocks.len() <= relative_func_index {
             module.memoizable_blocks.push(HashSet::new());

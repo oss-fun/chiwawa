@@ -2,12 +2,13 @@ use crate::execution::stack::ProcessedInstr;
 use crate::structure::instructions::*;
 use crate::structure::types::*;
 use std::collections::HashSet;
+use std::rc::Rc;
 
 #[derive(Clone, Debug)]
 pub struct Func {
     pub type_: TypeIdx,
     pub locals: Vec<(u32, ValueType)>,
-    pub body: Vec<ProcessedInstr>,
+    pub body: Rc<Vec<ProcessedInstr>>,
 }
 
 #[derive(Clone)]
@@ -527,7 +528,7 @@ pub enum ExportDesc {
 
 pub struct Module {
     _name: String,
-    pub types: Vec<FuncType>,
+    pub types: Rc<Vec<FuncType>>,
     pub funcs: Vec<Func>,
     pub tables: Vec<Table>,
     pub mems: Vec<Mem>,
@@ -546,7 +547,7 @@ impl Module {
     pub fn new(name: &str) -> Self {
         Module {
             _name: name.to_string(),
-            types: Vec::new(),
+            types: Rc::new(Vec::new()),
             funcs: Vec::new(),
             tables: Vec::new(),
             mems: Vec::new(),
