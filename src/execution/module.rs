@@ -256,6 +256,16 @@ impl ModuleInst {
             .collect()
     }
 
+    pub fn get_global_versions_for_tracker(
+        &self,
+        tracker: &crate::execution::memoization::GlobalAccessTracker,
+    ) -> Vec<(u32, u64)> {
+        tracker
+            .iter()
+            .map(|idx| (idx, self.global_addrs[idx as usize].get_version()))
+            .collect()
+    }
+
     fn expr_to_const(&self, expr: &Expr) -> Option<Val> {
         match &expr.0[..] {
             &[Instr::I32Const(i)] => Some(Val::Num(Num::I32(i))),

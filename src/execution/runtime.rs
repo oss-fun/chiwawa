@@ -10,7 +10,7 @@ use crate::execution::value::{Num, Val, Vec_};
 use crate::structure::module::WasiFuncType;
 use crate::structure::types::{NumType, ValueType, VecType};
 use crate::wasi::{WasiError, WasiResult};
-use std::collections::HashSet;
+use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -75,34 +75,27 @@ impl Runtime {
         frame_stack_idx: usize,
         called_func_addr: &mut Option<FuncAddr>,
     ) -> Result<Result<Option<super::stack::ModuleLevelInstr>, RuntimeError>, RuntimeError> {
-        // Extract cache to avoid borrowing conflicts, will be restored later
-        let mut cache_opt = self.block_cache.take();
-        let mut pending_cache_stores: Vec<(
-            usize,
-            usize,
-            Vec<Val>,
-            Vec<Val>,
-            Vec<(u32, u64)>,
-            Vec<Val>,
-            GlobalAccessTracker,
-            Vec<(u32, u64)>,
-            LocalAccessTracker,
-        )> = Vec::new();
+        let cache_opt = self
+            .block_cache
+            .take()
+            .map(|cache| Rc::new(RefCell::new(cache)));
 
         let result = {
             let frame_stack = &mut self.stacks.activation_frame_stack[frame_stack_idx];
             let module_inst = &self.module_inst;
 
-            let get_cache = |start_ip: usize,
-                             end_ip: usize,
-                             stack: &[Val],
-                             locals: &[Val],
-                             local_versions: &[u64]|
-             -> Option<Vec<Val>> {
-                cache_opt.as_mut().and_then(|cache| {
+            let cache_for_get = cache_opt.clone();
+            let get_cache = move |start_ip: usize,
+                                  end_ip: usize,
+                                  stack: &[Val],
+                                  locals: &[Val],
+                                  local_versions: &[u64]|
+                  -> Option<Vec<Val>> {
+                cache_for_get.as_ref().and_then(|cache_rc| {
+                    let mut cache = cache_rc.borrow_mut();
                     if let Some(written_chunks) = cache.get_write_pattern(start_ip, end_ip) {
                         let memory_chunks = if !module_inst.mem_addrs.is_empty() {
-                            module_inst.mem_addrs[0].get_chunk_versions_for_chunks(written_chunks)
+                            module_inst.mem_addrs[0].get_chunk_versions_for_tracker(written_chunks)
                         } else {
                             Vec::new()
                         };
@@ -110,7 +103,7 @@ impl Runtime {
                         let global_versions = if let Some(written_globals) =
                             cache.get_global_write_pattern(start_ip, end_ip)
                         {
-                            module_inst.get_global_versions_for_indices(written_globals)
+                            module_inst.get_global_versions_for_tracker(written_globals)
                         } else {
                             Vec::new()
                         };
@@ -134,81 +127,54 @@ impl Runtime {
                 })
             };
 
-            let store_cache = |start_ip: usize,
-                               end_ip: usize,
-                               input_stack: &[Val],
-                               locals: &[Val],
-                               output_stack: Vec<Val>,
-                               accessed_globals: GlobalAccessTracker,
-                               accessed_locals: LocalAccessTracker| {
-                // Get written chunks if tracking was enabled
-                let written_chunks = if !module_inst.mem_addrs.is_empty() {
-                    module_inst.mem_addrs[0].get_and_stop_tracking_access()
-                } else {
-                    None
+            let cache_for_store = cache_opt.clone();
+            let store_cache =
+                move |start_ip: usize,
+                      end_ip: usize,
+                      input_stack: &[Val],
+                      locals: &[Val],
+                      output_stack: Vec<Val>,
+                      accessed_globals: GlobalAccessTracker,
+                      accessed_locals: LocalAccessTracker| {
+                    if let Some(cache_rc) = cache_for_store.as_ref() {
+                        let mut cache = cache_rc.borrow_mut();
+
+                        let written_chunks = if !module_inst.mem_addrs.is_empty() {
+                            module_inst.mem_addrs[0].get_and_stop_tracking_access()
+                        } else {
+                            None
+                        };
+
+                        let memory_chunks = if let Some(chunks) = written_chunks {
+                            module_inst.mem_addrs[0].get_chunk_versions_for_tracker(&chunks)
+                        } else {
+                            Vec::new()
+                        };
+
+                        let global_versions =
+                            module_inst.get_global_versions_for_tracker(&accessed_globals);
+
+                        cache.store_block(
+                            start_ip,
+                            end_ip,
+                            input_stack,
+                            locals,
+                            memory_chunks,
+                            output_stack,
+                            accessed_globals,
+                            global_versions,
+                            accessed_locals,
+                        );
+                    }
                 };
-
-                // Get written chunks (empty set if no writes occurred)
-                let chunks = written_chunks.unwrap_or_else(HashSet::new);
-
-                // Get versions for accessed chunks
-                let memory_chunks = if !module_inst.mem_addrs.is_empty() {
-                    module_inst.mem_addrs[0].get_chunk_versions_for_chunks(&chunks)
-                } else {
-                    Vec::new()
-                };
-
-                // Get versions for accessed globals
-                let accessed_global_set: HashSet<u32> = accessed_globals.iter().collect();
-                let global_versions =
-                    module_inst.get_global_versions_for_indices(&accessed_global_set);
-
-                pending_cache_stores.push((
-                    start_ip,
-                    end_ip,
-                    input_stack.to_vec(),
-                    locals.to_vec(),
-                    memory_chunks,
-                    output_stack,
-                    accessed_globals,
-                    global_versions,
-                    accessed_locals,
-                ));
-            };
 
             frame_stack.run_dtc_loop(called_func_addr, get_cache, store_cache)
         }?;
 
-        // Process pending cache stores
-        if let Some(ref mut cache) = cache_opt {
-            for (
-                start_ip,
-                end_ip,
-                input_stack,
-                locals,
-                written_chunks,
-                output_stack,
-                written_globals,
-                global_versions,
-                accessed_locals,
-            ) in pending_cache_stores
-            {
-                cache.store_block(
-                    start_ip,
-                    end_ip,
-                    &input_stack,
-                    &locals,
-                    written_chunks,
-                    output_stack,
-                    written_globals,
-                    global_versions,
-                    accessed_locals,
-                );
-            }
-        }
-
-        // Restore cache
-        self.block_cache = cache_opt;
+        self.block_cache = cache_opt.map(|cache_rc| match Rc::try_unwrap(cache_rc) {
+            Ok(refcell) => refcell.into_inner(),
+            Err(cache_rc) => cache_rc.borrow().clone(),
+        });
 
         Ok(result)
     }

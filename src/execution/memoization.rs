@@ -115,10 +115,6 @@ impl MemoryChunkTracker {
             })
             .chain(self.extended.iter().flat_map(|set| set.iter().copied()))
     }
-
-    pub fn to_vec(&self) -> Vec<u32> {
-        self.iter().collect()
-    }
 }
 
 // Configuration constants
@@ -163,6 +159,22 @@ pub struct CacheStats {
     pub store_count: AtomicU64,
 }
 
+impl Clone for CacheStats {
+    fn clone(&self) -> Self {
+        Self {
+            hit_count: AtomicU64::new(self.hit_count.load(Ordering::Relaxed)),
+            invalidation_by_memory: AtomicU64::new(
+                self.invalidation_by_memory.load(Ordering::Relaxed),
+            ),
+            invalidation_by_global: AtomicU64::new(
+                self.invalidation_by_global.load(Ordering::Relaxed),
+            ),
+            eviction_count: AtomicU64::new(self.eviction_count.load(Ordering::Relaxed)),
+            store_count: AtomicU64::new(self.store_count.load(Ordering::Relaxed)),
+        }
+    }
+}
+
 impl CacheStats {
     pub fn report(&self) {
         let hits = self.hit_count.load(Ordering::Relaxed);
@@ -193,11 +205,11 @@ impl CacheStats {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BlockMemoizationCache {
     cache: LruCache<BlockCacheKey, BlockCacheValue>,
-    write_patterns: LruCache<(usize, usize), std::collections::HashSet<u32>>, // LRU cache for write patterns
-    global_write_patterns: LruCache<(usize, usize), std::collections::HashSet<u32>>, // LRU cache for global write patterns
+    write_patterns: LruCache<(usize, usize), MemoryChunkTracker>, // LRU cache for write patterns
+    global_write_patterns: LruCache<(usize, usize), GlobalAccessTracker>, // LRU cache for global write patterns
     pub stats: CacheStats,
 }
 
@@ -270,11 +282,14 @@ impl BlockMemoizationCache {
             match value {
                 BlockCacheValue::CachedResult(cached_block) => {
                     // Check if any accessed chunks have changed
-                    let current_versions_map: std::collections::HashMap<u32, u64> =
-                        current_chunk_versions.iter().cloned().collect();
-
                     for &(chunk, cached_version) in &cached_block.chunk_versions {
-                        if let Some(&current_version) = current_versions_map.get(&chunk) {
+                        // Direct linear search instead of HashMap creation
+                        let current_version = current_chunk_versions
+                            .iter()
+                            .find(|(idx, _)| *idx == chunk)
+                            .map(|(_, ver)| *ver);
+
+                        if let Some(current_version) = current_version {
                             if current_version != cached_version {
                                 self.stats
                                     .invalidation_by_memory
@@ -285,12 +300,14 @@ impl BlockMemoizationCache {
                     }
 
                     // Check if any accessed globals have changed
-                    let current_global_versions_map: std::collections::HashMap<u32, u64> =
-                        current_global_versions.iter().cloned().collect();
-
                     for &(global_idx, cached_version) in &cached_block.global_versions {
-                        if let Some(&current_version) = current_global_versions_map.get(&global_idx)
-                        {
+                        // Direct linear search instead of HashMap creation
+                        let current_version = current_global_versions
+                            .iter()
+                            .find(|(idx, _)| *idx == global_idx)
+                            .map(|(_, ver)| *ver);
+
+                        if let Some(current_version) = current_version {
                             if current_version != cached_version {
                                 self.stats
                                     .invalidation_by_global
@@ -344,8 +361,7 @@ impl BlockMemoizationCache {
         };
 
         // Check if we already have this block in cache
-        let existing_value = self.cache.get(&key).cloned();
-        let execution_count = match existing_value {
+        let execution_count = match self.cache.get(&key) {
             Some(BlockCacheValue::ExecutionCount(count)) => count + 1,
             Some(BlockCacheValue::CachedResult(_)) => {
                 // Already cached, nothing to do
@@ -364,23 +380,16 @@ impl BlockMemoizationCache {
             self.insert(key, BlockCacheValue::ExecutionCount(execution_count));
 
             // Still track write patterns for future use
-            let written_chunk_set: std::collections::HashSet<u32> =
-                written_chunks.iter().map(|&(chunk, _)| chunk).collect();
+            let mut written_chunks_tracker = MemoryChunkTracker::new();
+            for &(chunk_idx, _) in &written_chunks {
+                written_chunks_tracker.track_access(chunk_idx);
+            }
             self.write_patterns
-                .push((start_ip, end_ip), written_chunk_set);
+                .push((start_ip, end_ip), written_chunks_tracker);
 
-            // Convert GlobalAccessTracker to HashSet for write patterns
-            let mut written_globals_set = HashSet::new();
-            for i in 0..64 {
-                if (written_globals_tracker.bitset & (1u64 << i)) != 0 {
-                    written_globals_set.insert(i as u32);
-                }
-            }
-            if let Some(ref extended) = written_globals_tracker.extended {
-                written_globals_set.extend(extended.iter().copied());
-            }
+            // Store global write patterns
             self.global_write_patterns
-                .push((start_ip, end_ip), written_globals_set);
+                .push((start_ip, end_ip), written_globals_tracker.clone());
             return;
         }
 
@@ -390,33 +399,18 @@ impl BlockMemoizationCache {
             written_chunks_tracker.track_access(chunk_idx);
         }
 
-        // Store write patterns separately for reuse (still using HashSet for compatibility)
-        let written_chunk_set: std::collections::HashSet<u32> =
-            written_chunks.iter().map(|&(chunk, _)| chunk).collect();
+        // Store write patterns separately for reuse
         self.write_patterns
-            .push((start_ip, end_ip), written_chunk_set);
+            .push((start_ip, end_ip), written_chunks_tracker.clone());
 
-        // Convert GlobalAccessTracker to HashSet for write patterns
-        let mut written_globals_set = HashSet::new();
-        for i in 0..64 {
-            if (written_globals_tracker.bitset & (1u64 << i)) != 0 {
-                written_globals_set.insert(i as u32);
-            }
-        }
-        if let Some(ref extended) = written_globals_tracker.extended {
-            written_globals_set.extend(extended.iter().copied());
-        }
-
+        // Store global write patterns
         self.global_write_patterns
-            .push((start_ip, end_ip), written_globals_set);
+            .push((start_ip, end_ip), written_globals_tracker.clone());
 
         // Extract globals bitset and extended list
-        let written_globals_extended = if let Some(ref extended) = written_globals_tracker.extended
-        {
-            Some(extended.iter().copied().collect::<Vec<_>>())
-        } else {
-            None
-        };
+        let written_globals_extended = written_globals_tracker
+            .extended
+            .map(|extended| extended.into_iter().collect::<Vec<_>>());
 
         let cached_block = CachedBlock {
             result: output_stack,
@@ -439,7 +433,7 @@ impl BlockMemoizationCache {
         &mut self,
         start_ip: usize,
         end_ip: usize,
-    ) -> Option<&std::collections::HashSet<u32>> {
+    ) -> Option<&MemoryChunkTracker> {
         self.write_patterns.get(&(start_ip, end_ip))
     }
 
@@ -447,16 +441,16 @@ impl BlockMemoizationCache {
         &mut self,
         start_ip: usize,
         end_ip: usize,
-        pages: std::collections::HashSet<u32>,
+        chunks: MemoryChunkTracker,
     ) {
-        self.write_patterns.push((start_ip, end_ip), pages);
+        self.write_patterns.push((start_ip, end_ip), chunks);
     }
 
     pub fn get_global_write_pattern(
         &mut self,
         start_ip: usize,
         end_ip: usize,
-    ) -> Option<&std::collections::HashSet<u32>> {
+    ) -> Option<&GlobalAccessTracker> {
         self.global_write_patterns.get(&(start_ip, end_ip))
     }
 }

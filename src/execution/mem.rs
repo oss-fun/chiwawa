@@ -1,9 +1,10 @@
 use crate::error::RuntimeError;
+use crate::execution::memoization::MemoryChunkTracker;
 use crate::structure::{instructions::Memarg, types::*};
 use byteorder::*;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::Cursor;
 use std::rc::Rc;
 use typenum::*;
@@ -15,8 +16,8 @@ pub const CHUNK_SIZE: usize = 4096;
 #[derive(Clone, Debug)]
 pub struct MemAddr {
     mem_inst: Rc<RefCell<MemInst>>,
-    chunk_versions: Rc<RefCell<HashMap<u32, u64>>>,
-    current_block_written_chunks: RefCell<Option<HashSet<u32>>>,
+    chunk_versions: Rc<RefCell<Vec<u64>>>,
+    current_block_written_chunks: RefCell<Option<MemoryChunkTracker>>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MemInst {
@@ -40,7 +41,7 @@ impl MemAddr {
                     vec
                 },
             })),
-            chunk_versions: Rc::new(RefCell::new(HashMap::new())),
+            chunk_versions: Rc::new(RefCell::new(Vec::new())),
             current_block_written_chunks: RefCell::new(None),
         }
     }
@@ -51,16 +52,21 @@ impl MemAddr {
             let end_chunk = (start_pos + len - 1) / CHUNK_SIZE;
             let mut versions = self.chunk_versions.borrow_mut();
 
+            // Ensure vector is large enough
+            if end_chunk >= versions.len() {
+                versions.resize(end_chunk + 1, 0);
+            }
+
             // Update chunk versions
             for chunk in start_chunk..=end_chunk {
-                *versions.entry(chunk as u32).or_insert(0) += 1;
+                versions[chunk] += 1;
             }
 
             // Try to record in current_block_written_chunks if tracking
             if let Ok(mut access_lock) = self.current_block_written_chunks.try_borrow_mut() {
-                if let Some(ref mut chunks) = *access_lock {
+                if let Some(ref mut tracker) = *access_lock {
                     for chunk in start_chunk..=end_chunk {
-                        chunks.insert(chunk as u32);
+                        tracker.track_access(chunk as u32);
                     }
                 }
             }
@@ -126,14 +132,13 @@ impl MemAddr {
                 .data
                 .resize(new as usize * 65536, 0);
 
-            // Add new chunks with version 0
+            // Ensure chunk versions vector is large enough for new memory size
             // Convert from WASM pages (64KB) to internal tracking chunks (4KB)
-            if prev_size >= 0 && size > 0 {
+            if new > 0 {
                 let mut versions = self.chunk_versions.borrow_mut();
-                let start_chunk = (prev_size as usize * 65536) / CHUNK_SIZE;
-                let end_chunk = (new as usize * 65536) / CHUNK_SIZE;
-                for chunk in start_chunk..end_chunk {
-                    versions.insert(chunk as u32, 0);
+                let total_chunks = (new as usize * 65536) / CHUNK_SIZE;
+                if total_chunks > versions.len() {
+                    versions.resize(total_chunks, 0);
                 }
             }
 
@@ -215,20 +220,25 @@ impl MemAddr {
 
     pub fn get_all_chunk_versions(&self) -> Vec<(u32, u64)> {
         let versions = self.chunk_versions.borrow();
-        let mut result: Vec<(u32, u64)> = versions
+        versions
             .iter()
-            .map(|(&chunk, &version)| (chunk, version))
-            .collect();
-        result.sort_by_key(|&(chunk, _)| chunk);
-        result
+            .enumerate()
+            .filter_map(|(idx, &version)| {
+                if version > 0 {
+                    Some((idx as u32, version))
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     pub fn start_tracking_access(&self) {
         let mut access_lock = self.current_block_written_chunks.borrow_mut();
-        *access_lock = Some(HashSet::new());
+        *access_lock = Some(MemoryChunkTracker::new());
     }
 
-    pub fn get_and_stop_tracking_access(&self) -> Option<HashSet<u32>> {
+    pub fn get_and_stop_tracking_access(&self) -> Option<MemoryChunkTracker> {
         let mut access_lock = self.current_block_written_chunks.borrow_mut();
         access_lock.take()
     }
@@ -237,7 +247,32 @@ impl MemAddr {
         let versions = self.chunk_versions.borrow();
         let mut result: Vec<(u32, u64)> = chunks
             .iter()
-            .filter_map(|&chunk| versions.get(&chunk).map(|&version| (chunk, version)))
+            .filter_map(|&chunk| {
+                if (chunk as usize) < versions.len() && versions[chunk as usize] > 0 {
+                    Some((chunk, versions[chunk as usize]))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        result.sort_by_key(|&(chunk, _)| chunk);
+        result
+    }
+
+    pub fn get_chunk_versions_for_tracker(
+        &self,
+        tracker: &crate::execution::memoization::MemoryChunkTracker,
+    ) -> Vec<(u32, u64)> {
+        let versions = self.chunk_versions.borrow();
+        let mut result: Vec<(u32, u64)> = tracker
+            .iter()
+            .filter_map(|chunk| {
+                if (chunk as usize) < versions.len() && versions[chunk as usize] > 0 {
+                    Some((chunk, versions[chunk as usize]))
+                } else {
+                    None
+                }
+            })
             .collect();
         result.sort_by_key(|&(chunk, _)| chunk);
         result
