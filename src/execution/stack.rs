@@ -609,21 +609,9 @@ impl FrameStack {
             .ok_or(RuntimeError::StackError("Initial label stack empty"))?;
 
         const CHECKPOINT_TRIGGER_FILE: &str = "./checkpoint.trigger";
-        const CHECKPOINT_CHECK_INTERVAL: u64 = 100;
 
         loop {
             self.instruction_count += 1;
-            if self.instruction_count % CHECKPOINT_CHECK_INTERVAL == 0 {
-                let trigger_path = Path::new(CHECKPOINT_TRIGGER_FILE);
-                if trigger_path.exists() {
-                    println!(
-                        "Checkpoint trigger file found after {} instructions! Requesting checkpoint...",
-                        self.instruction_count
-                    );
-                    let _ = fs::remove_file(trigger_path);
-                    return Ok(Err(RuntimeError::CheckpointRequested));
-                }
-            }
 
             if current_label_stack_idx >= self.label_stack.len() {
                 break;
@@ -711,6 +699,17 @@ impl FrameStack {
                             return Ok(Ok(Some(ModuleLevelInstr::Return)));
                         }
                         HandlerResult::Invoke(func_addr) => {
+                            // Check for checkpoint trigger at function call boundary
+                            let trigger_path = Path::new(CHECKPOINT_TRIGGER_FILE);
+                            if trigger_path.exists() {
+                                println!(
+                                    "Checkpoint trigger file found at function call after {} instructions!",
+                                    self.instruction_count
+                                );
+                                let _ = fs::remove_file(trigger_path);
+                                return Ok(Err(RuntimeError::CheckpointRequested));
+                            }
+                            
                             self.label_stack[current_label_stack_idx].ip = ip + 1;
                             return Ok(Ok(Some(ModuleLevelInstr::Invoke(func_addr))));
                         }
