@@ -1,6 +1,8 @@
 use crate::error::RuntimeError;
 use crate::execution::func::{FuncAddr, FuncInst};
-use crate::execution::memoization::BlockMemoizationCache;
+use crate::execution::memoization::{
+    BlockMemoizationCache, GlobalAccessTracker, LocalAccessTracker,
+};
 use crate::execution::migration;
 use crate::execution::module::ModuleInst;
 use crate::execution::stack::{Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, Stacks};
@@ -8,7 +10,7 @@ use crate::execution::value::{Num, Val, Vec_};
 use crate::structure::module::WasiFuncType;
 use crate::structure::types::{NumType, ValueType, VecType};
 use crate::wasi::{WasiError, WasiResult};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -82,9 +84,9 @@ impl Runtime {
             Vec<Val>,
             Vec<(u32, u64)>,
             Vec<Val>,
-            std::collections::HashSet<u32>,
+            GlobalAccessTracker,
             Vec<(u32, u64)>,
-            HashMap<u32, u64>,
+            LocalAccessTracker,
         )> = Vec::new();
 
         let result = {
@@ -137,8 +139,8 @@ impl Runtime {
                                input_stack: &[Val],
                                locals: &[Val],
                                output_stack: Vec<Val>,
-                               accessed_globals: HashSet<u32>,
-                               accessed_locals: HashMap<u32, u64>| {
+                               accessed_globals: GlobalAccessTracker,
+                               accessed_locals: LocalAccessTracker| {
                 // Get written chunks if tracking was enabled
                 let written_chunks = if !module_inst.mem_addrs.is_empty() {
                     module_inst.mem_addrs[0].get_and_stop_tracking_access()
@@ -157,8 +159,9 @@ impl Runtime {
                 };
 
                 // Get versions for accessed globals
+                let accessed_global_set: HashSet<u32> = accessed_globals.iter().collect();
                 let global_versions =
-                    module_inst.get_global_versions_for_indices(&accessed_globals);
+                    module_inst.get_global_versions_for_indices(&accessed_global_set);
 
                 pending_cache_stores.push((
                     start_ip,
@@ -312,8 +315,12 @@ impl Runtime {
                                         void: type_.results.is_empty(),
                                         instruction_count: 0,
                                         global_value_stack: vec![], // Will be set up after frame creation
-                                        current_block_accessed_globals: Some(HashSet::new()),
-                                        current_block_accessed_locals: Some(HashMap::new()),
+                                        current_block_accessed_globals: Some(
+                                            GlobalAccessTracker::new(),
+                                        ),
+                                        current_block_accessed_locals: Some(
+                                            LocalAccessTracker::new(),
+                                        ),
                                     };
                                     self.stacks.activation_frame_stack.push(new_frame);
                                 }

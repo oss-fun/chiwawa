@@ -1,12 +1,15 @@
 use super::value::*;
 use crate::error::RuntimeError;
-use crate::execution::{func::*, module::*};
+use crate::execution::{
+    func::*,
+    memoization::{GlobalAccessTracker, LocalAccessTracker},
+    module::*,
+};
 use crate::structure::types::LabelIdx as StructureLabelIdx;
 use crate::structure::{instructions::*, types::*};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::arch::asm;
-use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
 use std::path::Path;
@@ -66,8 +69,8 @@ pub struct ExecutionContext<'a> {
     pub value_stack: &'a mut Vec<Val>,
     pub ip: usize,
     pub block_has_mutable_op: bool,
-    pub accessed_globals: &'a mut Option<HashSet<u32>>,
-    pub accessed_locals: &'a mut Option<HashMap<u32, u64>>,
+    pub accessed_globals: &'a mut Option<GlobalAccessTracker>,
+    pub accessed_locals: &'a mut Option<LocalAccessTracker>,
 }
 
 #[derive(Clone, Debug)]
@@ -510,8 +513,8 @@ impl Stacks {
                     void: type_.results.is_empty(),
                     instruction_count: 0,
                     global_value_stack: vec![],
-                    current_block_accessed_globals: Some(HashSet::new()),
-                    current_block_accessed_locals: Some(HashMap::new()),
+                    current_block_accessed_globals: Some(GlobalAccessTracker::new()),
+                    current_block_accessed_locals: Some(LocalAccessTracker::new()),
                 };
 
                 Ok(Stacks {
@@ -549,9 +552,9 @@ pub struct FrameStack {
     // Global value stack shared across all label stacks
     pub global_value_stack: Vec<Val>,
     #[serde(skip)]
-    pub current_block_accessed_globals: Option<HashSet<u32>>, // Track accessed globals when enabled
+    pub current_block_accessed_globals: Option<GlobalAccessTracker>, // Track accessed globals when enabled
     #[serde(skip)]
-    pub current_block_accessed_locals: Option<HashMap<u32, u64>>, // Track accessed locals when enabled
+    pub current_block_accessed_locals: Option<LocalAccessTracker>, // Track accessed locals when enabled
 }
 
 impl FrameStack {
@@ -597,7 +600,7 @@ impl FrameStack {
     ) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError>
     where
         F: FnMut(usize, usize, &[Val], &[Val], &[u64]) -> Option<Vec<Val>>, // Cache lookup callback with locals and versions
-        G: FnMut(usize, usize, &[Val], &[Val], Vec<Val>, HashSet<u32>, HashMap<u32, u64>), // Cache store callback with locals, globals and accessed locals
+        G: FnMut(usize, usize, &[Val], &[Val], Vec<Val>, GlobalAccessTracker, LocalAccessTracker), // Cache store callback with locals, globals and accessed locals
     {
         let mut current_label_stack_idx = self
             .label_stack
@@ -769,10 +772,12 @@ impl FrameStack {
 
                                 // Reset tracking for new block after branch
                                 if self.current_block_accessed_globals.is_some() {
-                                    self.current_block_accessed_globals = Some(HashSet::new());
+                                    self.current_block_accessed_globals =
+                                        Some(GlobalAccessTracker::new());
                                 }
                                 if self.current_block_accessed_locals.is_some() {
-                                    self.current_block_accessed_locals = Some(HashMap::new());
+                                    self.current_block_accessed_locals =
+                                        Some(LocalAccessTracker::new());
                                 }
                             } else {
                                 return Err(RuntimeError::InvalidBranchTarget);
@@ -827,10 +832,12 @@ impl FrameStack {
 
                             // Reset tracking for new block
                             if self.current_block_accessed_globals.is_some() {
-                                self.current_block_accessed_globals = Some(HashSet::new());
+                                self.current_block_accessed_globals =
+                                    Some(GlobalAccessTracker::new());
                             }
                             if self.current_block_accessed_locals.is_some() {
-                                self.current_block_accessed_locals = Some(HashMap::new());
+                                self.current_block_accessed_locals =
+                                    Some(LocalAccessTracker::new());
                             }
                         }
                         HandlerResult::PopLabelStack { next_ip } => {
@@ -935,12 +942,12 @@ impl FrameStack {
                                             let tracked_globals = self
                                                 .current_block_accessed_globals
                                                 .take()
-                                                .unwrap_or_else(HashSet::new);
+                                                .unwrap_or_else(GlobalAccessTracker::new);
                                             // Get tracked locals before storing
                                             let tracked_locals = self
                                                 .current_block_accessed_locals
                                                 .take()
-                                                .unwrap_or_else(HashMap::new);
+                                                .unwrap_or_else(LocalAccessTracker::new);
                                             store_block_cache(
                                                 start_ip,
                                                 end_ip,
@@ -3143,9 +3150,9 @@ fn handle_local_get(
         }
 
         // Track local access with version
-        if let Some(ref mut accessed_locals) = ctx.accessed_locals {
+        if let Some(ref mut tracker) = ctx.accessed_locals {
             let version = ctx.frame.local_versions[index];
-            accessed_locals.insert(index as u32, version);
+            tracker.track_access(index as u32, version);
         }
 
         let val = ctx.frame.locals[index].clone();
@@ -3193,9 +3200,9 @@ fn handle_local_tee(
             .clone();
 
         // Track local access with version before modification
-        if let Some(ref mut accessed_locals) = ctx.accessed_locals {
+        if let Some(ref mut tracker) = ctx.accessed_locals {
             let version = ctx.frame.local_versions[index];
-            accessed_locals.insert(index as u32, version);
+            tracker.track_access(index as u32, version);
         }
 
         ctx.frame.locals[index] = val;
@@ -3221,6 +3228,12 @@ fn handle_global_get(
             .global_addrs
             .get_by_idx(GlobalIdx(index_val))
             .clone();
+
+        // Track global access
+        if let Some(ref mut tracker) = ctx.accessed_globals {
+            tracker.track_access(index_val);
+        }
+
         ctx.value_stack.push(global_addr.get());
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
@@ -3248,8 +3261,8 @@ fn handle_global_set(
             .clone();
         global_addr.set(val)?;
         // Track global write
-        if let Some(ref mut globals) = ctx.accessed_globals.as_mut() {
-            globals.insert(index_val);
+        if let Some(ref mut tracker) = ctx.accessed_globals {
+            tracker.track_access(index_val);
         }
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {

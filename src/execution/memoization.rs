@@ -1,13 +1,129 @@
 use crate::execution::value::Val;
 use lru::LruCache;
+use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct LocalAccessTracker {
+    pub bitset_low: u64,
+    // Bitset for locals 64-127 (only allocated if needed)
+    pub bitset_high: Option<u64>,
+    pub versions: Vec<(u32, u64)>,
+}
+
+impl LocalAccessTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn track_access(&mut self, index: u32, version: u64) {
+        if index < 64 {
+            self.bitset_low |= 1u64 << index;
+        } else if index < 128 {
+            let high = self.bitset_high.get_or_insert(0);
+            *high |= 1u64 << (index - 64);
+        }
+        // Only store version if not already tracked
+        if !self.versions.iter().any(|(idx, _)| *idx == index) {
+            self.versions.push((index, version));
+        }
+    }
+
+    pub fn is_accessed(&self, index: u32) -> bool {
+        if index < 64 {
+            (self.bitset_low & (1u64 << index)) != 0
+        } else if index < 128 {
+            self.bitset_high
+                .map(|high| (high & (1u64 << (index - 64))) != 0)
+                .unwrap_or(false)
+        } else {
+            self.versions.iter().any(|(idx, _)| *idx == index)
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GlobalAccessTracker {
+    pub bitset: u64,
+    // Extended tracking for more globals
+    pub extended: Option<HashSet<u32>>,
+}
+
+// Lightweight tracking for memory chunk accesses
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MemoryChunkTracker {
+    // Index 0: chunks 0-63, Index 1: chunks 64-127, etc.
+    pub bitsets: Vec<u64>,
+    pub extended: Option<HashSet<u32>>,
+}
+
+impl GlobalAccessTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn track_access(&mut self, index: u32) {
+        if index < 64 {
+            self.bitset |= 1u64 << index;
+        } else {
+            self.extended.get_or_insert_with(HashSet::new).insert(index);
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = u32> + '_ {
+        (0..64)
+            .filter(move |i| (self.bitset & (1u64 << i)) != 0)
+            .map(|i| i as u32)
+            .chain(self.extended.iter().flat_map(|set| set.iter().copied()))
+    }
+}
+
+impl MemoryChunkTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn track_access(&mut self, chunk_idx: u32) {
+        let bitset_idx = (chunk_idx / 64) as usize;
+        let bit_pos = chunk_idx % 64;
+
+        if bitset_idx >= self.bitsets.len() {
+            if bitset_idx > 16 {
+                // Arbitrary threshold: 16 * 64 = 1024 chunks
+                self.extended
+                    .get_or_insert_with(HashSet::new)
+                    .insert(chunk_idx);
+                return;
+            }
+            self.bitsets.resize(bitset_idx + 1, 0);
+        }
+
+        self.bitsets[bitset_idx] |= 1u64 << bit_pos;
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = u32> + '_ {
+        self.bitsets
+            .iter()
+            .enumerate()
+            .flat_map(|(idx, &bitset)| {
+                (0..64)
+                    .filter(move |i| (bitset & (1u64 << i)) != 0)
+                    .map(move |i| (idx * 64 + i) as u32)
+            })
+            .chain(self.extended.iter().flat_map(|set| set.iter().copied()))
+    }
+
+    pub fn to_vec(&self) -> Vec<u32> {
+        self.iter().collect()
+    }
+}
+
 // Configuration constants
 const CACHE_EXECUTION_THRESHOLD: u32 = 10; // Number of executions before caching
-const CACHE_SIZE: usize = 30000; // Maximum number of cached blocks
+const CACHE_SIZE: usize = 5000; // Maximum number of cached blocks
 
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
 pub struct BlockCacheKey {
@@ -20,17 +136,22 @@ pub struct BlockCacheKey {
 #[derive(Clone, Debug)]
 pub struct CachedBlock {
     pub result: Vec<Val>,
-    pub written_chunks: std::collections::HashSet<u32>, // Chunks written during execution
-    pub chunk_versions: Vec<(u32, u64)>,                // Version snapshot when cached
-    pub written_globals: std::collections::HashSet<u32>, // Globals written during execution
-    pub global_versions: Vec<(u32, u64)>,               // Global version snapshot when cached
-    pub accessed_locals: HashMap<u32, u64>, // Locals accessed during execution with versions
+    pub written_chunks_tracker: MemoryChunkTracker, // Bitset-based chunk tracking
+    pub chunk_versions: Vec<(u32, u64)>,            // Version snapshot when cached
+    pub written_globals_bitset_low: u64,            // Bitset for first 64 globals
+    pub written_globals_bitset_high: Option<u64>,   // Bitset for globals 64-127
+    pub written_globals_extended: Option<Vec<u32>>, // For globals >= 128
+    pub global_versions: Vec<(u32, u64)>,           // Global version snapshot when cached
+    pub accessed_locals_bitset_low: u64,            // Bitset for first 64 locals
+    pub accessed_locals_bitset_high: Option<u64>,   // Bitset for locals 64-127
+    pub accessed_locals_versions: Vec<(u32, u64)>,  // Version info for accessed locals
 }
 
 #[derive(Clone, Debug)]
 pub enum BlockCacheValue {
     CachedResult(CachedBlock),
     NonCacheable,
+    ExecutionCount(u32),
 }
 
 #[derive(Debug, Default)]
@@ -75,21 +196,23 @@ impl CacheStats {
 #[derive(Debug)]
 pub struct BlockMemoizationCache {
     cache: LruCache<BlockCacheKey, BlockCacheValue>,
-    write_patterns: HashMap<(usize, usize), std::collections::HashSet<u32>>, // (start_ip, end_ip) -> written_chunks
-    global_write_patterns: HashMap<(usize, usize), std::collections::HashSet<u32>>, // (start_ip, end_ip) -> written_globals
-    cached_blocks: std::collections::HashSet<(usize, usize)>, // Track which blocks have cache entries
-    block_execution_counts: HashMap<(usize, usize), u32>, // Track execution count for each block
+    write_patterns: LruCache<(usize, usize), std::collections::HashSet<u32>>, // LRU cache for write patterns
+    global_write_patterns: LruCache<(usize, usize), std::collections::HashSet<u32>>, // LRU cache for global write patterns
     pub stats: CacheStats,
 }
+
+const WRITE_PATTERN_CACHE_SIZE: usize = 1000;
 
 impl BlockMemoizationCache {
     pub fn new() -> Self {
         Self {
             cache: LruCache::new(std::num::NonZeroUsize::new(CACHE_SIZE).unwrap()),
-            write_patterns: HashMap::new(),
-            global_write_patterns: HashMap::new(),
-            cached_blocks: std::collections::HashSet::new(),
-            block_execution_counts: HashMap::new(),
+            write_patterns: LruCache::new(
+                std::num::NonZeroUsize::new(WRITE_PATTERN_CACHE_SIZE).unwrap(),
+            ),
+            global_write_patterns: LruCache::new(
+                std::num::NonZeroUsize::new(WRITE_PATTERN_CACHE_SIZE).unwrap(),
+            ),
             stats: CacheStats::default(),
         }
     }
@@ -132,12 +255,6 @@ impl BlockMemoizationCache {
         current_chunk_versions: &[(u32, u64)],
         current_global_versions: &[(u32, u64)],
     ) -> Option<Vec<Val>> {
-        // Early exit if this block range has never been cached
-        if !self.cached_blocks.contains(&(start_ip, end_ip)) {
-            return None;
-        }
-
-        // Only compute hashes if block range exists in cache
         let stack_hash = Self::compute_stack_hash(stack);
         let locals_hash = Self::compute_locals_hash(locals);
         let key = BlockCacheKey {
@@ -183,8 +300,8 @@ impl BlockMemoizationCache {
                         }
                     }
 
-                    // Check if any accessed locals have changed
-                    for (&local_idx, &cached_version) in &cached_block.accessed_locals {
+                    // Check if any accessed locals have changed using bitsets
+                    for &(local_idx, cached_version) in &cached_block.accessed_locals_versions {
                         if (local_idx as usize) < local_versions.len() {
                             let current_version = local_versions[local_idx as usize];
                             if current_version != cached_version {
@@ -198,6 +315,7 @@ impl BlockMemoizationCache {
                     Some(cached_block.result)
                 }
                 BlockCacheValue::NonCacheable => None,
+                BlockCacheValue::ExecutionCount(_) => None, // Still tracking executions
             }
         } else {
             None
@@ -212,29 +330,10 @@ impl BlockMemoizationCache {
         locals: &[Val],
         written_chunks: Vec<(u32, u64)>,
         output_stack: Vec<Val>,
-        written_globals: std::collections::HashSet<u32>,
+        written_globals_tracker: GlobalAccessTracker,
         global_versions: Vec<(u32, u64)>,
-        accessed_locals: HashMap<u32, u64>,
+        accessed_locals_tracker: LocalAccessTracker,
     ) {
-        // Increment execution count
-        let count = self
-            .block_execution_counts
-            .entry((start_ip, end_ip))
-            .or_insert(0);
-        *count += 1;
-
-        // Only cache blocks that have been executed multiple times
-        if *count < CACHE_EXECUTION_THRESHOLD {
-            // Still track write patterns for future use
-            let written_chunk_set: std::collections::HashSet<u32> =
-                written_chunks.iter().map(|&(chunk, _)| chunk).collect();
-            self.write_patterns
-                .insert((start_ip, end_ip), written_chunk_set);
-            self.global_write_patterns
-                .insert((start_ip, end_ip), written_globals);
-            return;
-        }
-
         let stack_hash = Self::compute_stack_hash(input_stack);
         let locals_hash = Self::compute_locals_hash(locals);
         let key = BlockCacheKey {
@@ -244,26 +343,92 @@ impl BlockMemoizationCache {
             locals_hash,
         };
 
-        // Extract chunk indices for written chunks tracking
+        // Check if we already have this block in cache
+        let existing_value = self.cache.get(&key).cloned();
+        let execution_count = match existing_value {
+            Some(BlockCacheValue::ExecutionCount(count)) => count + 1,
+            Some(BlockCacheValue::CachedResult(_)) => {
+                // Already cached, nothing to do
+                return;
+            }
+            Some(BlockCacheValue::NonCacheable) => {
+                // Non-cacheable block
+                return;
+            }
+            None => 1, // First execution
+        };
+
+        // Only cache blocks that have been executed multiple times
+        if execution_count < CACHE_EXECUTION_THRESHOLD {
+            // Store execution count
+            self.insert(key, BlockCacheValue::ExecutionCount(execution_count));
+
+            // Still track write patterns for future use
+            let written_chunk_set: std::collections::HashSet<u32> =
+                written_chunks.iter().map(|&(chunk, _)| chunk).collect();
+            self.write_patterns
+                .push((start_ip, end_ip), written_chunk_set);
+
+            // Convert GlobalAccessTracker to HashSet for write patterns
+            let mut written_globals_set = HashSet::new();
+            for i in 0..64 {
+                if (written_globals_tracker.bitset & (1u64 << i)) != 0 {
+                    written_globals_set.insert(i as u32);
+                }
+            }
+            if let Some(ref extended) = written_globals_tracker.extended {
+                written_globals_set.extend(extended.iter().copied());
+            }
+            self.global_write_patterns
+                .push((start_ip, end_ip), written_globals_set);
+            return;
+        }
+
+        // Create memory chunk tracker
+        let mut written_chunks_tracker = MemoryChunkTracker::new();
+        for &(chunk_idx, _) in &written_chunks {
+            written_chunks_tracker.track_access(chunk_idx);
+        }
+
+        // Store write patterns separately for reuse (still using HashSet for compatibility)
         let written_chunk_set: std::collections::HashSet<u32> =
             written_chunks.iter().map(|&(chunk, _)| chunk).collect();
-
-        // Store write patterns separately for reuse
         self.write_patterns
-            .insert((start_ip, end_ip), written_chunk_set.clone());
-        self.global_write_patterns
-            .insert((start_ip, end_ip), written_globals.clone());
+            .push((start_ip, end_ip), written_chunk_set);
 
-        // Record that this block range now has cache entries
-        self.cached_blocks.insert((start_ip, end_ip));
+        // Convert GlobalAccessTracker to HashSet for write patterns
+        let mut written_globals_set = HashSet::new();
+        for i in 0..64 {
+            if (written_globals_tracker.bitset & (1u64 << i)) != 0 {
+                written_globals_set.insert(i as u32);
+            }
+        }
+        if let Some(ref extended) = written_globals_tracker.extended {
+            written_globals_set.extend(extended.iter().copied());
+        }
+
+        self.global_write_patterns
+            .push((start_ip, end_ip), written_globals_set);
+
+        // Extract globals bitset and extended list
+        let written_globals_extended = if let Some(ref extended) = written_globals_tracker.extended
+        {
+            Some(extended.iter().copied().collect::<Vec<_>>())
+        } else {
+            None
+        };
 
         let cached_block = CachedBlock {
             result: output_stack,
-            written_chunks: written_chunk_set,
+            written_chunks_tracker,
             chunk_versions: written_chunks,
-            written_globals,
+            written_globals_bitset_low: written_globals_tracker.bitset,
+            written_globals_bitset_high: None, // TODO: Add support for 64-127 globals if needed
+            written_globals_extended,
             global_versions,
-            accessed_locals,
+            accessed_locals_bitset_low: accessed_locals_tracker.bitset_low,
+            accessed_locals_bitset_high: accessed_locals_tracker.bitset_high,
+            accessed_locals_versions: accessed_locals_tracker.versions,
         };
         let value = BlockCacheValue::CachedResult(cached_block);
         self.insert(key, value);
@@ -271,7 +436,7 @@ impl BlockMemoizationCache {
     }
 
     pub fn get_write_pattern(
-        &self,
+        &mut self,
         start_ip: usize,
         end_ip: usize,
     ) -> Option<&std::collections::HashSet<u32>> {
@@ -284,11 +449,11 @@ impl BlockMemoizationCache {
         end_ip: usize,
         pages: std::collections::HashSet<u32>,
     ) {
-        self.write_patterns.insert((start_ip, end_ip), pages);
+        self.write_patterns.push((start_ip, end_ip), pages);
     }
 
     pub fn get_global_write_pattern(
-        &self,
+        &mut self,
         start_ip: usize,
         end_ip: usize,
     ) -> Option<&std::collections::HashSet<u32>> {
