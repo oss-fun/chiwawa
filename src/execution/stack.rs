@@ -709,7 +709,7 @@ impl FrameStack {
                                 let _ = fs::remove_file(trigger_path);
                                 return Ok(Err(RuntimeError::CheckpointRequested));
                             }
-                            
+
                             self.label_stack[current_label_stack_idx].ip = ip + 1;
                             return Ok(Ok(Some(ModuleLevelInstr::Invoke(func_addr))));
                         }
@@ -765,8 +765,10 @@ impl FrameStack {
                                     target_label_stack.label.stack_height
                                 };
 
-                                self.global_value_stack.truncate(stack_height);
-                                self.global_value_stack.extend(values_to_push);
+                                let current_len = self.global_value_stack.len();
+                                let actual_height = stack_height.min(current_len);
+                                self.global_value_stack
+                                    .splice(actual_height.., values_to_push);
                                 target_label_stack.ip = target_ip;
 
                                 // Reset tracking for new block after branch
@@ -808,8 +810,10 @@ impl FrameStack {
                             // Apply cache result if hit
                             if cache_hit {
                                 let block_start_height = label.stack_height;
-                                self.global_value_stack.truncate(block_start_height);
-                                self.global_value_stack.extend(cached_result_values);
+                                let current_len = self.global_value_stack.len();
+                                let actual_height = block_start_height.min(current_len);
+                                self.global_value_stack
+                                    .splice(actual_height.., cached_result_values);
                             }
 
                             // Create new label stack
@@ -892,8 +896,10 @@ impl FrameStack {
                                             stack_height
                                         };
 
-                                    self.global_value_stack.truncate(correct_stack_height);
-                                    self.global_value_stack.extend(result_values);
+                                    let current_len = self.global_value_stack.len();
+                                    let actual_height = correct_stack_height.min(current_len);
+                                    self.global_value_stack
+                                        .splice(actual_height.., result_values);
                                 }
 
                                 // Only cache nested blocks, not function level (index 0)
@@ -4160,13 +4166,9 @@ fn handle_memory_init(
 
     let mem_addr = &module_inst.mem_addrs[0];
 
-    for i in 0..len {
-        let byte_value = data_bytes[offset + i];
-        let memarg = Memarg {
-            offset: 0,
-            align: 1,
-        };
-        mem_addr.store(&memarg, (dest as usize + i) as i32, byte_value)?;
+    if len > 0 {
+        let init_data = data_bytes[offset..offset + len].to_vec();
+        mem_addr.init(dest, &init_data);
     }
 
     Ok(HandlerResult::Continue(ctx.ip + 1))
@@ -6214,8 +6216,11 @@ impl<'a> ExecutionContext<'a> {
         if len < n {
             return Err(RuntimeError::ValueStackUnderflow);
         }
-        let split_index = len - n;
-        let second_part = self.value_stack.split_off(split_index);
-        Ok(second_part.into_iter().rev().collect())
+
+        // Use drain for efficient removal and collection
+        let start = len - n;
+        let mut values: Vec<Val> = self.value_stack.drain(start..).collect();
+        values.reverse();
+        Ok(values)
     }
 }

@@ -83,7 +83,7 @@ impl Hash for Num {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Hash)]
 pub enum Vec_ {
     V128(i128),
 }

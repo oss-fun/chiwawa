@@ -75,9 +75,8 @@ impl MemAddr {
 
     pub fn init(&self, offset: usize, init: &Vec<u8>) {
         let mut addr_self = self.mem_inst.borrow_mut();
-        for (index, data) in init.iter().enumerate() {
-            addr_self.data[index + offset] = *data;
-        }
+        addr_self.data[offset..offset + init.len()].copy_from_slice(init);
+        drop(addr_self);
         self.update_chunk_versions(offset, init.len());
     }
     pub fn load<T: ByteMem>(&self, arg: &Memarg, ptr: i32) -> Result<T, RuntimeError> {
@@ -95,9 +94,9 @@ impl MemAddr {
             .ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
         let buf = <T>::to_byte(data);
         let mut raw = self.mem_inst.borrow_mut();
-        for (i, x) in buf.into_iter().enumerate() {
-            raw.data[pos + i] = x;
-        }
+
+        raw.data[pos..pos + buf.len()].copy_from_slice(&buf);
+
         let len = <T>::len();
         drop(raw);
         self.update_chunk_versions(pos, len);
@@ -203,9 +202,8 @@ impl MemAddr {
         }
 
         if len_usize > 0 {
-            for i in 0..len_usize {
-                raw.data[dest_pos + i] = val;
-            }
+            // Use fill for efficient bulk operation
+            raw.data[dest_pos..dest_pos + len_usize].fill(val);
 
             drop(raw);
             self.update_chunk_versions(dest_pos, len_usize);
@@ -294,9 +292,7 @@ impl ByteMem for i8 {
         reader.read_i8().unwrap()
     }
     fn to_byte(self) -> Vec<u8> {
-        let mut buf: Vec<u8> = Vec::with_capacity(Self::len());
-        buf.write_i8(self).unwrap();
-        buf[..].to_vec()
+        vec![self as u8]
     }
 }
 impl ByteMem for u8 {
@@ -308,9 +304,7 @@ impl ByteMem for u8 {
         reader.read_u8().unwrap()
     }
     fn to_byte(self) -> Vec<u8> {
-        let mut buf: Vec<u8> = Vec::with_capacity(Self::len());
-        buf.write_u8(self).unwrap();
-        buf[..].to_vec()
+        vec![self]
     }
 }
 
@@ -323,9 +317,7 @@ impl ByteMem for i16 {
         reader.read_i16::<LittleEndian>().unwrap()
     }
     fn to_byte(self) -> Vec<u8> {
-        let mut buf: Vec<u8> = Vec::with_capacity(Self::len());
-        buf.write_i16::<LittleEndian>(self).unwrap();
-        buf[..].to_vec()
+        self.to_le_bytes().to_vec()
     }
 }
 
@@ -338,9 +330,7 @@ impl ByteMem for u16 {
         reader.read_u16::<LittleEndian>().unwrap()
     }
     fn to_byte(self) -> Vec<u8> {
-        let mut buf: Vec<u8> = Vec::with_capacity(Self::len());
-        buf.write_u16::<LittleEndian>(self).unwrap();
-        buf[..].to_vec()
+        self.to_le_bytes().to_vec()
     }
 }
 
@@ -353,9 +343,7 @@ impl ByteMem for i32 {
         reader.read_i32::<LittleEndian>().unwrap()
     }
     fn to_byte(self) -> Vec<u8> {
-        let mut buf: Vec<u8> = Vec::with_capacity(Self::len());
-        buf.write_i32::<LittleEndian>(self).unwrap();
-        buf[..].to_vec()
+        self.to_le_bytes().to_vec()
     }
 }
 
@@ -368,9 +356,7 @@ impl ByteMem for u32 {
         reader.read_u32::<LittleEndian>().unwrap()
     }
     fn to_byte(self) -> Vec<u8> {
-        let mut buf: Vec<u8> = Vec::with_capacity(Self::len());
-        buf.write_u32::<LittleEndian>(self).unwrap();
-        buf[..].to_vec()
+        self.to_le_bytes().to_vec()
     }
 }
 
@@ -383,9 +369,7 @@ impl ByteMem for i64 {
         reader.read_i64::<LittleEndian>().unwrap()
     }
     fn to_byte(self) -> Vec<u8> {
-        let mut buf: Vec<u8> = Vec::with_capacity(Self::len());
-        buf.write_i64::<LittleEndian>(self).unwrap();
-        buf[..].to_vec()
+        self.to_le_bytes().to_vec()
     }
 }
 
@@ -398,9 +382,7 @@ impl ByteMem for f32 {
         reader.read_f32::<LittleEndian>().unwrap()
     }
     fn to_byte(self) -> Vec<u8> {
-        let mut buf: Vec<u8> = Vec::with_capacity(Self::len());
-        buf.write_f32::<LittleEndian>(self).unwrap();
-        buf[..].to_vec()
+        self.to_le_bytes().to_vec()
     }
 }
 
@@ -413,8 +395,6 @@ impl ByteMem for f64 {
         reader.read_f64::<LittleEndian>().unwrap()
     }
     fn to_byte(self) -> Vec<u8> {
-        let mut buf: Vec<u8> = Vec::with_capacity(Self::len());
-        buf.write_f64::<LittleEndian>(self).unwrap();
-        buf[..].to_vec()
+        self.to_le_bytes().to_vec()
     }
 }
