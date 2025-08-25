@@ -6,8 +6,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 // Configuration constants
-const CACHE_EXECUTION_THRESHOLD: u32 = 3; // Number of executions before caching
-const CACHE_SIZE: usize = 5000; // Maximum number of cached blocks
+const CACHE_EXECUTION_THRESHOLD: u32 = 10; // Number of executions before caching
+const CACHE_SIZE: usize = 30000; // Maximum number of cached blocks
 
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
 pub struct BlockCacheKey {
@@ -24,6 +24,7 @@ pub struct CachedBlock {
     pub chunk_versions: Vec<(u32, u64)>,                // Version snapshot when cached
     pub written_globals: std::collections::HashSet<u32>, // Globals written during execution
     pub global_versions: Vec<(u32, u64)>,               // Global version snapshot when cached
+    pub accessed_locals: HashMap<u32, u64>, // Locals accessed during execution with versions
 }
 
 #[derive(Clone, Debug)]
@@ -127,6 +128,7 @@ impl BlockMemoizationCache {
         end_ip: usize,
         stack: &[Val],
         locals: &[Val],
+        local_versions: &[u64],
         current_chunk_versions: &[(u32, u64)],
         current_global_versions: &[(u32, u64)],
     ) -> Option<Vec<Val>> {
@@ -181,6 +183,17 @@ impl BlockMemoizationCache {
                         }
                     }
 
+                    // Check if any accessed locals have changed
+                    for (&local_idx, &cached_version) in &cached_block.accessed_locals {
+                        if (local_idx as usize) < local_versions.len() {
+                            let current_version = local_versions[local_idx as usize];
+                            if current_version != cached_version {
+                                // Local variable version changed, cache invalid
+                                return None;
+                            }
+                        }
+                    }
+
                     self.stats.hit_count.fetch_add(1, Ordering::Relaxed);
                     Some(cached_block.result)
                 }
@@ -201,6 +214,7 @@ impl BlockMemoizationCache {
         output_stack: Vec<Val>,
         written_globals: std::collections::HashSet<u32>,
         global_versions: Vec<(u32, u64)>,
+        accessed_locals: HashMap<u32, u64>,
     ) {
         // Increment execution count
         let count = self
@@ -249,6 +263,7 @@ impl BlockMemoizationCache {
             chunk_versions: written_chunks,
             written_globals,
             global_versions,
+            accessed_locals,
         };
         let value = BlockCacheValue::CachedResult(cached_block);
         self.insert(key, value);

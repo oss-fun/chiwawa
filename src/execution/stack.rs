@@ -6,7 +6,7 @@ use crate::structure::{instructions::*, types::*};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::arch::asm;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
 use std::path::Path;
@@ -67,6 +67,7 @@ pub struct ExecutionContext<'a> {
     pub ip: usize,
     pub block_has_mutable_op: bool,
     pub accessed_globals: &'a mut Option<HashSet<u32>>,
+    pub accessed_locals: &'a mut Option<HashMap<u32, u64>>,
 }
 
 #[derive(Clone, Debug)]
@@ -484,6 +485,7 @@ impl Stacks {
 
                 let initial_frame = FrameStack {
                     frame: Frame {
+                        local_versions: vec![0; locals.len()],
                         locals,
                         module: module.clone(),
                         n: type_.results.len(),
@@ -509,6 +511,7 @@ impl Stacks {
                     instruction_count: 0,
                     global_value_stack: vec![],
                     current_block_accessed_globals: Some(HashSet::new()),
+                    current_block_accessed_locals: Some(HashMap::new()),
                 };
 
                 Ok(Stacks {
@@ -531,6 +534,7 @@ impl Stacks {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Frame {
     pub locals: Vec<Val>,
+    pub local_versions: Vec<u64>,
     #[serde(skip)]
     pub module: Weak<ModuleInst>,
     pub n: usize,
@@ -546,6 +550,8 @@ pub struct FrameStack {
     pub global_value_stack: Vec<Val>,
     #[serde(skip)]
     pub current_block_accessed_globals: Option<HashSet<u32>>, // Track accessed globals when enabled
+    #[serde(skip)]
+    pub current_block_accessed_locals: Option<HashMap<u32, u64>>, // Track accessed locals when enabled
 }
 
 impl FrameStack {
@@ -590,8 +596,8 @@ impl FrameStack {
         mut store_block_cache: G,
     ) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError>
     where
-        F: FnMut(usize, usize, &[Val], &[Val]) -> Option<Vec<Val>>, // Cache lookup callback with locals
-        G: FnMut(usize, usize, &[Val], &[Val], Vec<Val>, HashSet<u32>), // Cache store callback with locals and globals
+        F: FnMut(usize, usize, &[Val], &[Val], &[u64]) -> Option<Vec<Val>>, // Cache lookup callback with locals and versions
+        G: FnMut(usize, usize, &[Val], &[Val], Vec<Val>, HashSet<u32>, HashMap<u32, u64>), // Cache store callback with locals, globals and accessed locals
     {
         let mut current_label_stack_idx = self
             .label_stack
@@ -674,6 +680,7 @@ impl FrameStack {
                 ip,
                 block_has_mutable_op: false,
                 accessed_globals: &mut self.current_block_accessed_globals,
+                accessed_locals: &mut self.current_block_accessed_locals,
             };
 
             let result = handler_fn(&mut context, &instruction_ref.operand);
@@ -760,9 +767,12 @@ impl FrameStack {
                                 self.global_value_stack.extend(values_to_push);
                                 target_label_stack.ip = target_ip;
 
-                                // Reset global tracking for new block after branch
+                                // Reset tracking for new block after branch
                                 if self.current_block_accessed_globals.is_some() {
                                     self.current_block_accessed_globals = Some(HashSet::new());
+                                }
+                                if self.current_block_accessed_locals.is_some() {
+                                    self.current_block_accessed_locals = Some(HashMap::new());
                                 }
                             } else {
                                 return Err(RuntimeError::InvalidBranchTarget);
@@ -784,6 +794,7 @@ impl FrameStack {
                                     end_ip,
                                     &label.input_stack,
                                     &self.frame.locals,
+                                    &self.frame.local_versions,
                                 ) {
                                     cached_result_values = cached_result;
                                     cache_hit = true;
@@ -814,9 +825,12 @@ impl FrameStack {
                             self.label_stack.push(new_label_stack);
                             current_label_stack_idx = self.label_stack.len() - 1;
 
-                            // Reset global tracking for new block
+                            // Reset tracking for new block
                             if self.current_block_accessed_globals.is_some() {
                                 self.current_block_accessed_globals = Some(HashSet::new());
+                            }
+                            if self.current_block_accessed_locals.is_some() {
+                                self.current_block_accessed_locals = Some(HashMap::new());
                             }
                         }
                         HandlerResult::PopLabelStack { next_ip } => {
@@ -913,6 +927,7 @@ impl FrameStack {
                                             end_ip,
                                             &input_stack,
                                             &self.frame.locals,
+                                            &self.frame.local_versions,
                                         )
                                         .is_none()
                                         {
@@ -921,6 +936,11 @@ impl FrameStack {
                                                 .current_block_accessed_globals
                                                 .take()
                                                 .unwrap_or_else(HashSet::new);
+                                            // Get tracked locals before storing
+                                            let tracked_locals = self
+                                                .current_block_accessed_locals
+                                                .take()
+                                                .unwrap_or_else(HashMap::new);
                                             store_block_cache(
                                                 start_ip,
                                                 end_ip,
@@ -928,6 +948,7 @@ impl FrameStack {
                                                 &self.frame.locals,
                                                 final_stack_state,
                                                 tracked_globals,
+                                                tracked_locals,
                                             );
                                         }
                                     }
@@ -3120,6 +3141,13 @@ fn handle_local_get(
         if index >= ctx.frame.locals.len() {
             return Err(RuntimeError::LocalIndexOutOfBounds);
         }
+
+        // Track local access with version
+        if let Some(ref mut accessed_locals) = ctx.accessed_locals {
+            let version = ctx.frame.local_versions[index];
+            accessed_locals.insert(index as u32, version);
+        }
+
         let val = ctx.frame.locals[index].clone();
         ctx.value_stack.push(val);
         Ok(HandlerResult::Continue(ctx.ip + 1))
@@ -3142,7 +3170,7 @@ fn handle_local_set(
             .pop()
             .ok_or(RuntimeError::ValueStackUnderflow)?;
         ctx.frame.locals[index] = val;
-        ctx.block_has_mutable_op = true;
+        ctx.frame.local_versions[index] += 1;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3163,7 +3191,15 @@ fn handle_local_tee(
             .last()
             .ok_or(RuntimeError::ValueStackUnderflow)?
             .clone();
+
+        // Track local access with version before modification
+        if let Some(ref mut accessed_locals) = ctx.accessed_locals {
+            let version = ctx.frame.local_versions[index];
+            accessed_locals.insert(index as u32, version);
+        }
+
         ctx.frame.locals[index] = val;
+        ctx.frame.local_versions[index] += 1;
         ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
@@ -4663,7 +4699,7 @@ macro_rules! local_set_const {
                     return Err(RuntimeError::LocalIndexOutOfBounds);
                 }
                 $ctx.frame.locals[index] = Val::Num(Num::$num_variant(*immediate_val));
-                $ctx.block_has_mutable_op = true;
+                $ctx.frame.local_versions[index] += 1;
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => Err(RuntimeError::InvalidOperand),

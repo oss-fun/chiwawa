@@ -8,7 +8,7 @@ use crate::execution::value::{Num, Val, Vec_};
 use crate::structure::module::WasiFuncType;
 use crate::structure::types::{NumType, ValueType, VecType};
 use crate::wasi::{WasiError, WasiResult};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -84,6 +84,7 @@ impl Runtime {
             Vec<Val>,
             std::collections::HashSet<u32>,
             Vec<(u32, u64)>,
+            HashMap<u32, u64>,
         )> = Vec::new();
 
         let result = {
@@ -93,7 +94,8 @@ impl Runtime {
             let get_cache = |start_ip: usize,
                              end_ip: usize,
                              stack: &[Val],
-                             locals: &[Val]|
+                             locals: &[Val],
+                             local_versions: &[u64]|
              -> Option<Vec<Val>> {
                 cache_opt.as_mut().and_then(|cache| {
                     if let Some(written_chunks) = cache.get_write_pattern(start_ip, end_ip) {
@@ -115,6 +117,7 @@ impl Runtime {
                             end_ip,
                             stack,
                             locals,
+                            local_versions,
                             &memory_chunks,
                             &global_versions,
                         )
@@ -134,7 +137,8 @@ impl Runtime {
                                input_stack: &[Val],
                                locals: &[Val],
                                output_stack: Vec<Val>,
-                               accessed_globals: HashSet<u32>| {
+                               accessed_globals: HashSet<u32>,
+                               accessed_locals: HashMap<u32, u64>| {
                 // Get written chunks if tracking was enabled
                 let written_chunks = if !module_inst.mem_addrs.is_empty() {
                     module_inst.mem_addrs[0].get_and_stop_tracking_access()
@@ -165,6 +169,7 @@ impl Runtime {
                     output_stack,
                     accessed_globals,
                     global_versions,
+                    accessed_locals,
                 ));
             };
 
@@ -182,6 +187,7 @@ impl Runtime {
                 output_stack,
                 written_globals,
                 global_versions,
+                accessed_locals,
             ) in pending_cache_stores
             {
                 cache.store_block(
@@ -193,6 +199,7 @@ impl Runtime {
                     output_stack,
                     written_globals,
                     global_versions,
+                    accessed_locals,
                 );
             }
         }
@@ -280,6 +287,7 @@ impl Runtime {
 
                                     let new_frame = FrameStack {
                                         frame: Frame {
+                                            local_versions: vec![0; locals.len()],
                                             locals,
                                             module: func_module_weak.clone(),
                                             n: type_.results.len(),
@@ -305,6 +313,7 @@ impl Runtime {
                                         instruction_count: 0,
                                         global_value_stack: vec![], // Will be set up after frame creation
                                         current_block_accessed_globals: Some(HashSet::new()),
+                                        current_block_accessed_locals: Some(HashMap::new()),
                                     };
                                     self.stacks.activation_frame_stack.push(new_frame);
                                 }
