@@ -2,7 +2,7 @@ use chiwawa::{
     execution::module::*, execution::runtime::Runtime, execution::value::*, parser,
     structure::module::Module,
 };
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::rc::Rc;
 
 #[cfg(test)]
@@ -13,7 +13,7 @@ mod tests {
     fn load_instance(wasm_path: &str) -> Rc<ModuleInst> {
         let mut module = Module::new("test");
         let _ = parser::parse_bytecode(&mut module, wasm_path, true);
-        let imports: ImportObjects = HashMap::new();
+        let imports: ImportObjects = FxHashMap::default();
         ModuleInst::new(&module, imports, Vec::new()).unwrap()
     }
 
