@@ -9,7 +9,7 @@ use chiwawa::{
 };
 use clap::Parser;
 use fancy_regex::Regex;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::rc::Rc;
 
 #[derive(Parser)]
@@ -122,7 +122,7 @@ fn main() -> Result<()> {
 
     let mut module = Module::new("test");
     let _ = parser::parse_bytecode(&mut module, &cli.wasm_file, cli.enable_superinstructions);
-    let imports: ImportObjects = HashMap::new();
+    let imports: ImportObjects = FxHashMap::default();
 
     let mut wasm_argv = vec![cli.wasm_file.clone()];
     if let Some(args_string) = cli.app_args {

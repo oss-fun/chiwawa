@@ -1,8 +1,8 @@
 use crate::execution::value::Val;
 use lru::LruCache;
+use rustc_hash::FxHasher;
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -49,7 +49,7 @@ impl LocalAccessTracker {
 pub struct GlobalAccessTracker {
     pub bitset: u64,
     // Extended tracking for more globals
-    pub extended: Option<HashSet<u32>>,
+    pub extended: Option<FxHashSet<u32>>,
 }
 
 // Lightweight tracking for memory chunk accesses
@@ -57,7 +57,7 @@ pub struct GlobalAccessTracker {
 pub struct MemoryChunkTracker {
     // Index 0: chunks 0-63, Index 1: chunks 64-127, etc.
     pub bitsets: Vec<u64>,
-    pub extended: Option<HashSet<u32>>,
+    pub extended: Option<FxHashSet<u32>>,
 }
 
 impl GlobalAccessTracker {
@@ -69,7 +69,7 @@ impl GlobalAccessTracker {
         if index < 64 {
             self.bitset |= 1u64 << index;
         } else {
-            self.extended.get_or_insert_with(HashSet::new).insert(index);
+            self.extended.get_or_insert_with(FxHashSet::default).insert(index);
         }
     }
 
@@ -94,7 +94,7 @@ impl MemoryChunkTracker {
             if bitset_idx > 16 {
                 // Arbitrary threshold: 16 * 64 = 1024 chunks
                 self.extended
-                    .get_or_insert_with(HashSet::new)
+                    .get_or_insert_with(FxHashSet::default)
                     .insert(chunk_idx);
                 return;
             }
@@ -240,7 +240,7 @@ impl BlockMemoizationCache {
     }
 
     fn compute_stack_hash(stack: &[Val]) -> u64 {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = FxHasher::default();
         // Only hash the last 8 values for better performance
         const MAX_HASH_VALUES: usize = 8;
         if stack.len() <= MAX_HASH_VALUES {
@@ -252,7 +252,7 @@ impl BlockMemoizationCache {
     }
 
     fn compute_locals_hash(locals: &[Val]) -> u64 {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = FxHasher::default();
         locals.hash(&mut hasher);
         hasher.finish()
     }

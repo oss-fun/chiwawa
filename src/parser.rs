@@ -8,7 +8,7 @@ use crate::error::{ParserError, RuntimeError};
 use crate::execution::stack::*;
 use crate::structure::{instructions::*, module::*, types::*};
 use crate::superinstructions::*;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::rc::Rc;
 use std::sync::LazyLock;
 
@@ -34,33 +34,33 @@ impl From<&wasmparser::BlockType> for BlockTypeKey {
 
 // Cache for block arity calculations
 struct BlockArityCache {
-    block_arity_cache: HashMap<BlockTypeKey, usize>,
-    loop_parameter_arity_cache: HashMap<BlockTypeKey, usize>,
-    block_parameter_count_cache: HashMap<BlockTypeKey, usize>,
+    block_arity_cache: FxHashMap<BlockTypeKey, usize>,
+    loop_parameter_arity_cache: FxHashMap<BlockTypeKey, usize>,
+    block_parameter_count_cache: FxHashMap<BlockTypeKey, usize>,
 }
 
 impl BlockArityCache {
     fn new() -> Self {
         Self {
-            block_arity_cache: HashMap::new(),
-            loop_parameter_arity_cache: HashMap::new(),
-            block_parameter_count_cache: HashMap::new(),
+            block_arity_cache: FxHashMap::default(),
+            loop_parameter_arity_cache: FxHashMap::default(),
+            block_parameter_count_cache: FxHashMap::default(),
         }
     }
 }
 
 struct ConservativePurityChecker {
-    safe_arithmetic_ops: HashSet<usize>,
-    safe_const_ops: HashSet<usize>,
-    safe_comparison_ops: HashSet<usize>,
-    safe_stack_ops: HashSet<usize>,
-    safe_local_read_ops: HashSet<usize>,
-    safe_control_ops: HashSet<usize>,
+    safe_arithmetic_ops: FxHashSet<usize>,
+    safe_const_ops: FxHashSet<usize>,
+    safe_comparison_ops: FxHashSet<usize>,
+    safe_stack_ops: FxHashSet<usize>,
+    safe_local_read_ops: FxHashSet<usize>,
+    safe_control_ops: FxHashSet<usize>,
 }
 
 impl ConservativePurityChecker {
     fn new() -> Self {
-        let mut safe_arithmetic_ops = HashSet::new();
+        let mut safe_arithmetic_ops = FxHashSet::default();
         safe_arithmetic_ops.insert(HANDLER_IDX_I32_ADD);
         safe_arithmetic_ops.insert(HANDLER_IDX_I32_SUB);
         safe_arithmetic_ops.insert(HANDLER_IDX_I32_MUL);
@@ -74,13 +74,13 @@ impl ConservativePurityChecker {
         safe_arithmetic_ops.insert(HANDLER_IDX_F64_SUB);
         safe_arithmetic_ops.insert(HANDLER_IDX_F64_MUL);
 
-        let mut safe_const_ops = HashSet::new();
+        let mut safe_const_ops = FxHashSet::default();
         safe_const_ops.insert(HANDLER_IDX_I32_CONST);
         safe_const_ops.insert(HANDLER_IDX_I64_CONST);
         safe_const_ops.insert(HANDLER_IDX_F32_CONST);
         safe_const_ops.insert(HANDLER_IDX_F64_CONST);
 
-        let mut safe_comparison_ops = HashSet::new();
+        let mut safe_comparison_ops = FxHashSet::default();
         safe_comparison_ops.insert(HANDLER_IDX_I32_EQ);
         safe_comparison_ops.insert(HANDLER_IDX_I32_NE);
         safe_comparison_ops.insert(HANDLER_IDX_I32_LT_S);
@@ -114,14 +114,14 @@ impl ConservativePurityChecker {
         safe_comparison_ops.insert(HANDLER_IDX_F64_LE);
         safe_comparison_ops.insert(HANDLER_IDX_F64_GE);
 
-        let mut safe_stack_ops = HashSet::new();
+        let mut safe_stack_ops = FxHashSet::default();
         safe_stack_ops.insert(HANDLER_IDX_DROP);
         safe_stack_ops.insert(HANDLER_IDX_SELECT);
 
-        let mut safe_local_read_ops = HashSet::new();
+        let mut safe_local_read_ops = FxHashSet::default();
         safe_local_read_ops.insert(HANDLER_IDX_LOCAL_GET);
 
-        let mut safe_control_ops = HashSet::new();
+        let mut safe_control_ops = FxHashSet::default();
         safe_control_ops.insert(HANDLER_IDX_BLOCK);
         safe_control_ops.insert(HANDLER_IDX_LOOP);
         safe_control_ops.insert(HANDLER_IDX_IF);
@@ -188,8 +188,8 @@ impl ConservativePurityChecker {
     ///
     /// # Returns:
     /// HashSet containing start positions of memoizable blocks (e.g., {5} for above example)
-    fn analyze_function(&self, instructions: &[ProcessedInstr]) -> HashSet<usize> {
-        let mut memoizable_blocks = HashSet::new();
+    fn analyze_function(&self, instructions: &[ProcessedInstr]) -> FxHashSet<usize> {
+        let mut memoizable_blocks = FxHashSet::default();
         let mut current_block_start = 0;
         let mut block_depth = 0; // Track nesting level
 
@@ -225,8 +225,8 @@ impl ConservativePurityChecker {
     }
 }
 
-static WASI_FUNCTION_MAP: LazyLock<HashMap<&'static str, WasiFuncType>> = LazyLock::new(|| {
-    let mut map = HashMap::new();
+static WASI_FUNCTION_MAP: LazyLock<FxHashMap<&'static str, WasiFuncType>> = LazyLock::new(|| {
+    let mut map = FxHashMap::default();
     map.insert("proc_exit", WasiFuncType::ProcExit);
     map.insert("fd_write", WasiFuncType::FdWrite);
     map.insert("fd_read", WasiFuncType::FdRead);
@@ -752,7 +752,7 @@ fn decode_code_section(
         func.body = body_rc;
 
         while module.memoizable_blocks.len() <= relative_func_index {
-            module.memoizable_blocks.push(HashSet::new());
+            module.memoizable_blocks.push(FxHashSet::default());
         }
 
         if let Some(blocks) = module.memoizable_blocks.get_mut(relative_func_index) {
@@ -780,9 +780,9 @@ struct FixupInfo {
 fn preprocess_instructions(
     processed: &mut Vec<ProcessedInstr>,
     fixups: &mut Vec<FixupInfo>,
-    block_end_map: &HashMap<usize, usize>,
-    if_else_map: &HashMap<usize, usize>,
-    block_type_map: &HashMap<usize, wasmparser::BlockType>,
+    block_end_map: &FxHashMap<usize, usize>,
+    if_else_map: &FxHashMap<usize, usize>,
+    block_type_map: &FxHashMap<usize, wasmparser::BlockType>,
     module: &Module,
     cache: &mut BlockArityCache,
 ) -> Result<(), RuntimeError> {
@@ -1108,9 +1108,9 @@ fn decode_processed_instrs_and_fixups<'a>(
     (
         Vec<ProcessedInstr>,
         Vec<FixupInfo>,
-        HashMap<usize, usize>,
-        HashMap<usize, usize>,
-        HashMap<usize, wasmparser::BlockType>,
+        FxHashMap<usize, usize>,
+        FxHashMap<usize, usize>,
+        FxHashMap<usize, wasmparser::BlockType>,
     ),
     Box<dyn std::error::Error>,
 > {
@@ -1119,9 +1119,9 @@ fn decode_processed_instrs_and_fixups<'a>(
     let mut current_processed_pc = 0;
     let mut control_info_stack: Vec<(wasmparser::BlockType, usize)> = Vec::new();
 
-    let mut block_end_map: HashMap<usize, usize> = HashMap::new();
-    let mut if_else_map: HashMap<usize, usize> = HashMap::new();
-    let mut block_type_map: HashMap<usize, wasmparser::BlockType> = HashMap::new();
+    let mut block_end_map: FxHashMap<usize, usize> = FxHashMap::default();
+    let mut if_else_map: FxHashMap<usize, usize> = FxHashMap::default();
+    let mut block_type_map: FxHashMap<usize, wasmparser::BlockType> = FxHashMap::default();
     let mut control_stack_for_map_building: Vec<(usize, bool, Option<usize>)> = Vec::new();
 
     loop {
@@ -1265,7 +1265,7 @@ fn decode_processed_instrs_and_fixups<'a>(
 
 fn update_block_operands_with_ranges(
     processed_instrs: &mut Vec<ProcessedInstr>,
-    block_end_map: &HashMap<usize, usize>,
+    block_end_map: &FxHashMap<usize, usize>,
 ) {
     for (pc, instr) in processed_instrs.iter_mut().enumerate() {
         if let Operand::Block {

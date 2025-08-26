@@ -4,7 +4,7 @@ use crate::structure::{instructions::Memarg, types::*};
 use byteorder::*;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet;
 use std::io::Cursor;
 use std::rc::Rc;
 use typenum::*;
@@ -241,7 +241,7 @@ impl MemAddr {
         access_lock.take()
     }
 
-    pub fn get_chunk_versions_for_chunks(&self, chunks: &HashSet<u32>) -> Vec<(u32, u64)> {
+    pub fn get_chunk_versions_for_chunks(&self, chunks: &FxHashSet<u32>) -> Vec<(u32, u64)> {
         let versions = self.chunk_versions.borrow();
         let mut result: Vec<(u32, u64)> = chunks
             .iter()

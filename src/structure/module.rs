@@ -1,7 +1,7 @@
 use crate::execution::stack::ProcessedInstr;
 use crate::structure::instructions::*;
 use crate::structure::types::*;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet;
 use std::rc::Rc;
 
 #[derive(Clone, Debug)]
@@ -540,7 +540,7 @@ pub struct Module {
     pub num_imported_funcs: usize,
     pub code_index: usize,
     pub exports: Vec<Export>,
-    pub memoizable_blocks: Vec<HashSet<usize>>,
+    pub memoizable_blocks: Vec<FxHashSet<usize>>,
 }
 
 impl Module {

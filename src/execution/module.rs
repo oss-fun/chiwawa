@@ -6,7 +6,7 @@ use super::{
 use crate::error::RuntimeError;
 use crate::structure::{instructions::*, module::*, types::*};
 use crate::wasi::passthrough::PassthroughWasiImpl;
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -41,7 +41,7 @@ impl GetInstanceByIdx<TableIdx> for Vec<TableAddr> {}
 impl GetInstanceByIdx<MemIdx> for Vec<MemAddr> {}
 impl GetInstanceByIdx<GlobalIdx> for Vec<GlobalAddr> {}
 
-pub type ImportObjects = HashMap<String, HashMap<String, Externval>>;
+pub type ImportObjects = FxHashMap<String, FxHashMap<String, Externval>>;
 
 impl ModuleInst {
     pub fn new(
@@ -248,7 +248,7 @@ impl ModuleInst {
 
     pub fn get_global_versions_for_indices(
         &self,
-        indices: &std::collections::HashSet<u32>,
+        indices: &FxHashSet<u32>,
     ) -> Vec<(u32, u64)> {
         indices
             .iter()
