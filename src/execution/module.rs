@@ -246,10 +246,7 @@ impl ModuleInst {
             .collect()
     }
 
-    pub fn get_global_versions_for_indices(
-        &self,
-        indices: &FxHashSet<u32>,
-    ) -> Vec<(u32, u64)> {
+    pub fn get_global_versions_for_indices(&self, indices: &FxHashSet<u32>) -> Vec<(u32, u64)> {
         indices
             .iter()
             .map(|&idx| (idx, self.global_addrs[idx as usize].get_version()))

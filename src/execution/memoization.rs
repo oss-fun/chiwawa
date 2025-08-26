@@ -1,8 +1,8 @@
 use crate::execution::value::Val;
 use lru::LruCache;
+use rustc_hash::FxHashSet;
 use rustc_hash::FxHasher;
 use serde::{Deserialize, Serialize};
-use rustc_hash::FxHashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -69,7 +69,9 @@ impl GlobalAccessTracker {
         if index < 64 {
             self.bitset |= 1u64 << index;
         } else {
-            self.extended.get_or_insert_with(FxHashSet::default).insert(index);
+            self.extended
+                .get_or_insert_with(FxHashSet::default)
+                .insert(index);
         }
     }
 
@@ -155,6 +157,7 @@ pub struct CacheStats {
     pub hit_count: AtomicU64,
     pub invalidation_by_memory: AtomicU64,
     pub invalidation_by_global: AtomicU64,
+    pub invalidation_by_local: AtomicU64,
     pub eviction_count: AtomicU64,
     pub store_count: AtomicU64,
 }
@@ -169,6 +172,9 @@ impl Clone for CacheStats {
             invalidation_by_global: AtomicU64::new(
                 self.invalidation_by_global.load(Ordering::Relaxed),
             ),
+            invalidation_by_local: AtomicU64::new(
+                self.invalidation_by_local.load(Ordering::Relaxed),
+            ),
             eviction_count: AtomicU64::new(self.eviction_count.load(Ordering::Relaxed)),
             store_count: AtomicU64::new(self.store_count.load(Ordering::Relaxed)),
         }
@@ -181,6 +187,7 @@ impl CacheStats {
         let stores = self.store_count.load(Ordering::Relaxed);
         let mem_invalidations = self.invalidation_by_memory.load(Ordering::Relaxed);
         let global_invalidations = self.invalidation_by_global.load(Ordering::Relaxed);
+        let local_invalidations = self.invalidation_by_local.load(Ordering::Relaxed);
         let evictions = self.eviction_count.load(Ordering::Relaxed);
 
         let total_accesses = hits + stores;
@@ -194,10 +201,11 @@ impl CacheStats {
         eprintln!("Cache hits: {} ({:.1}% hit rate)", hits, hit_rate);
         eprintln!("Blocks cached: {}", stores);
         eprintln!(
-            "Invalidations: {} (memory: {}, global: {})",
-            mem_invalidations + global_invalidations,
+            "Invalidations: {} (memory: {}, global: {}, local: {})",
+            mem_invalidations + global_invalidations + local_invalidations,
             mem_invalidations,
-            global_invalidations
+            global_invalidations,
+            local_invalidations
         );
         eprintln!("Evictions: {}", evictions);
         eprintln!("Chunk size: {} bytes", crate::execution::mem::CHUNK_SIZE);
@@ -227,10 +235,6 @@ impl BlockMemoizationCache {
             ),
             stats: CacheStats::default(),
         }
-    }
-
-    fn get(&mut self, key: &BlockCacheKey) -> Option<&BlockCacheValue> {
-        self.cache.get(key)
     }
 
     fn insert(&mut self, key: BlockCacheKey, value: BlockCacheValue) {
@@ -276,66 +280,74 @@ impl BlockMemoizationCache {
             locals_hash,
         };
 
-        let cached_value = self.get(&key).cloned();
-
-        if let Some(value) = cached_value {
-            match value {
-                BlockCacheValue::CachedResult(cached_block) => {
-                    // Check if any accessed chunks have changed
-                    for &(chunk, cached_version) in &cached_block.chunk_versions {
-                        // Direct linear search instead of HashMap creation
-                        let current_version = current_chunk_versions
-                            .iter()
-                            .find(|(idx, _)| *idx == chunk)
-                            .map(|(_, ver)| *ver);
-
-                        if let Some(current_version) = current_version {
-                            if current_version != cached_version {
-                                self.stats
-                                    .invalidation_by_memory
-                                    .fetch_add(1, Ordering::Relaxed);
-                                return None; // Chunk version changed, cache invalid
-                            }
-                        }
-                    }
-
-                    // Check if any accessed globals have changed
-                    for &(global_idx, cached_version) in &cached_block.global_versions {
-                        // Direct linear search instead of HashMap creation
-                        let current_version = current_global_versions
-                            .iter()
-                            .find(|(idx, _)| *idx == global_idx)
-                            .map(|(_, ver)| *ver);
-
-                        if let Some(current_version) = current_version {
-                            if current_version != cached_version {
-                                self.stats
-                                    .invalidation_by_global
-                                    .fetch_add(1, Ordering::Relaxed);
-                                return None; // Global version changed, cache invalid
-                            }
-                        }
-                    }
-
-                    // Check if any accessed locals have changed using bitsets
-                    for &(local_idx, cached_version) in &cached_block.accessed_locals_versions {
-                        if (local_idx as usize) < local_versions.len() {
-                            let current_version = local_versions[local_idx as usize];
-                            if current_version != cached_version {
-                                // Local variable version changed, cache invalid
-                                return None;
-                            }
-                        }
-                    }
-
+        // Access cache directly without cloning the entire BlockCacheValue
+        match self.cache.get(&key) {
+            Some(BlockCacheValue::CachedResult(cached_block)) => {
+                // Early return optimization for pure functions (no side effects)
+                if cached_block.accessed_locals_versions.is_empty()
+                    && cached_block.chunk_versions.is_empty()
+                    && cached_block.global_versions.is_empty()
+                {
                     self.stats.hit_count.fetch_add(1, Ordering::Relaxed);
-                    Some(cached_block.result)
+                    return Some(cached_block.result.clone());
                 }
-                BlockCacheValue::NonCacheable => None,
-                BlockCacheValue::ExecutionCount(_) => None, // Still tracking executions
+
+                // Check locals first (most frequently changed)
+                for &(local_idx, cached_version) in &cached_block.accessed_locals_versions {
+                    if (local_idx as usize) < local_versions.len() {
+                        let current_version = local_versions[local_idx as usize];
+                        if current_version != cached_version {
+                            self.stats
+                                .invalidation_by_local
+                                .fetch_add(1, Ordering::Relaxed);
+                            return None; // Local variable version changed, cache invalid
+                        }
+                    }
+                }
+
+                // Check memory chunks (second most frequently changed)
+                for &(chunk, cached_version) in &cached_block.chunk_versions {
+                    // Direct linear search instead of HashMap creation
+                    let current_version = current_chunk_versions
+                        .iter()
+                        .find(|(idx, _)| *idx == chunk)
+                        .map(|(_, ver)| *ver);
+
+                    if let Some(current_version) = current_version {
+                        if current_version != cached_version {
+                            self.stats
+                                .invalidation_by_memory
+                                .fetch_add(1, Ordering::Relaxed);
+                            return None; // Chunk version changed, cache invalid
+                        }
+                    }
+                }
+
+                // Check globals last (least frequently changed)
+                for &(global_idx, cached_version) in &cached_block.global_versions {
+                    // Direct linear search instead of HashMap creation
+                    let current_version = current_global_versions
+                        .iter()
+                        .find(|(idx, _)| *idx == global_idx)
+                        .map(|(_, ver)| *ver);
+
+                    if let Some(current_version) = current_version {
+                        if current_version != cached_version {
+                            self.stats
+                                .invalidation_by_global
+                                .fetch_add(1, Ordering::Relaxed);
+                            return None; // Global version changed, cache invalid
+                        }
+                    }
+                }
+
+                self.stats.hit_count.fetch_add(1, Ordering::Relaxed);
+                // Only clone the result vector, not the entire CachedBlock
+                Some(cached_block.result.clone())
             }
-        } else {
-            None
+            Some(BlockCacheValue::NonCacheable) => None,
+            Some(BlockCacheValue::ExecutionCount(_)) => None, // Still tracking executions
+            None => None,
         }
     }
 
