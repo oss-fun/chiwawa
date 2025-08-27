@@ -80,22 +80,24 @@ impl MemAddr {
         self.update_chunk_versions(offset, init.len());
     }
     pub fn load<T: ByteMem>(&self, arg: &Memarg, ptr: i32) -> Result<T, RuntimeError> {
-        let pos = ptr
-            .checked_add(i32::try_from(arg.offset).ok().unwrap())
-            .ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
+        let pos = (ptr as usize) + (arg.offset as usize);
         let len = <T>::len();
-        let raw = &self.mem_inst.borrow().data;
-        let data = Vec::from(&raw[pos..pos + len]);
+        let raw = self.mem_inst.borrow();
+
+        let data = unsafe {
+            let slice = std::slice::from_raw_parts(raw.data.as_ptr().add(pos), len);
+            slice.to_vec()
+        };
         Ok(<T>::from_byte(data))
     }
     pub fn store<T: ByteMem>(&self, arg: &Memarg, ptr: i32, data: T) -> Result<(), RuntimeError> {
-        let pos = ptr
-            .checked_add(i32::try_from(arg.offset).ok().unwrap())
-            .ok_or_else(|| RuntimeError::InstructionFailed)? as usize;
+        let pos = (ptr as usize) + (arg.offset as usize);
         let buf = <T>::to_byte(data);
         let mut raw = self.mem_inst.borrow_mut();
 
-        raw.data[pos..pos + buf.len()].copy_from_slice(&buf);
+        unsafe {
+            std::ptr::copy_nonoverlapping(buf.as_ptr(), raw.data.as_mut_ptr().add(pos), buf.len());
+        }
 
         let len = <T>::len();
         drop(raw);
@@ -155,13 +157,13 @@ impl MemAddr {
         let pos = ptr as usize;
         let mut raw = self.mem_inst.borrow_mut();
 
-        // Bounds check
-        if pos.checked_add(data.len()).unwrap_or(usize::MAX) > raw.data.len() {
-            return Err(RuntimeError::InstructionFailed);
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr(),
+                raw.data.as_mut_ptr().add(pos),
+                data.len(),
+            );
         }
-
-        // Bulk copy
-        raw.data[pos..pos + data.len()].copy_from_slice(data);
 
         drop(raw);
         self.update_chunk_versions(pos, data.len());
@@ -182,7 +184,11 @@ impl MemAddr {
         let mut raw = self.mem_inst.borrow_mut();
 
         if len_usize > 0 {
-            raw.data.copy_within(src_pos..src_pos + len_usize, dest_pos);
+            unsafe {
+                let src_ptr = raw.data.as_ptr().add(src_pos);
+                let dest_ptr = raw.data.as_mut_ptr().add(dest_pos);
+                std::ptr::copy(src_ptr, dest_ptr, len_usize);
+            }
 
             drop(raw);
             self.update_chunk_versions(dest_pos, len_usize);
@@ -196,14 +202,10 @@ impl MemAddr {
         let len_usize = len as usize;
         let mut raw = self.mem_inst.borrow_mut();
 
-        // Bounds check
-        if dest_pos.checked_add(len_usize).unwrap_or(usize::MAX) > raw.data.len() {
-            return Err(RuntimeError::MemoryOutOfBounds);
-        }
-
         if len_usize > 0 {
-            // Use fill for efficient bulk operation
-            raw.data[dest_pos..dest_pos + len_usize].fill(val);
+            unsafe {
+                std::ptr::write_bytes(raw.data.as_mut_ptr().add(dest_pos), val, len_usize);
+            }
 
             drop(raw);
             self.update_chunk_versions(dest_pos, len_usize);
