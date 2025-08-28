@@ -5,12 +5,331 @@ use wasmparser::{
 };
 
 use crate::error::{ParserError, RuntimeError};
+use crate::execution::stack::ProcessedInstr;
 use crate::execution::stack::*;
 use crate::structure::{instructions::*, module::*, types::*};
-use crate::superinstructions::*;
+use itertools::Itertools;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::LazyLock;
+
+// Operation type classification
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum OperationType {
+    Producer,    // 0 args, produces value (const, local.get, global.get)
+    Unary,       // 1 arg, produces value (clz, ctz, popcnt, etc.)
+    Binary,      // 2 args, produces value (add, sub, mul, etc.)
+    MemoryLoad,  // 1 arg (address), produces value
+    MemoryStore, // 2 args (address, value), no value produced
+    ControlFlow, // Variable args, special handling
+    Other,       // Non-optimizable
+}
+
+fn get_operation_type(op: &wasmparser::Operator) -> OperationType {
+    use wasmparser::Operator;
+    match op {
+        // Producers
+        Operator::I32Const { .. }
+        | Operator::I64Const { .. }
+        | Operator::F32Const { .. }
+        | Operator::F64Const { .. }
+        | Operator::LocalGet { .. }
+        | Operator::GlobalGet { .. } => OperationType::Producer,
+        // Unary operations
+        Operator::I32Clz | Operator::I32Ctz | Operator::I32Popcnt |
+        Operator::I64Clz | Operator::I64Ctz | Operator::I64Popcnt |
+        Operator::F32Abs | Operator::F32Neg | Operator::F32Ceil |
+        Operator::F32Floor | Operator::F32Trunc | Operator::F32Nearest |
+        Operator::F32Sqrt | Operator::F64Abs | Operator::F64Neg |
+        Operator::F64Ceil | Operator::F64Floor | Operator::F64Trunc |
+        Operator::F64Nearest | Operator::F64Sqrt |
+        Operator::I32Eqz | Operator::I64Eqz |
+        // Type conversions (all are unary operations)
+        Operator::I32WrapI64 |
+        Operator::I64ExtendI32S | Operator::I64ExtendI32U |
+        Operator::I32TruncF32S | Operator::I32TruncF32U |
+        Operator::I32TruncF64S | Operator::I32TruncF64U |
+        Operator::I64TruncF32S | Operator::I64TruncF32U |
+        Operator::I64TruncF64S | Operator::I64TruncF64U |
+        Operator::I32TruncSatF32S | Operator::I32TruncSatF32U |
+        Operator::I32TruncSatF64S | Operator::I32TruncSatF64U |
+        Operator::I64TruncSatF32S | Operator::I64TruncSatF32U |
+        Operator::I64TruncSatF64S | Operator::I64TruncSatF64U |
+        Operator::F32DemoteF64 | Operator::F64PromoteF32 |
+        Operator::F32ConvertI32S | Operator::F32ConvertI32U |
+        Operator::F32ConvertI64S | Operator::F32ConvertI64U |
+        Operator::F64ConvertI32S | Operator::F64ConvertI32U |
+        Operator::F64ConvertI64S | Operator::F64ConvertI64U |
+        Operator::I32ReinterpretF32 | Operator::I64ReinterpretF64 |
+        Operator::F32ReinterpretI32 | Operator::F64ReinterpretI64 |
+        // Extend operations
+        Operator::I32Extend8S | Operator::I32Extend16S |
+        Operator::I64Extend8S | Operator::I64Extend16S | Operator::I64Extend32S => OperationType::Unary,
+
+        // Memory loads
+        Operator::I32Load { .. }
+        | Operator::I64Load { .. }
+        | Operator::F32Load { .. }
+        | Operator::F64Load { .. }
+        | Operator::I32Load8S { .. }
+        | Operator::I32Load8U { .. }
+        | Operator::I32Load16S { .. }
+        | Operator::I32Load16U { .. }
+        | Operator::I64Load8S { .. }
+        | Operator::I64Load8U { .. }
+        | Operator::I64Load16S { .. }
+        | Operator::I64Load16U { .. }
+        | Operator::I64Load32S { .. }
+        | Operator::I64Load32U { .. } => OperationType::MemoryLoad,
+
+        // Memory stores
+        Operator::I32Store { .. }
+        | Operator::I64Store { .. }
+        | Operator::F32Store { .. }
+        | Operator::F64Store { .. }
+        | Operator::I32Store8 { .. }
+        | Operator::I32Store16 { .. }
+        | Operator::I64Store8 { .. }
+        | Operator::I64Store16 { .. }
+        | Operator::I64Store32 { .. } => OperationType::MemoryStore,
+
+        // Binary operations
+        Operator::I32Add
+        | Operator::I32Sub
+        | Operator::I32Mul
+        | Operator::I32DivS
+        | Operator::I32DivU
+        | Operator::I32RemS
+        | Operator::I32RemU
+        | Operator::I32And
+        | Operator::I32Or
+        | Operator::I32Xor
+        | Operator::I32Shl
+        | Operator::I32ShrS
+        | Operator::I32ShrU
+        | Operator::I32Rotl
+        | Operator::I32Rotr
+        | Operator::I64Add
+        | Operator::I64Sub
+        | Operator::I64Mul
+        | Operator::I64DivS
+        | Operator::I64DivU
+        | Operator::I64RemS
+        | Operator::I64RemU
+        | Operator::I64And
+        | Operator::I64Or
+        | Operator::I64Xor
+        | Operator::I64Shl
+        | Operator::I64ShrS
+        | Operator::I64ShrU
+        | Operator::I64Rotl
+        | Operator::I64Rotr
+        | Operator::F32Add
+        | Operator::F32Sub
+        | Operator::F32Mul
+        | Operator::F32Div
+        | Operator::F32Min
+        | Operator::F32Max
+        | Operator::F32Copysign
+        | Operator::F64Add
+        | Operator::F64Sub
+        | Operator::F64Mul
+        | Operator::F64Div
+        | Operator::F64Min
+        | Operator::F64Max
+        | Operator::F64Copysign
+        | Operator::I32Eq
+        | Operator::I32Ne
+        | Operator::I32LtS
+        | Operator::I32LtU
+        | Operator::I32GtS
+        | Operator::I32GtU
+        | Operator::I32LeS
+        | Operator::I32LeU
+        | Operator::I32GeS
+        | Operator::I32GeU
+        | Operator::I64Eq
+        | Operator::I64Ne
+        | Operator::I64LtS
+        | Operator::I64LtU
+        | Operator::I64GtS
+        | Operator::I64GtU
+        | Operator::I64LeS
+        | Operator::I64LeU
+        | Operator::I64GeS
+        | Operator::I64GeU
+        | Operator::F32Eq
+        | Operator::F32Ne
+        | Operator::F32Lt
+        | Operator::F32Gt
+        | Operator::F32Le
+        | Operator::F32Ge
+        | Operator::F64Eq
+        | Operator::F64Ne
+        | Operator::F64Lt
+        | Operator::F64Gt
+        | Operator::F64Le
+        | Operator::F64Ge => OperationType::Binary,
+
+        // Control flow
+        Operator::Block { .. }
+        | Operator::Loop { .. }
+        | Operator::If { .. }
+        | Operator::Else
+        | Operator::End
+        | Operator::Br { .. }
+        | Operator::BrIf { .. }
+        | Operator::BrTable { .. }
+        | Operator::Return
+        | Operator::Call { .. }
+        | Operator::CallIndirect { .. } => OperationType::ControlFlow,
+
+        // Other
+        _ => OperationType::Other,
+    }
+}
+
+// Try to apply optimization for an operator based on recent instructions
+fn try_apply_optimization(
+    op: &wasmparser::Operator,
+    recent_instrs: &mut VecDeque<(wasmparser::Operator, usize)>,
+    processed_instr: &mut ProcessedInstr,
+    initial_processed_instrs: &mut Vec<ProcessedInstr>,
+    current_processed_pc: &mut usize,
+) -> bool {
+    let op_type = get_operation_type(op);
+
+    // Check if we have enough recent instructions
+    match op_type {
+        OperationType::Binary | OperationType::MemoryStore => {
+            if recent_instrs.len() < 2 {
+                return false;
+            }
+        }
+        OperationType::MemoryLoad | OperationType::Unary => {
+            if recent_instrs.is_empty() {
+                return false;
+            }
+        }
+        _ => return false,
+    }
+
+    let mut iter = recent_instrs.iter().rev();
+
+    // Apply optimization based on operation type
+    match op_type {
+        OperationType::Binary => {
+            let second_source = iter
+                .next()
+                .and_then(|(instr, _)| operator_to_value_source(instr));
+            let first_source = iter
+                .next()
+                .and_then(|(instr, _)| operator_to_value_source(instr));
+
+            if let (Some(first), Some(second)) = (first_source, second_source) {
+                processed_instr.operand = Operand::Optimized(OptimizedOperand::Double {
+                    first: Some(first),
+                    second: Some(second),
+                    memarg: None,
+                });
+
+                // Remove consumed instructions
+                for _ in 0..2 {
+                    initial_processed_instrs.pop();
+                    recent_instrs.pop_back();
+                    *current_processed_pc -= 1;
+                }
+                return true;
+            }
+        }
+        OperationType::MemoryLoad => {
+            if let Some(addr_source) = iter
+                .next()
+                .and_then(|(instr, _)| operator_to_value_source(instr))
+            {
+                if let Operand::MemArg(memarg) = &processed_instr.operand {
+                    processed_instr.operand = Operand::Optimized(OptimizedOperand::Single {
+                        value: Some(addr_source),
+                        memarg: Some(memarg.clone()),
+                    });
+
+                    // Remove consumed instruction
+                    initial_processed_instrs.pop();
+                    recent_instrs.pop_back();
+                    *current_processed_pc -= 1;
+                    return true;
+                }
+            }
+        }
+        OperationType::MemoryStore => {
+            let value_source = iter
+                .next()
+                .and_then(|(instr, _)| operator_to_value_source(instr));
+            let addr_source = iter
+                .next()
+                .and_then(|(instr, _)| operator_to_value_source(instr));
+
+            if let (Some(addr), Some(value)) = (addr_source, value_source) {
+                if let Operand::MemArg(memarg) = &processed_instr.operand {
+                    processed_instr.operand = Operand::Optimized(OptimizedOperand::Double {
+                        first: Some(addr),
+                        second: Some(value),
+                        memarg: Some(memarg.clone()),
+                    });
+
+                    // Remove consumed instructions
+                    for _ in 0..2 {
+                        initial_processed_instrs.pop();
+                        recent_instrs.pop_back();
+                        *current_processed_pc -= 1;
+                    }
+                    return true;
+                }
+            }
+        }
+        OperationType::Unary => {
+            // Get one value directly (same as memory load)
+            if let Some(value_source) = iter
+                .next()
+                .and_then(|(instr, _)| operator_to_value_source(instr))
+            {
+                processed_instr.operand = Operand::Optimized(OptimizedOperand::Single {
+                    value: Some(value_source),
+                    memarg: None,
+                });
+
+                // Remove consumed instruction
+                initial_processed_instrs.pop();
+                recent_instrs.pop_back();
+                *current_processed_pc -= 1;
+                return true;
+            }
+        }
+        _ => {}
+    }
+
+    false
+}
+
+// Helper function to create ValueSource from an operator
+fn operator_to_value_source(op: &wasmparser::Operator) -> Option<ValueSource> {
+    match op {
+        wasmparser::Operator::LocalGet { local_index } => Some(ValueSource::Local(*local_index)),
+        wasmparser::Operator::I32Const { value } => Some(ValueSource::Const(Value::I32(*value))),
+        wasmparser::Operator::I64Const { value } => Some(ValueSource::Const(Value::I64(*value))),
+        wasmparser::Operator::F32Const { value } => {
+            Some(ValueSource::Const(Value::F32(f32::from_bits(value.bits()))))
+        }
+        wasmparser::Operator::F64Const { value } => {
+            Some(ValueSource::Const(Value::F64(f64::from_bits(value.bits()))))
+        }
+        wasmparser::Operator::GlobalGet { global_index } => {
+            Some(ValueSource::Global(*global_index))
+        }
+        _ => None,
+    }
+}
 
 // Cache key for block type arity calculations
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -727,11 +1046,11 @@ fn decode_code_section(
     }
 
     let ops_reader = body.get_operators_reader()?;
-    let mut ops_iter = ops_reader.into_iter_with_offsets().peekable();
+    let ops_iter = ops_reader.into_iter_with_offsets();
 
     // Phase 1: Decode instructions and get necessary info for preprocessing
     let (mut processed_instrs, mut fixups, block_end_map, if_else_map, block_type_map) =
-        decode_processed_instrs_and_fixups(&mut ops_iter, module, enable_superinstructions)?;
+        decode_processed_instrs_and_fixups(ops_iter, module, enable_superinstructions)?;
 
     // Phase 2 & 3: Preprocess instructions for this function
     preprocess_instructions(
@@ -1101,7 +1420,7 @@ fn preprocess_instructions(
 }
 
 fn decode_processed_instrs_and_fixups<'a>(
-    ops: &mut std::iter::Peekable<wasmparser::OperatorsIteratorWithOffsets<'a>>,
+    ops_iter: wasmparser::OperatorsIteratorWithOffsets<'a>,
     module: &Module,
     enable_superinstructions: bool,
 ) -> Result<
@@ -1114,6 +1433,7 @@ fn decode_processed_instrs_and_fixups<'a>(
     ),
     Box<dyn std::error::Error>,
 > {
+    let mut ops = ops_iter.multipeek();
     let mut initial_processed_instrs = Vec::new();
     let mut initial_fixups = Vec::new();
     let mut current_processed_pc = 0;
@@ -1123,6 +1443,9 @@ fn decode_processed_instrs_and_fixups<'a>(
     let mut if_else_map: FxHashMap<usize, usize> = FxHashMap::default();
     let mut block_type_map: FxHashMap<usize, wasmparser::BlockType> = FxHashMap::default();
     let mut control_stack_for_map_building: Vec<(usize, bool, Option<usize>)> = Vec::new();
+    // Track recent instructions for value source optimization
+    let mut recent_instrs: VecDeque<(wasmparser::Operator, usize)> = VecDeque::new();
+    const RECENT_INSTRS_WINDOW: usize = 3; // Track last 3 instructions
 
     loop {
         if ops.peek().is_none() {
@@ -1135,22 +1458,27 @@ fn decode_processed_instrs_and_fixups<'a>(
             None => break,
         };
 
-        // Try to use superinstructions optimization at parse time
-        if enable_superinstructions {
-            if let Some(superinstr) = try_superinstructions_const(&op, ops) {
-                initial_processed_instrs.push(superinstr);
-                current_processed_pc += 1;
-                continue;
-            }
-        }
-
-        let (processed_instr_template, fixup_info_opt) = map_operator_to_initial_instr_and_fixup(
+        // Get the processed instruction first
+        let (mut processed_instr, fixup_info_opt) = map_operator_to_initial_instr_and_fixup(
             &op,
             current_processed_pc,
             &control_info_stack,
             module,
-            &mut BlockArityCache::new(), // Create cache for each instruction
+            &mut BlockArityCache::new(),
         )?;
+
+        // Try to apply optimization if enabled
+        if enable_superinstructions {
+            try_apply_optimization(
+                &op,
+                &mut recent_instrs,
+                &mut processed_instr,
+                &mut initial_processed_instrs,
+                &mut current_processed_pc,
+            );
+        }
+
+        let processed_instr_template = processed_instr;
 
         // --- Update Maps and Stacks based on operator ---
         match op {
@@ -1240,6 +1568,13 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 _ => {}
             }
+        }
+
+        // Track recent instructions for optimization
+        recent_instrs.push_back((op.clone(), current_processed_pc));
+        // Keep only the last RECENT_INSTRS_WINDOW instructions
+        if recent_instrs.len() > RECENT_INSTRS_WINDOW {
+            recent_instrs.pop_front();
         }
 
         current_processed_pc += 1;
