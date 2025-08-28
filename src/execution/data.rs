@@ -1,7 +1,8 @@
-use std::sync::{Arc, RwLock};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 #[derive(Clone, Debug)]
-pub struct DataAddr(Arc<RwLock<DataInst>>);
+pub struct DataAddr(Rc<RefCell<DataInst>>);
 #[derive(Debug)]
 pub struct DataInst {
     pub _data: Vec<u8>,
@@ -9,12 +10,12 @@ pub struct DataInst {
 
 impl DataAddr {
     pub fn new(data: &Vec<u8>) -> DataAddr {
-        DataAddr(Arc::new(RwLock::new(DataInst {
+        DataAddr(Rc::new(RefCell::new(DataInst {
             _data: data.clone(),
         })))
     }
 
     pub fn get_data(&self) -> Vec<u8> {
-        self.0.read().expect("RwLock poisoned")._data.clone()
+        self.0.borrow()._data.clone()
     }
 }

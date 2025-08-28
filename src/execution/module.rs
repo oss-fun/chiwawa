@@ -6,13 +6,14 @@ use super::{
 use crate::error::RuntimeError;
 use crate::structure::{instructions::*, module::*, types::*};
 use crate::wasi::passthrough::PassthroughWasiImpl;
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 
 pub struct Results(Option<Vec<Val>>);
 
 pub struct ModuleInst {
-    pub types: Vec<FuncType>,
+    pub types: Rc<Vec<FuncType>>,
     pub func_addrs: Vec<FuncAddr>,
     pub table_addrs: Vec<TableAddr>,
     pub mem_addrs: Vec<MemAddr>,
@@ -40,14 +41,14 @@ impl GetInstanceByIdx<TableIdx> for Vec<TableAddr> {}
 impl GetInstanceByIdx<MemIdx> for Vec<MemAddr> {}
 impl GetInstanceByIdx<GlobalIdx> for Vec<GlobalAddr> {}
 
-pub type ImportObjects = HashMap<String, HashMap<String, Externval>>;
+pub type ImportObjects = FxHashMap<String, FxHashMap<String, Externval>>;
 
 impl ModuleInst {
     pub fn new(
         module: &Module,
         imports: ImportObjects,
         argv: Vec<String>,
-    ) -> Result<Arc<ModuleInst>, RuntimeError> {
+    ) -> Result<Rc<ModuleInst>, RuntimeError> {
         let mut module_inst = ModuleInst {
             types: module.types.clone(),
             func_addrs: Vec::new(),
@@ -85,7 +86,7 @@ impl ModuleInst {
                             val.as_func()
                                 .filter(|func| {
                                     func.func_type()
-                                        .type_match(module_inst.types.get_by_idx(idx.clone()))
+                                        .type_match(&module_inst.types[idx.0 as usize])
                                 })
                                 .ok_or_else(|| RuntimeError::LinkError)?,
                         );
@@ -93,13 +94,10 @@ impl ModuleInst {
                     ImportDesc::WasiFunc(wasi_func_type) => {
                         // Create WASI function address
                         let wasi_func_addr = WasiFuncAddr::new(wasi_func_type.clone());
-                        module_inst.wasi_func_addrs.push(wasi_func_addr.clone());
-
-                        // Add to func_addrs as well for unified indexing
-                        // We'll create a special FuncAddr that points to WASI function
                         module_inst
                             .func_addrs
-                            .push(FuncAddr::alloc_wasi(wasi_func_addr));
+                            .push(FuncAddr::alloc_wasi(wasi_func_addr.clone()));
+                        module_inst.wasi_func_addrs.push(wasi_func_addr);
                     }
                     _ => todo!(),
                 }
@@ -191,21 +189,21 @@ impl ModuleInst {
                 name: export.name.0.clone(),
                 value: match &export.desc {
                     ExportDesc::Func(idx) => {
-                        Externval::Func(module_inst.func_addrs.get_by_idx(idx.clone()).clone())
+                        Externval::Func(module_inst.func_addrs[idx.0 as usize].clone())
                     }
                     ExportDesc::Table(idx) => {
-                        Externval::Table(module_inst.table_addrs.get_by_idx(idx.clone()).clone())
+                        Externval::Table(module_inst.table_addrs[idx.0 as usize].clone())
                     }
                     ExportDesc::Mem(idx) => {
-                        Externval::Mem(module_inst.mem_addrs.get_by_idx(idx.clone()).clone())
+                        Externval::Mem(module_inst.mem_addrs[idx.0 as usize].clone())
                     }
                     ExportDesc::Global(idx) => {
-                        Externval::Global(module_inst.global_addrs.get_by_idx(idx.clone()).clone())
+                        Externval::Global(module_inst.global_addrs[idx.0 as usize].clone())
                     }
                 },
             })
         }
-        let arc_module_inst = Arc::new(module_inst);
+        let arc_module_inst = Rc::new(module_inst);
 
         for (base, func) in module.funcs.iter().enumerate() {
             let index = base
@@ -219,7 +217,7 @@ impl ModuleInst {
                     })
                     .sum::<usize>();
             arc_module_inst.func_addrs[index]
-                .replace(func.clone(), Arc::downgrade(&arc_module_inst));
+                .replace(func.clone(), Rc::downgrade(&arc_module_inst));
         }
         if let Some(start) = &module.start {
             arc_module_inst.func_addrs.get_by_idx(start.func.clone());
@@ -238,6 +236,31 @@ impl ModuleInst {
         } else {
             Err(RuntimeError::ExportFuncNotFound)
         }
+    }
+
+    pub fn get_all_global_versions(&self) -> Vec<(u32, u64)> {
+        self.global_addrs
+            .iter()
+            .enumerate()
+            .map(|(idx, global_addr)| (idx as u32, global_addr.get_version()))
+            .collect()
+    }
+
+    pub fn get_global_versions_for_indices(&self, indices: &FxHashSet<u32>) -> Vec<(u32, u64)> {
+        indices
+            .iter()
+            .map(|&idx| (idx, self.global_addrs[idx as usize].get_version()))
+            .collect()
+    }
+
+    pub fn get_global_versions_for_tracker(
+        &self,
+        tracker: &crate::execution::memoization::GlobalAccessTracker,
+    ) -> Vec<(u32, u64)> {
+        tracker
+            .iter()
+            .map(|idx| (idx, self.global_addrs[idx as usize].get_version()))
+            .collect()
     }
 
     fn expr_to_const(&self, expr: &Expr) -> Option<Val> {

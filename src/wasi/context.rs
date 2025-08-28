@@ -1,17 +1,17 @@
 use super::error::*;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::io::{self, Read, Write};
 
 /// WASI context for managing file descriptors and state
 pub struct WasiContext {
-    pub file_descriptors: HashMap<i32, Box<dyn FileDescriptor>>,
+    pub file_descriptors: FxHashMap<i32, Box<dyn FileDescriptor>>,
     pub next_fd: i32,
 }
 
 impl WasiContext {
     pub fn new() -> Self {
         let mut ctx = WasiContext {
-            file_descriptors: HashMap::new(),
+            file_descriptors: FxHashMap::default(),
             next_fd: 3, // Start from 3, as 0, 1, 2 are reserved
         };
 

@@ -1,15 +1,104 @@
 use super::value::*;
 use crate::error::RuntimeError;
-use crate::execution::{func::*, module::*};
+use crate::execution::{
+    func::*,
+    memoization::{GlobalAccessTracker, LocalAccessTracker},
+    module::*,
+};
 use crate::structure::types::LabelIdx as StructureLabelIdx;
 use crate::structure::{instructions::*, types::*};
 use lazy_static::lazy_static;
-use serde::{Deserialize, Serialize};
-use std::arch::asm;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fs;
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
 use std::path::Path;
-use std::sync::Weak as SyncWeak;
+use std::rc::{Rc, Weak};
+
+// Value source for hybrid approach
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ValueSource {
+    Stack,        // Value from stack (default)
+    Const(Value), // Constant value
+    Local(u32),   // Local variable
+    Global(u32),  // Global variable
+}
+
+// Value type for direct operands
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Value {
+    I32(i32),
+    I64(i64),
+    F32(f32),
+    F64(f64),
+}
+
+impl Value {
+    pub fn to_val(&self) -> Val {
+        match self {
+            Value::I32(v) => Val::Num(Num::I32(*v)),
+            Value::I64(v) => Val::Num(Num::I64(*v)),
+            Value::F32(v) => Val::Num(Num::F32(*v)),
+            Value::F64(v) => Val::Num(Num::F64(*v)),
+        }
+    }
+}
+
+// Store target for optimized operations
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum StoreTarget {
+    Local(u32),
+    Global(u32),
+}
+
+// Helper function for storing results to target
+fn store_result(
+    ctx: &mut ExecutionContext,
+    result_val: Val,
+    store_target: &Option<StoreTarget>,
+) -> Result<(), RuntimeError> {
+    if let Some(target) = store_target {
+        match target {
+            StoreTarget::Local(idx) => {
+                let index = *idx as usize;
+                if index >= ctx.frame.locals.len() {
+                    return Err(RuntimeError::LocalIndexOutOfBounds);
+                }
+                ctx.frame.locals[index] = result_val;
+                ctx.frame.local_versions[index] += 1;
+            }
+            StoreTarget::Global(idx) => {
+                let module_inst = ctx
+                    .frame
+                    .module
+                    .upgrade()
+                    .ok_or(RuntimeError::ModuleInstanceGone)?;
+                let global_addr = module_inst.global_addrs.get_by_idx(GlobalIdx(*idx)).clone();
+                global_addr.set(result_val)?;
+            }
+        }
+    } else {
+        ctx.value_stack.push(result_val);
+    }
+    Ok(())
+}
+
+// Unified optimized operand type
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum OptimizedOperand {
+    // For operations that need 1 value (load, unary operations)
+    Single {
+        value: Option<ValueSource>,
+        memarg: Option<Memarg>,            // For memory operations
+        store_target: Option<StoreTarget>, // Where to store the result
+    },
+    // For operations that need 2 values (binary ops, store)
+    Double {
+        first: Option<ValueSource>,        // binary op's left, or store's addr
+        second: Option<ValueSource>,       // binary op's right, or store's value
+        memarg: Option<Memarg>,            // For store operations
+        store_target: Option<StoreTarget>, // Where to store the result
+    },
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Operand {
@@ -52,6 +141,9 @@ pub enum Operand {
         start_ip: usize,
         end_ip: usize,
     },
+
+    // Unified optimized operand
+    Optimized(OptimizedOperand),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -64,6 +156,9 @@ pub struct ExecutionContext<'a> {
     pub frame: &'a mut crate::execution::stack::Frame,
     pub value_stack: &'a mut Vec<Val>,
     pub ip: usize,
+    pub block_has_mutable_op: bool,
+    pub accessed_globals: &'a mut Option<GlobalAccessTracker>,
+    pub accessed_locals: &'a mut Option<LocalAccessTracker>,
 }
 
 #[derive(Clone, Debug)]
@@ -310,142 +405,7 @@ pub const HANDLER_IDX_I64_TRUNC_SAT_F64_U: usize = 0xCF;
 
 // TODO: Add remaining indices (Ref types, Table, Bulk Memory, SIMD)
 
-// Optimized immediate instructions
-pub const HANDLER_IDX_LOCAL_SET_I32_CONST: usize = 0xD8;
-pub const HANDLER_IDX_LOCAL_SET_I64_CONST: usize = 0xD9;
-pub const HANDLER_IDX_LOCAL_SET_F32_CONST: usize = 0xDA;
-pub const HANDLER_IDX_LOCAL_SET_F64_CONST: usize = 0xDB;
-pub const HANDLER_IDX_I32_LOAD_I32_CONST: usize = 0xDC;
-pub const HANDLER_IDX_I64_LOAD_I64_CONST: usize = 0xDD;
-pub const HANDLER_IDX_I32_CONST_I64_LOAD: usize = 0xDE;
-pub const HANDLER_IDX_I32_CONST_F32_LOAD: usize = 0xDF;
-pub const HANDLER_IDX_I32_CONST_F64_LOAD: usize = 0xE0;
-pub const HANDLER_IDX_I64_CONST_I32_LOAD: usize = 0xE1;
-pub const HANDLER_IDX_I64_CONST_I64_LOAD: usize = 0xE2;
-pub const HANDLER_IDX_I64_CONST_F32_LOAD: usize = 0xE3;
-pub const HANDLER_IDX_I64_CONST_F64_LOAD: usize = 0xE4;
-pub const HANDLER_IDX_I32_STORE_I32_CONST: usize = 0xE5;
-pub const HANDLER_IDX_I64_STORE_I64_CONST: usize = 0xE6;
-pub const HANDLER_IDX_I32_CONST_I64_STORE: usize = 0xE7;
-pub const HANDLER_IDX_I32_CONST_F32_STORE: usize = 0xE8;
-pub const HANDLER_IDX_I32_CONST_F64_STORE: usize = 0xE9;
-pub const HANDLER_IDX_I64_CONST_I32_STORE: usize = 0xEA;
-pub const HANDLER_IDX_I64_CONST_I64_STORE: usize = 0xEB;
-pub const HANDLER_IDX_I64_CONST_F32_STORE: usize = 0xEC;
-pub const HANDLER_IDX_I64_CONST_F64_STORE: usize = 0xED;
-// const + arithmetic superinstructions
-pub const HANDLER_IDX_I32_ADD_CONST: usize = 0xEE;
-pub const HANDLER_IDX_I32_SUB_CONST: usize = 0xEF;
-pub const HANDLER_IDX_I32_MUL_CONST: usize = 0xF0;
-pub const HANDLER_IDX_I32_DIV_S_CONST: usize = 0xF1;
-pub const HANDLER_IDX_I32_DIV_U_CONST: usize = 0xF2;
-pub const HANDLER_IDX_I64_ADD_CONST: usize = 0xF3;
-pub const HANDLER_IDX_I64_SUB_CONST: usize = 0xF4;
-pub const HANDLER_IDX_I64_MUL_CONST: usize = 0xF5;
-pub const HANDLER_IDX_I64_DIV_S_CONST: usize = 0xF6;
-pub const HANDLER_IDX_I64_DIV_U_CONST: usize = 0xF7;
-pub const HANDLER_IDX_F32_ADD_CONST: usize = 0xF8;
-pub const HANDLER_IDX_F32_SUB_CONST: usize = 0xF9;
-pub const HANDLER_IDX_F32_MUL_CONST: usize = 0xFA;
-pub const HANDLER_IDX_F32_DIV_CONST: usize = 0xFB;
-pub const HANDLER_IDX_F64_ADD_CONST: usize = 0xFC;
-pub const HANDLER_IDX_F64_SUB_CONST: usize = 0xFD;
-pub const HANDLER_IDX_F64_MUL_CONST: usize = 0xFE;
-pub const HANDLER_IDX_F64_DIV_CONST: usize = 0xFF;
-
-// Comparison with const superinstructions
-pub const HANDLER_IDX_I32_EQ_CONST: usize = 0x101;
-pub const HANDLER_IDX_I32_NE_CONST: usize = 0x102;
-pub const HANDLER_IDX_I32_LT_S_CONST: usize = 0x103;
-pub const HANDLER_IDX_I32_LT_U_CONST: usize = 0x104;
-pub const HANDLER_IDX_I32_GT_S_CONST: usize = 0x105;
-pub const HANDLER_IDX_I32_GT_U_CONST: usize = 0x106;
-pub const HANDLER_IDX_I32_LE_S_CONST: usize = 0x107;
-pub const HANDLER_IDX_I32_LE_U_CONST: usize = 0x108;
-pub const HANDLER_IDX_I32_GE_S_CONST: usize = 0x109;
-pub const HANDLER_IDX_I32_GE_U_CONST: usize = 0x10A;
-pub const HANDLER_IDX_I64_EQ_CONST: usize = 0x10C;
-pub const HANDLER_IDX_I64_NE_CONST: usize = 0x10D;
-pub const HANDLER_IDX_I64_LT_S_CONST: usize = 0x10E;
-pub const HANDLER_IDX_I64_LT_U_CONST: usize = 0x10F;
-pub const HANDLER_IDX_I64_GT_S_CONST: usize = 0x110;
-pub const HANDLER_IDX_I64_GT_U_CONST: usize = 0x111;
-pub const HANDLER_IDX_I64_LE_S_CONST: usize = 0x112;
-pub const HANDLER_IDX_I64_LE_U_CONST: usize = 0x113;
-pub const HANDLER_IDX_I64_GE_S_CONST: usize = 0x114;
-pub const HANDLER_IDX_I64_GE_U_CONST: usize = 0x115;
-pub const HANDLER_IDX_F32_EQ_CONST: usize = 0x116;
-pub const HANDLER_IDX_F32_NE_CONST: usize = 0x117;
-pub const HANDLER_IDX_F32_LT_CONST: usize = 0x118;
-pub const HANDLER_IDX_F32_GT_CONST: usize = 0x119;
-pub const HANDLER_IDX_F32_LE_CONST: usize = 0x11A;
-pub const HANDLER_IDX_F32_GE_CONST: usize = 0x11B;
-pub const HANDLER_IDX_F64_EQ_CONST: usize = 0x11C;
-pub const HANDLER_IDX_F64_NE_CONST: usize = 0x11D;
-pub const HANDLER_IDX_F64_LT_CONST: usize = 0x11E;
-pub const HANDLER_IDX_F64_GT_CONST: usize = 0x11F;
-pub const HANDLER_IDX_F64_LE_CONST: usize = 0x120;
-pub const HANDLER_IDX_F64_GE_CONST: usize = 0x121;
-pub const HANDLER_IDX_I32_REM_S_CONST: usize = 0x122;
-pub const HANDLER_IDX_I32_REM_U_CONST: usize = 0x123;
-pub const HANDLER_IDX_I64_REM_S_CONST: usize = 0x124;
-pub const HANDLER_IDX_I64_REM_U_CONST: usize = 0x125;
-// and/or/xor superinstructions
-pub const HANDLER_IDX_I32_AND_CONST: usize = 0x126;
-pub const HANDLER_IDX_I32_OR_CONST: usize = 0x127;
-pub const HANDLER_IDX_I32_XOR_CONST: usize = 0x128;
-pub const HANDLER_IDX_I64_AND_CONST: usize = 0x129;
-pub const HANDLER_IDX_I64_OR_CONST: usize = 0x12A;
-pub const HANDLER_IDX_I64_XOR_CONST: usize = 0x12B;
-
-// Shift with const superinstructions
-pub const HANDLER_IDX_I32_SHL_CONST: usize = 0x12C;
-pub const HANDLER_IDX_I32_SHR_S_CONST: usize = 0x12D;
-pub const HANDLER_IDX_I32_SHR_U_CONST: usize = 0x12E;
-pub const HANDLER_IDX_I64_SHL_CONST: usize = 0x12F;
-pub const HANDLER_IDX_I64_SHR_S_CONST: usize = 0x130;
-pub const HANDLER_IDX_I64_SHR_U_CONST: usize = 0x131;
-pub const HANDLER_IDX_I32_LOAD8_S_CONST: usize = 0x132;
-pub const HANDLER_IDX_I32_LOAD8_U_CONST: usize = 0x133;
-pub const HANDLER_IDX_I32_LOAD16_S_CONST: usize = 0x134;
-pub const HANDLER_IDX_I32_LOAD16_U_CONST: usize = 0x135;
-pub const HANDLER_IDX_I64_LOAD8_S_CONST: usize = 0x136;
-pub const HANDLER_IDX_I64_LOAD8_U_CONST: usize = 0x137;
-pub const HANDLER_IDX_I64_LOAD16_S_CONST: usize = 0x138;
-pub const HANDLER_IDX_I64_LOAD16_U_CONST: usize = 0x139;
-pub const HANDLER_IDX_I64_LOAD32_S_CONST: usize = 0x13A;
-pub const HANDLER_IDX_I64_LOAD32_U_CONST: usize = 0x13B;
-pub const HANDLER_IDX_I32_STORE8_CONST: usize = 0x13C;
-pub const HANDLER_IDX_I32_STORE16_CONST: usize = 0x13D;
-pub const HANDLER_IDX_I64_STORE8_CONST: usize = 0x13E;
-pub const HANDLER_IDX_I64_STORE16_CONST: usize = 0x13F;
-pub const HANDLER_IDX_I64_STORE32_CONST: usize = 0x140;
-pub const HANDLER_IDX_I32_ROTL_CONST: usize = 0x141;
-pub const HANDLER_IDX_I32_ROTR_CONST: usize = 0x142;
-pub const HANDLER_IDX_I64_ROTL_CONST: usize = 0x143;
-pub const HANDLER_IDX_I64_ROTR_CONST: usize = 0x144;
-// Conversion superinstructions
-pub const HANDLER_IDX_I32_WRAP_I64_CONST: usize = 0x145;
-pub const HANDLER_IDX_I64_EXTEND_I32_S_CONST: usize = 0x146;
-pub const HANDLER_IDX_I64_EXTEND_I32_U_CONST: usize = 0x147;
-pub const HANDLER_IDX_F32_CONVERT_I32_S_CONST: usize = 0x148;
-pub const HANDLER_IDX_F32_CONVERT_I32_U_CONST: usize = 0x149;
-pub const HANDLER_IDX_F32_CONVERT_I64_S_CONST: usize = 0x14A;
-pub const HANDLER_IDX_F32_CONVERT_I64_U_CONST: usize = 0x14B;
-pub const HANDLER_IDX_F64_CONVERT_I32_S_CONST: usize = 0x14C;
-pub const HANDLER_IDX_F64_CONVERT_I32_U_CONST: usize = 0x14D;
-pub const HANDLER_IDX_F64_CONVERT_I64_S_CONST: usize = 0x14E;
-pub const HANDLER_IDX_F64_CONVERT_I64_U_CONST: usize = 0x14F;
-pub const HANDLER_IDX_I32_TRUNC_F32_S_CONST: usize = 0x150;
-pub const HANDLER_IDX_I32_TRUNC_F32_U_CONST: usize = 0x151;
-pub const HANDLER_IDX_I32_TRUNC_F64_S_CONST: usize = 0x152;
-pub const HANDLER_IDX_I32_TRUNC_F64_U_CONST: usize = 0x153;
-pub const HANDLER_IDX_I64_TRUNC_F32_S_CONST: usize = 0x154;
-pub const HANDLER_IDX_I64_TRUNC_F32_U_CONST: usize = 0x155;
-pub const HANDLER_IDX_I64_TRUNC_F64_S_CONST: usize = 0x156;
-pub const HANDLER_IDX_I64_TRUNC_F64_U_CONST: usize = 0x157;
-
-pub const MAX_HANDLER_INDEX: usize = 0x158;
+pub const MAX_HANDLER_INDEX: usize = 0x168;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stacks {
@@ -454,7 +414,7 @@ pub struct Stacks {
 
 impl Stacks {
     pub fn new(funcaddr: &FuncAddr, params: Vec<Val>) -> Result<Stacks, RuntimeError> {
-        let func_inst_guard = funcaddr.read_lock().expect("RwLock poisoned");
+        let func_inst_guard = funcaddr.read_lock();
         match &*func_inst_guard {
             FuncInst::RuntimeFunc {
                 type_,
@@ -481,6 +441,7 @@ impl Stacks {
 
                 let initial_frame = FrameStack {
                     frame: Frame {
+                        local_versions: vec![0; locals.len()],
                         locals,
                         module: module.clone(),
                         n: type_.results.len(),
@@ -495,14 +456,18 @@ impl Stacks {
                             start_ip: 0,     // Function level starts at 0
                             end_ip: code.body.len(), // Function level ends at body length
                             input_stack: vec![], // Function level has empty input
+                            is_immutable: None, // Will be determined during execution
                         },
                         processed_instrs: code.body.clone(),
                         value_stack: vec![],
                         ip: 0,
+                        block_has_mutable_ops: false,
                     }],
                     void: type_.results.is_empty(),
                     instruction_count: 0,
                     global_value_stack: vec![],
+                    current_block_accessed_globals: Some(GlobalAccessTracker::new()),
+                    current_block_accessed_locals: Some(LocalAccessTracker::new()),
                 };
 
                 Ok(Stacks {
@@ -525,8 +490,9 @@ impl Stacks {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Frame {
     pub locals: Vec<Val>,
+    pub local_versions: Vec<u64>,
     #[serde(skip)]
-    pub module: SyncWeak<ModuleInst>,
+    pub module: Weak<ModuleInst>,
     pub n: usize,
 }
 
@@ -538,6 +504,10 @@ pub struct FrameStack {
     pub instruction_count: u64,
     // Global value stack shared across all label stacks
     pub global_value_stack: Vec<Val>,
+    #[serde(skip)]
+    pub current_block_accessed_globals: Option<GlobalAccessTracker>, // Track accessed globals when enabled
+    #[serde(skip)]
+    pub current_block_accessed_locals: Option<LocalAccessTracker>, // Track accessed locals when enabled
 }
 
 impl FrameStack {
@@ -545,9 +515,10 @@ impl FrameStack {
     pub fn push_label_stack(&mut self, label: Label, instructions: Vec<ProcessedInstr>) {
         let new_label_stack = LabelStack {
             label,
-            processed_instrs: instructions,
+            processed_instrs: Rc::new(instructions),
             value_stack: vec![],
             ip: 0,
+            block_has_mutable_ops: false,
         };
         self.label_stack.push(new_label_stack);
     }
@@ -581,8 +552,8 @@ impl FrameStack {
         mut store_block_cache: G,
     ) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError>
     where
-        F: FnMut(usize, usize, &[Val], &[Val]) -> Option<Vec<Val>>, // Cache lookup callback with locals
-        G: FnMut(usize, usize, &[Val], &[Val], Vec<Val>), // Cache store callback with locals
+        F: FnMut(usize, usize, &[Val], &[Val], &[u64]) -> Option<Vec<Val>>, // Cache lookup callback with locals and versions
+        G: FnMut(usize, usize, &[Val], &[Val], Vec<Val>, GlobalAccessTracker, LocalAccessTracker), // Cache store callback with locals, globals and accessed locals
     {
         let mut current_label_stack_idx = self
             .label_stack
@@ -591,21 +562,9 @@ impl FrameStack {
             .ok_or(RuntimeError::StackError("Initial label stack empty"))?;
 
         const CHECKPOINT_TRIGGER_FILE: &str = "./checkpoint.trigger";
-        const CHECKPOINT_CHECK_INTERVAL: u64 = 100;
 
         loop {
             self.instruction_count += 1;
-            if self.instruction_count % CHECKPOINT_CHECK_INTERVAL == 0 {
-                let trigger_path = Path::new(CHECKPOINT_TRIGGER_FILE);
-                if trigger_path.exists() {
-                    println!(
-                        "Checkpoint trigger file found after {} instructions! Requesting checkpoint...",
-                        self.instruction_count
-                    );
-                    let _ = fs::remove_file(trigger_path);
-                    return Ok(Err(RuntimeError::CheckpointRequested));
-                }
-            }
 
             if current_label_stack_idx >= self.label_stack.len() {
                 break;
@@ -663,9 +622,18 @@ impl FrameStack {
                 frame: &mut self.frame,
                 value_stack: &mut self.global_value_stack,
                 ip,
+                block_has_mutable_op: false,
+                accessed_globals: &mut self.current_block_accessed_globals,
+                accessed_locals: &mut self.current_block_accessed_locals,
             };
 
             let result = handler_fn(&mut context, &instruction_ref.operand);
+            let has_mutable_op = context.block_has_mutable_op;
+
+            // Track if this block executed a mutable operation
+            if has_mutable_op {
+                current_label_stack.block_has_mutable_ops = true;
+            }
 
             match result {
                 Err(e) => {
@@ -684,6 +652,17 @@ impl FrameStack {
                             return Ok(Ok(Some(ModuleLevelInstr::Return)));
                         }
                         HandlerResult::Invoke(func_addr) => {
+                            // Check for checkpoint trigger at function call boundary
+                            let trigger_path = Path::new(CHECKPOINT_TRIGGER_FILE);
+                            if trigger_path.exists() {
+                                println!(
+                                    "Checkpoint trigger file found at function call after {} instructions!",
+                                    self.instruction_count
+                                );
+                                let _ = fs::remove_file(trigger_path);
+                                return Ok(Err(RuntimeError::CheckpointRequested));
+                            }
+
                             self.label_stack[current_label_stack_idx].ip = ip + 1;
                             return Ok(Ok(Some(ModuleLevelInstr::Invoke(func_addr))));
                         }
@@ -698,6 +677,11 @@ impl FrameStack {
                             if branch_depth <= current_label_stack_idx {
                                 let target_depth = current_label_stack_idx - branch_depth;
                                 let target_level = target_depth + 1;
+
+                                // Mark all blocks being exited as having executed a branch (early exit)
+                                for i in target_level..self.label_stack.len() {
+                                    self.label_stack[i].block_has_mutable_ops = true;
+                                }
 
                                 let current_label_stack =
                                     &self.label_stack[current_label_stack_idx];
@@ -734,9 +718,21 @@ impl FrameStack {
                                     target_label_stack.label.stack_height
                                 };
 
-                                self.global_value_stack.truncate(stack_height);
-                                self.global_value_stack.extend(values_to_push);
+                                let current_len = self.global_value_stack.len();
+                                let actual_height = stack_height.min(current_len);
+                                self.global_value_stack
+                                    .splice(actual_height.., values_to_push);
                                 target_label_stack.ip = target_ip;
+
+                                // Reset tracking for new block after branch
+                                if self.current_block_accessed_globals.is_some() {
+                                    self.current_block_accessed_globals =
+                                        Some(GlobalAccessTracker::new());
+                                }
+                                if self.current_block_accessed_locals.is_some() {
+                                    self.current_block_accessed_locals =
+                                        Some(LocalAccessTracker::new());
+                                }
                             } else {
                                 return Err(RuntimeError::InvalidBranchTarget);
                             }
@@ -751,12 +747,13 @@ impl FrameStack {
                             let mut cache_hit = false;
                             let mut cached_result_values = Vec::new();
 
-                            if current_label_stack_idx > 0 {
+                            if current_label_stack_idx > 0 && label.is_immutable != Some(false) {
                                 if let Some(cached_result) = get_block_cache(
                                     start_ip,
                                     end_ip,
                                     &label.input_stack,
                                     &self.frame.locals,
+                                    &self.frame.local_versions,
                                 ) {
                                     cached_result_values = cached_result;
                                     cache_hit = true;
@@ -766,32 +763,62 @@ impl FrameStack {
                             // Apply cache result if hit
                             if cache_hit {
                                 let block_start_height = label.stack_height;
-                                self.global_value_stack.truncate(block_start_height);
-                                self.global_value_stack.extend(cached_result_values);
+                                let current_len = self.global_value_stack.len();
+                                let actual_height = block_start_height.min(current_len);
+                                self.global_value_stack
+                                    .splice(actual_height.., cached_result_values);
                             }
 
                             // Create new label stack
                             let current_instrs =
                                 &self.label_stack[current_label_stack_idx].processed_instrs;
+                            // Inherit parent's mutable status if this is a nested structure
+                            let parent_has_mutable_ops =
+                                self.label_stack[current_label_stack_idx].block_has_mutable_ops;
                             let new_label_stack = LabelStack {
                                 label,
                                 processed_instrs: current_instrs.clone(),
                                 value_stack: vec![],
                                 ip: if cache_hit { end_ip } else { next_ip },
+                                block_has_mutable_ops: parent_has_mutable_ops,
                             };
 
                             self.label_stack.push(new_label_stack);
                             current_label_stack_idx = self.label_stack.len() - 1;
+
+                            // Reset tracking for new block
+                            if self.current_block_accessed_globals.is_some() {
+                                self.current_block_accessed_globals =
+                                    Some(GlobalAccessTracker::new());
+                            }
+                            if self.current_block_accessed_locals.is_some() {
+                                self.current_block_accessed_locals =
+                                    Some(LocalAccessTracker::new());
+                            }
                         }
                         HandlerResult::PopLabelStack { next_ip } => {
                             // Pop the current label stack when ending a block/loop
                             if self.label_stack.len() > 1 {
-                                let current_label =
-                                    &self.label_stack[current_label_stack_idx].label;
-                                let stack_height = current_label.stack_height;
-                                let arity = current_label.arity;
+                                // Determine if the block was immutable based on whether any mutable operations were executed
+                                let block_was_mutable =
+                                    self.label_stack[current_label_stack_idx].block_has_mutable_ops;
 
-                                let input_stack = &current_label.input_stack;
+                                // Update the label's immutability status
+                                self.label_stack[current_label_stack_idx].label.is_immutable =
+                                    Some(!block_was_mutable);
+
+                                // Extract values before mutating
+                                let (stack_height, arity, input_stack, start_ip, end_ip) = {
+                                    let current_label =
+                                        &self.label_stack[current_label_stack_idx].label;
+                                    (
+                                        current_label.stack_height,
+                                        current_label.arity,
+                                        current_label.input_stack.clone(),
+                                        current_label.start_ip,
+                                        current_label.end_ip,
+                                    )
+                                };
 
                                 // Extract the result values from the global stack
                                 let result_values = if arity > 0 {
@@ -822,24 +849,37 @@ impl FrameStack {
                                             stack_height
                                         };
 
-                                    self.global_value_stack.truncate(correct_stack_height);
-                                    self.global_value_stack.extend(result_values);
+                                    let current_len = self.global_value_stack.len();
+                                    let actual_height = correct_stack_height.min(current_len);
+                                    self.global_value_stack
+                                        .splice(actual_height.., result_values);
                                 }
-
-                                let start_ip = current_label.start_ip;
-                                let end_ip = current_label.end_ip;
 
                                 // Only cache nested blocks, not function level (index 0)
                                 if current_label_stack_idx > 0 {
-                                    // Check if block is pure before caching
-                                    let current_instrs =
-                                        &self.label_stack[current_label_stack_idx].processed_instrs;
-                                    if crate::execution::memoization::is_vm_immutable_block(
-                                        current_instrs,
-                                    ) {
+                                    // Update immutability status if not yet determined
+                                    let block_is_mutable = self.label_stack
+                                        [current_label_stack_idx]
+                                        .block_has_mutable_ops;
+                                    let block_start_height = stack_height;
+
+                                    if self.label_stack[current_label_stack_idx]
+                                        .label
+                                        .is_immutable
+                                        .is_none()
+                                    {
+                                        self.label_stack[current_label_stack_idx]
+                                            .label
+                                            .is_immutable = Some(!block_is_mutable);
+                                    }
+
+                                    // Check if block is immutable before caching
+                                    let is_immutable = self.label_stack[current_label_stack_idx]
+                                        .label
+                                        .is_immutable;
+                                    if is_immutable == Some(true) {
                                         // Save block results from block start height
                                         // For blocks (not functions), we always save from block_start_height
-                                        let block_start_height = current_label.stack_height;
                                         let final_stack_state = if block_start_height
                                             <= self.global_value_stack.len()
                                         {
@@ -852,15 +892,28 @@ impl FrameStack {
                                             end_ip,
                                             &input_stack,
                                             &self.frame.locals,
+                                            &self.frame.local_versions,
                                         )
                                         .is_none()
                                         {
+                                            // Get tracked globals before storing
+                                            let tracked_globals = self
+                                                .current_block_accessed_globals
+                                                .take()
+                                                .unwrap_or_else(GlobalAccessTracker::new);
+                                            // Get tracked locals before storing
+                                            let tracked_locals = self
+                                                .current_block_accessed_locals
+                                                .take()
+                                                .unwrap_or_else(LocalAccessTracker::new);
                                             store_block_cache(
                                                 start_ip,
                                                 end_ip,
-                                                input_stack,
+                                                &input_stack,
                                                 &self.frame.locals,
                                                 final_stack_state,
+                                                tracked_globals,
+                                                tracked_locals,
                                             );
                                         }
                                     }
@@ -875,20 +928,20 @@ impl FrameStack {
                                 let function_arity = current_label.arity;
 
                                 // Extract the function result values from the global stack
-                                let result_values = if function_arity > 0 {
+                                if function_arity > 0 {
                                     if self.global_value_stack.len() >= function_arity {
                                         let start_idx =
                                             self.global_value_stack.len() - function_arity;
-                                        self.global_value_stack[start_idx..].to_vec()
+                                        let result_values =
+                                            self.global_value_stack[start_idx..].to_vec();
+                                        self.global_value_stack.clear();
+                                        self.global_value_stack.extend(result_values);
                                     } else {
                                         return Err(RuntimeError::ValueStackUnderflow);
                                     }
                                 } else {
-                                    self.global_value_stack.clone()
+                                    // If arity is 0, keep the stack as is
                                 };
-
-                                self.global_value_stack.clear();
-                                self.global_value_stack.extend(result_values);
                                 break;
                             }
                         }
@@ -910,14 +963,55 @@ pub struct Label {
     pub start_ip: usize,
     pub end_ip: usize,
     pub input_stack: Vec<Val>, // Cache input stack state at block start
+    pub is_immutable: Option<bool>, // None = not determined yet, Some(true/false) = determined
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct LabelStack {
     pub label: Label,
-    pub processed_instrs: Vec<ProcessedInstr>,
+    pub processed_instrs: Rc<Vec<ProcessedInstr>>,
     pub value_stack: Vec<Val>,
     pub ip: usize,
+    pub block_has_mutable_ops: bool, // Track if this block executed mutable operations
+}
+
+impl Serialize for LabelStack {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("LabelStack", 4)?;
+        state.serialize_field("label", &self.label)?;
+        state.serialize_field("processed_instrs", self.processed_instrs.as_ref())?;
+        state.serialize_field("value_stack", &self.value_stack)?;
+        state.serialize_field("ip", &self.ip)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for LabelStack {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct LabelStackData {
+            label: Label,
+            processed_instrs: Vec<ProcessedInstr>,
+            value_stack: Vec<Val>,
+            ip: usize,
+        }
+
+        let data = LabelStackData::deserialize(deserializer)?;
+        Ok(LabelStack {
+            label: data.label,
+            processed_instrs: Rc::new(data.processed_instrs),
+            value_stack: data.value_stack,
+            ip: data.ip,
+            block_has_mutable_ops: false, // Default to false when deserializing
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -942,82 +1036,301 @@ pub enum AdminInstr {
 }
 
 macro_rules! binop {
-    ($ctx:ident, $operand_type:ident, $op_trait:ident, $op_method:ident, $result_type:ident) => {{
-        if $ctx.value_stack.len() < 2 {
-            return Err(RuntimeError::ValueStackUnderflow);
+    ($ctx:ident, $operand:ident, $operand_type:ident, $op_trait:ident, $op_method:ident, $result_type:ident) => {{
+        match $operand {
+            Operand::Optimized(OptimizedOperand::Double {
+                first,
+                second,
+                memarg: None,
+                store_target,
+            }) => {
+                // Get values from sources
+                let lhs_val = get_value_from_source($ctx, first)?;
+                let rhs_val = get_value_from_source($ctx, second)?;
+
+                // Perform operation
+                let result = match (lhs_val, rhs_val) {
+                    (Val::Num(Num::$operand_type(a)), Val::Num(Num::$operand_type(b))) => {
+                        Val::Num(Num::$result_type($op_trait::$op_method(a, b)))
+                    }
+                    _ => return Err(RuntimeError::TypeMismatch),
+                };
+
+                // Use store_result helper function
+                store_result($ctx, result, store_target)?;
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => {
+                // Normal stack-based operation
+                if $ctx.value_stack.len() < 2 {
+                    return Err(RuntimeError::ValueStackUnderflow);
+                }
+                let rhs_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let lhs_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let (lhs, rhs) = match (lhs_val, rhs_val) {
+                    (Val::Num(Num::$operand_type(l)), Val::Num(Num::$operand_type(r))) => (l, r),
+                    _ => return Err(RuntimeError::TypeMismatch),
+                };
+                $ctx.value_stack
+                    .push(Val::Num(Num::$result_type($op_trait::$op_method(lhs, rhs))));
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
         }
-        let rhs_val = $ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let lhs_val = $ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let (lhs, rhs) = match (lhs_val, rhs_val) {
-            (Val::Num(Num::$operand_type(l)), Val::Num(Num::$operand_type(r))) => (l, r),
-            _ => return Err(RuntimeError::TypeMismatch),
-        };
-        $ctx.value_stack
-            .push(Val::Num(Num::$result_type($op_trait::$op_method(lhs, rhs))));
-        Ok(HandlerResult::Continue($ctx.ip + 1))
     }};
-    ($ctx:ident, $operand_type:ident, $op_trait:ident, $op_method:ident) => {
-        binop!($ctx, $operand_type, $op_trait, $op_method, $operand_type)
+    ($ctx:ident, $operand:ident, $operand_type:ident, $op_trait:ident, $op_method:ident) => {
+        binop!(
+            $ctx,
+            $operand,
+            $operand_type,
+            $op_trait,
+            $op_method,
+            $operand_type
+        )
     };
 }
 
 macro_rules! binop_wrapping {
-    ($ctx:ident, $operand_type:ident, $op_method:ident, $result_type:ident) => {{
-        if $ctx.value_stack.len() < 2 {
-            return Err(RuntimeError::ValueStackUnderflow);
+    ($ctx:ident, $operand:ident, $operand_type:ident, $op_method:ident, $result_type:ident) => {{
+        match $operand {
+            Operand::Optimized(OptimizedOperand::Double {
+                first,
+                second,
+                memarg: None,
+                store_target,
+            }) => {
+                // Get values from sources
+                let lhs_val = get_value_from_source($ctx, first)?;
+                let rhs_val = get_value_from_source($ctx, second)?;
+
+                // Perform operation
+                let result = match (lhs_val, rhs_val) {
+                    (Val::Num(Num::$operand_type(a)), Val::Num(Num::$operand_type(b))) => {
+                        Val::Num(Num::$result_type(a.$op_method(b)))
+                    }
+                    _ => return Err(RuntimeError::TypeMismatch),
+                };
+
+                // Use store_result helper function
+                store_result($ctx, result, store_target)?;
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => {
+                // Normal stack-based operation
+                if $ctx.value_stack.len() < 2 {
+                    return Err(RuntimeError::ValueStackUnderflow);
+                }
+                let rhs_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let lhs_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let (lhs, rhs) = match (lhs_val, rhs_val) {
+                    (Val::Num(Num::$operand_type(l)), Val::Num(Num::$operand_type(r))) => (l, r),
+                    _ => return Err(RuntimeError::TypeMismatch),
+                };
+                let result_val = Val::Num(Num::$result_type(lhs.$op_method(rhs)));
+                $ctx.value_stack.push(result_val);
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
         }
-        let rhs_val = $ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let lhs_val = $ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let (lhs, rhs) = match (lhs_val, rhs_val) {
-            (Val::Num(Num::$operand_type(l)), Val::Num(Num::$operand_type(r))) => (l, r),
-            _ => return Err(RuntimeError::TypeMismatch),
-        };
-        let result_val = Val::Num(Num::$result_type(lhs.$op_method(rhs)));
-        $ctx.value_stack.push(result_val);
-        Ok(HandlerResult::Continue($ctx.ip + 1))
     }};
-    ($ctx:ident, $operand_type:ident, $op_method:ident) => {
-        binop_wrapping!($ctx, $operand_type, $op_method, $operand_type)
+    ($ctx:ident, $operand:ident, $operand_type:ident, $op_method:ident) => {
+        binop_wrapping!($ctx, $operand, $operand_type, $op_method, $operand_type)
     };
 }
 
+// Unary operation macro
+macro_rules! unaryop {
+    ($ctx:ident, $operand:ident, $type:ident, $val_method:ident, $op:expr) => {{
+        match $operand {
+            Operand::Optimized(OptimizedOperand::Single {
+                value,
+                memarg: None,
+                store_target,
+            }) => {
+                // Get value from source
+                let val = get_value_from_source($ctx, value)?;
+                let x = val.$val_method()?;
+                let result_val = Val::Num(Num::$type($op(x)));
+
+                // Store to target if specified, otherwise push to stack
+                store_result($ctx, result_val, store_target)?;
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => {
+                // Normal stack-based operation
+                let val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let x = val.$val_method()?;
+                let result = $op(x);
+                $ctx.value_stack.push(Val::Num(Num::$type(result)));
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+        }
+    }};
+}
+
+macro_rules! shiftop {
+    ($ctx:ident, $operand:ident, $type:ident, $val_method:ident, $shift_method:ident) => {{
+        match $operand {
+            Operand::Optimized(OptimizedOperand::Double {
+                first,
+                second,
+                memarg: None,
+                store_target,
+            }) => {
+                // Get values from sources
+                let lhs_val = get_value_from_source($ctx, first)?;
+                let rhs_val = get_value_from_source($ctx, second)?;
+
+                let lhs = lhs_val.$val_method()?;
+                let rhs = rhs_val.$val_method()?;
+                let result_val = Val::Num(Num::$type(lhs.$shift_method(rhs as u32)));
+
+                // Store to target if specified, otherwise push to stack
+                store_result($ctx, result_val, store_target)?;
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => {
+                // Normal stack-based operation
+                let rhs_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let lhs_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let rhs = rhs_val.$val_method()?;
+                let lhs = lhs_val.$val_method()?;
+                let result = lhs.$shift_method(rhs as u32);
+                $ctx.value_stack.push(Val::Num(Num::$type(result)));
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+        }
+    }};
+}
+
+macro_rules! shiftop_unsigned {
+    ($ctx:ident, $operand:ident, $type:ident, $val_method:ident, $unsigned_type:ident, $signed_type:ident) => {{
+        match $operand {
+            Operand::Optimized(OptimizedOperand::Double {
+                first,
+                second,
+                memarg: None,
+                store_target,
+            }) => {
+                // Get values from sources
+                let lhs_val = get_value_from_source($ctx, first)?;
+                let rhs_val = get_value_from_source($ctx, second)?;
+
+                let lhs = lhs_val.$val_method()? as $unsigned_type;
+                let rhs = rhs_val.$val_method()? as u32;
+                let result = lhs.wrapping_shr(rhs);
+                let result_val = Val::Num(Num::$type(result as $signed_type));
+
+                // Store to target if specified, otherwise push to stack
+                store_result($ctx, result_val, store_target)?;
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => {
+                // Normal stack-based operation
+                let rhs_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let lhs_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let rhs = rhs_val.$val_method()? as u32;
+                let lhs = lhs_val.$val_method()? as $unsigned_type;
+                let result = lhs.wrapping_shr(rhs);
+                $ctx.value_stack
+                    .push(Val::Num(Num::$type(result as $signed_type)));
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+        }
+    }};
+}
+
+// Direct comparison macro (for signed comparisons and equality)
 macro_rules! cmpop {
-    ($ctx:ident, $operand_type:ident, $op:tt) => {
-        {
-            let rhs_val = $ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?;
-            let lhs_val = $ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?;
-            let (lhs, rhs) = match (lhs_val, rhs_val) {
-                 (Val::Num(Num::$operand_type(l)), Val::Num(Num::$operand_type(r))) => (l, r),
-                 _ => return Err(RuntimeError::TypeMismatch),
-            };
-            $ctx.value_stack.push(Val::Num(Num::I32((lhs $op rhs) as i32)));
-             Ok(HandlerResult::Continue($ctx.ip + 1))
+    ($ctx:ident, $operand:ident, $operand_type:ident, $op:tt) => {{
+        match $operand {
+            Operand::Optimized(OptimizedOperand::Double { first, second, memarg: None, store_target }) => {
+                // Get values from sources
+                let lhs_val = get_value_from_source($ctx, first)?;
+                let rhs_val = get_value_from_source($ctx, second)?;
+
+                let (lhs, rhs) = match (lhs_val, rhs_val) {
+                    (Val::Num(Num::$operand_type(l)), Val::Num(Num::$operand_type(r))) => (l, r),
+                    _ => return Err(RuntimeError::TypeMismatch),
+                };
+                let result = Val::Num(Num::I32((lhs $op rhs) as i32));
+
+                // Use store_result helper function
+                store_result($ctx, result, store_target)?;
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => {
+                // Normal stack-based operation
+                let rhs_val = $ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?;
+                let lhs_val = $ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?;
+                let (lhs, rhs) = match (lhs_val, rhs_val) {
+                     (Val::Num(Num::$operand_type(l)), Val::Num(Num::$operand_type(r))) => (l, r),
+                     _ => return Err(RuntimeError::TypeMismatch),
+                };
+                $ctx.value_stack.push(Val::Num(Num::I32((lhs $op rhs) as i32)));
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
         }
-    };
-     ($ctx:ident, $operand_type:ident, $op:tt, $cast_type:ty) => {
-        {
-            let rhs_val = $ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?;
-            let lhs_val = $ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?;
-            let (lhs, rhs) = match (lhs_val, rhs_val) {
-                 (Val::Num(Num::$operand_type(l)), Val::Num(Num::$operand_type(r))) => (l as $cast_type, r as $cast_type),
-                 _ => return Err(RuntimeError::TypeMismatch),
-            };
-            $ctx.value_stack.push(Val::Num(Num::I32((lhs $op rhs) as i32)));
-             Ok(HandlerResult::Continue($ctx.ip + 1))
+    }};
+}
+
+// Comparison macro with casting (for unsigned comparisons)
+macro_rules! cmpop_cast {
+    ($ctx:ident, $operand:ident, $operand_type:ident, $op:tt, $cast_type:ty) => {{
+        match $operand {
+            Operand::Optimized(OptimizedOperand::Double { first, second, memarg: None, store_target }) => {
+                // Get values from sources
+                let lhs_val = get_value_from_source($ctx, first)?;
+                let rhs_val = get_value_from_source($ctx, second)?;
+
+                let (lhs, rhs) = match (lhs_val, rhs_val) {
+                    (Val::Num(Num::$operand_type(l)), Val::Num(Num::$operand_type(r))) => (l as $cast_type, r as $cast_type),
+                    _ => return Err(RuntimeError::TypeMismatch),
+                };
+                let result = Val::Num(Num::I32((lhs $op rhs) as i32));
+
+                // Use store_result helper function
+                store_result($ctx, result, store_target)?;
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
+            _ => {
+                // Normal stack-based operation
+                let rhs_val = $ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?;
+                let lhs_val = $ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?;
+                let (lhs, rhs) = match (lhs_val, rhs_val) {
+                     (Val::Num(Num::$operand_type(l)), Val::Num(Num::$operand_type(r))) => (l as $cast_type, r as $cast_type),
+                     _ => return Err(RuntimeError::TypeMismatch),
+                };
+                $ctx.value_stack.push(Val::Num(Num::I32((lhs $op rhs) as i32)));
+                Ok(HandlerResult::Continue($ctx.ip + 1))
+            }
         }
-    };
+    }};
 }
 
 fn handle_unreachable(
@@ -1057,6 +1370,7 @@ fn handle_block(
             start_ip: *start_ip,
             end_ip: *end_ip,
             input_stack: ctx.value_stack[..current_stack_height].to_vec(),
+            is_immutable: None, // Will be determined during execution
         };
 
         Ok(HandlerResult::PushLabelStack {
@@ -1092,6 +1406,7 @@ fn handle_loop(
             start_ip: *start_ip,
             end_ip: *end_ip,
             input_stack: ctx.value_stack[..current_stack_height].to_vec(),
+            is_immutable: None, // Will be determined during execution
         };
 
         // Signal to the main execution loop to create a new label stack
@@ -1136,6 +1451,7 @@ fn handle_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
             start_ip: ctx.ip,     // Current IP as start
             end_ip: target_ip,    // Target IP as end
             input_stack: ctx.value_stack[..current_stack_height].to_vec(),
+            is_immutable: None, // Will be determined during execution
         };
 
         // WebAssembly if: 0 = false (else/skip), non-zero = true (then)
@@ -1258,7 +1574,8 @@ fn handle_call(
             .module
             .upgrade()
             .ok_or(RuntimeError::ModuleInstanceGone)?;
-        let func_addr = instance.func_addrs.get_by_idx(func_idx.clone()).clone();
+        let func_addr = instance.func_addrs[func_idx.0 as usize].clone();
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Invoke(func_addr))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -1317,1540 +1634,1649 @@ fn handle_f64_const(
 // --- Comparison Handlers (Operand not used, signature change only) ---
 fn handle_i32_eqz(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_i32()?;
-    ctx.value_stack.push(Val::Num(Num::I32((val == 0) as i32)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val = get_value_from_source(ctx, value)?;
+            let x = val.to_i32()?;
+            let result = (x == 0) as i32;
+            let result_val = Val::Num(Num::I32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => {
+            let val_opt = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let val = val_opt.to_i32()?;
+            ctx.value_stack.push(Val::Num(Num::I32((val == 0) as i32)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 fn handle_i32_eq(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I32, ==)
+    cmpop!(ctx, operand, I32, ==)
 }
 fn handle_i32_ne(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I32, !=)
+    cmpop!(ctx, operand, I32, !=)
 }
 fn handle_i32_lt_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I32, <)
+    cmpop!(ctx, operand, I32, <)
 }
 fn handle_i32_lt_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I32, <, u32)
+    cmpop_cast!(ctx, operand, I32, <, u32)
 }
 fn handle_i32_gt_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I32, >)
+    cmpop!(ctx, operand, I32, >)
 }
 fn handle_i32_gt_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I32, >, u32)
+    cmpop_cast!(ctx, operand, I32, >, u32)
 }
 fn handle_i32_le_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I32, <=)
+    cmpop!(ctx, operand, I32, <=)
 }
 fn handle_i32_le_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I32, <=, u32)
+    cmpop_cast!(ctx, operand, I32, <=, u32)
 }
 fn handle_i32_ge_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I32, >=)
+    cmpop!(ctx, operand, I32, >=)
 }
 fn handle_i32_ge_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I32, >=, u32)
+    cmpop_cast!(ctx, operand, I32, >=, u32)
 }
 
 fn handle_i64_eqz(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_i64()?;
-    ctx.value_stack.push(Val::Num(Num::I32((val == 0) as i32)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val = get_value_from_source(ctx, value)?;
+            let x = val.to_i64()?;
+            let result = (x == 0) as i32;
+            let result_val = Val::Num(Num::I32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => {
+            let val_opt = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let val = val_opt.to_i64()?;
+            ctx.value_stack.push(Val::Num(Num::I32((val == 0) as i32)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 fn handle_i64_eq(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I64, ==)
+    cmpop!(ctx, operand, I64, ==)
 }
 fn handle_i64_ne(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I64, !=)
+    cmpop!(ctx, operand, I64, !=)
 }
 fn handle_i64_lt_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I64, <)
+    cmpop!(ctx, operand, I64, <)
 }
 fn handle_i64_lt_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I64, <, u64)
+    cmpop_cast!(ctx, operand, I64, <, u64)
 }
 fn handle_i64_gt_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I64, >)
+    cmpop!(ctx, operand, I64, >)
 }
 fn handle_i64_gt_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I64, >, u64)
+    cmpop_cast!(ctx, operand, I64, >, u64)
 }
 fn handle_i64_le_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I64, <=)
+    cmpop!(ctx, operand, I64, <=)
 }
 fn handle_i64_le_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I64, <=, u64)
+    cmpop_cast!(ctx, operand, I64, <=, u64)
 }
 fn handle_i64_ge_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I64, >=)
+    cmpop!(ctx, operand, I64, >=)
 }
 fn handle_i64_ge_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, I64, >=, u64)
+    cmpop_cast!(ctx, operand, I64, >=, u64)
 }
 
 fn handle_f32_eq(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, F32, ==)
+    cmpop!(ctx, operand, F32, ==)
 }
 fn handle_f32_ne(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, F32, !=)
+    cmpop!(ctx, operand, F32, !=)
 }
 fn handle_f32_lt(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, F32, <)
+    cmpop!(ctx, operand, F32, <)
 }
 fn handle_f32_gt(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, F32, >)
+    cmpop!(ctx, operand, F32, >)
 }
 fn handle_f32_le(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, F32, <=)
+    cmpop!(ctx, operand, F32, <=)
 }
 fn handle_f32_ge(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, F32, >=)
+    cmpop!(ctx, operand, F32, >=)
 }
 
 fn handle_f64_eq(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, F64, ==)
+    cmpop!(ctx, operand, F64, ==)
 }
 fn handle_f64_ne(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, F64, !=)
+    cmpop!(ctx, operand, F64, !=)
 }
 fn handle_f64_lt(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, F64, <)
+    cmpop!(ctx, operand, F64, <)
 }
 fn handle_f64_gt(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, F64, >)
+    cmpop!(ctx, operand, F64, >)
 }
 fn handle_f64_le(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, F64, <=)
+    cmpop!(ctx, operand, F64, <=)
 }
 fn handle_f64_ge(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    cmpop!(ctx, F64, >=)
+    cmpop!(ctx, operand, F64, >=)
+}
+
+// Helper macro to resolve memory address from operand
+macro_rules! resolve_mem_addr {
+    ($ctx:ident, $operand:ident) => {{
+        match $operand {
+            Operand::MemArg(arg) => {
+                let ptr_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let ptr = ptr_val.to_i32()?;
+                (arg, ptr)
+            }
+            Operand::Optimized(OptimizedOperand::Single {
+                value,
+                memarg: Some(m),
+                store_target,
+            }) => {
+                let ptr = match value {
+                    Some(src) => {
+                        let val = get_value_from_source($ctx, &Some(src.clone()))?;
+                        val.to_i32()?
+                    }
+                    None => {
+                        let ptr_val = $ctx
+                            .value_stack
+                            .pop()
+                            .ok_or(RuntimeError::ValueStackUnderflow)?;
+                        ptr_val.to_i32()?
+                    }
+                };
+                (m, ptr)
+            }
+            _ => {
+                return Err(RuntimeError::InvalidOperand);
+            }
+        }
+    }};
+}
+
+// Helper macro to resolve memory address and value for store operations
+macro_rules! resolve_store_args {
+    ($ctx:ident, $operand:ident) => {{
+        match $operand {
+            Operand::MemArg(arg) => {
+                let val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let ptr_val = $ctx
+                    .value_stack
+                    .pop()
+                    .ok_or(RuntimeError::ValueStackUnderflow)?;
+                let ptr = ptr_val.to_i32()?;
+                (arg, val, ptr)
+            }
+            Operand::Optimized(OptimizedOperand::Double {
+                first: addr_source,
+                second: value_source,
+                memarg: Some(m),
+                store_target,
+            }) => {
+                let val = match value_source {
+                    Some(src) => get_value_from_source($ctx, &Some(src.clone()))?,
+                    None => $ctx
+                        .value_stack
+                        .pop()
+                        .ok_or(RuntimeError::ValueStackUnderflow)?,
+                };
+                let ptr = match addr_source {
+                    Some(src) => {
+                        let ptr_val = get_value_from_source($ctx, &Some(src.clone()))?;
+                        ptr_val.to_i32()?
+                    }
+                    None => {
+                        let ptr_val = $ctx
+                            .value_stack
+                            .pop()
+                            .ok_or(RuntimeError::ValueStackUnderflow)?;
+                        ptr_val.to_i32()?
+                    }
+                };
+                (m, val, ptr)
+            }
+            _ => return Err(RuntimeError::InvalidOperand),
+        }
+    }};
+}
+
+// Memory load macro for types that don't need conversion (i32, i64, f32, f64)
+macro_rules! load_with_source {
+    ($ctx:ident, $operand:ident, $type:ty, $val_type:ident) => {{
+        let (arg, ptr) = resolve_mem_addr!($ctx, $operand);
+
+        let module_inst = $ctx
+            .frame
+            .module
+            .upgrade()
+            .ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() {
+            return Err(RuntimeError::MemoryNotFound);
+        }
+        let mem_addr = &module_inst.mem_addrs[0];
+        let val = mem_addr.load::<$type>(arg, ptr)?;
+        $ctx.value_stack.push(Val::Num(Num::$val_type(val)));
+        Ok(HandlerResult::Continue($ctx.ip + 1))
+    }};
+}
+
+// Memory load macro for types that need conversion (i8/u8/i16/u16 -> i32, i8/u8/i16/u16/i32/u32 -> i64)
+macro_rules! load_with_source_convert {
+    ($ctx:ident, $operand:ident, $load_type:ty, $result_type:ident) => {{
+        let (arg, ptr) = resolve_mem_addr!($ctx, $operand);
+
+        let module_inst = $ctx
+            .frame
+            .module
+            .upgrade()
+            .ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() {
+            return Err(RuntimeError::MemoryNotFound);
+        }
+        let mem_addr = &module_inst.mem_addrs[0];
+        let val = mem_addr.load::<$load_type>(arg, ptr)?;
+        // Convert to the appropriate result type
+        let result = match stringify!($result_type) {
+            "I32" => Val::Num(Num::I32(val as i32)),
+            "I64" => Val::Num(Num::I64(val as i64)),
+            _ => unreachable!(),
+        };
+        $ctx.value_stack.push(result);
+        Ok(HandlerResult::Continue($ctx.ip + 1))
+    }};
+}
+
+// Memory store macro for types that don't need truncation (i32, i64, f32, f64)
+macro_rules! store_with_source {
+    ($ctx:ident, $operand:ident, $type:ty, $to_method:ident) => {{
+        let (arg, val, ptr) = resolve_store_args!($ctx, $operand);
+        let module_inst = $ctx
+            .frame
+            .module
+            .upgrade()
+            .ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() {
+            return Err(RuntimeError::MemoryNotFound);
+        }
+        let mem_addr = &module_inst.mem_addrs[0];
+        let val_typed = val.$to_method()?;
+        mem_addr.store::<$type>(arg, ptr, val_typed)?;
+        Ok(HandlerResult::Continue($ctx.ip + 1))
+    }};
+}
+
+// Memory store macro for types that need truncation (i8/i16/i32 from larger values)
+macro_rules! store_with_source_truncate {
+    ($ctx:ident, $operand:ident, $store_type:ty, $to_method:ident) => {{
+        let (arg, val, ptr) = resolve_store_args!($ctx, $operand);
+        let module_inst = $ctx
+            .frame
+            .module
+            .upgrade()
+            .ok_or(RuntimeError::ModuleInstanceGone)?;
+        if module_inst.mem_addrs.is_empty() {
+            return Err(RuntimeError::MemoryNotFound);
+        }
+        let mem_addr = &module_inst.mem_addrs[0];
+        let val_truncated = val.$to_method()? as $store_type;
+        mem_addr.store::<$store_type>(arg, ptr, val_truncated)?;
+        Ok(HandlerResult::Continue($ctx.ip + 1))
+    }};
 }
 
 // --- Arithmetic Handlers ---
+// Helper function to get value from various sources
+fn get_value_from_source(
+    ctx: &mut ExecutionContext,
+    source: &Option<ValueSource>,
+) -> Result<Val, RuntimeError> {
+    match source {
+        Some(ValueSource::Const(val)) => Ok(val.to_val()),
+        Some(ValueSource::Local(idx)) => ctx
+            .frame
+            .locals
+            .get(*idx as usize)
+            .cloned()
+            .ok_or(RuntimeError::LocalIndexOutOfBounds),
+        Some(ValueSource::Global(idx)) => {
+            let module_inst = ctx
+                .frame
+                .module
+                .upgrade()
+                .ok_or(RuntimeError::ModuleInstanceGone)?;
+            if *idx as usize >= module_inst.global_addrs.len() {
+                return Err(RuntimeError::GlobalIndexOutOfBounds);
+            }
+            let global_addr = &module_inst.global_addrs[*idx as usize];
+            Ok(global_addr.get())
+        }
+        Some(ValueSource::Stack) => ctx
+            .value_stack
+            .pop()
+            .ok_or(RuntimeError::ValueStackUnderflow),
+        None => Err(RuntimeError::InvalidOperand),
+    }
+}
+
 fn handle_i32_clz(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let x = x_val.to_i32()?;
-    let result = x.leading_zeros() as i32;
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, I32, to_i32, |x: i32| x.leading_zeros() as i32)
 }
 fn handle_i32_ctz(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let x = x_val.to_i32()?;
-    let result = x.trailing_zeros() as i32;
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, I32, to_i32, |x: i32| x.trailing_zeros()
+        as i32)
 }
 fn handle_i32_popcnt(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let x = x_val.to_i32()?;
-    let result = x.count_ones() as i32;
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, I32, to_i32, |x: i32| x.count_ones() as i32)
 }
 fn handle_i32_add(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_wrapping!(ctx, I32, wrapping_add)
+    binop_wrapping!(ctx, operand, I32, wrapping_add)
 }
 fn handle_i32_sub(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_wrapping!(ctx, I32, wrapping_sub)
+    binop_wrapping!(ctx, operand, I32, wrapping_sub)
 }
 fn handle_i32_mul(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_wrapping!(ctx, I32, wrapping_mul)
+    binop_wrapping!(ctx, operand, I32, wrapping_mul)
 }
 fn handle_i32_div_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
+    // Get operand values based on source
+    let (lhs_val, rhs_val, store_target) = match operand {
+        Operand::Optimized(OptimizedOperand::Double {
+            first,
+            second,
+            memarg: None,
+            store_target,
+        }) => {
+            let rhs = get_value_from_source(ctx, second)?;
+            let lhs = get_value_from_source(ctx, first)?;
+            (lhs, rhs, store_target)
+        }
+        _ => {
+            // Fallback to stack-based operation
+            let rhs = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let lhs = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            (lhs, rhs, &None)
+        }
+    };
+
     let rhs = rhs_val.to_i32()?;
     let lhs = lhs_val.to_i32()?;
 
-    #[cfg(target_arch = "wasm32")]
-    let result = {
-        let mut result: i32;
-        unsafe {
-            asm!(
-                "local.get {0}",
-                "local.get {1}",
-                "i32.div_s",
-                "local.set {2}",
-                in(local) lhs,
-                in(local) rhs,
-                out(local) result,
-            );
-        }
-        result
-    };
+    if rhs == 0 {
+        return Err(RuntimeError::ZeroDivideError);
+    }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    let result = if lhs == i32::MIN && rhs == -1 {
-        0 // WebAssembly仕様: i32::MIN % -1 = 0
-    } else {
-        lhs / rhs
-    };
+    if lhs == i32::MIN && rhs == -1 {
+        return Err(RuntimeError::IntegerOverflow);
+    }
 
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
+    let result = lhs / rhs;
+    let result_val = Val::Num(Num::I32(result));
+
+    // Use store_result helper function
+    store_result(ctx, result_val, store_target)?;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 fn handle_i32_div_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
+    // Get operand values based on source
+    let (lhs_val, rhs_val, store_target) = match operand {
+        Operand::Optimized(OptimizedOperand::Double {
+            first,
+            second,
+            memarg: None,
+            store_target,
+        }) => {
+            let rhs = get_value_from_source(ctx, second)?;
+            let lhs = get_value_from_source(ctx, first)?;
+            (lhs, rhs, store_target)
+        }
+        _ => {
+            // Fallback to stack-based operation
+            let rhs = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let lhs = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            (lhs, rhs, &None)
+        }
+    };
+
     let rhs = rhs_val.to_i32()? as u32;
     let lhs = lhs_val.to_i32()? as u32;
 
-    #[cfg(target_arch = "wasm32")]
-    let result = {
-        let mut result: i32;
-        unsafe {
-            asm!(
-                "local.get {0}",
-                "local.get {1}",
-                "i32.div_u",
-                "local.set {2}",
-                in(local) lhs,
-                in(local) rhs,
-                out(local) result,
-            );
-        }
-        result
-    };
+    if rhs == 0 {
+        return Err(RuntimeError::ZeroDivideError);
+    }
 
-    #[cfg(not(target_arch = "wasm32"))]
     let result = (lhs / rhs) as i32;
+    let result_val = Val::Num(Num::I32(result));
 
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
+    // Store to target if specified, otherwise push to stack
+    store_result(ctx, result_val, store_target)?;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 fn handle_i32_rem_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
+    // Get operand values based on source
+    let (lhs_val, rhs_val, store_target) = match operand {
+        Operand::Optimized(OptimizedOperand::Double {
+            first,
+            second,
+            memarg: None,
+            store_target,
+        }) => {
+            let rhs = get_value_from_source(ctx, second)?;
+            let lhs = get_value_from_source(ctx, first)?;
+            (lhs, rhs, store_target)
+        }
+        _ => {
+            // Fallback to stack-based operation
+            let rhs = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let lhs = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            (lhs, rhs, &None)
+        }
+    };
+
     let rhs = rhs_val.to_i32()?;
     let lhs = lhs_val.to_i32()?;
 
-    #[cfg(target_arch = "wasm32")]
-    let result = {
-        let mut result: i32;
-        unsafe {
-            asm!(
-                "local.get {0}",
-                "local.get {1}",
-                "i32.rem_s",
-                "local.set {2}",
-                in(local) lhs,
-                in(local) rhs,
-                out(local) result,
-            );
-        }
-        result
-    };
-
-    #[cfg(not(target_arch = "wasm32"))]
     let result = if lhs == i32::MIN && rhs == -1 {
         0 // WebAssembly仕様: i32::MIN % -1 = 0
     } else {
         lhs % rhs
     };
 
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
+    let result_val = Val::Num(Num::I32(result));
+
+    // Store to target if specified, otherwise push to stack
+    store_result(ctx, result_val, store_target)?;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 fn handle_i32_rem_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
+    // Get operand values based on source
+    let (lhs_val, rhs_val, store_target) = match operand {
+        Operand::Optimized(OptimizedOperand::Double {
+            first,
+            second,
+            memarg: None,
+            store_target,
+        }) => {
+            let rhs = get_value_from_source(ctx, second)?;
+            let lhs = get_value_from_source(ctx, first)?;
+            (lhs, rhs, store_target)
+        }
+        _ => {
+            // Fallback to stack-based operation
+            let rhs = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let lhs = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            (lhs, rhs, &None)
+        }
+    };
+
     let rhs = rhs_val.to_i32()? as u32;
     let lhs = lhs_val.to_i32()? as u32;
 
-    #[cfg(target_arch = "wasm32")]
-    let result = {
-        let mut result: i32;
-        unsafe {
-            asm!(
-                "local.get {0}",
-                "local.get {1}",
-                "i32.rem_u",
-                "local.set {2}",
-                in(local) lhs,
-                in(local) rhs,
-                out(local) result,
-            );
-        }
-        result
-    };
+    if rhs == 0 {
+        return Err(RuntimeError::ZeroDivideError);
+    }
 
-    #[cfg(not(target_arch = "wasm32"))]
     let result = (lhs % rhs) as i32;
+    let result_val = Val::Num(Num::I32(result));
 
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
+    // Store to target if specified, otherwise push to stack
+    store_result(ctx, result_val, store_target)?;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 fn handle_i32_and(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop!(ctx, I32, BitAnd, bitand)
+    binop!(ctx, operand, I32, BitAnd, bitand)
 }
 fn handle_i32_or(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop!(ctx, I32, BitOr, bitor)
+    binop!(ctx, operand, I32, BitOr, bitor)
 }
 fn handle_i32_xor(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop!(ctx, I32, BitXor, bitxor)
+    binop!(ctx, operand, I32, BitXor, bitxor)
 }
 fn handle_i32_shl(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let rhs = rhs_val.to_i32()?;
-    let lhs = lhs_val.to_i32()?;
-    let result = lhs.wrapping_shl(rhs as u32);
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    shiftop!(ctx, operand, I32, to_i32, wrapping_shl)
 }
 fn handle_i32_shr_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let rhs = rhs_val.to_i32()?;
-    let lhs = lhs_val.to_i32()?;
-    let result = lhs.wrapping_shr(rhs as u32);
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    shiftop!(ctx, operand, I32, to_i32, wrapping_shr)
 }
 fn handle_i32_shr_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let rhs = rhs_val.to_i32()? as u32;
-    let lhs = lhs_val.to_i32()? as u32;
-    let result = lhs.wrapping_shr(rhs);
-    ctx.value_stack.push(Val::Num(Num::I32(result as i32)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    shiftop_unsigned!(ctx, operand, I32, to_i32, u32, i32)
 }
 fn handle_i32_rotl(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let rhs = rhs_val.to_i32()?;
-    let lhs = lhs_val.to_i32()?;
-    let result = lhs.rotate_left(rhs as u32);
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    shiftop!(ctx, operand, I32, to_i32, rotate_left)
 }
 fn handle_i32_rotr(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let rhs = rhs_val.to_i32()?;
-    let lhs = lhs_val.to_i32()?;
-    let result = lhs.rotate_right(rhs as u32);
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    shiftop!(ctx, operand, I32, to_i32, rotate_right)
 }
 
 fn handle_i64_clz(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let x = x_val.to_i64()?;
-    let result = x.leading_zeros() as i64;
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, I64, to_i64, |x: i64| x.leading_zeros() as i64)
 }
 fn handle_i64_ctz(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let x = x_val.to_i64()?;
-    let result = x.trailing_zeros() as i64;
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, I64, to_i64, |x: i64| x.trailing_zeros()
+        as i64)
 }
 fn handle_i64_popcnt(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let x = x_val.to_i64()?;
-    let result = x.count_ones() as i64;
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, I64, to_i64, |x: i64| x.count_ones() as i64)
 }
 fn handle_i64_add(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_wrapping!(ctx, I64, wrapping_add)
+    binop_wrapping!(ctx, operand, I64, wrapping_add)
 }
 fn handle_i64_sub(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_wrapping!(ctx, I64, wrapping_sub)
+    binop_wrapping!(ctx, operand, I64, wrapping_sub)
 }
 fn handle_i64_mul(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop_wrapping!(ctx, I64, wrapping_mul)
+    binop_wrapping!(ctx, operand, I64, wrapping_mul)
 }
 fn handle_i64_div_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
+    // Get operand values based on source
+    let (lhs_val, rhs_val, store_target) = match operand {
+        Operand::Optimized(OptimizedOperand::Double {
+            first,
+            second,
+            memarg: None,
+            store_target,
+        }) => {
+            let rhs = get_value_from_source(ctx, second)?;
+            let lhs = get_value_from_source(ctx, first)?;
+            (lhs, rhs, store_target)
+        }
+        _ => {
+            // Fallback to stack-based operation
+            let rhs = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let lhs = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            (lhs, rhs, &None)
+        }
+    };
+
     let rhs = rhs_val.to_i64()?;
     let lhs = lhs_val.to_i64()?;
 
-    #[cfg(target_arch = "wasm32")]
-    let result = {
-        let mut result: i64;
-        unsafe {
-            asm!(
-                "local.get {0}",
-                "local.get {1}",
-                "i64.div_s",
-                "local.set {2}",
-                in(local) lhs,
-                in(local) rhs,
-                out(local) result,
-            );
-        }
-        result
-    };
+    if rhs == 0 {
+        return Err(RuntimeError::ZeroDivideError);
+    }
+    if lhs == i64::MIN && rhs == -1 {
+        return Err(RuntimeError::IntegerOverflow);
+    }
 
-    #[cfg(not(target_arch = "wasm32"))]
     let result = lhs / rhs;
+    let result_val = Val::Num(Num::I64(result));
 
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
+    // Store to target if specified, otherwise push to stack
+    store_result(ctx, result_val, store_target)?;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 fn handle_i64_div_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
+    // Get operand values based on source
+    let (lhs_val, rhs_val, store_target) = match operand {
+        Operand::Optimized(OptimizedOperand::Double {
+            first,
+            second,
+            memarg: None,
+            store_target,
+        }) => {
+            let rhs = get_value_from_source(ctx, second)?;
+            let lhs = get_value_from_source(ctx, first)?;
+            (lhs, rhs, store_target)
+        }
+        _ => {
+            // Fallback to stack-based operation
+            let rhs = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let lhs = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            (lhs, rhs, &None)
+        }
+    };
+
     let rhs = rhs_val.to_i64()? as u64;
     let lhs = lhs_val.to_i64()? as u64;
 
-    #[cfg(target_arch = "wasm32")]
-    let result = {
-        let mut result: i64;
-        unsafe {
-            asm!(
-                "local.get {0}",
-                "local.get {1}",
-                "i64.div_u",
-                "local.set {2}",
-                in(local) lhs,
-                in(local) rhs,
-                out(local) result,
-            );
-        }
-        result
-    };
+    if rhs == 0 {
+        return Err(RuntimeError::ZeroDivideError);
+    }
 
-    #[cfg(not(target_arch = "wasm32"))]
     let result = (lhs / rhs) as i64;
+    let result_val = Val::Num(Num::I64(result));
 
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
+    // Store to target if specified, otherwise push to stack
+    store_result(ctx, result_val, store_target)?;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 fn handle_i64_rem_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
+    // Get operand values based on source
+    let (lhs_val, rhs_val, store_target) = match operand {
+        Operand::Optimized(OptimizedOperand::Double {
+            first,
+            second,
+            memarg: None,
+            store_target,
+        }) => {
+            let rhs = get_value_from_source(ctx, second)?;
+            let lhs = get_value_from_source(ctx, first)?;
+            (lhs, rhs, store_target)
+        }
+        _ => {
+            // Fallback to stack-based operation
+            let rhs = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let lhs = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            (lhs, rhs, &None)
+        }
+    };
+
     let rhs = rhs_val.to_i64()?;
     let lhs = lhs_val.to_i64()?;
 
-    #[cfg(target_arch = "wasm32")]
-    let result = {
-        let mut result: i64;
-        unsafe {
-            asm!(
-                "local.get {0}",
-                "local.get {1}",
-                "i64.rem_s",
-                "local.set {2}",
-                in(local) lhs,
-                in(local) rhs,
-                out(local) result,
-            );
-        }
-        result
+    if rhs == 0 {
+        return Err(RuntimeError::ZeroDivideError);
+    }
+
+    let result = if lhs == i64::MIN && rhs == -1 {
+        0 // WebAssembly spec: i64::MIN % -1 = 0
+    } else {
+        lhs % rhs
     };
 
-    #[cfg(not(target_arch = "wasm32"))]
-    let result = lhs % rhs;
+    let result_val = Val::Num(Num::I64(result));
 
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
+    // Store to target if specified, otherwise push to stack
+    store_result(ctx, result_val, store_target)?;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 fn handle_i64_rem_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
+    // Get operand values based on source
+    let (lhs_val, rhs_val, store_target) = match operand {
+        Operand::Optimized(OptimizedOperand::Double {
+            first,
+            second,
+            memarg: None,
+            store_target,
+        }) => {
+            let rhs = get_value_from_source(ctx, second)?;
+            let lhs = get_value_from_source(ctx, first)?;
+            (lhs, rhs, store_target)
+        }
+        _ => {
+            // Fallback to stack-based operation
+            let rhs = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let lhs = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            (lhs, rhs, &None)
+        }
+    };
+
     let rhs = rhs_val.to_i64()? as u64;
     let lhs = lhs_val.to_i64()? as u64;
 
-    #[cfg(target_arch = "wasm32")]
-    let result = {
-        let mut result: i64;
-        unsafe {
-            asm!(
-                "local.get {0}",
-                "local.get {1}",
-                "i64.rem_u",
-                "local.set {2}",
-                in(local) lhs,
-                in(local) rhs,
-                out(local) result,
-            );
-        }
-        result
-    };
+    if rhs == 0 {
+        return Err(RuntimeError::ZeroDivideError);
+    }
 
-    #[cfg(not(target_arch = "wasm32"))]
     let result = (lhs % rhs) as i64;
+    let result_val = Val::Num(Num::I64(result));
 
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
+    // Store to target if specified, otherwise push to stack
+    store_result(ctx, result_val, store_target)?;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 fn handle_i64_and(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop!(ctx, I64, BitAnd, bitand)
+    binop!(ctx, operand, I64, BitAnd, bitand)
 }
 fn handle_i64_or(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop!(ctx, I64, BitOr, bitor)
+    binop!(ctx, operand, I64, BitOr, bitor)
 }
 fn handle_i64_xor(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop!(ctx, I64, BitXor, bitxor)
+    binop!(ctx, operand, I64, BitXor, bitxor)
 }
 fn handle_i64_shl(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let rhs = rhs_val.to_i64()?;
-    let lhs = lhs_val.to_i64()?;
-    let result = lhs.wrapping_shl(rhs as u32);
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    shiftop!(ctx, operand, I64, to_i64, wrapping_shl)
 }
 fn handle_i64_shr_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let rhs = rhs_val.to_i64()?;
-    let lhs = lhs_val.to_i64()?;
-    let result = lhs.wrapping_shr(rhs as u32);
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    shiftop!(ctx, operand, I64, to_i64, wrapping_shr)
 }
 fn handle_i64_shr_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let rhs = rhs_val.to_i64()? as u64;
-    let lhs = lhs_val.to_i64()? as u64;
-    let result = lhs.wrapping_shr(rhs as u32);
-    ctx.value_stack.push(Val::Num(Num::I64(result as i64)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    shiftop_unsigned!(ctx, operand, I64, to_i64, u64, i64)
 }
 fn handle_i64_rotl(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let rhs = rhs_val.to_i64()?;
-    let lhs = lhs_val.to_i64()?;
-    let result = lhs.rotate_left(rhs as u32);
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    shiftop!(ctx, operand, I64, to_i64, rotate_left)
 }
 fn handle_i64_rotr(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let rhs = rhs_val.to_i64()?;
-    let lhs = lhs_val.to_i64()?;
-    let result = lhs.rotate_right(rhs as u32);
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    shiftop!(ctx, operand, I64, to_i64, rotate_right)
 }
 
 fn handle_f32_abs(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let x = x_val.to_f32()?;
-    let result = x.abs();
-    ctx.value_stack.push(Val::Num(Num::F32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F32, to_f32, |x: f32| x.abs())
 }
 fn handle_f32_neg(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let x = x_val.to_f32()?;
-    let result = -x;
-    ctx.value_stack.push(Val::Num(Num::F32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F32, to_f32, |x: f32| -x)
 }
 fn handle_f32_ceil(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?
-        .to_f32()?;
-    let result = x.ceil();
-    ctx.value_stack.push(Val::Num(Num::F32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F32, to_f32, |x: f32| x.ceil())
 }
 fn handle_f32_floor(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?
-        .to_f32()?;
-    let result = x.floor();
-    ctx.value_stack.push(Val::Num(Num::F32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F32, to_f32, |x: f32| x.floor())
 }
 fn handle_f32_trunc(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?
-        .to_f32()?;
-    let result = x.trunc();
-    ctx.value_stack.push(Val::Num(Num::F32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F32, to_f32, |x: f32| x.trunc())
 }
 fn handle_f32_nearest(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?
-        .to_f32()?;
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val = get_value_from_source(ctx, value)?;
+            let x = val.to_f32()?;
 
-    #[cfg(target_arch = "wasm32")]
-    let result = {
-        let mut result: f32;
-        unsafe {
-            asm!(
-                "local.get {0}",
-                "f32.nearest",
-                "local.set {1}",
-                in(local) x,
-                out(local) result,
-            );
+            let result = x.round_ties_even();
+            let result_val = Val::Num(Num::F32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
         }
-        result
-    };
+        _ => {
+            let x = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?
+                .to_f32()?;
+            let result = x.round_ties_even();
 
-    #[cfg(not(target_arch = "wasm32"))]
-    let result = x.round_ties_even();
-
-    ctx.value_stack.push(Val::Num(Num::F32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+            ctx.value_stack.push(Val::Num(Num::F32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 fn handle_f32_sqrt(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?
-        .to_f32()?;
-    let result = x.sqrt();
-    ctx.value_stack.push(Val::Num(Num::F32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F32, to_f32, |x: f32| x.sqrt())
 }
 fn handle_f32_add(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop!(ctx, F32, Add, add)
+    binop!(ctx, operand, F32, Add, add)
 }
 fn handle_f32_sub(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop!(ctx, F32, Sub, sub)
+    binop!(ctx, operand, F32, Sub, sub)
 }
 fn handle_f32_mul(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop!(ctx, F32, Mul, mul)
+    binop!(ctx, operand, F32, Mul, mul)
 }
 fn handle_f32_div(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop!(ctx, F32, Div, div)
+    binop!(ctx, operand, F32, Div, div)
 }
 fn handle_f32_min(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let rhs = rhs_val.to_f32()?;
-    let lhs = lhs_val.to_f32()?;
-    let result = if lhs.is_nan() || rhs.is_nan() {
-        f32::NAN
-    } else if lhs == 0.0 && rhs == 0.0 && (lhs.is_sign_negative() || rhs.is_sign_negative()) {
-        -0.0 // min(±0, ±0) where at least one is negative
-    } else {
-        lhs.min(rhs)
-    };
-    ctx.value_stack.push(Val::Num(Num::F32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    match operand {
+        Operand::Optimized(OptimizedOperand::Double {
+            first,
+            second,
+            memarg: None,
+            store_target,
+        }) => {
+            // Get values from sources
+            let lhs_val = get_value_from_source(ctx, first)?;
+            let rhs_val = get_value_from_source(ctx, second)?;
+
+            let lhs = lhs_val.to_f32()?;
+            let rhs = rhs_val.to_f32()?;
+
+            let result = if lhs.is_nan() || rhs.is_nan() {
+                f32::NAN
+            } else if lhs == 0.0 && rhs == 0.0 && (lhs.is_sign_negative() || rhs.is_sign_negative())
+            {
+                -0.0 // min(±0, ±0) where at least one is negative
+            } else {
+                lhs.min(rhs)
+            };
+
+            let result_val = Val::Num(Num::F32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => {
+            // Fallback to traditional stack-based operation
+            let rhs_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let lhs_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let rhs = rhs_val.to_f32()?;
+            let lhs = lhs_val.to_f32()?;
+
+            let result = if lhs.is_nan() || rhs.is_nan() {
+                f32::NAN
+            } else if lhs == 0.0 && rhs == 0.0 && (lhs.is_sign_negative() || rhs.is_sign_negative())
+            {
+                -0.0 // min(±0, ±0) where at least one is negative
+            } else {
+                lhs.min(rhs)
+            };
+
+            ctx.value_stack.push(Val::Num(Num::F32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 fn handle_f32_max(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let rhs = rhs_val.to_f32()?;
-    let lhs = lhs_val.to_f32()?;
-    let result = if lhs.is_nan() || rhs.is_nan() {
-        f32::NAN
-    } else if lhs == 0.0 && rhs == 0.0 && (lhs.is_sign_positive() || rhs.is_sign_positive()) {
-        0.0 // max(±0, ±0) where at least one is positive
-    } else {
-        lhs.max(rhs)
-    };
-    ctx.value_stack.push(Val::Num(Num::F32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    match operand {
+        Operand::Optimized(OptimizedOperand::Double {
+            first,
+            second,
+            memarg: None,
+            store_target,
+        }) => {
+            // Get values from sources
+            let lhs_val = get_value_from_source(ctx, first)?;
+            let rhs_val = get_value_from_source(ctx, second)?;
+
+            let lhs = lhs_val.to_f32()?;
+            let rhs = rhs_val.to_f32()?;
+
+            let result = if lhs.is_nan() || rhs.is_nan() {
+                f32::NAN
+            } else if lhs == 0.0 && rhs == 0.0 && (lhs.is_sign_positive() || rhs.is_sign_positive())
+            {
+                0.0 // max(±0, ±0) where at least one is positive
+            } else {
+                lhs.max(rhs)
+            };
+
+            let result_val = Val::Num(Num::F32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => {
+            // Fallback to traditional stack-based operation
+            let rhs_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let lhs_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let rhs = rhs_val.to_f32()?;
+            let lhs = lhs_val.to_f32()?;
+
+            let result = if lhs.is_nan() || rhs.is_nan() {
+                f32::NAN
+            } else if lhs == 0.0 && rhs == 0.0 && (lhs.is_sign_positive() || rhs.is_sign_positive())
+            {
+                0.0 // max(±0, ±0) where at least one is positive
+            } else {
+                lhs.max(rhs)
+            };
+
+            ctx.value_stack.push(Val::Num(Num::F32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 fn handle_f32_copysign(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let rhs = rhs_val.to_f32()?;
-    let lhs = lhs_val.to_f32()?;
-    let result = lhs.copysign(rhs);
-    ctx.value_stack.push(Val::Num(Num::F32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    binop_wrapping!(ctx, operand, F32, copysign)
 }
 
 fn handle_f64_abs(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let x = x_val.to_f64()?;
-    let result = x.abs();
-    ctx.value_stack.push(Val::Num(Num::F64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F64, to_f64, |x: f64| x.abs())
 }
 fn handle_f64_neg(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let x = x_val.to_f64()?;
-    let result = -x;
-    ctx.value_stack.push(Val::Num(Num::F64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F64, to_f64, |x: f64| -x)
 }
 fn handle_f64_ceil(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let x = x_val.to_f64()?;
-    let result = x.ceil();
-    ctx.value_stack.push(Val::Num(Num::F64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F64, to_f64, |x: f64| x.ceil())
 }
 fn handle_f64_floor(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let x = x_val.to_f64()?;
-    let result = x.floor();
-    ctx.value_stack.push(Val::Num(Num::F64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F64, to_f64, |x: f64| x.floor())
 }
 fn handle_f64_trunc(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let x = x_val.to_f64()?;
-    let result = x.trunc();
-    ctx.value_stack.push(Val::Num(Num::F64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F64, to_f64, |x: f64| x.trunc())
 }
 fn handle_f64_nearest(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let x = x_val.to_f64()?;
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val = get_value_from_source(ctx, value)?;
+            let x = val.to_f64()?;
 
-    #[cfg(target_arch = "wasm32")]
-    let result = {
-        let mut result: f64;
-        unsafe {
-            asm!(
-                "local.get {0}",
-                "f64.nearest",
-                "local.set {1}",
-                in(local) x,
-                out(local) result,
-            );
+            let result = x.round();
+            let result_val = Val::Num(Num::F64(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
         }
-        result
-    };
+        _ => {
+            let x_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let x = x_val.to_f64()?;
 
-    #[cfg(not(target_arch = "wasm32"))]
-    let result = x.round();
+            let result = x.round();
 
-    ctx.value_stack.push(Val::Num(Num::F64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+            ctx.value_stack.push(Val::Num(Num::F64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 
 fn handle_i32_extend8_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_i32()?;
-    let result = (val as i8) as i32;
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, I32, to_i32, |x: i32| (x as i8) as i32)
 }
 
 fn handle_i32_extend16_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_i32()?;
-    let result = (val as i16) as i32;
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, I32, to_i32, |x: i32| (x as i16) as i32)
 }
 
 fn handle_i64_extend8_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_i64()?;
-    let result = (val as i8) as i64;
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, I64, to_i64, |x: i64| (x as i8) as i64)
 }
 
 fn handle_i64_extend16_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_i64()?;
-    let result = (val as i16) as i64;
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, I64, to_i64, |x: i64| (x as i16) as i64)
 }
 
 fn handle_i64_extend32_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_i32()?;
-    let result = val as i64;
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, I64, to_i32, |x: i32| x as i64)
 }
 
 fn handle_i32_wrap_i64(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_i64()?;
-    let result = val as i32;
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, I32, to_i64, |x: i64| x as i32)
 }
 
 fn handle_i64_extend_i32_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_i32()?;
-    let result = (val as u32) as i64;
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, I64, to_i32, |x: i32| (x as u32) as i64)
 }
 
 fn handle_f64_promote_f32(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_f32()?;
-    let result = val as f64;
-    ctx.value_stack.push(Val::Num(Num::F64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F64, to_f32, |x: f32| x as f64)
 }
 
 fn handle_f32_demote_f64(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_f64()?;
-    let result = val as f32;
-    ctx.value_stack.push(Val::Num(Num::F32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F32, to_f64, |x: f64| x as f32)
 }
 
 fn handle_i32_trunc_f32_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_f32()?;
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val = get_value_from_source(ctx, value)?;
+            let x = val.to_f32()?;
 
-    #[cfg(target_arch = "wasm32")]
-    let result = {
-        let mut result: i32;
-        unsafe {
-            asm!(
-                "local.get {0}",
-                "i32.trunc_f32_s",
-                "local.set {1}",
-                in(local) val,
-                out(local) result,
-            );
+            let result = x.trunc() as i32;
+            let result_val = Val::Num(Num::I32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
         }
-        result
-    };
+        _ => {
+            let val_opt = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let val = val_opt.to_f32()?;
 
-    #[cfg(not(target_arch = "wasm32"))]
-    let result = val.trunc() as i32;
+            let result = val.trunc() as i32;
 
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 
 fn handle_i32_trunc_f32_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_f32()?;
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val = get_value_from_source(ctx, value)?;
+            let x = val.to_f32()?;
 
-    #[cfg(target_arch = "wasm32")]
-    let result = {
-        let mut result: i32;
-        unsafe {
-            asm!(
-                "local.get {0}",
-                "i32.trunc_f32_u",
-                "local.set {1}",
-                in(local) val,
-                out(local) result,
-            );
+            let result = x.trunc() as u32 as i32;
+            let result_val = Val::Num(Num::I32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
         }
-        result
-    };
+        _ => {
+            let val_opt = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let val = val_opt.to_f32()?;
 
-    #[cfg(not(target_arch = "wasm32"))]
-    let result = val.trunc() as u32 as i32;
+            let result = val.trunc() as u32 as i32;
 
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 
 fn handle_i32_trunc_f64_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?
-        .to_f64()?;
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val = get_value_from_source(ctx, value)?;
+            let x = val.to_f64()?;
 
-    #[cfg(target_arch = "wasm32")]
-    let result = {
-        let mut result: i32;
-        unsafe {
-            asm!(
-                "local.get {0}",
-                "i32.trunc_f64_s",
-                "local.set {1}",
-                in(local) val,
-                out(local) result,
-            );
+            let result = x.trunc() as i32;
+            let result_val = Val::Num(Num::I32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
         }
-        result
-    };
+        _ => {
+            let val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?
+                .to_f64()?;
 
-    #[cfg(not(target_arch = "wasm32"))]
-    let result = val.trunc() as i32;
+            let result = val.trunc() as i32;
 
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 
 fn handle_i32_trunc_f64_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val_f64 = val_opt.to_f64()?;
-    if val_f64.is_nan() {
-        return Err(RuntimeError::InvalidConversionToInt);
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val = get_value_from_source(ctx, value)?;
+            let val_f64 = val.to_f64()?;
+            if val_f64.is_nan() {
+                return Err(RuntimeError::InvalidConversionToInt);
+            }
+            let truncated = val_f64.trunc();
+            if !(truncated >= 0.0 && truncated < u32::MAX as f64 + 1.0) {
+                return Err(RuntimeError::IntegerOverflow);
+            }
+            let result_val = Val::Num(Num::I32(truncated as u32 as i32));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => {
+            let val_opt = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let val_f64 = val_opt.to_f64()?;
+            if val_f64.is_nan() {
+                return Err(RuntimeError::InvalidConversionToInt);
+            }
+            let truncated = val_f64.trunc();
+            if !(truncated >= 0.0 && truncated < u32::MAX as f64 + 1.0) {
+                return Err(RuntimeError::IntegerOverflow);
+            }
+            ctx.value_stack
+                .push(Val::Num(Num::I32(truncated as u32 as i32)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
     }
-    let truncated = val_f64.trunc();
-    if !(truncated >= 0.0 && truncated < u32::MAX as f64 + 1.0) {
-        return Err(RuntimeError::IntegerOverflow);
-    }
-    ctx.value_stack
-        .push(Val::Num(Num::I32(truncated as u32 as i32)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 
 fn handle_i64_trunc_f32_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?
-        .to_f32()?;
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val = get_value_from_source(ctx, value)?;
+            let x = val.to_f32()?;
 
-    #[cfg(target_arch = "wasm32")]
-    let result = {
-        let mut result: i64;
-        unsafe {
-            asm!(
-                "local.get {0}",
-                "i64.trunc_f32_s",
-                "local.set {1}",
-                in(local) val,
-                out(local) result,
-            );
+            let result = x.trunc() as i64;
+            let result_val = Val::Num(Num::I64(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
         }
-        result
-    };
+        _ => {
+            let val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?
+                .to_f32()?;
 
-    #[cfg(not(target_arch = "wasm32"))]
-    let result = val.trunc() as i64;
+            let result = val.trunc() as i64;
 
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 
 fn handle_i64_trunc_f32_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?
-        .to_f32()?;
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val_obj = get_value_from_source(ctx, value)?;
+            let val = val_obj.to_f32()?;
 
-    // Check for overflow conditions according to WebAssembly spec
-    if val.is_nan() || val.is_infinite() || val < 0.0 || val >= (u64::MAX as f32) {
-        return Err(RuntimeError::IntegerOverflow);
-    }
+            // Check for overflow conditions according to WebAssembly spec
+            if val.is_nan() || val.is_infinite() || val < 0.0 || val >= (u64::MAX as f32) {
+                return Err(RuntimeError::IntegerOverflow);
+            }
 
-    #[cfg(target_arch = "wasm32")]
-    let result = {
-        let mut result: i64;
-        unsafe {
-            asm!(
-                "local.get {0}",
-                "i64.trunc_f32_u",
-                "local.set {1}",
-                in(local) val,
-                out(local) result,
-            );
+            let result = val.trunc() as u64 as i64;
+            let result_val = Val::Num(Num::I64(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
         }
-        result
-    };
+        _ => {
+            let val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?
+                .to_f32()?;
 
-    #[cfg(not(target_arch = "wasm32"))]
-    let result = val.trunc() as u64 as i64;
+            // Check for overflow conditions according to WebAssembly spec
+            if val.is_nan() || val.is_infinite() || val < 0.0 || val >= (u64::MAX as f32) {
+                return Err(RuntimeError::IntegerOverflow);
+            }
 
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+            let result = val.trunc() as u64 as i64;
+
+            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 
 fn handle_i64_trunc_f64_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?
-        .to_f64()?;
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val_obj = get_value_from_source(ctx, value)?;
+            let val = val_obj.to_f64()?;
 
-    #[cfg(target_arch = "wasm32")]
-    let result = {
-        let mut result: i64;
-        unsafe {
-            asm!(
-                "local.get {0}",
-                "i64.trunc_f64_s",
-                "local.set {1}",
-                in(local) val,
-                out(local) result,
-            );
+            let result = val.trunc() as i64;
+            let result_val = Val::Num(Num::I64(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
         }
-        result
-    };
+        _ => {
+            let val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?
+                .to_f64()?;
 
-    #[cfg(not(target_arch = "wasm32"))]
-    let result = val.trunc() as i64;
+            let result = val.trunc() as i64;
 
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 
 fn handle_i64_trunc_f64_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?
-        .to_f64()?;
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val_obj = get_value_from_source(ctx, value)?;
+            let val = val_obj.to_f64()?;
 
-    #[cfg(target_arch = "wasm32")]
-    let result = {
-        let mut result: i64;
-        unsafe {
-            asm!(
-                "local.get {0}",
-                "i64.trunc_f64_u",
-                "local.set {1}",
-                in(local) val,
-                out(local) result,
-            );
+            let result = val.trunc() as u64 as i64;
+            let result_val = Val::Num(Num::I64(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
         }
-        result
-    };
+        _ => {
+            let val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?
+                .to_f64()?;
 
-    #[cfg(not(target_arch = "wasm32"))]
-    let result = val.trunc() as u64 as i64;
+            let result = val.trunc() as u64 as i64;
 
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 
 fn handle_unimplemented(
@@ -2939,11 +3365,12 @@ fn handle_call_indirect(
 
         if let Some(func_addr) = func_ref_option {
             let actual_type = func_addr.func_type();
-            let expected_type = module_inst.types.get_by_idx(expected_type_idx.clone());
+            let expected_type = &module_inst.types[expected_type_idx.0 as usize];
 
             if actual_type != *expected_type {
                 return Err(RuntimeError::IndirectCallTypeMismatch);
             }
+            ctx.block_has_mutable_op = true;
             Ok(HandlerResult::Invoke(func_addr.clone()))
         } else {
             // TODO: Distinguish between UninitializedElement and TableOutOfBounds if necessary
@@ -3007,8 +3434,15 @@ fn handle_local_get(
         if index >= ctx.frame.locals.len() {
             return Err(RuntimeError::LocalIndexOutOfBounds);
         }
+
+        // Track local access with version
+        if let Some(ref mut tracker) = ctx.accessed_locals {
+            let version = ctx.frame.local_versions[index];
+            tracker.track_access(index as u32, version);
+        }
+
         let val = ctx.frame.locals[index].clone();
-        ctx.value_stack.push(val.clone());
+        ctx.value_stack.push(val);
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3029,6 +3463,7 @@ fn handle_local_set(
             .pop()
             .ok_or(RuntimeError::ValueStackUnderflow)?;
         ctx.frame.locals[index] = val;
+        ctx.frame.local_versions[index] += 1;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3049,7 +3484,16 @@ fn handle_local_tee(
             .last()
             .ok_or(RuntimeError::ValueStackUnderflow)?
             .clone();
+
+        // Track local access with version before modification
+        if let Some(ref mut tracker) = ctx.accessed_locals {
+            let version = ctx.frame.local_versions[index];
+            tracker.track_access(index as u32, version);
+        }
+
         ctx.frame.locals[index] = val;
+        ctx.frame.local_versions[index] += 1;
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3070,6 +3514,12 @@ fn handle_global_get(
             .global_addrs
             .get_by_idx(GlobalIdx(index_val))
             .clone();
+
+        // Track global access
+        if let Some(ref mut tracker) = ctx.accessed_globals {
+            tracker.track_access(index_val);
+        }
+
         ctx.value_stack.push(global_addr.get());
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
@@ -3096,6 +3546,10 @@ fn handle_global_set(
             .get_by_idx(GlobalIdx(index_val))
             .clone();
         global_addr.set(val)?;
+        // Track global write
+        if let Some(ref mut tracker) = ctx.accessed_globals {
+            tracker.track_access(index_val);
+        }
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3106,54 +3560,14 @@ fn handle_i32_load(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        let val = mem_addr.load::<i32>(&arg, ptr)?;
-        ctx.value_stack.push(Val::Num(Num::I32(val)));
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    load_with_source!(ctx, operand, i32, I32)
 }
 
 fn handle_i64_load(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        let val = mem_addr.load::<i64>(&arg, ptr)?;
-        ctx.value_stack.push(Val::Num(Num::I64(val)));
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    load_with_source!(ctx, operand, i64, I64)
 }
 
 fn handle_f32_load(
@@ -3187,679 +3601,301 @@ fn handle_f64_load(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        let val = mem_addr.load::<f64>(&arg, ptr)?;
-        ctx.value_stack.push(Val::Num(Num::F64(val)));
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    load_with_source!(ctx, operand, f64, F64)
 }
 
 fn handle_i32_load8_s(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        let val_i8 = mem_addr.load::<i8>(&arg, ptr)?;
-        let val_i32 = val_i8 as i32;
-        ctx.value_stack.push(Val::Num(Num::I32(val_i32)));
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    load_with_source_convert!(ctx, operand, i8, I32)
 }
 
 fn handle_i32_load8_u(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        let val_u8 = mem_addr.load::<u8>(&arg, ptr)?;
-        let val_i32 = val_u8 as i32;
-        ctx.value_stack.push(Val::Num(Num::I32(val_i32)));
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    load_with_source_convert!(ctx, operand, u8, I32)
 }
 
 fn handle_i32_load16_s(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        let val_i16 = mem_addr.load::<i16>(&arg, ptr)?;
-        let val_i32 = val_i16 as i32;
-        ctx.value_stack.push(Val::Num(Num::I32(val_i32)));
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    load_with_source_convert!(ctx, operand, i16, I32)
 }
 
 fn handle_i32_load16_u(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        let val_u16 = mem_addr.load::<u16>(&arg, ptr)?;
-        let val_i32 = val_u16 as i32;
-        ctx.value_stack.push(Val::Num(Num::I32(val_i32)));
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    load_with_source_convert!(ctx, operand, u16, I32)
 }
 
 fn handle_i64_load8_s(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        let val_i8 = mem_addr.load::<i8>(&arg, ptr)?;
-        let val_i64 = val_i8 as i64;
-        ctx.value_stack.push(Val::Num(Num::I64(val_i64)));
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    load_with_source_convert!(ctx, operand, i8, I64)
 }
 
 fn handle_i64_load8_u(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        let val_u8 = mem_addr.load::<u8>(&arg, ptr)?;
-        let val_i64 = val_u8 as i64;
-        ctx.value_stack.push(Val::Num(Num::I64(val_i64)));
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    load_with_source_convert!(ctx, operand, u8, I64)
 }
 
 fn handle_i64_load16_s(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        let val_i16 = mem_addr.load::<i16>(&arg, ptr)?;
-        let val_i64 = val_i16 as i64;
-        ctx.value_stack.push(Val::Num(Num::I64(val_i64)));
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    load_with_source_convert!(ctx, operand, i16, I64)
 }
 
 fn handle_i64_load16_u(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        let val_u16 = mem_addr.load::<u16>(&arg, ptr)?;
-        let val_i64 = val_u16 as i64;
-        ctx.value_stack.push(Val::Num(Num::I64(val_i64)));
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    load_with_source_convert!(ctx, operand, u16, I64)
 }
 
 fn handle_i64_load32_s(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        let val_i32 = mem_addr.load::<i32>(&arg, ptr)?;
-        let val_i64 = val_i32 as i64;
-        ctx.value_stack.push(Val::Num(Num::I64(val_i64)));
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    load_with_source_convert!(ctx, operand, i32, I64)
 }
 
 fn handle_i64_load32_u(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        let val_u32 = mem_addr.load::<u32>(&arg, ptr)?;
-        let val_i64 = val_u32 as i64;
-        ctx.value_stack.push(Val::Num(Num::I64(val_i64)));
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    load_with_source_convert!(ctx, operand, u32, I64)
 }
 
 fn handle_i32_store(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        mem_addr.store::<i32>(&arg, ptr, val.to_i32()?)?;
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    store_with_source!(ctx, operand, i32, to_i32)
 }
 
 fn handle_i64_store(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        mem_addr.store::<i64>(&arg, ptr, val.to_i64()?)?;
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    store_with_source!(ctx, operand, i64, to_i64)
 }
 
 fn handle_f32_store(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        mem_addr.store::<f32>(&arg, ptr, val.to_f32()?)?;
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    store_with_source!(ctx, operand, f32, to_f32)
 }
 
 fn handle_f64_store(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let data = val.to_f64()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        mem_addr.store::<f64>(&arg, ptr, data)?;
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    store_with_source!(ctx, operand, f64, to_f64)
 }
 
 fn handle_i32_store8(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let val_i32 = val.to_i32()?;
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        mem_addr.store::<i8>(&arg, ptr, val_i32 as i8)?;
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    store_with_source_truncate!(ctx, operand, i8, to_i32)
 }
 
 fn handle_i32_store16(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let val_i32 = val.to_i32()?;
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        mem_addr.store::<i16>(&arg, ptr, val_i32 as i16)?;
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    store_with_source_truncate!(ctx, operand, i16, to_i32)
 }
 
 fn handle_i64_store8(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let val_i64 = val.to_i64()?;
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        mem_addr.store::<i8>(&arg, ptr, val_i64 as i8)?;
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    store_with_source_truncate!(ctx, operand, i8, to_i64)
 }
 
 fn handle_i64_store16(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let val_i64 = val.to_i64()?;
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        mem_addr.store::<i16>(&arg, ptr, val_i64 as i16)?;
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    store_with_source_truncate!(ctx, operand, i16, to_i64)
 }
 
 fn handle_i64_store32(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let Operand::MemArg(arg) = operand {
-        let val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let val_i64 = val.to_i64()?;
-        let ptr_val = ctx
-            .value_stack
-            .pop()
-            .ok_or(RuntimeError::ValueStackUnderflow)?;
-        let ptr = ptr_val.to_i32()?;
-        let module_inst = ctx
-            .frame
-            .module
-            .upgrade()
-            .ok_or(RuntimeError::ModuleInstanceGone)?;
-        if module_inst.mem_addrs.is_empty() {
-            return Err(RuntimeError::MemoryNotFound);
-        }
-        let mem_addr = &module_inst.mem_addrs[0];
-        mem_addr.store::<i32>(&arg, ptr, val_i64 as i32)?;
-        Ok(HandlerResult::Continue(ctx.ip + 1))
-    } else {
-        Err(RuntimeError::InvalidOperand)
-    }
+    store_with_source_truncate!(ctx, operand, i32, to_i64)
 }
 
 fn handle_f64_sqrt(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let x_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let x = x_val.to_f64()?;
-    let result = x.sqrt();
-    ctx.value_stack.push(Val::Num(Num::F64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F64, to_f64, |x: f64| x.sqrt())
 }
 
 fn handle_f64_add(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop!(ctx, F64, Add, add)
+    binop!(ctx, operand, F64, Add, add)
 }
 fn handle_f64_sub(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop!(ctx, F64, Sub, sub)
+    binop!(ctx, operand, F64, Sub, sub)
 }
 fn handle_f64_mul(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop!(ctx, F64, Mul, mul)
+    binop!(ctx, operand, F64, Mul, mul)
 }
 fn handle_f64_div(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    binop!(ctx, F64, Div, div)
+    binop!(ctx, operand, F64, Div, div)
 }
 
 fn handle_f64_min(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let rhs = rhs_val.to_f64()?;
-    let lhs = lhs_val.to_f64()?;
-    let result = lhs.min(rhs);
-    ctx.value_stack.push(Val::Num(Num::F64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    match operand {
+        Operand::Optimized(OptimizedOperand::Double {
+            first,
+            second,
+            memarg: None,
+            store_target,
+        }) => {
+            // Get values from sources
+            let lhs_val = get_value_from_source(ctx, first)?;
+            let rhs_val = get_value_from_source(ctx, second)?;
+
+            let lhs = lhs_val.to_f64()?;
+            let rhs = rhs_val.to_f64()?;
+
+            let result = if lhs.is_nan() || rhs.is_nan() {
+                f64::NAN
+            } else if lhs == 0.0 && rhs == 0.0 && (lhs.is_sign_negative() || rhs.is_sign_negative())
+            {
+                -0.0 // min(±0, ±0) where at least one is negative
+            } else {
+                lhs.min(rhs)
+            };
+
+            let result_val = Val::Num(Num::F64(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => {
+            // Fallback to traditional stack-based operation
+            let rhs_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let lhs_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let rhs = rhs_val.to_f64()?;
+            let lhs = lhs_val.to_f64()?;
+
+            let result = if lhs.is_nan() || rhs.is_nan() {
+                f64::NAN
+            } else if lhs == 0.0 && rhs == 0.0 && (lhs.is_sign_negative() || rhs.is_sign_negative())
+            {
+                -0.0 // min(±0, ±0) where at least one is negative
+            } else {
+                lhs.min(rhs)
+            };
+
+            ctx.value_stack.push(Val::Num(Num::F64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 
 fn handle_f64_max(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let rhs = rhs_val.to_f64()?;
-    let lhs = lhs_val.to_f64()?;
-    let result = lhs.max(rhs);
-    ctx.value_stack.push(Val::Num(Num::F64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    match operand {
+        Operand::Optimized(OptimizedOperand::Double {
+            first,
+            second,
+            memarg: None,
+            store_target,
+        }) => {
+            // Get values from sources
+            let lhs_val = get_value_from_source(ctx, first)?;
+            let rhs_val = get_value_from_source(ctx, second)?;
+
+            let lhs = lhs_val.to_f64()?;
+            let rhs = rhs_val.to_f64()?;
+
+            let result = if lhs.is_nan() || rhs.is_nan() {
+                f64::NAN
+            } else if lhs == 0.0 && rhs == 0.0 && (lhs.is_sign_positive() || rhs.is_sign_positive())
+            {
+                0.0 // max(±0, ±0) where at least one is positive
+            } else {
+                lhs.max(rhs)
+            };
+
+            let result_val = Val::Num(Num::F64(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => {
+            // Fallback to traditional stack-based operation
+            let rhs_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let lhs_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let rhs = rhs_val.to_f64()?;
+            let lhs = lhs_val.to_f64()?;
+
+            let result = if lhs.is_nan() || rhs.is_nan() {
+                f64::NAN
+            } else if lhs == 0.0 && rhs == 0.0 && (lhs.is_sign_positive() || rhs.is_sign_positive())
+            {
+                0.0 // max(±0, ±0) where at least one is positive
+            } else {
+                lhs.max(rhs)
+            };
+
+            ctx.value_stack.push(Val::Num(Num::F64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 
 fn handle_f64_copysign(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let rhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let lhs_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let rhs = rhs_val.to_f64()?;
-    let lhs = lhs_val.to_f64()?;
-    let result = lhs.copysign(rhs);
-    ctx.value_stack.push(Val::Num(Num::F64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    binop_wrapping!(ctx, operand, F64, copysign)
 }
 
 fn handle_memory_size(
@@ -3993,13 +4029,9 @@ fn handle_memory_init(
 
     let mem_addr = &module_inst.mem_addrs[0];
 
-    for i in 0..len {
-        let byte_value = data_bytes[offset + i];
-        let memarg = Memarg {
-            offset: 0,
-            align: 1,
-        };
-        mem_addr.store(&memarg, (dest as usize + i) as i32, byte_value)?;
+    if len > 0 {
+        let init_data = data_bytes[offset..offset + len].to_vec();
+        mem_addr.init(dest, &init_data);
     }
 
     Ok(HandlerResult::Continue(ctx.ip + 1))
@@ -4128,6 +4160,7 @@ fn handle_table_set(
             .ok_or(RuntimeError::InvalidTableIndex)?;
 
         table_addr.set(index, ref_val)?;
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -4173,6 +4206,7 @@ fn handle_table_fill(
             table_addr.set(index + i, fill_val.clone())?;
         }
 
+        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -4181,1518 +4215,494 @@ fn handle_table_fill(
 
 fn handle_f32_convert_i32_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_i32()?;
-    let result = val as f32;
-    ctx.value_stack.push(Val::Num(Num::F32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F32, to_i32, |x: i32| x as f32)
 }
 
 fn handle_f32_convert_i32_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_i32()?;
-    let result = (val as u32) as f32;
-    ctx.value_stack.push(Val::Num(Num::F32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F32, to_i32, |x: i32| (x as u32) as f32)
 }
 
 fn handle_f32_convert_i64_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_i64()?;
-    let result = val as f32;
-    ctx.value_stack.push(Val::Num(Num::F32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F32, to_i64, |x: i64| x as f32)
 }
 
 fn handle_f32_convert_i64_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_i64()?;
-    let result = (val as u64) as f32;
-    ctx.value_stack.push(Val::Num(Num::F32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F32, to_i64, |x: i64| (x as u64) as f32)
 }
 
 fn handle_f64_convert_i32_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_i32()?;
-    let result = val as f64;
-    ctx.value_stack.push(Val::Num(Num::F64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F64, to_i32, |x: i32| x as f64)
 }
 
 fn handle_f64_convert_i32_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_i32()?;
-    let result = (val as u32) as f64;
-    ctx.value_stack.push(Val::Num(Num::F64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F64, to_i32, |x: i32| (x as u32) as f64)
 }
 
 fn handle_f64_convert_i64_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_i64()?;
-    let result = val as f64;
-    ctx.value_stack.push(Val::Num(Num::F64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F64, to_i64, |x: i64| x as f64)
 }
 
 fn handle_f64_convert_i64_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val = val_opt.to_i64()?;
-    let result = (val as u64) as f64;
-    ctx.value_stack.push(Val::Num(Num::F64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F64, to_i64, |x: i64| (x as u64) as f64)
 }
 
 fn handle_i32_reinterpret_f32(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val_f32 = val_opt.to_f32()?;
-    let val_i32 = unsafe { std::mem::transmute::<f32, i32>(val_f32) };
-    ctx.value_stack.push(Val::Num(Num::I32(val_i32)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, I32, to_f32, |x: f32| unsafe {
+        std::mem::transmute::<f32, i32>(x)
+    })
 }
 
 fn handle_i64_reinterpret_f64(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val_f64 = val_opt.to_f64()?;
-    let val_i64 = unsafe { std::mem::transmute::<f64, i64>(val_f64) };
-    ctx.value_stack.push(Val::Num(Num::I64(val_i64)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, I64, to_f64, |x: f64| unsafe {
+        std::mem::transmute::<f64, i64>(x)
+    })
 }
 
 fn handle_f32_reinterpret_i32(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val_i32 = val_opt.to_i32()?;
-    let val_f32 = unsafe { std::mem::transmute::<i32, f32>(val_i32) };
-    ctx.value_stack.push(Val::Num(Num::F32(val_f32)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F32, to_i32, |x: i32| unsafe {
+        std::mem::transmute::<i32, f32>(x)
+    })
 }
 
 fn handle_f64_reinterpret_i64(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val_opt = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let val_i64 = val_opt.to_i64()?;
-    let val_f64 = unsafe { std::mem::transmute::<i64, f64>(val_i64) };
-    ctx.value_stack.push(Val::Num(Num::F64(val_f64)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+    unaryop!(ctx, operand, F64, to_i64, |x: i64| unsafe {
+        std::mem::transmute::<i64, f64>(x)
+    })
 }
 
 fn handle_i32_trunc_sat_f32_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?
-        .to_f32()?;
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val_obj = get_value_from_source(ctx, value)?;
+            let val = val_obj.to_f32()?;
 
-    let result = if val.is_nan() {
-        0
-    } else if val >= i32::MAX as f32 + 1.0 {
-        i32::MAX
-    } else if val <= i32::MIN as f32 - 1.0 {
-        i32::MIN
-    } else {
-        val as i32
-    };
+            let result = if val.is_nan() {
+                0
+            } else if val >= i32::MAX as f32 + 1.0 {
+                i32::MAX
+            } else if val <= i32::MIN as f32 - 1.0 {
+                i32::MIN
+            } else {
+                val as i32
+            };
 
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+            let result_val = Val::Num(Num::I32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => {
+            let val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?
+                .to_f32()?;
+
+            let result = if val.is_nan() {
+                0
+            } else if val >= i32::MAX as f32 + 1.0 {
+                i32::MAX
+            } else if val <= i32::MIN as f32 - 1.0 {
+                i32::MIN
+            } else {
+                val as i32
+            };
+
+            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 
 fn handle_i32_trunc_sat_f32_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?
-        .to_f32()?;
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val_obj = get_value_from_source(ctx, value)?;
+            let val = val_obj.to_f32()?;
 
-    let result = if val.is_nan() || val <= -1.0 {
-        0
-    } else if val >= u32::MAX as f32 + 1.0 {
-        u32::MAX as i32
-    } else {
-        val as u32 as i32
-    };
+            let result = if val.is_nan() || val <= -1.0 {
+                0
+            } else if val >= u32::MAX as f32 + 1.0 {
+                u32::MAX as i32
+            } else {
+                val as u32 as i32
+            };
 
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+            let result_val = Val::Num(Num::I32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => {
+            let val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?
+                .to_f32()?;
+
+            let result = if val.is_nan() || val <= -1.0 {
+                0
+            } else if val >= u32::MAX as f32 + 1.0 {
+                u32::MAX as i32
+            } else {
+                val as u32 as i32
+            };
+
+            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 
 fn handle_i32_trunc_sat_f64_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?
-        .to_f64()?;
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val_obj = get_value_from_source(ctx, value)?;
+            let val = val_obj.to_f64()?;
 
-    let result = if val.is_nan() {
-        0
-    } else if val >= i32::MAX as f64 + 1.0 {
-        i32::MAX
-    } else if val <= i32::MIN as f64 - 1.0 {
-        i32::MIN
-    } else {
-        val as i32
-    };
+            let result = if val.is_nan() {
+                0
+            } else if val >= i32::MAX as f64 + 1.0 {
+                i32::MAX
+            } else if val <= i32::MIN as f64 - 1.0 {
+                i32::MIN
+            } else {
+                val as i32
+            };
 
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+            let result_val = Val::Num(Num::I32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => {
+            let val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?
+                .to_f64()?;
+
+            let result = if val.is_nan() {
+                0
+            } else if val >= i32::MAX as f64 + 1.0 {
+                i32::MAX
+            } else if val <= i32::MIN as f64 - 1.0 {
+                i32::MIN
+            } else {
+                val as i32
+            };
+
+            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 
 fn handle_i32_trunc_sat_f64_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?
-        .to_f64()?;
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val_obj = get_value_from_source(ctx, value)?;
+            let val = val_obj.to_f64()?;
 
-    let result = if val.is_nan() || val <= -1.0 {
-        0
-    } else if val >= u32::MAX as f64 + 1.0 {
-        u32::MAX as i32
-    } else {
-        val as u32 as i32
-    };
+            let result = if val.is_nan() || val <= -1.0 {
+                0
+            } else if val >= u32::MAX as f64 + 1.0 {
+                u32::MAX as i32
+            } else {
+                val as u32 as i32
+            };
 
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+            let result_val = Val::Num(Num::I32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => {
+            let val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?
+                .to_f64()?;
+
+            let result = if val.is_nan() || val <= -1.0 {
+                0
+            } else if val >= u32::MAX as f64 + 1.0 {
+                u32::MAX as i32
+            } else {
+                val as u32 as i32
+            };
+
+            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 
 fn handle_i64_trunc_sat_f32_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?
-        .to_f32()?;
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val_obj = get_value_from_source(ctx, value)?;
+            let val = val_obj.to_f32()?;
 
-    let result = if val.is_nan() {
-        0
-    } else if val >= i64::MAX as f32 + 1.0 {
-        i64::MAX
-    } else if val <= i64::MIN as f32 - 1.0 {
-        i64::MIN
-    } else {
-        val as i64
-    };
+            let result = if val.is_nan() {
+                0
+            } else if val >= i64::MAX as f32 + 1.0 {
+                i64::MAX
+            } else if val <= i64::MIN as f32 - 1.0 {
+                i64::MIN
+            } else {
+                val as i64
+            };
 
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+            let result_val = Val::Num(Num::I64(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => {
+            let val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?
+                .to_f32()?;
+
+            let result = if val.is_nan() {
+                0
+            } else if val >= i64::MAX as f32 + 1.0 {
+                i64::MAX
+            } else if val <= i64::MIN as f32 - 1.0 {
+                i64::MIN
+            } else {
+                val as i64
+            };
+
+            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 
 fn handle_i64_trunc_sat_f32_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?
-        .to_f32()?;
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val_obj = get_value_from_source(ctx, value)?;
+            let val = val_obj.to_f32()?;
 
-    let result = if val.is_nan() || val <= -1.0 {
-        0
-    } else if val >= u64::MAX as f32 + 1.0 {
-        u64::MAX as i64
-    } else {
-        val as u64 as i64
-    };
+            let result = if val.is_nan() || val <= -1.0 {
+                0
+            } else if val >= u64::MAX as f32 + 1.0 {
+                u64::MAX as i64
+            } else {
+                val as u64 as i64
+            };
 
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+            let result_val = Val::Num(Num::I64(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => {
+            let val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?
+                .to_f32()?;
+
+            let result = if val.is_nan() || val <= -1.0 {
+                0
+            } else if val >= u64::MAX as f32 + 1.0 {
+                u64::MAX as i64
+            } else {
+                val as u64 as i64
+            };
+
+            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 
 fn handle_i64_trunc_sat_f64_s(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?
-        .to_f64()?;
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val_obj = get_value_from_source(ctx, value)?;
+            let val = val_obj.to_f64()?;
 
-    let result = if val.is_nan() {
-        0
-    } else if val >= i64::MAX as f64 + 1.0 {
-        i64::MAX
-    } else if val <= i64::MIN as f64 - 1.0 {
-        i64::MIN
-    } else {
-        val as i64
-    };
+            let result = if val.is_nan() {
+                0
+            } else if val >= i64::MAX as f64 + 1.0 {
+                i64::MAX
+            } else if val <= i64::MIN as f64 - 1.0 {
+                i64::MIN
+            } else {
+                val as i64
+            };
 
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
+            let result_val = Val::Num(Num::I64(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+        _ => {
+            let val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?
+                .to_f64()?;
+
+            let result = if val.is_nan() {
+                0
+            } else if val >= i64::MAX as f64 + 1.0 {
+                i64::MAX
+            } else if val <= i64::MIN as f64 - 1.0 {
+                i64::MIN
+            } else {
+                val as i64
+            };
+
+            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
+        }
+    }
 }
 
 fn handle_i64_trunc_sat_f64_u(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?
-        .to_f64()?;
+    match operand {
+        Operand::Optimized(OptimizedOperand::Single {
+            value,
+            memarg: None,
+            store_target,
+        }) => {
+            let val_obj = get_value_from_source(ctx, value)?;
+            let val = val_obj.to_f64()?;
 
-    let result = if val.is_nan() || val <= -1.0 {
-        0
-    } else if val >= u64::MAX as f64 + 1.0 {
-        u64::MAX as i64
-    } else {
-        val as u64 as i64
-    };
+            let result = if val.is_nan() || val <= -1.0 {
+                0
+            } else if val >= u64::MAX as f64 + 1.0 {
+                u64::MAX as i64
+            } else {
+                val as u64 as i64
+            };
 
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
-    Ok(HandlerResult::Continue(ctx.ip + 1))
-}
+            let result_val = Val::Num(Num::I64(result));
 
-/*Superinstructions*/
-
-macro_rules! local_set_const {
-    ($ctx:ident, $operand:ident, $operand_type:ident, $num_variant:ident) => {{
-        match $operand {
-            Operand::$operand_type(local_idx, immediate_val) => {
-                let index = local_idx.0 as usize;
-                if index >= $ctx.frame.locals.len() {
-                    return Err(RuntimeError::LocalIndexOutOfBounds);
-                }
-                $ctx.frame.locals[index] = Val::Num(Num::$num_variant(*immediate_val));
-                Ok(HandlerResult::Continue($ctx.ip + 1))
-            }
-            _ => Err(RuntimeError::InvalidOperand),
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
+            Ok(HandlerResult::Continue(ctx.ip + 1))
         }
-    }};
-}
+        _ => {
+            let val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?
+                .to_f64()?;
 
-fn handle_local_set_i32_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    local_set_const!(ctx, operand, LocalIdxI32, I32)
-}
+            let result = if val.is_nan() || val <= -1.0 {
+                0
+            } else if val >= u64::MAX as f64 + 1.0 {
+                u64::MAX as i64
+            } else {
+                val as u64 as i64
+            };
 
-fn handle_local_set_i64_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    local_set_const!(ctx, operand, LocalIdxI64, I64)
-}
-
-fn handle_local_set_f32_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    local_set_const!(ctx, operand, LocalIdxF32, F32)
-}
-
-fn handle_local_set_f64_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    local_set_const!(ctx, operand, LocalIdxF64, F64)
-}
-
-macro_rules! load_const {
-    ($ctx:ident, $operand:ident, $operand_type:ident, $load_type:ident, $num_variant:ident) => {{
-        match $operand {
-            Operand::$operand_type(offset, memarg) => {
-                let module_inst = $ctx
-                    .frame
-                    .module
-                    .upgrade()
-                    .ok_or(RuntimeError::ModuleInstanceGone)?;
-                if module_inst.mem_addrs.is_empty() {
-                    return Err(RuntimeError::MemoryNotFound);
-                }
-                let mem_addr = &module_inst.mem_addrs[0];
-                let val = mem_addr.load::<$load_type>(&memarg, *offset as i32)?;
-                $ctx.value_stack.push(Val::Num(Num::$num_variant(val)));
-                Ok(HandlerResult::Continue($ctx.ip + 1))
-            }
-            _ => Err(RuntimeError::InvalidOperand),
+            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            Ok(HandlerResult::Continue(ctx.ip + 1))
         }
-    }};
-}
-
-macro_rules! load_sized_const {
-    ($ctx:ident, $operand:ident, $operand_type:ident, $load_type:ident, $result_type:ident, $num_variant:ident) => {{
-        match $operand {
-            Operand::$operand_type(offset, memarg) => {
-                let module_inst = $ctx
-                    .frame
-                    .module
-                    .upgrade()
-                    .ok_or(RuntimeError::ModuleInstanceGone)?;
-                let mem_addr = &module_inst.mem_addrs[0];
-                let loaded_val = mem_addr.load::<$load_type>(&memarg, *offset as i32)?;
-                let result_val = loaded_val as $result_type;
-                $ctx.value_stack
-                    .push(Val::Num(Num::$num_variant(result_val)));
-                Ok(HandlerResult::Continue($ctx.ip + 1))
-            }
-            _ => Err(RuntimeError::InvalidOperand),
-        }
-    }};
-}
-
-macro_rules! store_const {
-    // Pattern 1: Type-matching store (e.g., I32StoreI32Const, I64StoreI64Const)
-    // WebAssembly semantics: const value is stored, address comes from stack
-    // Stack layout: [i32_address] → [] (const value stored at address)
-    ($ctx:ident, $operand:ident, $operand_type:ident, $store_type:ident) => {{
-        match $operand {
-            Operand::$operand_type(val_to_store, memarg) => {
-                let ptr_val = $ctx
-                    .value_stack
-                    .pop()
-                    .ok_or(RuntimeError::ValueStackUnderflow)?;
-                let ptr = ptr_val.to_i32()?;
-                let module_inst = $ctx
-                    .frame
-                    .module
-                    .upgrade()
-                    .ok_or(RuntimeError::ModuleInstanceGone)?;
-                if module_inst.mem_addrs.is_empty() {
-                    return Err(RuntimeError::MemoryNotFound);
-                }
-                let mem_addr = &module_inst.mem_addrs[0];
-                mem_addr.store::<$store_type>(&memarg, ptr, *val_to_store)?;
-                Ok(HandlerResult::Continue($ctx.ip + 1))
-            }
-            _ => Err(RuntimeError::InvalidOperand),
-        }
-    }};
-    // Pattern 2: Type-mismatching store (e.g., I32ConstI64Store, I64ConstI32Store)
-    // WebAssembly semantics: const value is address, stored value comes from stack
-    // Stack layout: [typed_value] → [] (stack value stored at const address)
-    ($ctx:ident, $operand:ident, $operand_type:ident, $val_to_store_method:ident, $store_type:ident) => {{
-        match $operand {
-            Operand::$operand_type(ptr, memarg) => {
-                let val_val = $ctx
-                    .value_stack
-                    .pop()
-                    .ok_or(RuntimeError::ValueStackUnderflow)?;
-                let val_to_store = val_val.$val_to_store_method()?;
-                let module_inst = $ctx
-                    .frame
-                    .module
-                    .upgrade()
-                    .ok_or(RuntimeError::ModuleInstanceGone)?;
-                if module_inst.mem_addrs.is_empty() {
-                    return Err(RuntimeError::MemoryNotFound);
-                }
-                let mem_addr = &module_inst.mem_addrs[0];
-                mem_addr.store::<$store_type>(&memarg, *ptr as i32, val_to_store)?;
-                Ok(HandlerResult::Continue($ctx.ip + 1))
-            }
-            _ => Err(RuntimeError::InvalidOperand),
-        }
-    }};
-}
-
-macro_rules! store_sized_const {
-    ($ctx:ident, $operand:ident, $operand_type:ident, $input_type:ident, $store_type:ident) => {{
-        match $operand {
-            Operand::$operand_type(val_to_store, memarg) => {
-                let ptr_val = $ctx
-                    .value_stack
-                    .pop()
-                    .ok_or(RuntimeError::ValueStackUnderflow)?;
-                let ptr = ptr_val.to_i32()?;
-                let module_inst = $ctx
-                    .frame
-                    .module
-                    .upgrade()
-                    .ok_or(RuntimeError::ModuleInstanceGone)?;
-                if module_inst.mem_addrs.is_empty() {
-                    return Err(RuntimeError::MemoryNotFound);
-                }
-                let mem_addr = &module_inst.mem_addrs[0];
-                let truncated_val = *val_to_store as $store_type;
-                mem_addr.store::<$store_type>(&memarg, ptr, truncated_val)?;
-                Ok(HandlerResult::Continue($ctx.ip + 1))
-            }
-            _ => Err(RuntimeError::InvalidOperand),
-        }
-    }};
-}
-
-macro_rules! cmpop_const {
-    // Pattern for binary comparison operations
-    ($ctx:ident, $operand:ident, $operand_type:ident, $val_method:ident, $op:tt) => {{
-        match $operand {
-            Operand::$operand_type(const_val) => {
-                let stack_val = $ctx
-                    .value_stack
-                    .pop()
-                    .ok_or(RuntimeError::ValueStackUnderflow)?;
-                let stack_value = stack_val.$val_method()?;
-                let result = (stack_value $op *const_val) as i32;
-                $ctx.value_stack.push(Val::Num(Num::I32(result)));
-                Ok(HandlerResult::Continue($ctx.ip + 1))
-            }
-            _ => Err(RuntimeError::InvalidOperand),
-        }
-    }};
-    // Pattern for unsigned comparison (with cast)
-    ($ctx:ident, $operand:ident, $operand_type:ident, $val_method:ident, $op:tt, $cast_type:ty) => {{
-        match $operand {
-            Operand::$operand_type(const_val) => {
-                let stack_val = $ctx
-                    .value_stack
-                    .pop()
-                    .ok_or(RuntimeError::ValueStackUnderflow)?;
-                let stack_value = stack_val.$val_method()? as $cast_type;
-                let const_value = *const_val as $cast_type;
-                let result = (stack_value $op const_value) as i32;
-                $ctx.value_stack.push(Val::Num(Num::I32(result)));
-                Ok(HandlerResult::Continue($ctx.ip + 1))
-            }
-            _ => Err(RuntimeError::InvalidOperand),
-        }
-    }};
-}
-
-macro_rules! shiftop_const {
-    ($ctx:ident, $operand:ident, $type:ident, $val_method:ident, $shift_op:tt, $mask:expr) => {{
-        match $operand {
-            Operand::$type(const_val) => {
-                let stack_val = $ctx.value_stack.pop().ok_or(RuntimeError::ValueStackUnderflow)?;
-                let left = stack_val.$val_method()?;
-                let shift_amount = (*const_val as u32) & $mask;
-                let result = left $shift_op shift_amount;
-                $ctx.value_stack.push(Val::Num(Num::$type(result)));
-                Ok(HandlerResult::Continue($ctx.ip + 1))
-            }
-            _ => Err(RuntimeError::InvalidOperand),
-        }
-    }};
-}
-
-macro_rules! shiftop_const_unsigned {
-    ($ctx:ident, $operand:ident, $type:ident, $val_method:ident, $unsigned_type:ident, $cast_result_type:ident, $mask:expr) => {{
-        match $operand {
-            Operand::$type(const_val) => {
-                let stack_val = $ctx
-                    .value_stack
-                    .pop()
-                    .ok_or(RuntimeError::ValueStackUnderflow)?;
-                let left = stack_val.$val_method()? as $unsigned_type;
-                let shift_amount = (*const_val as u32) & $mask;
-                let result = (left >> shift_amount) as $cast_result_type;
-                $ctx.value_stack.push(Val::Num(Num::$type(result)));
-                Ok(HandlerResult::Continue($ctx.ip + 1))
-            }
-            _ => Err(RuntimeError::InvalidOperand),
-        }
-    }};
-}
-
-macro_rules! rotop_const {
-    ($ctx:ident, $operand:ident, $type:ident, $val_method:ident, $rotate_method:ident) => {{
-        match $operand {
-            Operand::$type(const_val) => {
-                let operand_val = $ctx
-                    .value_stack
-                    .pop()
-                    .ok_or(RuntimeError::ValueStackUnderflow)?;
-                let operand = operand_val.$val_method()?;
-                let result = operand.$rotate_method(*const_val as u32);
-                $ctx.value_stack.push(Val::Num(Num::$type(result)));
-                Ok(HandlerResult::Continue($ctx.ip + 1))
-            }
-            _ => Err(RuntimeError::InvalidOperand),
-        }
-    }};
-}
-
-macro_rules! convop_const {
-    ($ctx:ident, $operand:ident, $src_type:ident, $dest_type:ident, $conversion:expr) => {{
-        match $operand {
-            Operand::$src_type(const_val) => {
-                let result = $conversion(*const_val);
-                $ctx.value_stack.push(Val::Num(Num::$dest_type(result)));
-                Ok(HandlerResult::Continue($ctx.ip + 1))
-            }
-            _ => Err(RuntimeError::InvalidOperand),
-        }
-    }};
-}
-
-fn handle_i32_load_i32_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_const!(ctx, operand, MemArgI32, i32, I32)
-}
-
-fn handle_i64_load_i64_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_const!(ctx, operand, MemArgI64, i64, I64)
-}
-
-fn handle_i32_const_i64_load(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_const!(ctx, operand, MemArgI32, i64, I64)
-}
-
-fn handle_i32_const_f32_load(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_const!(ctx, operand, MemArgI32, f32, F32)
-}
-
-fn handle_i32_const_f64_load(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_const!(ctx, operand, MemArgI32, f64, F64)
-}
-
-fn handle_i64_const_i32_load(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_const!(ctx, operand, MemArgI64, i32, I32)
-}
-
-fn handle_i64_const_i64_load(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_const!(ctx, operand, MemArgI64, i64, I64)
-}
-
-fn handle_i64_const_f32_load(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_const!(ctx, operand, MemArgI64, f32, F32)
-}
-
-fn handle_i64_const_f64_load(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_const!(ctx, operand, MemArgI64, f64, F64)
-}
-
-// Load8/16/32 const handlers
-fn handle_i32_load8_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_sized_const!(ctx, operand, MemArgI32, i8, i32, I32)
-}
-
-fn handle_i32_load8_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_sized_const!(ctx, operand, MemArgI32, u8, i32, I32)
-}
-
-fn handle_i32_load16_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_sized_const!(ctx, operand, MemArgI32, i16, i32, I32)
-}
-
-fn handle_i32_load16_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_sized_const!(ctx, operand, MemArgI32, u16, i32, I32)
-}
-
-fn handle_i64_load8_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_sized_const!(ctx, operand, MemArgI64, i8, i64, I64)
-}
-
-fn handle_i64_load8_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_sized_const!(ctx, operand, MemArgI64, u8, i64, I64)
-}
-
-fn handle_i64_load16_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_sized_const!(ctx, operand, MemArgI64, i16, i64, I64)
-}
-
-fn handle_i64_load16_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_sized_const!(ctx, operand, MemArgI64, u16, i64, I64)
-}
-
-fn handle_i64_load32_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_sized_const!(ctx, operand, MemArgI64, i32, i64, I64)
-}
-
-fn handle_i64_load32_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    load_sized_const!(ctx, operand, MemArgI64, u32, i64, I64)
-}
-
-fn handle_i32_store_i32_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    store_const!(ctx, operand, MemArgI32, i32)
-}
-
-fn handle_i64_store_i64_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    store_const!(ctx, operand, MemArgI64, i64)
-}
-
-fn handle_i32_const_i64_store(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    store_const!(ctx, operand, MemArgI32, to_i64, i64)
-}
-
-fn handle_i32_const_f32_store(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    store_const!(ctx, operand, MemArgI32, to_f32, f32)
-}
-
-fn handle_i32_const_f64_store(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    store_const!(ctx, operand, MemArgI32, to_f64, f64)
-}
-
-fn handle_i64_const_i32_store(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    store_const!(ctx, operand, MemArgI64, to_i32, i32)
-}
-
-fn handle_i64_const_i64_store(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    store_const!(ctx, operand, MemArgI64, to_i64, i64)
-}
-
-fn handle_i64_const_f32_store(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    store_const!(ctx, operand, MemArgI64, to_f32, f32)
-}
-
-fn handle_i64_const_f64_store(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    store_const!(ctx, operand, MemArgI64, to_f64, f64)
-}
-
-// Store8/16/32 const handlers
-fn handle_i32_store8_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    store_sized_const!(ctx, operand, MemArgI32, i32, u8)
-}
-
-fn handle_i32_store16_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    store_sized_const!(ctx, operand, MemArgI32, i32, u16)
-}
-
-fn handle_i64_store8_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    store_sized_const!(ctx, operand, MemArgI64, i64, u8)
-}
-
-fn handle_i64_store16_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    store_sized_const!(ctx, operand, MemArgI64, i64, u16)
-}
-
-fn handle_i64_store32_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    store_sized_const!(ctx, operand, MemArgI64, i64, u32)
-}
-
-macro_rules! binop_const {
-    ($ctx:ident, $operand:ident, $type:ident, $val_type:ident, $op:ident) => {{
-        match $operand {
-            Operand::$type(const_val) => {
-                let operand_val = $ctx
-                    .value_stack
-                    .pop()
-                    .ok_or(RuntimeError::ValueStackUnderflow)?;
-                let operand = operand_val.$val_type()?;
-                let result = operand.$op(*const_val);
-                $ctx.value_stack.push(Val::Num(Num::$type(result)));
-                Ok(HandlerResult::Continue($ctx.ip + 1))
-            }
-            _ => Err(RuntimeError::InvalidOperand),
-        }
-    }};
-    ($ctx:ident, $operand:ident, $type:ident, $val_type:ident, $op:tt) => {{
-        match $operand {
-            Operand::$type(const_val) => {
-                let operand_val = $ctx
-                    .value_stack
-                    .pop()
-                    .ok_or(RuntimeError::ValueStackUnderflow)?;
-                let operand = operand_val.$val_type()?;
-                let result = operand $op *const_val;
-                $ctx.value_stack.push(Val::Num(Num::$type(result)));
-                Ok(HandlerResult::Continue($ctx.ip + 1))
-            }
-            _ => Err(RuntimeError::InvalidOperand),
-        }
-    }};
-}
-
-macro_rules! divrem_const {
-    ($ctx:ident, $operand:ident, $type:ident, $val_type:ident, $primitive_type:ident, $signed:expr, $op:tt) => {{
-        match $operand {
-            Operand::$type(const_val) => {
-                let operand_val = $ctx
-                    .value_stack
-                    .pop()
-                    .ok_or(RuntimeError::ValueStackUnderflow)?;
-                let operand = operand_val.$val_type()?;
-                if *const_val == 0 {
-                    return Err(RuntimeError::ZeroDivideError);
-                }
-                let result = if $signed {
-                    if operand == <$primitive_type>::MIN && *const_val == -1 {
-                        if stringify!($op) == "/" {
-                            return Err(RuntimeError::IntegerOverflow);
-                        } else {
-                            0  // rem case
-                        }
-                    } else {
-                        operand $op *const_val
-                    }
-                } else {
-                    ((operand as u64) $op (*const_val as u64)) as $primitive_type
-                };
-                $ctx.value_stack.push(Val::Num(Num::$type(result)));
-                Ok(HandlerResult::Continue($ctx.ip + 1))
-            }
-            _ => Err(RuntimeError::InvalidOperand),
-        }
-    }};
-}
-
-fn handle_i32_add_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I32, to_i32, wrapping_add)
-}
-
-fn handle_i32_sub_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I32, to_i32, wrapping_sub)
-}
-
-fn handle_i32_mul_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I32, to_i32, wrapping_mul)
-}
-
-fn handle_i32_div_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    divrem_const!(ctx, operand, I32, to_i32, i32, true, /)
-}
-
-fn handle_i32_div_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    divrem_const!(ctx, operand, I32, to_i32, i32, false, /)
-}
-
-fn handle_i64_add_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I64, to_i64, wrapping_add)
-}
-
-fn handle_i64_sub_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I64, to_i64, wrapping_sub)
-}
-
-fn handle_i64_mul_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I64, to_i64, wrapping_mul)
-}
-
-fn handle_i64_div_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    divrem_const!(ctx, operand, I64, to_i64, i64, true, /)
-}
-
-fn handle_i64_div_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    divrem_const!(ctx, operand, I64, to_i64, i64, false, /)
-}
-
-fn handle_f32_add_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, F32, to_f32, +)
-}
-
-fn handle_f32_sub_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, F32, to_f32, -)
-}
-
-fn handle_f32_mul_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, F32, to_f32, *)
-}
-
-fn handle_f32_div_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, F32, to_f32, /)
-}
-
-fn handle_f64_add_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, F64, to_f64, +)
-}
-
-fn handle_f64_sub_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, F64, to_f64, -)
-}
-
-fn handle_f64_mul_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, F64, to_f64, *)
-}
-
-fn handle_f64_div_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, F64, to_f64, /)
-}
-
-fn handle_i32_rem_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    divrem_const!(ctx, operand, I32, to_i32, i32, true, %)
-}
-
-fn handle_i32_rem_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    divrem_const!(ctx, operand, I32, to_i32, i32, false, %)
-}
-
-fn handle_i64_rem_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    divrem_const!(ctx, operand, I64, to_i64, i64, true, %)
-}
-
-fn handle_i64_rem_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    divrem_const!(ctx, operand, I64, to_i64, i64, false, %)
-}
-
-fn handle_i32_and_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I32, to_i32, &)
-}
-
-fn handle_i32_or_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I32, to_i32, |)
-}
-
-fn handle_i32_xor_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I32, to_i32, ^)
-}
-
-fn handle_i64_and_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I64, to_i64, &)
-}
-
-fn handle_i64_or_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I64, to_i64, |)
-}
-
-fn handle_i64_xor_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    binop_const!(ctx, operand, I64, to_i64, ^)
-}
-
-// Comparison superinstruction handlers
-fn handle_i32_eq_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I32, to_i32, ==)
-}
-fn handle_i32_ne_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I32, to_i32, !=)
-}
-fn handle_i32_lt_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I32, to_i32, <)
-}
-fn handle_i32_lt_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I32, to_i32, <, u32)
-}
-fn handle_i32_gt_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I32, to_i32, >)
-}
-fn handle_i32_gt_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I32, to_i32, >, u32)
-}
-fn handle_i32_le_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I32, to_i32, <=)
-}
-fn handle_i32_le_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I32, to_i32, <=, u32)
-}
-fn handle_i32_ge_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I32, to_i32, >=)
-}
-fn handle_i32_ge_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I32, to_i32, >=, u32)
-}
-fn handle_i64_eq_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I64, to_i64, ==)
-}
-fn handle_i64_ne_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I64, to_i64, !=)
-}
-fn handle_i64_lt_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I64, to_i64, <)
-}
-fn handle_i64_lt_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I64, to_i64, <, u64)
-}
-fn handle_i64_gt_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I64, to_i64, >)
-}
-fn handle_i64_gt_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I64, to_i64, >, u64)
-}
-fn handle_i64_le_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I64, to_i64, <=)
-}
-fn handle_i64_le_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I64, to_i64, <=, u64)
-}
-fn handle_i64_ge_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I64, to_i64, >=)
-}
-fn handle_i64_ge_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, I64, to_i64, >=, u64)
-}
-fn handle_f32_eq_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, F32, to_f32, ==)
-}
-fn handle_f32_ne_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, F32, to_f32, !=)
-}
-fn handle_f32_lt_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, F32, to_f32, <)
-}
-fn handle_f32_gt_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, F32, to_f32, >)
-}
-fn handle_f32_le_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, F32, to_f32, <=)
-}
-fn handle_f32_ge_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, F32, to_f32, >=)
-}
-fn handle_f64_eq_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, F64, to_f64, ==)
-}
-fn handle_f64_ne_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, F64, to_f64, !=)
-}
-fn handle_f64_lt_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, F64, to_f64, <)
-}
-fn handle_f64_gt_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, F64, to_f64, >)
-}
-fn handle_f64_le_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, F64, to_f64, <=)
-}
-fn handle_f64_ge_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    cmpop_const!(ctx, operand, F64, to_f64, >=)
-}
-
-fn handle_i32_shl_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    shiftop_const!(ctx, operand, I32, to_i32, <<, 0x1f)
-}
-fn handle_i32_shr_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    shiftop_const!(ctx, operand, I32, to_i32, >>, 0x1f)
-}
-fn handle_i32_shr_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    shiftop_const_unsigned!(ctx, operand, I32, to_i32, u32, i32, 0x1f)
-}
-fn handle_i64_shl_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    shiftop_const!(ctx, operand, I64, to_i64, <<, 0x3f)
-}
-fn handle_i64_shr_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    shiftop_const!(ctx, operand, I64, to_i64, >>, 0x3f)
-}
-fn handle_i64_shr_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    shiftop_const_unsigned!(ctx, operand, I64, to_i64, u64, i64, 0x3f)
-}
-
-fn handle_i32_rotl_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    rotop_const!(ctx, operand, I32, to_i32, rotate_left)
-}
-
-fn handle_i32_rotr_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    rotop_const!(ctx, operand, I32, to_i32, rotate_right)
-}
-
-fn handle_i64_rotl_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    rotop_const!(ctx, operand, I64, to_i64, rotate_left)
-}
-
-fn handle_i64_rotr_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    rotop_const!(ctx, operand, I64, to_i64, rotate_right)
-}
-
-fn handle_i32_wrap_i64_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, I64, I32, |val: i64| val as i32)
-}
-
-fn handle_i64_extend_i32_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, I32, I64, |val: i32| val as i64)
-}
-
-fn handle_i64_extend_i32_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, I32, I64, |val: i32| (val as u32) as i64)
-}
-
-fn handle_f32_convert_i32_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, I32, F32, |val: i32| val as f32)
-}
-
-fn handle_f32_convert_i32_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, I32, F32, |val: i32| (val as u32) as f32)
-}
-
-fn handle_f32_convert_i64_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, I64, F32, |val: i64| val as f32)
-}
-
-fn handle_f32_convert_i64_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, I64, F32, |val: i64| (val as u64) as f32)
-}
-
-fn handle_f64_convert_i32_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, I32, F64, |val: i32| val as f64)
-}
-
-fn handle_f64_convert_i32_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, I32, F64, |val: i32| (val as u32) as f64)
-}
-
-fn handle_f64_convert_i64_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, I64, F64, |val: i64| val as f64)
-}
-
-fn handle_f64_convert_i64_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, I64, F64, |val: i64| (val as u64) as f64)
-}
-
-fn handle_i32_trunc_f32_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, F32, I32, |val: f32| val.trunc() as i32)
-}
-
-fn handle_i32_trunc_f32_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, F32, I32, |val: f32| (val.trunc() as u32)
-        as i32)
-}
-
-fn handle_i32_trunc_f64_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, F64, I32, |val: f64| val.trunc() as i32)
-}
-
-fn handle_i32_trunc_f64_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, F64, I32, |val: f64| (val.trunc() as u32)
-        as i32)
-}
-
-fn handle_i64_trunc_f32_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, F32, I64, |val: f32| val.trunc() as i64)
-}
-
-fn handle_i64_trunc_f32_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, F32, I64, |val: f32| (val.trunc() as u64)
-        as i64)
-}
-
-fn handle_i64_trunc_f64_s_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, F64, I64, |val: f64| val.trunc() as i64)
-}
-
-fn handle_i64_trunc_f64_u_const(
-    ctx: &mut ExecutionContext,
-    operand: &Operand,
-) -> Result<HandlerResult, RuntimeError> {
-    convop_const!(ctx, operand, F64, I64, |val: f64| (val.trunc() as u64)
-        as i64)
+    }
 }
 
 lazy_static! {
@@ -5891,149 +4901,6 @@ lazy_static! {
         table[HANDLER_IDX_I64_TRUNC_SAT_F32_U] = handle_i64_trunc_sat_f32_u;
         table[HANDLER_IDX_I64_TRUNC_SAT_F64_S] = handle_i64_trunc_sat_f64_s;
         table[HANDLER_IDX_I64_TRUNC_SAT_F64_U] = handle_i64_trunc_sat_f64_u;
-
-        // === Superinstructions ===
-        // const + local.set superinstructions
-        table[HANDLER_IDX_LOCAL_SET_I32_CONST] = handle_local_set_i32_const;
-        table[HANDLER_IDX_LOCAL_SET_I64_CONST] = handle_local_set_i64_const;
-        table[HANDLER_IDX_LOCAL_SET_F32_CONST] = handle_local_set_f32_const;
-        table[HANDLER_IDX_LOCAL_SET_F64_CONST] = handle_local_set_f64_const;
-
-        // const + load superinstructions
-        table[HANDLER_IDX_I32_LOAD_I32_CONST] = handle_i32_load_i32_const;
-        table[HANDLER_IDX_I64_LOAD_I64_CONST] = handle_i64_load_i64_const;
-        table[HANDLER_IDX_I32_CONST_I64_LOAD] = handle_i32_const_i64_load;
-        table[HANDLER_IDX_I32_CONST_F32_LOAD] = handle_i32_const_f32_load;
-        table[HANDLER_IDX_I32_CONST_F64_LOAD] = handle_i32_const_f64_load;
-        table[HANDLER_IDX_I64_CONST_I32_LOAD] = handle_i64_const_i32_load;
-        table[HANDLER_IDX_I64_CONST_I64_LOAD] = handle_i64_const_i64_load;
-        table[HANDLER_IDX_I64_CONST_F32_LOAD] = handle_i64_const_f32_load;
-        table[HANDLER_IDX_I64_CONST_F64_LOAD] = handle_i64_const_f64_load;
-        table[HANDLER_IDX_I32_LOAD8_S_CONST] = handle_i32_load8_s_const;
-        table[HANDLER_IDX_I32_LOAD8_U_CONST] = handle_i32_load8_u_const;
-        table[HANDLER_IDX_I32_LOAD16_S_CONST] = handle_i32_load16_s_const;
-        table[HANDLER_IDX_I32_LOAD16_U_CONST] = handle_i32_load16_u_const;
-        table[HANDLER_IDX_I64_LOAD8_S_CONST] = handle_i64_load8_s_const;
-        table[HANDLER_IDX_I64_LOAD8_U_CONST] = handle_i64_load8_u_const;
-        table[HANDLER_IDX_I64_LOAD16_S_CONST] = handle_i64_load16_s_const;
-        table[HANDLER_IDX_I64_LOAD16_U_CONST] = handle_i64_load16_u_const;
-        table[HANDLER_IDX_I64_LOAD32_S_CONST] = handle_i64_load32_s_const;
-        table[HANDLER_IDX_I64_LOAD32_U_CONST] = handle_i64_load32_u_const;
-
-        // const + store superinstructions
-        table[HANDLER_IDX_I32_STORE_I32_CONST] = handle_i32_store_i32_const;
-        table[HANDLER_IDX_I64_STORE_I64_CONST] = handle_i64_store_i64_const;
-        table[HANDLER_IDX_I32_CONST_I64_STORE] = handle_i32_const_i64_store;
-        table[HANDLER_IDX_I32_CONST_F32_STORE] = handle_i32_const_f32_store;
-        table[HANDLER_IDX_I32_CONST_F64_STORE] = handle_i32_const_f64_store;
-        table[HANDLER_IDX_I64_CONST_I32_STORE] = handle_i64_const_i32_store;
-        table[HANDLER_IDX_I64_CONST_I64_STORE] = handle_i64_const_i64_store;
-        table[HANDLER_IDX_I64_CONST_F32_STORE] = handle_i64_const_f32_store;
-        table[HANDLER_IDX_I64_CONST_F64_STORE] = handle_i64_const_f64_store;
-        table[HANDLER_IDX_I32_STORE8_CONST] = handle_i32_store8_const;
-        table[HANDLER_IDX_I32_STORE16_CONST] = handle_i32_store16_const;
-        table[HANDLER_IDX_I64_STORE8_CONST] = handle_i64_store8_const;
-        table[HANDLER_IDX_I64_STORE16_CONST] = handle_i64_store16_const;
-        table[HANDLER_IDX_I64_STORE32_CONST] = handle_i64_store32_const;
-
-        // const + arithmetic superinstructions
-        table[HANDLER_IDX_I32_ADD_CONST] = handle_i32_add_const;
-        table[HANDLER_IDX_I32_SUB_CONST] = handle_i32_sub_const;
-        table[HANDLER_IDX_I32_MUL_CONST] = handle_i32_mul_const;
-        table[HANDLER_IDX_I32_DIV_S_CONST] = handle_i32_div_s_const;
-        table[HANDLER_IDX_I32_DIV_U_CONST] = handle_i32_div_u_const;
-        table[HANDLER_IDX_I64_ADD_CONST] = handle_i64_add_const;
-        table[HANDLER_IDX_I64_SUB_CONST] = handle_i64_sub_const;
-        table[HANDLER_IDX_I64_MUL_CONST] = handle_i64_mul_const;
-        table[HANDLER_IDX_I64_DIV_S_CONST] = handle_i64_div_s_const;
-        table[HANDLER_IDX_I64_DIV_U_CONST] = handle_i64_div_u_const;
-        table[HANDLER_IDX_F32_ADD_CONST] = handle_f32_add_const;
-        table[HANDLER_IDX_F32_SUB_CONST] = handle_f32_sub_const;
-        table[HANDLER_IDX_F32_MUL_CONST] = handle_f32_mul_const;
-        table[HANDLER_IDX_F32_DIV_CONST] = handle_f32_div_const;
-        table[HANDLER_IDX_F64_ADD_CONST] = handle_f64_add_const;
-        table[HANDLER_IDX_F64_SUB_CONST] = handle_f64_sub_const;
-        table[HANDLER_IDX_F64_MUL_CONST] = handle_f64_mul_const;
-        table[HANDLER_IDX_F64_DIV_CONST] = handle_f64_div_const;
-        table[HANDLER_IDX_I32_REM_S_CONST] = handle_i32_rem_s_const;
-        table[HANDLER_IDX_I32_REM_U_CONST] = handle_i32_rem_u_const;
-        table[HANDLER_IDX_I64_REM_S_CONST] = handle_i64_rem_s_const;
-        table[HANDLER_IDX_I64_REM_U_CONST] = handle_i64_rem_u_const;
-        table[HANDLER_IDX_I32_AND_CONST] = handle_i32_and_const;
-        table[HANDLER_IDX_I32_OR_CONST] = handle_i32_or_const;
-        table[HANDLER_IDX_I32_XOR_CONST] = handle_i32_xor_const;
-        table[HANDLER_IDX_I64_AND_CONST] = handle_i64_and_const;
-        table[HANDLER_IDX_I64_OR_CONST] = handle_i64_or_const;
-        table[HANDLER_IDX_I64_XOR_CONST] = handle_i64_xor_const;
-
-        // const + comparison superinstructions
-        table[HANDLER_IDX_I32_EQ_CONST] = handle_i32_eq_const;
-        table[HANDLER_IDX_I32_NE_CONST] = handle_i32_ne_const;
-        table[HANDLER_IDX_I32_LT_S_CONST] = handle_i32_lt_s_const;
-        table[HANDLER_IDX_I32_LT_U_CONST] = handle_i32_lt_u_const;
-        table[HANDLER_IDX_I32_GT_S_CONST] = handle_i32_gt_s_const;
-        table[HANDLER_IDX_I32_GT_U_CONST] = handle_i32_gt_u_const;
-        table[HANDLER_IDX_I32_LE_S_CONST] = handle_i32_le_s_const;
-        table[HANDLER_IDX_I32_LE_U_CONST] = handle_i32_le_u_const;
-        table[HANDLER_IDX_I32_GE_S_CONST] = handle_i32_ge_s_const;
-        table[HANDLER_IDX_I32_GE_U_CONST] = handle_i32_ge_u_const;
-        table[HANDLER_IDX_I64_EQ_CONST] = handle_i64_eq_const;
-        table[HANDLER_IDX_I64_NE_CONST] = handle_i64_ne_const;
-        table[HANDLER_IDX_I64_LT_S_CONST] = handle_i64_lt_s_const;
-        table[HANDLER_IDX_I64_LT_U_CONST] = handle_i64_lt_u_const;
-        table[HANDLER_IDX_I64_GT_S_CONST] = handle_i64_gt_s_const;
-        table[HANDLER_IDX_I64_GT_U_CONST] = handle_i64_gt_u_const;
-        table[HANDLER_IDX_I64_LE_S_CONST] = handle_i64_le_s_const;
-        table[HANDLER_IDX_I64_LE_U_CONST] = handle_i64_le_u_const;
-        table[HANDLER_IDX_I64_GE_S_CONST] = handle_i64_ge_s_const;
-        table[HANDLER_IDX_I64_GE_U_CONST] = handle_i64_ge_u_const;
-        table[HANDLER_IDX_F32_EQ_CONST] = handle_f32_eq_const;
-        table[HANDLER_IDX_F32_NE_CONST] = handle_f32_ne_const;
-        table[HANDLER_IDX_F32_LT_CONST] = handle_f32_lt_const;
-        table[HANDLER_IDX_F32_GT_CONST] = handle_f32_gt_const;
-        table[HANDLER_IDX_F32_LE_CONST] = handle_f32_le_const;
-        table[HANDLER_IDX_F32_GE_CONST] = handle_f32_ge_const;
-        table[HANDLER_IDX_F64_EQ_CONST] = handle_f64_eq_const;
-        table[HANDLER_IDX_F64_NE_CONST] = handle_f64_ne_const;
-        table[HANDLER_IDX_F64_LT_CONST] = handle_f64_lt_const;
-        table[HANDLER_IDX_F64_GT_CONST] = handle_f64_gt_const;
-        table[HANDLER_IDX_F64_LE_CONST] = handle_f64_le_const;
-        table[HANDLER_IDX_F64_GE_CONST] = handle_f64_ge_const;
-
-        // const + shift superinstructions
-        table[HANDLER_IDX_I32_SHL_CONST] = handle_i32_shl_const;
-        table[HANDLER_IDX_I32_SHR_S_CONST] = handle_i32_shr_s_const;
-        table[HANDLER_IDX_I32_SHR_U_CONST] = handle_i32_shr_u_const;
-        table[HANDLER_IDX_I64_SHL_CONST] = handle_i64_shl_const;
-        table[HANDLER_IDX_I64_SHR_S_CONST] = handle_i64_shr_s_const;
-        table[HANDLER_IDX_I64_SHR_U_CONST] = handle_i64_shr_u_const;
-
-        // const + rotation superinstructions
-        table[HANDLER_IDX_I32_ROTL_CONST] = handle_i32_rotl_const;
-        table[HANDLER_IDX_I32_ROTR_CONST] = handle_i32_rotr_const;
-        table[HANDLER_IDX_I64_ROTL_CONST] = handle_i64_rotl_const;
-        table[HANDLER_IDX_I64_ROTR_CONST] = handle_i64_rotr_const;
-        // Conversion superinstructions
-        table[HANDLER_IDX_I32_WRAP_I64_CONST] = handle_i32_wrap_i64_const;
-        table[HANDLER_IDX_I64_EXTEND_I32_S_CONST] = handle_i64_extend_i32_s_const;
-        table[HANDLER_IDX_I64_EXTEND_I32_U_CONST] = handle_i64_extend_i32_u_const;
-        table[HANDLER_IDX_F32_CONVERT_I32_S_CONST] = handle_f32_convert_i32_s_const;
-        table[HANDLER_IDX_F32_CONVERT_I32_U_CONST] = handle_f32_convert_i32_u_const;
-        table[HANDLER_IDX_F32_CONVERT_I64_S_CONST] = handle_f32_convert_i64_s_const;
-        table[HANDLER_IDX_F32_CONVERT_I64_U_CONST] = handle_f32_convert_i64_u_const;
-        table[HANDLER_IDX_F64_CONVERT_I32_S_CONST] = handle_f64_convert_i32_s_const;
-        table[HANDLER_IDX_F64_CONVERT_I32_U_CONST] = handle_f64_convert_i32_u_const;
-        table[HANDLER_IDX_F64_CONVERT_I64_S_CONST] = handle_f64_convert_i64_s_const;
-        table[HANDLER_IDX_F64_CONVERT_I64_U_CONST] = handle_f64_convert_i64_u_const;
-        table[HANDLER_IDX_I32_TRUNC_F32_S_CONST] = handle_i32_trunc_f32_s_const;
-        table[HANDLER_IDX_I32_TRUNC_F32_U_CONST] = handle_i32_trunc_f32_u_const;
-        table[HANDLER_IDX_I32_TRUNC_F64_S_CONST] = handle_i32_trunc_f64_s_const;
-        table[HANDLER_IDX_I32_TRUNC_F64_U_CONST] = handle_i32_trunc_f64_u_const;
-        table[HANDLER_IDX_I64_TRUNC_F32_S_CONST] = handle_i64_trunc_f32_s_const;
-        table[HANDLER_IDX_I64_TRUNC_F32_U_CONST] = handle_i64_trunc_f32_u_const;
-        table[HANDLER_IDX_I64_TRUNC_F64_S_CONST] = handle_i64_trunc_f64_s_const;
-        table[HANDLER_IDX_I64_TRUNC_F64_U_CONST] = handle_i64_trunc_f64_u_const;
-
         table
     };
 }
@@ -6044,8 +4911,11 @@ impl<'a> ExecutionContext<'a> {
         if len < n {
             return Err(RuntimeError::ValueStackUnderflow);
         }
-        let split_index = len - n;
-        let second_part = self.value_stack.split_off(split_index);
-        Ok(second_part.into_iter().rev().collect())
+
+        // Use drain for efficient removal and collection
+        let start = len - n;
+        let mut values: Vec<Val> = self.value_stack.drain(start..).collect();
+        values.reverse();
+        Ok(values)
     }
 }

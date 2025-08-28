@@ -2,24 +2,22 @@ use super::module::*;
 use super::value::{Val, WasiFuncAddr};
 use crate::error::RuntimeError;
 use crate::structure::{module::*, types::*};
-use std::sync::{Arc, RwLock, Weak as SyncWeak};
-use std::{
-    fmt::{self, Debug},
-    sync::RwLockReadGuard,
-};
+use std::cell::{Ref, RefCell};
+use std::fmt::{self, Debug};
+use std::rc::{Rc, Weak};
 
 #[derive(Clone)]
-pub struct FuncAddr(Arc<RwLock<FuncInst>>);
+pub struct FuncAddr(Rc<RefCell<FuncInst>>);
 
 pub enum FuncInst {
     RuntimeFunc {
         type_: FuncType,
-        module: SyncWeak<ModuleInst>,
+        module: Weak<ModuleInst>,
         code: Func,
     },
     HostFunc {
         type_: FuncType,
-        host_code: Arc<dyn Fn(Vec<Val>) -> Result<Option<Val>, RuntimeError> + Send + Sync>,
+        host_code: Rc<dyn Fn(Vec<Val>) -> Result<Option<Val>, RuntimeError>>,
     },
     WasiFunc {
         type_: FuncType,
@@ -29,7 +27,7 @@ pub enum FuncInst {
 
 impl Debug for FuncAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0.try_read() {
+        match self.0.try_borrow() {
             Ok(guard) => write!(f, "FuncAddr({:?})", *guard),
             Err(_) => write!(f, "FuncAddr(<Locked>)"),
         }
@@ -71,29 +69,29 @@ impl Debug for FuncInst {
 
 impl FuncAddr {
     pub fn alloc_empty() -> FuncAddr {
-        FuncAddr(Arc::new(RwLock::new(FuncInst::RuntimeFunc {
+        FuncAddr(Rc::new(RefCell::new(FuncInst::RuntimeFunc {
             type_: FuncType {
                 params: Vec::new(),
                 results: Vec::new(),
             },
-            module: SyncWeak::new(),
+            module: Weak::new(),
             code: Func {
                 type_: TypeIdx(0),
                 locals: Vec::new(),
-                body: Vec::new(),
+                body: Rc::new(Vec::new()),
             },
         })))
     }
 
     pub fn alloc_wasi(wasi_func_addr: WasiFuncAddr) -> FuncAddr {
         let func_type = wasi_func_addr.func_type.to_func_type();
-        FuncAddr(Arc::new(RwLock::new(FuncInst::WasiFunc {
+        FuncAddr(Rc::new(RefCell::new(FuncInst::WasiFunc {
             type_: func_type,
             wasi_func_addr,
         })))
     }
 
-    pub fn replace(&self, func: Func, module: SyncWeak<ModuleInst>) {
+    pub fn replace(&self, func: Func, module: Weak<ModuleInst>) {
         let upgraded_module = module.upgrade().expect("Module weak ref expired");
         let func_type = upgraded_module.types.get_by_idx(func.type_.clone()).clone();
         drop(upgraded_module);
@@ -103,19 +101,19 @@ impl FuncAddr {
             module: module,
             code: func,
         };
-        *self.0.write().expect("RwLock poisoned") = new_inst;
+        *self.0.borrow_mut() = new_inst;
     }
 
     pub fn func_type(&self) -> FuncType {
-        match &*self.0.read().expect("RwLock poisoned") {
+        match &*self.0.borrow() {
             FuncInst::RuntimeFunc { type_, .. } => type_.clone(),
             FuncInst::HostFunc { type_, .. } => type_.clone(),
             FuncInst::WasiFunc { type_, .. } => type_.clone(),
         }
     }
 
-    pub fn get_runtime_func_details(&self) -> Option<(FuncType, SyncWeak<ModuleInst>, Func)> {
-        match &*self.0.read().expect("RwLock poisoned") {
+    pub fn get_runtime_func_details(&self) -> Option<(FuncType, Weak<ModuleInst>, Func)> {
+        match &*self.0.borrow() {
             FuncInst::RuntimeFunc {
                 type_,
                 module,
@@ -129,16 +127,16 @@ impl FuncAddr {
         &self,
     ) -> Option<(
         FuncType,
-        Arc<dyn Fn(Vec<Val>) -> Result<Option<Val>, RuntimeError> + Send + Sync>,
+        Rc<dyn Fn(Vec<Val>) -> Result<Option<Val>, RuntimeError>>,
     )> {
-        match &*self.0.read().expect("RwLock poisoned") {
+        match &*self.0.borrow() {
             FuncInst::HostFunc { type_, host_code } => Some((type_.clone(), host_code.clone())),
             _ => None,
         }
     }
 
     pub fn get_wasi_func_details(&self) -> Option<(FuncType, WasiFuncAddr)> {
-        match &*self.0.read().expect("RwLock poisoned") {
+        match &*self.0.borrow() {
             FuncInst::WasiFunc {
                 type_,
                 wasi_func_addr,
@@ -147,14 +145,11 @@ impl FuncAddr {
         }
     }
 
-    pub fn read_lock(
-        &self,
-    ) -> Result<RwLockReadGuard<FuncInst>, std::sync::PoisonError<RwLockReadGuard<'_, FuncInst>>>
-    {
-        self.0.read()
+    pub fn read_lock(&self) -> Ref<FuncInst> {
+        self.0.borrow()
     }
 
-    pub fn get_arc(&self) -> &Arc<RwLock<FuncInst>> {
+    pub fn get_rc(&self) -> &Rc<RefCell<FuncInst>> {
         &self.0
     }
 }

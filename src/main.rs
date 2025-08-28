@@ -9,8 +9,8 @@ use chiwawa::{
 };
 use clap::Parser;
 use fancy_regex::Regex;
-use std::collections::HashMap;
-use std::sync::Arc;
+use rustc_hash::FxHashMap;
+use std::rc::Rc;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -33,6 +33,9 @@ struct Cli {
     /// Enable memoization optimizations for pure instructions
     #[arg(long, default_value = "false")]
     enable_memoization: bool,
+    /// Enable statistics output
+    #[arg(long, default_value = "false")]
+    enable_stats: bool,
 }
 
 fn parse_args_string(args: &str) -> Vec<String> {
@@ -119,7 +122,7 @@ fn main() -> Result<()> {
 
     let mut module = Module::new("test");
     let _ = parser::parse_bytecode(&mut module, &cli.wasm_file, cli.enable_superinstructions);
-    let imports: ImportObjects = HashMap::new();
+    let imports: ImportObjects = FxHashMap::default();
 
     let mut wasm_argv = vec![cli.wasm_file.clone()];
     if let Some(args_string) = cli.app_args {
@@ -132,7 +135,7 @@ fn main() -> Result<()> {
     if let Some(restore_path) = cli.restore {
         println!("Restoring from checkpoint: {}", restore_path);
 
-        let restored_stacks: Stacks = match migration::restore(Arc::clone(&inst), &restore_path) {
+        let restored_stacks: Stacks = match migration::restore(Rc::clone(&inst), &restore_path) {
             Ok(stacks) => stacks,
             Err(e) => {
                 eprintln!("Failed to restore state: {:?}", e);
@@ -141,8 +144,12 @@ fn main() -> Result<()> {
         };
         println!("State restored into module instance. Stacks obtained.");
 
-        let mut runtime =
-            Runtime::new_restored(Arc::clone(&inst), restored_stacks, cli.enable_memoization);
+        let mut runtime = Runtime::new_restored(
+            Rc::clone(&inst),
+            restored_stacks,
+            cli.enable_memoization,
+            cli.enable_stats,
+        );
         println!("Runtime reconstructed. Resuming execution...");
 
         let result = runtime.run();
@@ -152,10 +159,11 @@ fn main() -> Result<()> {
         let params = parse_params(cli.params.unwrap_or_default());
 
         match Runtime::new(
-            Arc::clone(&inst),
+            Rc::clone(&inst),
             &func_addr,
             params,
             cli.enable_memoization,
+            cli.enable_stats,
         ) {
             Ok(mut runtime) => {
                 let result = runtime.run();

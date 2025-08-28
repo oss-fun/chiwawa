@@ -1,6 +1,8 @@
 use crate::error::RuntimeError;
 use crate::execution::func::{FuncAddr, FuncInst};
-use crate::execution::memoization::BlockMemoizationCache;
+use crate::execution::memoization::{
+    BlockMemoizationCache, GlobalAccessTracker, LocalAccessTracker,
+};
 use crate::execution::migration;
 use crate::execution::module::ModuleInst;
 use crate::execution::stack::{Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, Stacks};
@@ -8,47 +10,63 @@ use crate::execution::value::{Num, Val, Vec_};
 use crate::structure::module::WasiFuncType;
 use crate::structure::types::{NumType, ValueType, VecType};
 use crate::wasi::{WasiError, WasiResult};
+use std::cell::RefCell;
 use std::path::Path;
-use std::sync::Arc;
+use std::rc::Rc;
 
 pub struct Runtime {
-    module_inst: Arc<ModuleInst>,
+    module_inst: Rc<ModuleInst>,
     stacks: Stacks,
     block_cache: Option<BlockMemoizationCache>,
+    enable_stats: bool,
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        if self.enable_stats {
+            if let Some(ref cache) = self.block_cache {
+                cache.stats.report();
+            }
+        }
+    }
 }
 
 impl Runtime {
     pub fn new(
-        module_inst: Arc<ModuleInst>,
+        module_inst: Rc<ModuleInst>,
         func_addr: &FuncAddr,
         params: Vec<Val>,
         enable_memoization: bool,
+        enable_stats: bool,
     ) -> Result<Self, RuntimeError> {
         let stacks = Stacks::new(func_addr, params)?;
         Ok(Runtime {
-            module_inst: module_inst.clone(),
+            module_inst,
             stacks,
             block_cache: if enable_memoization {
                 Some(BlockMemoizationCache::new())
             } else {
                 None
             },
+            enable_stats,
         })
     }
 
     pub fn new_restored(
-        module_inst: Arc<ModuleInst>,
+        module_inst: Rc<ModuleInst>,
         stacks: Stacks,
         enable_memoization: bool,
+        enable_stats: bool,
     ) -> Self {
         Runtime {
-            module_inst: module_inst.clone(),
+            module_inst,
             stacks,
             block_cache: if enable_memoization {
                 Some(BlockMemoizationCache::new())
             } else {
                 None
             },
+            enable_stats,
         }
     }
 
@@ -57,50 +75,106 @@ impl Runtime {
         frame_stack_idx: usize,
         called_func_addr: &mut Option<FuncAddr>,
     ) -> Result<Result<Option<super::stack::ModuleLevelInstr>, RuntimeError>, RuntimeError> {
-        // Extract cache to avoid borrowing conflicts, will be restored later
-        let mut cache_opt = self.block_cache.take();
-        let mut pending_cache_stores: Vec<(usize, usize, Vec<Val>, Vec<Val>, Vec<Val>)> =
-            Vec::new();
+        let cache_opt = self
+            .block_cache
+            .take()
+            .map(|cache| Rc::new(RefCell::new(cache)));
 
         let result = {
             let frame_stack = &mut self.stacks.activation_frame_stack[frame_stack_idx];
+            let module_inst = &self.module_inst;
 
-            let get_cache = |start_ip: usize,
-                             end_ip: usize,
-                             stack: &[Val],
-                             locals: &[Val]|
-             -> Option<Vec<Val>> {
-                cache_opt
-                    .as_ref()
-                    .and_then(|cache| cache.check_block(start_ip, end_ip, stack, locals))
+            let cache_for_get = cache_opt.clone();
+            let get_cache = move |start_ip: usize,
+                                  end_ip: usize,
+                                  stack: &[Val],
+                                  locals: &[Val],
+                                  local_versions: &[u64]|
+                  -> Option<Vec<Val>> {
+                cache_for_get.as_ref().and_then(|cache_rc| {
+                    let mut cache = cache_rc.borrow_mut();
+                    if let Some(written_chunks) = cache.get_write_pattern(start_ip, end_ip) {
+                        let memory_chunks = if !module_inst.mem_addrs.is_empty() {
+                            module_inst.mem_addrs[0].get_chunk_versions_for_tracker(written_chunks)
+                        } else {
+                            Vec::new()
+                        };
+                        // Get global versions for written globals
+                        let global_versions = if let Some(written_globals) =
+                            cache.get_global_write_pattern(start_ip, end_ip)
+                        {
+                            module_inst.get_global_versions_for_tracker(written_globals)
+                        } else {
+                            Vec::new()
+                        };
+                        cache.check_block(
+                            start_ip,
+                            end_ip,
+                            stack,
+                            locals,
+                            local_versions,
+                            &memory_chunks,
+                            &global_versions,
+                        )
+                    } else {
+                        // No write pattern known - just start tracking, don't check cache
+                        // Don't count as miss here - it will be counted in check_block
+                        if !module_inst.mem_addrs.is_empty() {
+                            module_inst.mem_addrs[0].start_tracking_access();
+                        }
+                        None
+                    }
+                })
             };
 
-            let store_cache = |start_ip: usize,
-                               end_ip: usize,
-                               input_stack: &[Val],
-                               locals: &[Val],
-                               output_stack: Vec<Val>| {
-                pending_cache_stores.push((
-                    start_ip,
-                    end_ip,
-                    input_stack.to_vec(),
-                    locals.to_vec(),
-                    output_stack,
-                ));
-            };
+            let cache_for_store = cache_opt.clone();
+            let store_cache =
+                move |start_ip: usize,
+                      end_ip: usize,
+                      input_stack: &[Val],
+                      locals: &[Val],
+                      output_stack: Vec<Val>,
+                      accessed_globals: GlobalAccessTracker,
+                      accessed_locals: LocalAccessTracker| {
+                    if let Some(cache_rc) = cache_for_store.as_ref() {
+                        let mut cache = cache_rc.borrow_mut();
+
+                        let written_chunks = if !module_inst.mem_addrs.is_empty() {
+                            module_inst.mem_addrs[0].get_and_stop_tracking_access()
+                        } else {
+                            None
+                        };
+
+                        let memory_chunks = if let Some(chunks) = written_chunks {
+                            module_inst.mem_addrs[0].get_chunk_versions_for_tracker(&chunks)
+                        } else {
+                            Vec::new()
+                        };
+
+                        let global_versions =
+                            module_inst.get_global_versions_for_tracker(&accessed_globals);
+
+                        cache.store_block(
+                            start_ip,
+                            end_ip,
+                            input_stack,
+                            locals,
+                            memory_chunks,
+                            output_stack,
+                            accessed_globals,
+                            global_versions,
+                            accessed_locals,
+                        );
+                    }
+                };
 
             frame_stack.run_dtc_loop(called_func_addr, get_cache, store_cache)
         }?;
 
-        // Process pending cache stores
-        if let Some(ref mut cache) = cache_opt {
-            for (start_ip, end_ip, input_stack, locals, output_stack) in pending_cache_stores {
-                cache.store_block(start_ip, end_ip, &input_stack, &locals, output_stack);
-            }
-        }
-
-        // Restore cache
-        self.block_cache = cache_opt;
+        self.block_cache = cache_opt.map(|cache_rc| match Rc::try_unwrap(cache_rc) {
+            Ok(refcell) => refcell.into_inner(),
+            Err(cache_rc) => cache_rc.borrow().clone(),
+        });
 
         Ok(result)
     }
@@ -155,7 +229,7 @@ impl Runtime {
 
                     match instr_option {
                         Some(ModuleLevelInstr::Invoke(func_addr)) => {
-                            let func_inst_guard = func_addr.read_lock().expect("RwLock poisoned");
+                            let func_inst_guard = func_addr.read_lock();
                             match &*func_inst_guard {
                                 FuncInst::RuntimeFunc {
                                     type_,
@@ -182,6 +256,7 @@ impl Runtime {
 
                                     let new_frame = FrameStack {
                                         frame: Frame {
+                                            local_versions: vec![0; locals.len()],
                                             locals,
                                             module: func_module_weak.clone(),
                                             n: type_.results.len(),
@@ -196,14 +271,22 @@ impl Runtime {
                                                 start_ip: 0,  // Function level starts at 0
                                                 end_ip: code.body.len(), // Function level ends at body length
                                                 input_stack: Vec::new(), // Function level has empty input
+                                                is_immutable: None, // Will be determined during execution
                                             },
                                             processed_instrs: code.body.clone(),
                                             value_stack: vec![],
                                             ip: 0,
+                                            block_has_mutable_ops: false,
                                         }],
                                         void: type_.results.is_empty(),
                                         instruction_count: 0,
                                         global_value_stack: vec![], // Will be set up after frame creation
+                                        current_block_accessed_globals: Some(
+                                            GlobalAccessTracker::new(),
+                                        ),
+                                        current_block_accessed_locals: Some(
+                                            LocalAccessTracker::new(),
+                                        ),
                                     };
                                     self.stacks.activation_frame_stack.push(new_frame);
                                 }
