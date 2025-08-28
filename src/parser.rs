@@ -191,12 +191,17 @@ fn get_operation_type(op: &wasmparser::Operator) -> OperationType {
 }
 
 // Try to apply optimization for an operator based on recent instructions
-fn try_apply_optimization(
+fn try_apply_optimization<'a>(
     op: &wasmparser::Operator,
     recent_instrs: &mut VecDeque<(wasmparser::Operator, usize)>,
     processed_instr: &mut ProcessedInstr,
     initial_processed_instrs: &mut Vec<ProcessedInstr>,
     current_processed_pc: &mut usize,
+    ops: &mut itertools::structs::MultiPeek<
+        impl Iterator<
+                Item = Result<(wasmparser::Operator<'a>, usize), wasmparser::BinaryReaderError>,
+            > + 'a,
+    >,
 ) -> bool {
     let op_type = get_operation_type(op);
 
@@ -228,10 +233,29 @@ fn try_apply_optimization(
                 .and_then(|(instr, _)| operator_to_value_source(instr));
 
             if let (Some(first), Some(second)) = (first_source, second_source) {
+                // Check if next instruction is local.set or global.set
+                let mut store_target = None;
+                let mut skip_next = false;
+
+                if let Some(Ok((next_op, _))) = ops.peek() {
+                    match next_op {
+                        wasmparser::Operator::LocalSet { local_index } => {
+                            store_target = Some(StoreTarget::Local(*local_index));
+                            skip_next = true;
+                        }
+                        wasmparser::Operator::GlobalSet { global_index } => {
+                            store_target = Some(StoreTarget::Global(*global_index));
+                            skip_next = true;
+                        }
+                        _ => {}
+                    }
+                }
+
                 processed_instr.operand = Operand::Optimized(OptimizedOperand::Double {
                     first: Some(first),
                     second: Some(second),
                     memarg: None,
+                    store_target,
                 });
 
                 // Remove consumed instructions
@@ -240,6 +264,12 @@ fn try_apply_optimization(
                     recent_instrs.pop_back();
                     *current_processed_pc -= 1;
                 }
+
+                // If we have a store target, skip the next instruction
+                if skip_next {
+                    ops.next(); // Skip the set instruction
+                }
+
                 return true;
             }
         }
@@ -252,6 +282,7 @@ fn try_apply_optimization(
                     processed_instr.operand = Operand::Optimized(OptimizedOperand::Single {
                         value: Some(addr_source),
                         memarg: Some(memarg.clone()),
+                        store_target: None,
                     });
 
                     // Remove consumed instruction
@@ -276,6 +307,7 @@ fn try_apply_optimization(
                         first: Some(addr),
                         second: Some(value),
                         memarg: Some(memarg.clone()),
+                        store_target: None,
                     });
 
                     // Remove consumed instructions
@@ -294,15 +326,39 @@ fn try_apply_optimization(
                 .next()
                 .and_then(|(instr, _)| operator_to_value_source(instr))
             {
+                // Check if next instruction is local.set or global.set
+                let mut store_target = None;
+                let mut skip_next = false;
+
+                if let Some(Ok((next_op, _))) = ops.peek() {
+                    match next_op {
+                        wasmparser::Operator::LocalSet { local_index } => {
+                            store_target = Some(StoreTarget::Local(*local_index));
+                            skip_next = true;
+                        }
+                        wasmparser::Operator::GlobalSet { global_index } => {
+                            store_target = Some(StoreTarget::Global(*global_index));
+                            skip_next = true;
+                        }
+                        _ => {}
+                    }
+                }
+
                 processed_instr.operand = Operand::Optimized(OptimizedOperand::Single {
                     value: Some(value_source),
                     memarg: None,
+                    store_target,
                 });
 
                 // Remove consumed instruction
                 initial_processed_instrs.pop();
                 recent_instrs.pop_back();
                 *current_processed_pc -= 1;
+
+                if skip_next {
+                    ops.next(); // Skip the set instruction
+                }
+
                 return true;
             }
         }
@@ -1475,6 +1531,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                 &mut processed_instr,
                 &mut initial_processed_instrs,
                 &mut current_processed_pc,
+                &mut ops,
             );
         }
 

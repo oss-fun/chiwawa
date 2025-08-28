@@ -9,7 +9,6 @@ use crate::structure::types::LabelIdx as StructureLabelIdx;
 use crate::structure::{instructions::*, types::*};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::arch::asm;
 use std::fs;
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
 use std::path::Path;
@@ -44,19 +43,60 @@ impl Value {
     }
 }
 
+// Store target for optimized operations
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum StoreTarget {
+    Local(u32),
+    Global(u32),
+}
+
+// Helper function for storing results to target
+fn store_result(
+    ctx: &mut ExecutionContext,
+    result_val: Val,
+    store_target: &Option<StoreTarget>,
+) -> Result<(), RuntimeError> {
+    if let Some(target) = store_target {
+        match target {
+            StoreTarget::Local(idx) => {
+                let index = *idx as usize;
+                if index >= ctx.frame.locals.len() {
+                    return Err(RuntimeError::LocalIndexOutOfBounds);
+                }
+                ctx.frame.locals[index] = result_val;
+                ctx.frame.local_versions[index] += 1;
+            }
+            StoreTarget::Global(idx) => {
+                let module_inst = ctx
+                    .frame
+                    .module
+                    .upgrade()
+                    .ok_or(RuntimeError::ModuleInstanceGone)?;
+                let global_addr = module_inst.global_addrs.get_by_idx(GlobalIdx(*idx)).clone();
+                global_addr.set(result_val)?;
+            }
+        }
+    } else {
+        ctx.value_stack.push(result_val);
+    }
+    Ok(())
+}
+
 // Unified optimized operand type
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum OptimizedOperand {
     // For operations that need 1 value (load, unary operations)
     Single {
         value: Option<ValueSource>,
-        memarg: Option<Memarg>, // For memory operations
+        memarg: Option<Memarg>,            // For memory operations
+        store_target: Option<StoreTarget>, // Where to store the result
     },
     // For operations that need 2 values (binary ops, store)
     Double {
-        first: Option<ValueSource>,  // binary op's left, or store's addr
-        second: Option<ValueSource>, // binary op's right, or store's value
-        memarg: Option<Memarg>,      // For store operations
+        first: Option<ValueSource>,        // binary op's left, or store's addr
+        second: Option<ValueSource>,       // binary op's right, or store's value
+        memarg: Option<Memarg>,            // For store operations
+        store_target: Option<StoreTarget>, // Where to store the result
     },
 }
 
@@ -1002,6 +1042,7 @@ macro_rules! binop {
                 first,
                 second,
                 memarg: None,
+                store_target,
             }) => {
                 // Get values from sources
                 let lhs_val = get_value_from_source($ctx, first)?;
@@ -1015,7 +1056,8 @@ macro_rules! binop {
                     _ => return Err(RuntimeError::TypeMismatch),
                 };
 
-                $ctx.value_stack.push(result);
+                // Use store_result helper function
+                store_result($ctx, result, store_target)?;
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => {
@@ -1060,6 +1102,7 @@ macro_rules! binop_wrapping {
                 first,
                 second,
                 memarg: None,
+                store_target,
             }) => {
                 // Get values from sources
                 let lhs_val = get_value_from_source($ctx, first)?;
@@ -1073,7 +1116,8 @@ macro_rules! binop_wrapping {
                     _ => return Err(RuntimeError::TypeMismatch),
                 };
 
-                $ctx.value_stack.push(result);
+                // Use store_result helper function
+                store_result($ctx, result, store_target)?;
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => {
@@ -1111,12 +1155,15 @@ macro_rules! unaryop {
             Operand::Optimized(OptimizedOperand::Single {
                 value,
                 memarg: None,
+                store_target,
             }) => {
                 // Get value from source
                 let val = get_value_from_source($ctx, value)?;
                 let x = val.$val_method()?;
-                let result = $op(x);
-                $ctx.value_stack.push(Val::Num(Num::$type(result)));
+                let result_val = Val::Num(Num::$type($op(x)));
+
+                // Store to target if specified, otherwise push to stack
+                store_result($ctx, result_val, store_target)?;
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => {
@@ -1141,6 +1188,7 @@ macro_rules! shiftop {
                 first,
                 second,
                 memarg: None,
+                store_target,
             }) => {
                 // Get values from sources
                 let lhs_val = get_value_from_source($ctx, first)?;
@@ -1148,9 +1196,10 @@ macro_rules! shiftop {
 
                 let lhs = lhs_val.$val_method()?;
                 let rhs = rhs_val.$val_method()?;
-                let result = lhs.$shift_method(rhs as u32);
+                let result_val = Val::Num(Num::$type(lhs.$shift_method(rhs as u32)));
 
-                $ctx.value_stack.push(Val::Num(Num::$type(result)));
+                // Store to target if specified, otherwise push to stack
+                store_result($ctx, result_val, store_target)?;
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => {
@@ -1180,6 +1229,7 @@ macro_rules! shiftop_unsigned {
                 first,
                 second,
                 memarg: None,
+                store_target,
             }) => {
                 // Get values from sources
                 let lhs_val = get_value_from_source($ctx, first)?;
@@ -1188,9 +1238,10 @@ macro_rules! shiftop_unsigned {
                 let lhs = lhs_val.$val_method()? as $unsigned_type;
                 let rhs = rhs_val.$val_method()? as u32;
                 let result = lhs.wrapping_shr(rhs);
+                let result_val = Val::Num(Num::$type(result as $signed_type));
 
-                $ctx.value_stack
-                    .push(Val::Num(Num::$type(result as $signed_type)));
+                // Store to target if specified, otherwise push to stack
+                store_result($ctx, result_val, store_target)?;
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => {
@@ -1218,7 +1269,7 @@ macro_rules! shiftop_unsigned {
 macro_rules! cmpop {
     ($ctx:ident, $operand:ident, $operand_type:ident, $op:tt) => {{
         match $operand {
-            Operand::Optimized(OptimizedOperand::Double { first, second, memarg: None }) => {
+            Operand::Optimized(OptimizedOperand::Double { first, second, memarg: None, store_target }) => {
                 // Get values from sources
                 let lhs_val = get_value_from_source($ctx, first)?;
                 let rhs_val = get_value_from_source($ctx, second)?;
@@ -1227,7 +1278,10 @@ macro_rules! cmpop {
                     (Val::Num(Num::$operand_type(l)), Val::Num(Num::$operand_type(r))) => (l, r),
                     _ => return Err(RuntimeError::TypeMismatch),
                 };
-                $ctx.value_stack.push(Val::Num(Num::I32((lhs $op rhs) as i32)));
+                let result = Val::Num(Num::I32((lhs $op rhs) as i32));
+
+                // Use store_result helper function
+                store_result($ctx, result, store_target)?;
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => {
@@ -1249,7 +1303,7 @@ macro_rules! cmpop {
 macro_rules! cmpop_cast {
     ($ctx:ident, $operand:ident, $operand_type:ident, $op:tt, $cast_type:ty) => {{
         match $operand {
-            Operand::Optimized(OptimizedOperand::Double { first, second, memarg: None }) => {
+            Operand::Optimized(OptimizedOperand::Double { first, second, memarg: None, store_target }) => {
                 // Get values from sources
                 let lhs_val = get_value_from_source($ctx, first)?;
                 let rhs_val = get_value_from_source($ctx, second)?;
@@ -1258,7 +1312,10 @@ macro_rules! cmpop_cast {
                     (Val::Num(Num::$operand_type(l)), Val::Num(Num::$operand_type(r))) => (l as $cast_type, r as $cast_type),
                     _ => return Err(RuntimeError::TypeMismatch),
                 };
-                $ctx.value_stack.push(Val::Num(Num::I32((lhs $op rhs) as i32)));
+                let result = Val::Num(Num::I32((lhs $op rhs) as i32));
+
+                // Use store_result helper function
+                store_result($ctx, result, store_target)?;
                 Ok(HandlerResult::Continue($ctx.ip + 1))
             }
             _ => {
@@ -1583,11 +1640,15 @@ fn handle_i32_eqz(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val = get_value_from_source(ctx, value)?;
             let x = val.to_i32()?;
             let result = (x == 0) as i32;
-            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            let result_val = Val::Num(Num::I32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -1670,11 +1731,15 @@ fn handle_i64_eqz(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val = get_value_from_source(ctx, value)?;
             let x = val.to_i64()?;
             let result = (x == 0) as i32;
-            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            let result_val = Val::Num(Num::I32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -1838,6 +1903,7 @@ macro_rules! resolve_mem_addr {
             Operand::Optimized(OptimizedOperand::Single {
                 value,
                 memarg: Some(m),
+                store_target,
             }) => {
                 let ptr = match value {
                     Some(src) => {
@@ -1881,6 +1947,7 @@ macro_rules! resolve_store_args {
                 first: addr_source,
                 second: value_source,
                 memarg: Some(m),
+                store_target,
             }) => {
                 let val = match value_source {
                     Some(src) => get_value_from_source($ctx, &Some(src.clone()))?,
@@ -2069,15 +2136,16 @@ fn handle_i32_div_s(
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     // Get operand values based on source
-    let (lhs_val, rhs_val) = match operand {
+    let (lhs_val, rhs_val, store_target) = match operand {
         Operand::Optimized(OptimizedOperand::Double {
             first,
             second,
             memarg: None,
+            store_target,
         }) => {
             let rhs = get_value_from_source(ctx, second)?;
             let lhs = get_value_from_source(ctx, first)?;
-            (lhs, rhs)
+            (lhs, rhs, store_target)
         }
         _ => {
             // Fallback to stack-based operation
@@ -2089,7 +2157,7 @@ fn handle_i32_div_s(
                 .value_stack
                 .pop()
                 .ok_or(RuntimeError::ValueStackUnderflow)?;
-            (lhs, rhs)
+            (lhs, rhs, &None)
         }
     };
 
@@ -2105,8 +2173,10 @@ fn handle_i32_div_s(
     }
 
     let result = lhs / rhs;
+    let result_val = Val::Num(Num::I32(result));
 
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
+    // Use store_result helper function
+    store_result(ctx, result_val, store_target)?;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 fn handle_i32_div_u(
@@ -2114,15 +2184,16 @@ fn handle_i32_div_u(
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     // Get operand values based on source
-    let (lhs_val, rhs_val) = match operand {
+    let (lhs_val, rhs_val, store_target) = match operand {
         Operand::Optimized(OptimizedOperand::Double {
             first,
             second,
             memarg: None,
+            store_target,
         }) => {
             let rhs = get_value_from_source(ctx, second)?;
             let lhs = get_value_from_source(ctx, first)?;
-            (lhs, rhs)
+            (lhs, rhs, store_target)
         }
         _ => {
             // Fallback to stack-based operation
@@ -2134,16 +2205,22 @@ fn handle_i32_div_u(
                 .value_stack
                 .pop()
                 .ok_or(RuntimeError::ValueStackUnderflow)?;
-            (lhs, rhs)
+            (lhs, rhs, &None)
         }
     };
 
     let rhs = rhs_val.to_i32()? as u32;
     let lhs = lhs_val.to_i32()? as u32;
 
-    let result = (lhs / rhs) as i32;
+    if rhs == 0 {
+        return Err(RuntimeError::ZeroDivideError);
+    }
 
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
+    let result = (lhs / rhs) as i32;
+    let result_val = Val::Num(Num::I32(result));
+
+    // Store to target if specified, otherwise push to stack
+    store_result(ctx, result_val, store_target)?;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 fn handle_i32_rem_s(
@@ -2151,15 +2228,16 @@ fn handle_i32_rem_s(
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     // Get operand values based on source
-    let (lhs_val, rhs_val) = match operand {
+    let (lhs_val, rhs_val, store_target) = match operand {
         Operand::Optimized(OptimizedOperand::Double {
             first,
             second,
             memarg: None,
+            store_target,
         }) => {
             let rhs = get_value_from_source(ctx, second)?;
             let lhs = get_value_from_source(ctx, first)?;
-            (lhs, rhs)
+            (lhs, rhs, store_target)
         }
         _ => {
             // Fallback to stack-based operation
@@ -2171,7 +2249,7 @@ fn handle_i32_rem_s(
                 .value_stack
                 .pop()
                 .ok_or(RuntimeError::ValueStackUnderflow)?;
-            (lhs, rhs)
+            (lhs, rhs, &None)
         }
     };
 
@@ -2184,7 +2262,10 @@ fn handle_i32_rem_s(
         lhs % rhs
     };
 
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
+    let result_val = Val::Num(Num::I32(result));
+
+    // Store to target if specified, otherwise push to stack
+    store_result(ctx, result_val, store_target)?;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 fn handle_i32_rem_u(
@@ -2192,15 +2273,16 @@ fn handle_i32_rem_u(
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     // Get operand values based on source
-    let (lhs_val, rhs_val) = match operand {
+    let (lhs_val, rhs_val, store_target) = match operand {
         Operand::Optimized(OptimizedOperand::Double {
             first,
             second,
             memarg: None,
+            store_target,
         }) => {
             let rhs = get_value_from_source(ctx, second)?;
             let lhs = get_value_from_source(ctx, first)?;
-            (lhs, rhs)
+            (lhs, rhs, store_target)
         }
         _ => {
             // Fallback to stack-based operation
@@ -2212,7 +2294,7 @@ fn handle_i32_rem_u(
                 .value_stack
                 .pop()
                 .ok_or(RuntimeError::ValueStackUnderflow)?;
-            (lhs, rhs)
+            (lhs, rhs, &None)
         }
     };
 
@@ -2224,8 +2306,10 @@ fn handle_i32_rem_u(
     }
 
     let result = (lhs % rhs) as i32;
+    let result_val = Val::Num(Num::I32(result));
 
-    ctx.value_stack.push(Val::Num(Num::I32(result)));
+    // Store to target if specified, otherwise push to stack
+    store_result(ctx, result_val, store_target)?;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 fn handle_i32_and(
@@ -2319,15 +2403,16 @@ fn handle_i64_div_s(
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     // Get operand values based on source
-    let (lhs_val, rhs_val) = match operand {
+    let (lhs_val, rhs_val, store_target) = match operand {
         Operand::Optimized(OptimizedOperand::Double {
             first,
             second,
             memarg: None,
+            store_target,
         }) => {
             let rhs = get_value_from_source(ctx, second)?;
             let lhs = get_value_from_source(ctx, first)?;
-            (lhs, rhs)
+            (lhs, rhs, store_target)
         }
         _ => {
             // Fallback to stack-based operation
@@ -2339,7 +2424,7 @@ fn handle_i64_div_s(
                 .value_stack
                 .pop()
                 .ok_or(RuntimeError::ValueStackUnderflow)?;
-            (lhs, rhs)
+            (lhs, rhs, &None)
         }
     };
 
@@ -2354,8 +2439,10 @@ fn handle_i64_div_s(
     }
 
     let result = lhs / rhs;
+    let result_val = Val::Num(Num::I64(result));
 
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
+    // Store to target if specified, otherwise push to stack
+    store_result(ctx, result_val, store_target)?;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 fn handle_i64_div_u(
@@ -2363,15 +2450,16 @@ fn handle_i64_div_u(
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     // Get operand values based on source
-    let (lhs_val, rhs_val) = match operand {
+    let (lhs_val, rhs_val, store_target) = match operand {
         Operand::Optimized(OptimizedOperand::Double {
             first,
             second,
             memarg: None,
+            store_target,
         }) => {
             let rhs = get_value_from_source(ctx, second)?;
             let lhs = get_value_from_source(ctx, first)?;
-            (lhs, rhs)
+            (lhs, rhs, store_target)
         }
         _ => {
             // Fallback to stack-based operation
@@ -2383,7 +2471,7 @@ fn handle_i64_div_u(
                 .value_stack
                 .pop()
                 .ok_or(RuntimeError::ValueStackUnderflow)?;
-            (lhs, rhs)
+            (lhs, rhs, &None)
         }
     };
 
@@ -2395,8 +2483,10 @@ fn handle_i64_div_u(
     }
 
     let result = (lhs / rhs) as i64;
+    let result_val = Val::Num(Num::I64(result));
 
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
+    // Store to target if specified, otherwise push to stack
+    store_result(ctx, result_val, store_target)?;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 fn handle_i64_rem_s(
@@ -2404,15 +2494,16 @@ fn handle_i64_rem_s(
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     // Get operand values based on source
-    let (lhs_val, rhs_val) = match operand {
+    let (lhs_val, rhs_val, store_target) = match operand {
         Operand::Optimized(OptimizedOperand::Double {
             first,
             second,
             memarg: None,
+            store_target,
         }) => {
             let rhs = get_value_from_source(ctx, second)?;
             let lhs = get_value_from_source(ctx, first)?;
-            (lhs, rhs)
+            (lhs, rhs, store_target)
         }
         _ => {
             // Fallback to stack-based operation
@@ -2424,7 +2515,7 @@ fn handle_i64_rem_s(
                 .value_stack
                 .pop()
                 .ok_or(RuntimeError::ValueStackUnderflow)?;
-            (lhs, rhs)
+            (lhs, rhs, &None)
         }
     };
 
@@ -2435,9 +2526,16 @@ fn handle_i64_rem_s(
         return Err(RuntimeError::ZeroDivideError);
     }
 
-    let result = lhs % rhs;
+    let result = if lhs == i64::MIN && rhs == -1 {
+        0 // WebAssembly spec: i64::MIN % -1 = 0
+    } else {
+        lhs % rhs
+    };
 
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
+    let result_val = Val::Num(Num::I64(result));
+
+    // Store to target if specified, otherwise push to stack
+    store_result(ctx, result_val, store_target)?;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 fn handle_i64_rem_u(
@@ -2445,15 +2543,16 @@ fn handle_i64_rem_u(
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
     // Get operand values based on source
-    let (lhs_val, rhs_val) = match operand {
+    let (lhs_val, rhs_val, store_target) = match operand {
         Operand::Optimized(OptimizedOperand::Double {
             first,
             second,
             memarg: None,
+            store_target,
         }) => {
             let rhs = get_value_from_source(ctx, second)?;
             let lhs = get_value_from_source(ctx, first)?;
-            (lhs, rhs)
+            (lhs, rhs, store_target)
         }
         _ => {
             // Fallback to stack-based operation
@@ -2465,7 +2564,7 @@ fn handle_i64_rem_u(
                 .value_stack
                 .pop()
                 .ok_or(RuntimeError::ValueStackUnderflow)?;
-            (lhs, rhs)
+            (lhs, rhs, &None)
         }
     };
 
@@ -2477,8 +2576,10 @@ fn handle_i64_rem_u(
     }
 
     let result = (lhs % rhs) as i64;
+    let result_val = Val::Num(Num::I64(result));
 
-    ctx.value_stack.push(Val::Num(Num::I64(result)));
+    // Store to target if specified, otherwise push to stack
+    store_result(ctx, result_val, store_target)?;
     Ok(HandlerResult::Continue(ctx.ip + 1))
 }
 fn handle_i64_and(
@@ -2568,13 +2669,16 @@ fn handle_f32_nearest(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val = get_value_from_source(ctx, value)?;
             let x = val.to_f32()?;
 
             let result = x.round_ties_even();
+            let result_val = Val::Num(Num::F32(result));
 
-            ctx.value_stack.push(Val::Num(Num::F32(result)));
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -2629,6 +2733,7 @@ fn handle_f32_min(
             first,
             second,
             memarg: None,
+            store_target,
         }) => {
             // Get values from sources
             let lhs_val = get_value_from_source(ctx, first)?;
@@ -2646,7 +2751,10 @@ fn handle_f32_min(
                 lhs.min(rhs)
             };
 
-            ctx.value_stack.push(Val::Num(Num::F32(result)));
+            let result_val = Val::Num(Num::F32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -2685,6 +2793,7 @@ fn handle_f32_max(
             first,
             second,
             memarg: None,
+            store_target,
         }) => {
             // Get values from sources
             let lhs_val = get_value_from_source(ctx, first)?;
@@ -2702,7 +2811,10 @@ fn handle_f32_max(
                 lhs.max(rhs)
             };
 
-            ctx.value_stack.push(Val::Num(Num::F32(result)));
+            let result_val = Val::Num(Num::F32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -2777,13 +2889,16 @@ fn handle_f64_nearest(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val = get_value_from_source(ctx, value)?;
             let x = val.to_f64()?;
 
             let result = x.round();
+            let result_val = Val::Num(Num::F64(result));
 
-            ctx.value_stack.push(Val::Num(Num::F64(result)));
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -2872,13 +2987,16 @@ fn handle_i32_trunc_f32_s(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val = get_value_from_source(ctx, value)?;
             let x = val.to_f32()?;
 
             let result = x.trunc() as i32;
+            let result_val = Val::Num(Num::I32(result));
 
-            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -2904,13 +3022,16 @@ fn handle_i32_trunc_f32_u(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val = get_value_from_source(ctx, value)?;
             let x = val.to_f32()?;
 
             let result = x.trunc() as u32 as i32;
+            let result_val = Val::Num(Num::I32(result));
 
-            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -2936,13 +3057,16 @@ fn handle_i32_trunc_f64_s(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val = get_value_from_source(ctx, value)?;
             let x = val.to_f64()?;
 
             let result = x.trunc() as i32;
+            let result_val = Val::Num(Num::I32(result));
 
-            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -2968,6 +3092,7 @@ fn handle_i32_trunc_f64_u(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val = get_value_from_source(ctx, value)?;
             let val_f64 = val.to_f64()?;
@@ -2978,8 +3103,10 @@ fn handle_i32_trunc_f64_u(
             if !(truncated >= 0.0 && truncated < u32::MAX as f64 + 1.0) {
                 return Err(RuntimeError::IntegerOverflow);
             }
-            ctx.value_stack
-                .push(Val::Num(Num::I32(truncated as u32 as i32)));
+            let result_val = Val::Num(Num::I32(truncated as u32 as i32));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -3010,13 +3137,16 @@ fn handle_i64_trunc_f32_s(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val = get_value_from_source(ctx, value)?;
             let x = val.to_f32()?;
 
             let result = x.trunc() as i64;
+            let result_val = Val::Num(Num::I64(result));
 
-            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -3042,6 +3172,7 @@ fn handle_i64_trunc_f32_u(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val_obj = get_value_from_source(ctx, value)?;
             let val = val_obj.to_f32()?;
@@ -3052,8 +3183,10 @@ fn handle_i64_trunc_f32_u(
             }
 
             let result = val.trunc() as u64 as i64;
+            let result_val = Val::Num(Num::I64(result));
 
-            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -3084,13 +3217,16 @@ fn handle_i64_trunc_f64_s(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val_obj = get_value_from_source(ctx, value)?;
             let val = val_obj.to_f64()?;
 
             let result = val.trunc() as i64;
+            let result_val = Val::Num(Num::I64(result));
 
-            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -3116,13 +3252,16 @@ fn handle_i64_trunc_f64_u(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val_obj = get_value_from_source(ctx, value)?;
             let val = val_obj.to_f64()?;
 
             let result = val.trunc() as u64 as i64;
+            let result_val = Val::Num(Num::I64(result));
 
-            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -3639,6 +3778,7 @@ fn handle_f64_min(
             first,
             second,
             memarg: None,
+            store_target,
         }) => {
             // Get values from sources
             let lhs_val = get_value_from_source(ctx, first)?;
@@ -3656,7 +3796,10 @@ fn handle_f64_min(
                 lhs.min(rhs)
             };
 
-            ctx.value_stack.push(Val::Num(Num::F64(result)));
+            let result_val = Val::Num(Num::F64(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -3696,6 +3839,7 @@ fn handle_f64_max(
             first,
             second,
             memarg: None,
+            store_target,
         }) => {
             // Get values from sources
             let lhs_val = get_value_from_source(ctx, first)?;
@@ -3713,7 +3857,10 @@ fn handle_f64_max(
                 lhs.max(rhs)
             };
 
-            ctx.value_stack.push(Val::Num(Num::F64(result)));
+            let result_val = Val::Num(Num::F64(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -4166,6 +4313,7 @@ fn handle_i32_trunc_sat_f32_s(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val_obj = get_value_from_source(ctx, value)?;
             let val = val_obj.to_f32()?;
@@ -4180,7 +4328,10 @@ fn handle_i32_trunc_sat_f32_s(
                 val as i32
             };
 
-            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            let result_val = Val::Num(Num::I32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -4214,6 +4365,7 @@ fn handle_i32_trunc_sat_f32_u(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val_obj = get_value_from_source(ctx, value)?;
             let val = val_obj.to_f32()?;
@@ -4226,7 +4378,10 @@ fn handle_i32_trunc_sat_f32_u(
                 val as u32 as i32
             };
 
-            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            let result_val = Val::Num(Num::I32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -4258,6 +4413,7 @@ fn handle_i32_trunc_sat_f64_s(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val_obj = get_value_from_source(ctx, value)?;
             let val = val_obj.to_f64()?;
@@ -4272,7 +4428,10 @@ fn handle_i32_trunc_sat_f64_s(
                 val as i32
             };
 
-            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            let result_val = Val::Num(Num::I32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -4306,6 +4465,7 @@ fn handle_i32_trunc_sat_f64_u(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val_obj = get_value_from_source(ctx, value)?;
             let val = val_obj.to_f64()?;
@@ -4318,7 +4478,10 @@ fn handle_i32_trunc_sat_f64_u(
                 val as u32 as i32
             };
 
-            ctx.value_stack.push(Val::Num(Num::I32(result)));
+            let result_val = Val::Num(Num::I32(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -4350,6 +4513,7 @@ fn handle_i64_trunc_sat_f32_s(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val_obj = get_value_from_source(ctx, value)?;
             let val = val_obj.to_f32()?;
@@ -4364,7 +4528,10 @@ fn handle_i64_trunc_sat_f32_s(
                 val as i64
             };
 
-            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            let result_val = Val::Num(Num::I64(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -4398,6 +4565,7 @@ fn handle_i64_trunc_sat_f32_u(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val_obj = get_value_from_source(ctx, value)?;
             let val = val_obj.to_f32()?;
@@ -4410,7 +4578,10 @@ fn handle_i64_trunc_sat_f32_u(
                 val as u64 as i64
             };
 
-            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            let result_val = Val::Num(Num::I64(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -4442,6 +4613,7 @@ fn handle_i64_trunc_sat_f64_s(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val_obj = get_value_from_source(ctx, value)?;
             let val = val_obj.to_f64()?;
@@ -4456,7 +4628,10 @@ fn handle_i64_trunc_sat_f64_s(
                 val as i64
             };
 
-            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            let result_val = Val::Num(Num::I64(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
@@ -4490,6 +4665,7 @@ fn handle_i64_trunc_sat_f64_u(
         Operand::Optimized(OptimizedOperand::Single {
             value,
             memarg: None,
+            store_target,
         }) => {
             let val_obj = get_value_from_source(ctx, value)?;
             let val = val_obj.to_f64()?;
@@ -4502,7 +4678,10 @@ fn handle_i64_trunc_sat_f64_u(
                 val as u64 as i64
             };
 
-            ctx.value_stack.push(Val::Num(Num::I64(result)));
+            let result_val = Val::Num(Num::I64(result));
+
+            // Store to target if specified, otherwise push to stack
+            store_result(ctx, result_val, store_target)?;
             Ok(HandlerResult::Continue(ctx.ip + 1))
         }
         _ => {
