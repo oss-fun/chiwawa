@@ -280,6 +280,7 @@ impl Runtime {
                                         }],
                                         void: type_.results.is_empty(),
                                         instruction_count: 0,
+                                        function_call_count: 0,
                                         global_value_stack: vec![], // Will be set up after frame creation
                                         current_block_accessed_globals: Some(
                                             GlobalAccessTracker::new(),

@@ -464,6 +464,7 @@ impl Stacks {
                     }],
                     void: type_.results.is_empty(),
                     instruction_count: 0,
+                    function_call_count: 0,
                     global_value_stack: vec![],
                     current_block_accessed_globals: Some(GlobalAccessTracker::new()),
                     current_block_accessed_locals: Some(LocalAccessTracker::new()),
@@ -501,6 +502,7 @@ pub struct FrameStack {
     pub label_stack: Vec<LabelStack>,
     pub void: bool,
     pub instruction_count: u64,
+    pub function_call_count: u64,
     // Global value stack shared across all label stacks
     pub global_value_stack: Vec<Val>,
     #[serde(skip)]
@@ -539,6 +541,20 @@ impl FrameStack {
         }
     }
 
+    fn check_checkpoint_trigger(&self) -> Result<bool, RuntimeError> {
+        const CHECKPOINT_TRIGGER_FILE: &str = "./checkpoint.trigger";
+
+        if let Some(module) = self.frame.module.upgrade() {
+            if let Some(ref wasi) = module.wasi_impl {
+                if wasi.check_file_exists(CHECKPOINT_TRIGGER_FILE) {
+                    let _ = fs::remove_file(CHECKPOINT_TRIGGER_FILE);
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
     /// DTC execution loop with block memoization callbacks
     ///
     /// Uses callback functions to access Runtime's cache from Stack without borrowing conflicts.
@@ -560,7 +576,7 @@ impl FrameStack {
             .checked_sub(1)
             .ok_or(RuntimeError::StackError("Initial label stack empty"))?;
 
-        const CHECKPOINT_TRIGGER_FILE: &str = "./checkpoint.trigger";
+        const CHECK_INTERVAL: u64 = 5;
 
         loop {
             self.instruction_count += 1;
@@ -651,14 +667,11 @@ impl FrameStack {
                             return Ok(Ok(Some(ModuleLevelInstr::Return)));
                         }
                         HandlerResult::Invoke(func_addr) => {
-                            // Check for checkpoint trigger at function call boundary using WASI
-                            if let Some(module) = self.frame.module.upgrade() {
-                                if let Some(ref wasi) = module.wasi_impl {
-                                    if wasi.check_file_exists(CHECKPOINT_TRIGGER_FILE) {
-                                        let _ = fs::remove_file(CHECKPOINT_TRIGGER_FILE);
-                                        return Ok(Err(RuntimeError::CheckpointRequested));
-                                    }
-                                }
+                            self.function_call_count += 1;
+                            if self.function_call_count % CHECK_INTERVAL == 0
+                                && self.check_checkpoint_trigger()?
+                            {
+                                return Ok(Err(RuntimeError::CheckpointRequested));
                             }
 
                             self.label_stack[current_label_stack_idx].ip = ip + 1;
