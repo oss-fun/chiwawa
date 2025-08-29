@@ -11,7 +11,6 @@ use lazy_static::lazy_static;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fs;
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
-use std::path::Path;
 use std::rc::{Rc, Weak};
 
 // Value source for hybrid approach
@@ -652,15 +651,14 @@ impl FrameStack {
                             return Ok(Ok(Some(ModuleLevelInstr::Return)));
                         }
                         HandlerResult::Invoke(func_addr) => {
-                            // Check for checkpoint trigger at function call boundary
-                            let trigger_path = Path::new(CHECKPOINT_TRIGGER_FILE);
-                            if trigger_path.exists() {
-                                println!(
-                                    "Checkpoint trigger file found at function call after {} instructions!",
-                                    self.instruction_count
-                                );
-                                let _ = fs::remove_file(trigger_path);
-                                return Ok(Err(RuntimeError::CheckpointRequested));
+                            // Check for checkpoint trigger at function call boundary using WASI
+                            if let Some(module) = self.frame.module.upgrade() {
+                                if let Some(ref wasi) = module.wasi_impl {
+                                    if wasi.check_file_exists(CHECKPOINT_TRIGGER_FILE) {
+                                        let _ = fs::remove_file(CHECKPOINT_TRIGGER_FILE);
+                                        return Ok(Err(RuntimeError::CheckpointRequested));
+                                    }
+                                }
                             }
 
                             self.label_stack[current_label_stack_idx].ip = ip + 1;

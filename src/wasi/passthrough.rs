@@ -139,6 +139,30 @@ impl PassthroughWasiImpl {
         PassthroughWasiImpl { argv }
     }
 
+    /// Check if a file exists without memory allocation
+    /// Used for checkpoint trigger detection
+    pub fn check_file_exists(&self, path: &str) -> bool {
+        // Create null-terminated path
+        let mut path_vec = path.as_bytes().to_vec();
+        path_vec.push(0);
+
+        // Dummy buffer for filestat (required by some WASI implementations)
+        let mut dummy_stat: [u8; 64] = [0; 64];
+
+        // Call path_filestat_get
+        let wasi_errno = unsafe {
+            __wasi_path_filestat_get(
+                3, // fd: current directory (AT_FDCWD)
+                0, // flags: 0
+                path_vec.as_ptr(),
+                dummy_stat.as_mut_ptr(),
+            )
+        };
+
+        // Return true if file exists (errno == 0)
+        wasi_errno == 0
+    }
+
     pub fn fd_write(
         &self,
         memory: &MemAddr,
