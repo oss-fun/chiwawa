@@ -3,13 +3,13 @@ use crate::error::RuntimeError;
 use crate::execution::{
     func::*,
     memoization::{GlobalAccessTracker, LocalAccessTracker},
+    migration,
     module::*,
 };
 use crate::structure::types::LabelIdx as StructureLabelIdx;
 use crate::structure::{instructions::*, types::*};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::fs;
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
 use std::rc::{Rc, Weak};
 
@@ -464,7 +464,6 @@ impl Stacks {
                     }],
                     void: type_.results.is_empty(),
                     instruction_count: 0,
-                    function_call_count: 0,
                     global_value_stack: vec![],
                     current_block_accessed_globals: Some(GlobalAccessTracker::new()),
                     current_block_accessed_locals: Some(LocalAccessTracker::new()),
@@ -502,7 +501,6 @@ pub struct FrameStack {
     pub label_stack: Vec<LabelStack>,
     pub void: bool,
     pub instruction_count: u64,
-    pub function_call_count: u64,
     // Global value stack shared across all label stacks
     pub global_value_stack: Vec<Val>,
     #[serde(skip)]
@@ -539,20 +537,6 @@ impl FrameStack {
         } else {
             0
         }
-    }
-
-    fn check_checkpoint_trigger(&self) -> Result<bool, RuntimeError> {
-        const CHECKPOINT_TRIGGER_FILE: &str = "./checkpoint.trigger";
-
-        if let Some(module) = self.frame.module.upgrade() {
-            if let Some(ref wasi) = module.wasi_impl {
-                if wasi.check_file_exists(CHECKPOINT_TRIGGER_FILE) {
-                    let _ = fs::remove_file(CHECKPOINT_TRIGGER_FILE);
-                    return Ok(true);
-                }
-            }
-        }
-        Ok(false)
     }
 
     /// DTC execution loop with block memoization callbacks
@@ -667,11 +651,28 @@ impl FrameStack {
                             return Ok(Ok(Some(ModuleLevelInstr::Return)));
                         }
                         HandlerResult::Invoke(func_addr) => {
-                            self.function_call_count += 1;
-                            if self.function_call_count % CHECK_INTERVAL == 0
-                                && self.check_checkpoint_trigger()?
+                            #[cfg(all(
+                                target_arch = "wasm32",
+                                target_os = "wasi",
+                                target_env = "p1",
+                                target_feature = "atomics"
+                            ))]
                             {
-                                return Ok(Err(RuntimeError::CheckpointRequested));
+                                if migration::check_checkpoint_flag() {
+                                    return Ok(Err(RuntimeError::CheckpointRequested));
+                                }
+                            }
+
+                            #[cfg(all(
+                                target_arch = "wasm32",
+                                target_os = "wasi",
+                                target_env = "p1",
+                                not(target_feature = "atomics")
+                            ))]
+                            {
+                                if migration::check_checkpoint_trigger(&self.frame)? {
+                                    return Ok(Err(RuntimeError::CheckpointRequested));
+                                }
                             }
 
                             self.label_stack[current_label_stack_idx].ip = ip + 1;

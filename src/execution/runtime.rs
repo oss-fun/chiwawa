@@ -13,6 +13,7 @@ use crate::wasi::{WasiError, WasiResult};
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Once;
 
 pub struct Runtime {
     module_inst: Rc<ModuleInst>,
@@ -180,6 +181,20 @@ impl Runtime {
     }
 
     pub fn run(&mut self) -> Result<Vec<Val>, RuntimeError> {
+        // Setup checkpoint monitor thread (only for wasm32-wasip1-threads)
+        #[cfg(all(
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p1",
+            target_feature = "atomics"
+        ))]
+        {
+            static INIT: Once = Once::new();
+            INIT.call_once(|| {
+                migration::setup_checkpoint_monitor();
+            });
+        }
+
         while !self.stacks.activation_frame_stack.is_empty() {
             let frame_stack_idx = self.stacks.activation_frame_stack.len() - 1;
             let mut called_func_addr: Option<FuncAddr> = None;
@@ -280,7 +295,6 @@ impl Runtime {
                                         }],
                                         void: type_.results.is_empty(),
                                         instruction_count: 0,
-                                        function_call_count: 0,
                                         global_value_stack: vec![], // Will be set up after frame creation
                                         current_block_accessed_globals: Some(
                                             GlobalAccessTracker::new(),
