@@ -563,8 +563,6 @@ impl FrameStack {
             .checked_sub(1)
             .ok_or(RuntimeError::StackError("Initial label stack empty"))?;
 
-        const CHECK_INTERVAL: u64 = 5;
-
         loop {
             self.instruction_count += 1;
 
@@ -1920,7 +1918,7 @@ macro_rules! resolve_mem_addr {
             Operand::Optimized(OptimizedOperand::Single {
                 value,
                 memarg: Some(m),
-                store_target,
+                store_target: _,
             }) => {
                 let ptr = match value {
                     Some(src) => {
@@ -1964,7 +1962,7 @@ macro_rules! resolve_store_args {
                 first: addr_source,
                 second: value_source,
                 memarg: Some(m),
-                store_target,
+                store_target: _,
             }) => {
                 let val = match value_source {
                     Some(src) => get_value_from_source($ctx, &Some(src.clone()))?,
