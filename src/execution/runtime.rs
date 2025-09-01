@@ -13,12 +13,14 @@ use crate::wasi::{WasiError, WasiResult};
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Once;
 
 pub struct Runtime {
     module_inst: Rc<ModuleInst>,
     stacks: Stacks,
     block_cache: Option<BlockMemoizationCache>,
     enable_stats: bool,
+    enable_checkpoint: bool,
 }
 
 impl Drop for Runtime {
@@ -38,6 +40,7 @@ impl Runtime {
         params: Vec<Val>,
         enable_memoization: bool,
         enable_stats: bool,
+        enable_checkpoint: bool,
     ) -> Result<Self, RuntimeError> {
         let stacks = Stacks::new(func_addr, params)?;
         Ok(Runtime {
@@ -49,6 +52,7 @@ impl Runtime {
                 None
             },
             enable_stats,
+            enable_checkpoint,
         })
     }
 
@@ -57,6 +61,7 @@ impl Runtime {
         stacks: Stacks,
         enable_memoization: bool,
         enable_stats: bool,
+        enable_checkpoint: bool,
     ) -> Self {
         Runtime {
             module_inst,
@@ -67,6 +72,7 @@ impl Runtime {
                 None
             },
             enable_stats,
+            enable_checkpoint,
         }
     }
 
@@ -180,6 +186,27 @@ impl Runtime {
     }
 
     pub fn run(&mut self) -> Result<Vec<Val>, RuntimeError> {
+        // Setup checkpoint monitor thread (only for wasm32-wasip1-threads)
+        #[cfg(all(
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p1",
+            target_feature = "atomics"
+        ))]
+        {
+            if self.enable_checkpoint {
+                static INIT: Once = Once::new();
+                INIT.call_once(|| {
+                    migration::setup_checkpoint_monitor();
+                });
+            }
+        }
+
+        // Set checkpoint enabled flag for initial frame stack
+        if let Some(frame_stack) = self.stacks.activation_frame_stack.first_mut() {
+            frame_stack.enable_checkpoint = self.enable_checkpoint;
+        }
+
         while !self.stacks.activation_frame_stack.is_empty() {
             let frame_stack_idx = self.stacks.activation_frame_stack.len() - 1;
             let mut called_func_addr: Option<FuncAddr> = None;
@@ -287,6 +314,7 @@ impl Runtime {
                                         current_block_accessed_locals: Some(
                                             LocalAccessTracker::new(),
                                         ),
+                                        enable_checkpoint: self.enable_checkpoint,
                                     };
                                     self.stacks.activation_frame_stack.push(new_frame);
                                 }

@@ -2,7 +2,7 @@ use crate::error::RuntimeError;
 use crate::execution::global::GlobalAddr;
 use crate::execution::mem::MemAddr;
 use crate::execution::module::ModuleInst;
-use crate::execution::stack::Stacks;
+use crate::execution::stack::{Frame, Stacks};
 use crate::execution::table::TableAddr;
 use crate::execution::value::{Ref, Val};
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,39 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
+
+static CHECKPOINT_TRIGGERED: AtomicBool = AtomicBool::new(false);
+const CHECKPOINT_TRIGGER_FILE: &str = "./checkpoint.trigger";
+
+pub fn setup_checkpoint_monitor() {
+    thread::spawn(|| loop {
+        if std::path::Path::new(CHECKPOINT_TRIGGER_FILE).exists() {
+            CHECKPOINT_TRIGGERED.store(true, Ordering::Relaxed);
+            let _ = std::fs::remove_file(CHECKPOINT_TRIGGER_FILE);
+        }
+        thread::sleep(Duration::from_millis(10));
+    });
+}
+
+#[inline(always)]
+pub fn check_checkpoint_flag() -> bool {
+    CHECKPOINT_TRIGGERED.load(Ordering::Relaxed)
+}
+
+pub fn check_checkpoint_trigger(frame: &Frame) -> Result<bool, RuntimeError> {
+    if let Some(module) = frame.module.upgrade() {
+        if let Some(ref wasi) = module.wasi_impl {
+            if wasi.check_file_exists(CHECKPOINT_TRIGGER_FILE) {
+                let _ = std::fs::remove_file(CHECKPOINT_TRIGGER_FILE);
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SerializableState {

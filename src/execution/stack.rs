@@ -3,15 +3,14 @@ use crate::error::RuntimeError;
 use crate::execution::{
     func::*,
     memoization::{GlobalAccessTracker, LocalAccessTracker},
+    migration,
     module::*,
 };
 use crate::structure::types::LabelIdx as StructureLabelIdx;
 use crate::structure::{instructions::*, types::*};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::fs;
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
-use std::path::Path;
 use std::rc::{Rc, Weak};
 
 // Value source for hybrid approach
@@ -468,6 +467,7 @@ impl Stacks {
                     global_value_stack: vec![],
                     current_block_accessed_globals: Some(GlobalAccessTracker::new()),
                     current_block_accessed_locals: Some(LocalAccessTracker::new()),
+                    enable_checkpoint: false,
                 };
 
                 Ok(Stacks {
@@ -508,6 +508,8 @@ pub struct FrameStack {
     pub current_block_accessed_globals: Option<GlobalAccessTracker>, // Track accessed globals when enabled
     #[serde(skip)]
     pub current_block_accessed_locals: Option<LocalAccessTracker>, // Track accessed locals when enabled
+    #[serde(skip)]
+    pub enable_checkpoint: bool,
 }
 
 impl FrameStack {
@@ -560,8 +562,6 @@ impl FrameStack {
             .len()
             .checked_sub(1)
             .ok_or(RuntimeError::StackError("Initial label stack empty"))?;
-
-        const CHECKPOINT_TRIGGER_FILE: &str = "./checkpoint.trigger";
 
         loop {
             self.instruction_count += 1;
@@ -652,15 +652,30 @@ impl FrameStack {
                             return Ok(Ok(Some(ModuleLevelInstr::Return)));
                         }
                         HandlerResult::Invoke(func_addr) => {
-                            // Check for checkpoint trigger at function call boundary
-                            let trigger_path = Path::new(CHECKPOINT_TRIGGER_FILE);
-                            if trigger_path.exists() {
-                                println!(
-                                    "Checkpoint trigger file found at function call after {} instructions!",
-                                    self.instruction_count
-                                );
-                                let _ = fs::remove_file(trigger_path);
-                                return Ok(Err(RuntimeError::CheckpointRequested));
+                            if self.enable_checkpoint {
+                                #[cfg(all(
+                                    target_arch = "wasm32",
+                                    target_os = "wasi",
+                                    target_env = "p1",
+                                    target_feature = "atomics"
+                                ))]
+                                {
+                                    if migration::check_checkpoint_flag() {
+                                        return Ok(Err(RuntimeError::CheckpointRequested));
+                                    }
+                                }
+
+                                #[cfg(all(
+                                    target_arch = "wasm32",
+                                    target_os = "wasi",
+                                    target_env = "p1",
+                                    not(target_feature = "atomics")
+                                ))]
+                                {
+                                    if migration::check_checkpoint_trigger(&self.frame)? {
+                                        return Ok(Err(RuntimeError::CheckpointRequested));
+                                    }
+                                }
                             }
 
                             self.label_stack[current_label_stack_idx].ip = ip + 1;
@@ -1903,7 +1918,7 @@ macro_rules! resolve_mem_addr {
             Operand::Optimized(OptimizedOperand::Single {
                 value,
                 memarg: Some(m),
-                store_target,
+                store_target: _,
             }) => {
                 let ptr = match value {
                     Some(src) => {
@@ -1947,7 +1962,7 @@ macro_rules! resolve_store_args {
                 first: addr_source,
                 second: value_source,
                 memarg: Some(m),
-                store_target,
+                store_target: _,
             }) => {
                 let val = match value_source {
                     Some(src) => get_value_from_source($ctx, &Some(src.clone()))?,
