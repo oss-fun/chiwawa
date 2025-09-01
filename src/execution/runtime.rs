@@ -20,6 +20,7 @@ pub struct Runtime {
     stacks: Stacks,
     block_cache: Option<BlockMemoizationCache>,
     enable_stats: bool,
+    enable_checkpoint: bool,
 }
 
 impl Drop for Runtime {
@@ -39,6 +40,7 @@ impl Runtime {
         params: Vec<Val>,
         enable_memoization: bool,
         enable_stats: bool,
+        enable_checkpoint: bool,
     ) -> Result<Self, RuntimeError> {
         let stacks = Stacks::new(func_addr, params)?;
         Ok(Runtime {
@@ -50,6 +52,7 @@ impl Runtime {
                 None
             },
             enable_stats,
+            enable_checkpoint,
         })
     }
 
@@ -58,6 +61,7 @@ impl Runtime {
         stacks: Stacks,
         enable_memoization: bool,
         enable_stats: bool,
+        enable_checkpoint: bool,
     ) -> Self {
         Runtime {
             module_inst,
@@ -68,6 +72,7 @@ impl Runtime {
                 None
             },
             enable_stats,
+            enable_checkpoint,
         }
     }
 
@@ -189,10 +194,17 @@ impl Runtime {
             target_feature = "atomics"
         ))]
         {
-            static INIT: Once = Once::new();
-            INIT.call_once(|| {
-                migration::setup_checkpoint_monitor();
-            });
+            if self.enable_checkpoint {
+                static INIT: Once = Once::new();
+                INIT.call_once(|| {
+                    migration::setup_checkpoint_monitor();
+                });
+            }
+        }
+
+        // Set checkpoint enabled flag for initial frame stack
+        if let Some(frame_stack) = self.stacks.activation_frame_stack.first_mut() {
+            frame_stack.enable_checkpoint = self.enable_checkpoint;
         }
 
         while !self.stacks.activation_frame_stack.is_empty() {
@@ -302,6 +314,7 @@ impl Runtime {
                                         current_block_accessed_locals: Some(
                                             LocalAccessTracker::new(),
                                         ),
+                                        enable_checkpoint: self.enable_checkpoint,
                                     };
                                     self.stacks.activation_frame_stack.push(new_frame);
                                 }

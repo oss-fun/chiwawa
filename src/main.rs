@@ -36,6 +36,9 @@ struct Cli {
     /// Enable statistics output
     #[arg(long, default_value = "false")]
     enable_stats: bool,
+    /// Enable checkpoint/restore
+    #[arg(long = "cr", default_value = "false")]
+    enable_checkpoint: bool,
 }
 
 fn parse_args_string(args: &str) -> Vec<String> {
@@ -149,6 +152,7 @@ fn main() -> Result<()> {
             restored_stacks,
             cli.enable_memoization,
             cli.enable_stats,
+            cli.enable_checkpoint,
         );
         println!("Runtime reconstructed. Resuming execution...");
 
@@ -164,6 +168,7 @@ fn main() -> Result<()> {
             params,
             cli.enable_memoization,
             cli.enable_stats,
+            cli.enable_checkpoint,
         ) {
             Ok(mut runtime) => {
                 let result = runtime.run();

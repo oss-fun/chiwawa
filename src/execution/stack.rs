@@ -467,6 +467,7 @@ impl Stacks {
                     global_value_stack: vec![],
                     current_block_accessed_globals: Some(GlobalAccessTracker::new()),
                     current_block_accessed_locals: Some(LocalAccessTracker::new()),
+                    enable_checkpoint: false,
                 };
 
                 Ok(Stacks {
@@ -507,6 +508,8 @@ pub struct FrameStack {
     pub current_block_accessed_globals: Option<GlobalAccessTracker>, // Track accessed globals when enabled
     #[serde(skip)]
     pub current_block_accessed_locals: Option<LocalAccessTracker>, // Track accessed locals when enabled
+    #[serde(skip)]
+    pub enable_checkpoint: bool,
 }
 
 impl FrameStack {
@@ -651,27 +654,29 @@ impl FrameStack {
                             return Ok(Ok(Some(ModuleLevelInstr::Return)));
                         }
                         HandlerResult::Invoke(func_addr) => {
-                            #[cfg(all(
-                                target_arch = "wasm32",
-                                target_os = "wasi",
-                                target_env = "p1",
-                                target_feature = "atomics"
-                            ))]
-                            {
-                                if migration::check_checkpoint_flag() {
-                                    return Ok(Err(RuntimeError::CheckpointRequested));
+                            if self.enable_checkpoint {
+                                #[cfg(all(
+                                    target_arch = "wasm32",
+                                    target_os = "wasi",
+                                    target_env = "p1",
+                                    target_feature = "atomics"
+                                ))]
+                                {
+                                    if migration::check_checkpoint_flag() {
+                                        return Ok(Err(RuntimeError::CheckpointRequested));
+                                    }
                                 }
-                            }
 
-                            #[cfg(all(
-                                target_arch = "wasm32",
-                                target_os = "wasi",
-                                target_env = "p1",
-                                not(target_feature = "atomics")
-                            ))]
-                            {
-                                if migration::check_checkpoint_trigger(&self.frame)? {
-                                    return Ok(Err(RuntimeError::CheckpointRequested));
+                                #[cfg(all(
+                                    target_arch = "wasm32",
+                                    target_os = "wasi",
+                                    target_env = "p1",
+                                    not(target_feature = "atomics")
+                                ))]
+                                {
+                                    if migration::check_checkpoint_trigger(&self.frame)? {
+                                        return Ok(Err(RuntimeError::CheckpointRequested));
+                                    }
                                 }
                             }
 
