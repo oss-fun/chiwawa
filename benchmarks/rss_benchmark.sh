@@ -53,10 +53,10 @@ for i in {1..10}; do
     # Run chiwawa and extract RSS from time output
     if [ -n "$PROGRAM_ARGS" ]; then
         # If program arguments exist, pass them via --app-args
-        rss=$(/usr/bin/time -v wasmtime --dir . "$CHIWAWA_WASM" "$WASM_FILE" --enable-superinstructions --app-args "$PROGRAM_ARGS" 2>&1 | grep "Maximum resident set size" | awk '{print $6}')
+        rss=$(/usr/bin/time -v wasmtime --dir . "$CHIWAWA_WASM" "$WASM_FILE" --superinstructions --app-args "$PROGRAM_ARGS" 2>&1 | grep "Maximum resident set size" | awk '{print $6}')
     else
         # No program arguments
-        rss=$(/usr/bin/time -v wasmtime --dir . "$CHIWAWA_WASM" "$WASM_FILE" --enable-superinstructions 2>&1 | grep "Maximum resident set size" | awk '{print $6}')
+        rss=$(/usr/bin/time -v wasmtime --dir . "$CHIWAWA_WASM" "$WASM_FILE" --superinstructions 2>&1 | grep "Maximum resident set size" | awk '{print $6}')
     fi
     echo "$rss KB"
     chiwawa_rss_values+=($rss)
