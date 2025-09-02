@@ -28,13 +28,13 @@ struct Cli {
     #[arg(long, allow_hyphen_values = true)]
     app_args: Option<String>,
     /// Enable superinstructions optimizations (const + local.set)
-    #[arg(long, default_value = "false")]
+    #[arg(long = "superinstructions", default_value = "false")]
     enable_superinstructions: bool,
     /// Enable memoization optimizations for pure instructions
-    #[arg(long, default_value = "false")]
+    #[arg(long = "memoization", default_value = "false")]
     enable_memoization: bool,
     /// Enable statistics output
-    #[arg(long, default_value = "false")]
+    #[arg(long = "stats", default_value = "false")]
     enable_stats: bool,
     /// Enable checkpoint/restore
     #[arg(long = "cr", default_value = "false")]

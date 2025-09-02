@@ -52,7 +52,7 @@ function run_write_benchmark() {
     
     # Run chiwawa write benchmark with superinstructions and memoization
     local start_time=$(date +%s.%N)
-    wasmtime --dir . "$CHIWAWA_WASM" "$WRITE_WASM" --enable-superinstructions --enable-memoization --app-args "--size $size --iterations $iterations" 2>/dev/null
+    wasmtime --dir . "$CHIWAWA_WASM" "$WRITE_WASM" --superinstructions --memoization --app-args "--size $size --iterations $iterations" 2>/dev/null
     local end_time=$(date +%s.%N)
     
     local chiwawa_super_memo_time=$(echo "$end_time - $start_time" | bc)
@@ -67,7 +67,7 @@ function run_write_benchmark() {
     
     # Run chiwawa write benchmark with superinstructions and capture timing
     local start_time=$(date +%s.%N)
-    wasmtime --dir . "$CHIWAWA_WASM" "$WRITE_WASM" --enable-superinstructions --app-args "--size $size --iterations $iterations" 2>/dev/null
+    wasmtime --dir . "$CHIWAWA_WASM" "$WRITE_WASM" --superinstructions --app-args "--size $size --iterations $iterations" 2>/dev/null
     local end_time=$(date +%s.%N)
     rm -f bench_test_file.dat_* 2>/dev/null || true
     

@@ -48,7 +48,7 @@ function run_pi_benchmark() {
     # Run chiwawa pi benchmark with superinstructions and memoization multiple times
     for i in $(seq 1 $runs); do
         local start_time=$(date +%s.%N)
-        wasmtime --dir . "$CHIWAWA_WASM" "$PI_WASM" --enable-superinstructions --enable-memoization 2>/dev/null
+        wasmtime --dir . "$CHIWAWA_WASM" "$PI_WASM" --superinstructions --memoization 2>/dev/null
         local end_time=$(date +%s.%N)
         
         local run_time=$(echo "$end_time - $start_time" | bc)
@@ -71,7 +71,7 @@ function run_pi_benchmark() {
     # Run chiwawa pi benchmark with superinstructions multiple times
     for i in $(seq 1 $runs); do
         local start_time=$(date +%s.%N)
-        wasmtime --dir . "$CHIWAWA_WASM" "$PI_WASM" --enable-superinstructions 2>/dev/null
+        wasmtime --dir . "$CHIWAWA_WASM" "$PI_WASM" --superinstructions 2>/dev/null
         local end_time=$(date +%s.%N)
         
         local run_time=$(echo "$end_time - $start_time" | bc)
