@@ -564,6 +564,20 @@ impl FrameStack {
             .ok_or(RuntimeError::StackError("Initial label stack empty"))?;
 
         loop {
+            if self.enable_checkpoint {
+                #[cfg(all(
+                    target_arch = "wasm32",
+                    target_os = "wasi",
+                    target_env = "p1",
+                    target_feature = "atomics"
+                ))]
+                {
+                    if migration::check_checkpoint_flag() {
+                        return Ok(Err(RuntimeError::CheckpointRequested));
+                    }
+                }
+            }
+
             self.instruction_count += 1;
 
             if current_label_stack_idx >= self.label_stack.len() {
@@ -653,18 +667,6 @@ impl FrameStack {
                         }
                         HandlerResult::Invoke(func_addr) => {
                             if self.enable_checkpoint {
-                                #[cfg(all(
-                                    target_arch = "wasm32",
-                                    target_os = "wasi",
-                                    target_env = "p1",
-                                    target_feature = "atomics"
-                                ))]
-                                {
-                                    if migration::check_checkpoint_flag() {
-                                        return Ok(Err(RuntimeError::CheckpointRequested));
-                                    }
-                                }
-
                                 #[cfg(all(
                                     target_arch = "wasm32",
                                     target_os = "wasi",
