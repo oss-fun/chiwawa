@@ -19,7 +19,7 @@ somethingWasmRuntime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --app-a
 
 **Note**: The checkpoint trigger mechanism differs between build targets:
 - `wasm32-wasip1-threads`: Uses a background thread to monitor `checkpoint.trigger` file (recommended for better performance)
-- `wasm32-wasip1`: Checks file existence via WASI at each instruction (no threading support)
+- `wasm32-wasip1`: Checks file existence via WASI at each instruction (use if host runtime does not support WASI threads)
 
 ```bash
 cargo build --target wasm32-wasip1-threads --release
