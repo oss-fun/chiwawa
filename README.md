@@ -5,17 +5,30 @@ Chiwawa (Pronunciation of chihuahua) is a self-hosted Wasm runtime that enables 
 
 ## Build and Run
 
-```
+```bash
 cargo build --target wasm32-wasip1 --release
-somethingWasmRuntime target/rwasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --params "I64(100)"
+
+# Call function with Wasm parameters (I32, I64, F32, F64)
+somethingWasmRuntime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --params "I64(100)"
+
+# Pass command-line arguments to WASI-compiled program
+somethingWasmRuntime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --app-args "--version"
 ```
 
 ## Checkpoint and Restore
 
-```
-somethingWasmRuntime target/rwasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --params "I64(100)"
-touch  ./checkpoint.trigger # Trigger of Checkpointing
-somethingWasmRuntime target/rwasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --restore checkpoint.bin
+**Note**: The checkpoint trigger mechanism differs between build targets:
+- `wasm32-wasip1-threads`: Uses a background thread to monitor `checkpoint.trigger` file (recommended for better performance)
+- `wasm32-wasip1`: Checks file existence via WASI at each instruction (no threading support)
+
+```bash
+cargo build --target wasm32-wasip1-threads --release
+
+# Run with checkpoint enabled
+somethingWasmRuntime target/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm --invoke func-name --params "I64(100)" --cr
+touch ./checkpoint.trigger # Trigger of Checkpointing
+# Restore from checkpoint
+somethingWasmRuntime target/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm --restore checkpoint.bin
 ```
 
 ## References
