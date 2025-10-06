@@ -1,243 +1,577 @@
-# Direct Threaded Code (DTC) in stackopt.rs
-Direct Threaded Code (DTC) は、インタプリタ（特に仮想マシンやバイトコードインタプリタ）を高速化するためのテクニック。
+# Direct Threaded Code (DTC) in stack.rs
 
-**目的:** Wasm 命令を実行する際のディスパッチ（どの命令を実行するか決定する処理）のオーバーヘッドを削減する。
+Direct Threaded Code (DTC) is a technique for accelerating interpreters (especially virtual machines and bytecode interpreters).
 
-**通常のインタプリタとの比較:** 単純なインタプリタでは、命令コード (`opcode`) を読み込み、`match` や `switch` 文で対応する処理を探す。
-命令の種類が多い場合、命令ディスパッチと分岐処理が実行速度のボトルネックになる。
+**Purpose:** Reduce the overhead of dispatching (the process of determining which instruction to execute) when executing Wasm instructions.
 
-**DTC のアプローチ:** DTC では、事前に各命令に対応する処理（ハンドラ）のアドレスをテーブル (`HANDLER_TABLE`) に格納する。
-実行時には、命令列からハンドラテーブルのインデックスを読み取り、テーブルを使ってハンドラ関数のアドレスを取得し、そのアドレスの関数を呼び出す。
-これにより、`match` 文のような大きな分岐処理を実行ループから排除できる。
+**Comparison with Regular Interpreters:** In a simple interpreter, the instruction code (`opcode`) is read and the corresponding process is found using a `match` or `switch` statement. When there are many types of instructions, instruction dispatch and branching become a bottleneck in execution speed.
 
-## `stackopt.rs` における DTC 実装
-### 1. 主要なデータ構造
+**DTC Approach:** In DTC, addresses of handlers corresponding to each instruction are stored in a table (`HANDLER_TABLE`) beforehand. During execution, the handler table index is read from the instruction sequence, the handler function address is obtained using the table, and that function is called. This eliminates large branching processes like `match` statements from the execution loop.
+
+## DTC Implementation in `stack.rs`
+
+### 1. Main Data Structures
 
 *   **`Operand` enum:**
-    -  **役割:** 前処理済みの命令オペランド（引数）を表す。
+    -  **Role:** Represents preprocessed instruction operands (arguments).
 
-    実行時に命令の引数をバイト列からパースするコストをなくす。
-    特に、分岐命令のジャンプ先 (`LabelIdx(usize)`) は、前処理によって計算された**絶対的な命令ポインタ (PC)** を保持するため、実行時のジャンプ先計算が不要になる。
-    `BrTable` も同様に解決済みのターゲットリストを持つ。
+    Eliminates the cost of parsing instruction arguments from byte sequences at runtime.
+    Specifically, branch instruction jump targets (`LabelIdx`) hold **absolute instruction pointers (PC)** calculated by preprocessing, along with additional metadata like arity and depth information.
+    `BrTable` holds a list of resolved target operands.
+
     ```rust
-    #[derive(Clone, Debug, PartialEq)]
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
     pub enum Operand {
         None,
-        I32(i32), // 即値
-        // ...
-        LocalIdx(LocalIdx), // ローカル変数インデックス
-        GlobalIdx(GlobalIdx), // グローバル変数インデックス
-        LabelIdx(usize), // ★解決済みの分岐先絶対PC
-        MemArg(Memarg), // メモリアクセス情報
-        BrTable { targets: Vec<usize>, default: usize }, // ★解決済みのBrTableターゲット
+        I32(i32),
+        I64(i64),
+        F32(f32),
+        F64(f64),
+        LocalIdx(LocalIdx),
+        LocalIdxI32(LocalIdx, i32),  // Superinstruction: local.set with constant
+        LocalIdxI64(LocalIdx, i64),
+        LocalIdxF32(LocalIdx, f32),
+        LocalIdxF64(LocalIdx, f64),
+        MemArgI32(i32, Memarg),      // Superinstruction: memory op with constant
+        MemArgI64(i64, Memarg),
+        GlobalIdx(GlobalIdx),
+        FuncIdx(FuncIdx),
+        TableIdx(TableIdx),
+        TypeIdx(TypeIdx),
+        RefType(RefType),
+        LabelIdx {                    // ★Branch target with metadata
+            target_ip: usize,         // Absolute PC to jump to
+            arity: usize,             // Number of values to transfer
+            original_wasm_depth: usize, // Original relative depth from Wasm
+            is_loop: bool,            // Whether target is a loop
+        },
+        MemArg(Memarg),
+        BrTable {                     // ★BrTable with resolved targets
+            targets: Vec<Operand>,    // Each target is a LabelIdx operand
+            default: Box<Operand>,    // Default target as LabelIdx operand
+        },
+        CallIndirect {
+            type_idx: TypeIdx,
+            table_idx: TableIdx,
+        },
+        Block {
+            arity: usize,
+            param_count: usize,
+            is_loop: bool,
+            start_ip: usize,
+            end_ip: usize,
+        },
+
+        // Unified optimized operand
+        Optimized(OptimizedOperand),
+    }
+
+    // Supporting types for OptimizedOperand
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    pub enum ValueSource {
+        Stack,        // Value from stack (default)
+        Const(Value), // Constant value
+        Local(u32),   // Local variable
+        Global(u32),  // Global variable
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    pub enum Value {
+        I32(i32),
+        I64(i64),
+        F32(f32),
+        F64(f64),
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    pub enum StoreTarget {
+        Local(u32),
+        Global(u32),
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    pub enum OptimizedOperand {
+        // For operations that need 1 value (load, unary operations)
+        Single {
+            value: Option<ValueSource>,
+            memarg: Option<Memarg>,            // For memory operations
+            store_target: Option<StoreTarget>, // Where to store the result
+        },
+        // For operations that need 2 values (binary ops, store)
+        Double {
+            first: Option<ValueSource>,        // binary op's left, or store's addr
+            second: Option<ValueSource>,       // binary op's right, or store's value
+            memarg: Option<Memarg>,            // For store operations
+            store_target: Option<StoreTarget>, // Where to store the result
+        },
     }
     ```
 
 *   **`ProcessedInstr` struct:**
-    *   **役割:** 前処理済みの一つの命令を表す。
-    
-    実行ループが必要とする情報、すなわち「次に実行すべきハンドラはどれか (`handler_index`)」と「そのハンドラが必要とする引数は何か (`operand`)」を持つ。
-    実行ループは単純なインデックス参照と関数呼び出しのみをする。
+    *   **Role:** Represents one preprocessed instruction.
+
+    Holds the information needed by the execution loop: "which handler to execute next (`handler_index`)" and "what arguments that handler needs (`operand`)".
+    The execution loop only performs simple index references and function calls.
     ```rust
-    #[derive(Clone, Debug)]
+    #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct ProcessedInstr {
-        handler_index: usize, // ハンドラテーブルへのインデックス
-        operand: Operand,     // 解決済みのオペランド
+        pub handler_index: usize, // Index into handler table
+        pub operand: Operand,     // Resolved operand
     }
     ```
 
 *   **`ExecutionContext` struct:**
-    *   **役割:** 各ハンドラ関数に渡される実行コンテキスト。
+    *   **Role:** Execution context passed to each handler function.
 
-    ハンドラ関数が現在の実行状態（値スタック、ローカル変数、現在の命令ポインタ `ip` など）にアクセスし、それを変更できるようにするため。
-    `&mut` (可変参照) で渡すことで、ハンドラによる状態変更を可能に。
-    `ip` を含むのは、多くの命令が単純に次の命令に進む (`Ok(ctx.ip + 1)`) ため、その計算を容易にする意図ため。
+    Allows handler functions to access and modify the current execution state (value stack, local variables, current instruction pointer `ip`, etc.).
+    Passed as `&mut` (mutable reference) to enable state changes by handlers.
     ```rust
     pub struct ExecutionContext<'a> {
-        pub frame: &'a mut crate::execution::stackopt::Frame, // ローカル変数等へのアクセス
-        pub value_stack: &'a mut Vec<Val>,                 // 値スタック操作
-        pub ip: usize,                                     // 現在の命令ポインタ
+        pub frame: &'a mut crate::execution::stack::Frame,
+        pub value_stack: &'a mut Vec<Val>,
+        pub ip: usize,
+        pub block_has_mutable_op: bool,                    // Track mutable operations
+        pub accessed_globals: &'a mut Option<GlobalAccessTracker>, // Track global access
+        pub accessed_locals: &'a mut Option<LocalAccessTracker>,   // Track local access
+    }
+    ```
+
+*   **`HandlerResult` enum:**
+    *   **Role:** Represents the result of executing an instruction handler.
+
+    Provides type-safe control flow instead of using magic numbers. Handlers return different variants depending on the instruction semantics.
+    ```rust
+    enum HandlerResult {
+        Continue(usize),           // Continue to next instruction at given IP
+        Return,                    // Return from current function
+        Invoke(FuncAddr),         // Invoke another function
+        Branch {                   // Branch with value transfer
+            target_ip: usize,
+            values_to_push: Vec<Val>,
+            branch_depth: usize,
+        },
+        PushLabelStack { ... },   // Enter new block/loop/if
+        PopLabelStack { ... },    // Exit block/loop/if
     }
     ```
 
 *   **`HandlerFn` type:**
-    *   **役割:** 命令ハンドラ関数の統一されたシグネチャ（型）を定義
-
-    `HANDLER_TABLE` に異なるハンドラ関数へのポインタを格納するため。
-    戻り値 `Result<usize, RuntimeError>` は、成功時には次の命令ポインタ (`usize`) を、失敗時にはエラーを返す。
-    `usize::MAX` や `usize::MAX - 1` といった特別な `usize` を使うのは、戻り値の型を変えずに Call や Return といった特別な制御フロー遷移を効率的に実行ループへ通知するため。
+    *   **Role:** Defines the unified signature (type) of instruction handler functions.
 
     ```rust
-    type HandlerFn = fn(&mut ExecutionContext, Operand) -> Result<usize, RuntimeError>;
+    type HandlerFn = fn(&mut ExecutionContext, &Operand) -> Result<HandlerResult, RuntimeError>;
     ```
 
-### 2. 前処理と分岐解決 (Fixup)
+### 2. BlockType
 
-*   **目的:** 実行時のコスト（特に分岐解決）を可能な限り削減するため、Wasm 命令列を DTC 実行に適した形式 (`Vec<ProcessedInstr>`) へ変換する。この変換は複数のフェーズで行われる。
-*   **フェーズ:**
-    *   **Phase 1 (パーサー内: `parser.rs`):**
-        *   Wasm バイトコードの関数ボディをパースする際に、各オペコードを対応する `handler_index` と初期 `Operand` を持つ `ProcessedInstr` に直接変換する。
-        *   分岐命令 (`Br`, `BrIf`, `If`, `Else`) については、オペランドをプレースホルダー (`Operand::LabelIdx(usize::MAX)`) とし、解決に必要な情報 (`pc`, `relative_depth`, フラグ) を `FixupInfo` として収集する。
-        *   パーサーはこの `Vec<ProcessedInstr>` と `Vec<FixupInfo>` を出力する。
-    *   **Phase 2 (実行時前処理: `stack.rs::preprocess_instructions`):**
-        *   Phase 1 で生成された `ProcessedInstr` 列を入力として受け取る。
-        *   命令列を走査し、`End` や `Else` の位置情報を `HashMap` (`block_end_map`, `if_else_map`) に記録する。これは Phase 3/4 で分岐先を計算するために必要。
-    *   **Phase 3 (実行時前処理: `stack.rs::preprocess_instructions`):**
-        *   Phase 1 で生成された `FixupInfo` リストと Phase 2 で作成されたマップ情報を使用する。
-        *   `Br`, `BrIf`, `If`, `Else` に対応する `FixupInfo` を処理する。
-        *   各 Fixup 対象命令 (`fixup_pc`) について、命令列の先頭から `fixup_pc` までをスキャンして**制御スタックを再構築**し、`relative_depth` とマップ情報を用いて絶対的な分岐先 PC を計算する。
-        *   計算した絶対 PC を `ProcessedInstr` の `operand` に書き込む (パッチする)。
-    *   **Phase 4 (実行時前処理: `stack.rs::preprocess_instructions`):**
-        *   `BrTable` 命令に対応する `FixupInfo` を処理する。
-        *   Phase 3 と同様に、制御スタックの再構築とマップ情報を用いて、各ターゲット（およびデフォルト）の絶対分岐先 PC を計算する。
-        *   解決した全ターゲット PC のリストとデフォルト PC を `ProcessedInstr` の `operand` に `Operand::BrTable { ... }` として書き込む。
-*   **制御スタック再構築の理由 (Phase 3/4):** Wasm の分岐 (`relative_depth`) は、その命令が存在する時点での制御フローのネスト構造に依存する。
-そのため、各 Fixup ごとに命令列の先頭から `fixup_pc` までをスキャンし、その時点での制御スタック (`current_control_stack_passX`) を再現する必要がある。
-これにより、`relative_depth` を使って正しいターゲットブロックを特定できる。
-そのため、各 Fixup ごとに命令列の先頭から `fixup_pc` までをスキャンし、その時点での制御スタック (`current_control_stack_passX`) を再現。
-これにより、`relative_depth` を使って正しいターゲットブロックを特定できる。
-    ```rust
-    // Phase 3 内の制御スタック再構築ループ (簡略化)
-    current_control_stack_pass3.clear();
-    for (pc, instr) in processed.iter().enumerate().take(fixup_pc + 1) {
-        match instr.handler_index {
-            HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_IF => { /* push */ }
-            HANDLER_IDX_END => { /* pop */ }
-            _ => {}
+**BlockType** (from `wasmparser::BlockType`) represents the type signature of control flow structures (block/loop/if). It describes what parameters they accept and what results they produce.
+
+**Variants:**
+```rust
+pub enum BlockType {
+    Empty,              // No parameters, no results
+    Type(ValType),      // No parameters, single result (i32/i64/f32/f64)
+    FuncType(u32),      // Function type index - can have multiple params/results
+}
+```
+
+**Role in Branch Resolution:**
+
+BlockType is critical for calculating **arity** - the number of values a branch instruction must transfer:
+
+- **For loops**: Branch provides **parameters** (input types from BlockType)
+  - Example: `loop (param i32 i64) ... end` - branch to loop transfers 2 values
+
+- **For blocks/if**: Branch provides **results** (output types from BlockType)
+  - Example: `block (result i32) ... end` - branch to block end transfers 1 value
+
+**Arity Calculation:**
+```rust
+let target_arity = if is_loop {
+    calculate_loop_parameter_arity(&target_block_type, module, cache)  // Input types count
+} else {
+    calculate_block_arity(&target_block_type, module, cache)  // Output types count
+};
+```
+
+This arity is stored in the `LabelIdx` operand and used at runtime to determine how many values to pop from the stack when executing a branch.
+
+### 3. Preprocessing and Branch Resolution (Fixup)
+
+**Purpose:** Convert Wasm instruction sequences to a DTC-friendly format (`Vec<ProcessedInstr>`) to minimize runtime cost (especially branch resolution). This is done in multiple phases, all within `parser.rs`.
+
+#### **Phase 1: Decode and Map Building** (`decode_processed_instrs_and_fixups` in parser.rs)
+
+This phase performs multiple tasks simultaneously while scanning through Wasm operators:
+
+1. **Convert opcodes to ProcessedInstr:**
+   - Each Wasm operator is converted to a `ProcessedInstr` with appropriate `handler_index`
+   - Initial `Operand` is set (placeholders for branches)
+   - Collect fixup information for branch instructions
+
+2. **Build control flow maps:**
+   - `block_end_map`: Maps block/loop/if start PC → end PC (after End instruction)
+   - `if_else_map`: Maps if start PC → else PC (or end PC if no else)
+   - `block_type_map`: Maps block/loop/if start PC → block type (for arity calculation)
+
+3. **Apply superinstruction optimizations** (if enabled):
+   - Fuse `const` + `local.set` into `LocalIdxI32/I64/F32/F64`
+   - Fuse `const` + memory ops into `MemArgI32/I64`
+
+**Control Stack for Map Building:**
+```rust
+// Tracks: (start_pc, is_if, else_pc_opt)
+let mut control_stack_for_map_building: Vec<(usize, bool, Option<usize>)> = Vec::new();
+
+match op {
+    Block { blockty } => {
+        control_stack_for_map_building.push((current_pc, false, None));
+    }
+    If { blockty } => {
+        control_stack_for_map_building.push((current_pc, true, None));
+    }
+    Else => {
+        // Mark else position in the current if's stack entry
+        if let Some((_, true, else_pc @ None)) = control_stack_for_map_building.last_mut() {
+            *else_pc = Some(current_pc + 1);
         }
     }
-    // この時点で current_control_stack_pass3 は fixup_pc 時点のネスト状態を表す
-    ```
-*   **Phase 3: Br, BrIf, If, Else の Fixup (詳細)**
-    *   `preprocess_instructions` 内で、Phase 1 で生成された `fixups` ベクタ内の `BrTable` 以外の分岐情報を処理。
-    *   各 Fixup 情報 `(fixup_pc, relative_depth, is_if_false_jump, is_else_jump)` について：
-        1.  **制御スタック再構築:** `processed` (Phase 1 の結果) を先頭から `fixup_pc` までスキャンし、その時点での `Block`, `Loop`, `If` のネスト状態をスタック (`current_control_stack_pass3`) に再現。
-        2.  **ターゲットブロック特定:** `relative_depth` を使って、再構築したスタックからジャンプ対象ブロックの開始 PC (`target_start_pc`) と種類 (`is_loop`) を特定。
-        3.  **絶対ターゲット PC 計算:** ターゲットが `Loop` なら `target_start_pc`。`Block`/`If` なら Phase 2 で作成した `block_end_map` を使って対応する `End` の次の PC を `target_ip` として計算。
-        4.  **オペランド更新:** 計算した `target_ip` を `processed[fixup_pc]` の `operand` (`Operand::LabelIdx`) に書き込む。`If` (`is_if_false_jump=true`) や `Else` (`is_else_jump=true`) の場合は、`if_else_map` も参照して適切なターゲット (`Else` の開始位置 + 1 または `End` の終了位置 + 1) を計算する。
+    End => {
+        if let Some((start_pc, is_if, else_pc_opt)) = control_stack_for_map_building.pop() {
+            block_end_map.insert(start_pc, current_pc + 1);
+            if is_if {
+                let else_target = else_pc_opt.unwrap_or(current_pc + 1);
+                if_else_map.insert(start_pc, else_target);
+            }
+        }
+    }
+}
+```
 
-         ```
-        | PC (ip) | Handler Index        | 説明                     |
-        | :------ | :------------------- | :----------------------- |
-        | 0       | HANDLER_IDX_BLOCK    | 外側の Block 開始        |
-        | 1       | HANDLER_IDX_I32_CONST |                          |
-        | 2       | HANDLER_IDX_IF       | If 開始                  |
-        | 3       | HANDLER_IDX_I32_CONST | (then 節)                |
-        | 4       | HANDLER_IDX_LOCAL_SET | (then 節)                |
-        | 5       | HANDLER_IDX_BR       | Br 0 (fixup対象 @ pc=5) |
-        | 6       | HANDLER_IDX_END      | If 終了                  |
-        | 7       | HANDLER_IDX_END      | 外側の Block 終了        |
+**Output:** `(processed_instrs, fixups, block_end_map, if_else_map, block_type_map)`
 
-        Fixup 対象: pc = 5, relative_depth = 0 (元の命令: Br 0)
-        ----------------------------------------------------------
-        1. 制御スタック再構築 (pc = 0 から 5 までスキャン):
-        pc = 0 (BLOCK): push (0, false) -> Stack: [(0, false)]
-        pc = 1 (CONST): no change     -> Stack: [(0, false)]
-        pc = 2 (IF):    push (2, false) -> Stack: [(0, false), (2, false)]
-        pc = 3 (CONST): no change     -> Stack: [(0, false), (2, false)]
-        pc = 4 (SET):   no change     -> Stack: [(0, false), (2, false)]
-        pc = 5 (BR):    スキャン終了
-        ==> 再構築されたスタック: [(0, false), (2, false)]
+#### **Phase 2: Resolve Br, BrIf, If, Else** (`preprocess_instructions` in parser.rs)
 
-        2. ターゲットブロック特定:
-        - relative_depth = 0 なので、スタックのトップ要素を取得。
-        - target_block = (pc=2, is_loop=false)
-        - target_start_pc = 2
-        - is_loop = false
+Uses the maps from Phase 1 to resolve branch targets.
 
-        3. 絶対ターゲット PC 計算:
-        - is_loop が false なので、block_end_map を使用。
-        - block_end_map には、Phase 2 で「PC=2 で始まるブロックは PC=6 の End の次 (PC=7) で終わる」という情報が記録されていると仮定 (block_end_map[2] == 7)。
-        - target_ip = block_end_map[&target_start_pc] = block_end_map[&2] = 7
+**For each fixup (except BrTable):**
 
-        4. オペランド更新:
-        - processed[fixup_pc] (つまり processed[5]) の operand を更新。
-        - 元の命令は Br なので、計算した target_ip を設定。
-        - processed[5].operand = Operand::LabelIdx(7)
-        ```
+1. **Reconstruct control stack up to fixup point:**
+   ```rust
+   let mut current_control_stack: Vec<(usize, bool, BlockType)> = Vec::new();
 
-*   **Phase 4: BrTable の Fixup (詳細)**
-    *   `preprocess_instructions` 内で、`BrTable` 命令 (`handler_index == HANDLER_IDX_BR_TABLE`) で、かつオペランドがまだ初期状態 (`Operand::None`) のものを処理。
-    *   **理由:** `BrTable` は複数のターゲットを持つため、他の分岐が解決された後 (Phase 3 完了後) に処理する。
-    *   各 `BrTable` 命令 (`pc`) について：
-        1.  **関連 Fixup 特定:** Phase 1 で生成された `fixups` リストから、この `pc` に関連付けられたエントリを全て見つける。
-        2.  **各ターゲット解決:** 見つけた各 Fixup 情報 (`relative_depth`) について、Phase 3 と同様に、その時点までの制御スタックを再構築 (`current_control_stack_pass4`) し、マップ情報 (`block_end_map`) を参照して絶対宛先 PC を計算する（リストの最後の Fixup はデフォルト分岐に対応）。
-        3.  **オペランド更新:** 解決した全ターゲット PC のリストとデフォルト PC を `processed[pc]` の `operand` に `Operand::BrTable { targets: [...], default: ... }` として書き込む。
+   for (pc, instr) in processed.iter().enumerate().take(fixup_pc + 1) {
+       match instr.handler_index {
+           HANDLER_IDX_BLOCK | HANDLER_IDX_IF => {
+               let block_type = block_type_map.get(&pc).cloned().unwrap_or(Empty);
+               current_control_stack.push((pc, false, block_type));
+           }
+           HANDLER_IDX_LOOP => {
+               let block_type = block_type_map.get(&pc).cloned().unwrap_or(Empty);
+               current_control_stack.push((pc, true, block_type));
+           }
+           HANDLER_IDX_END => {
+               current_control_stack.pop();
+           }
+           _ => {}
+       }
+   }
+   ```
 
-この複数フェーズによる前処理（パーサーでの Phase 1 + `stack.rs` での Phase 2-4）により、最終的に得られる `ProcessedInstr` 列では全ての分岐先が絶対 PC として解決済みとなり、実行ループ (`run_dtc_loop`) は分岐命令に対して単純に `operand` 内の絶対 PC を返すだけで良くなる。
+2. **Calculate target from relative depth:**
+   ```rust
+   let target_stack_level = current_control_stack.len() - 1 - relative_depth;
+   let (target_start_pc, is_loop, target_block_type) = current_control_stack[target_stack_level];
 
-### 3. ハンドラテーブル (`HANDLER_TABLE`)
+   let target_ip = if is_loop {
+       target_start_pc  // Loop: branch back to start
+   } else {
+       block_end_map[&target_start_pc]  // Block/If: branch to end
+   };
+   ```
 
-*   **役割:** 命令コード（のインデックス）から対応するハンドラ関数へのマッピングを提供。
-*   **理由:** `handler_index` を使った O(1) の高速なルックアップを可能にする。
-`lazy_static!` を使うのは、関数ポインタを含む静的ベクターを安全に初期化するため。
-`const` 文脈では関数ポインタの直接代入が制限される。
+3. **Calculate arity:**
+   ```rust
+   let target_arity = if is_loop {
+       calculate_loop_parameter_arity(&target_block_type, module)  // Input types
+   } else {
+       calculate_block_arity(&target_block_type, module)  // Output types
+   };
+   ```
 
-    ```rust
-    lazy_static! {
-        static ref HANDLER_TABLE: Vec<HandlerFn> = {
-            let mut table: Vec<HandlerFn> = vec![handle_unimplemented; MAX_HANDLER_INDEX];
-            // ... (各命令のハンドラを代入) ...
-            table[HANDLER_IDX_I32_ADD] = handle_i32_add;
-            table[HANDLER_IDX_LOCAL_GET] = handle_local_get;
-            table[HANDLER_IDX_BR] = handle_br;
-            table[HANDLER_IDX_CALL] = handle_call;
-            // ... (他の実装済みハンドラ) ...
-            table
+4. **Patch operand with full LabelIdx struct:**
+   ```rust
+   instr_to_patch.operand = Operand::LabelIdx {
+       target_ip,
+       arity: target_arity,
+       original_wasm_depth: relative_depth,
+       is_loop,
+   };
+   ```
+
+**Special cases:**
+- **If instruction (is_if_false_jump=true):** Target is else or end from `if_else_map`
+- **Else instruction (is_else_jump=true):** Target is end from `block_end_map`
+
+#### **Phase 3: Resolve BrTable Targets** (`preprocess_instructions` in parser.rs)
+
+Similar to Phase 2 but processes BrTable instructions with multiple targets.
+
+**Process:**
+
+1. **Scan instructions and maintain control stack:**
+   ```rust
+   let mut current_control_stack: Vec<(usize, bool, BlockType)> = Vec::new();
+
+   for pc in 0..processed.len() {
+       // Update control stack
+       match instr.handler_index {
+           HANDLER_IDX_BLOCK | HANDLER_IDX_IF => { push to stack }
+           HANDLER_IDX_LOOP => { push to stack with is_loop=true }
+           HANDLER_IDX_END => { pop from stack }
+       }
+
+       // Check if this is a BrTable needing resolution
+       if instr.handler_index == HANDLER_IDX_BR_TABLE && instr.operand == Operand::None {
+           // Resolve all targets for this BrTable
+       }
+   }
+   ```
+
+2. **For each BrTable, resolve all targets:**
+   ```rust
+   // Get all fixups for this BrTable PC
+   let mut fixup_indices = fixups.iter()
+       .filter(|f| f.pc == pc && f.original_wasm_depth != usize::MAX)
+       .collect();
+
+   // Last fixup is default target
+   let default_fixup = fixup_indices.pop();
+
+   // Resolve each target using control stack
+   for each fixup_depth {
+       let target_level = control_stack.len() - 1 - fixup_depth;
+       let (target_pc, is_loop, block_type) = control_stack[target_level];
+
+       let target_ip = if is_loop { target_pc } else { block_end_map[&target_pc] };
+       let arity = calculate_arity(&block_type, is_loop);
+
+       targets.push(Operand::LabelIdx {
+           target_ip,
+           arity,
+           original_wasm_depth: fixup_depth,
+           is_loop,
+       });
+   }
+
+   // Patch BrTable operand
+   instr.operand = Operand::BrTable {
+       targets: resolved_targets,
+       default: Box::new(default_target_operand),
+   };
+   ```
+
+#### **Phase 4: Sanity Check** (`preprocess_instructions` in parser.rs)
+
+Verifies all fixups were processed:
+
+```rust
+for fixup in fixups {
+    if fixup.original_wasm_depth != usize::MAX {
+        return Err("Unprocessed fixup after preprocessing");
+    }
+}
+```
+
+### 4. Phase 2 Example: Br Fixup with Control Stack Reconstruction
+
+```
+| PC (ip) | Handler Index        | Description              |
+| :------ | :------------------- | :----------------------- |
+| 0       | HANDLER_IDX_BLOCK    | Outer Block start        |
+| 1       | HANDLER_IDX_I32_CONST|                          |
+| 2       | HANDLER_IDX_IF       | If start                 |
+| 3       | HANDLER_IDX_I32_CONST| (then clause)            |
+| 4       | HANDLER_IDX_LOCAL_SET| (then clause)            |
+| 5       | HANDLER_IDX_BR       | Br 0 (fixup @ pc=5)     |
+| 6       | HANDLER_IDX_END      | If end                   |
+| 7       | HANDLER_IDX_END      | Outer Block end          |
+
+Fixup Target: pc = 5, relative_depth = 0 (Original instruction: Br 0)
+----------------------------------------------------------
+1. Control Stack Reconstruction (scan from pc = 0 to 5):
+   pc = 0 (BLOCK): push (0, false, Empty) -> Stack: [(0, false, Empty)]
+   pc = 1 (CONST): no change              -> Stack: [(0, false, Empty)]
+   pc = 2 (IF):    push (2, false, Empty) -> Stack: [(0, false, Empty), (2, false, Empty)]
+   pc = 3 (CONST): no change              -> Stack: [(0, false, Empty), (2, false, Empty)]
+   pc = 4 (SET):   no change              -> Stack: [(0, false, Empty), (2, false, Empty)]
+   pc = 5 (BR):    scan complete
+   ==> Reconstructed Stack: [(0, false, Empty), (2, false, Empty)]
+
+2. Target Block Identification:
+   - relative_depth = 0, so target_stack_level = len - 1 - 0 = 1
+   - target_block = control_stack[1] = (pc=2, is_loop=false, block_type=Empty)
+   - target_start_pc = 2
+
+3. Absolute Target PC Calculation:
+   - is_loop is false, so use block_end_map
+   - block_end_map[2] = 7 (end of if block)
+   - target_ip = 7
+
+4. Calculate Arity:
+   - is_loop is false, so use calculate_block_arity(Empty) = 0
+   - arity = 0
+
+5. Operand Update:
+   - processed[5].operand = Operand::LabelIdx {
+       target_ip: 7,
+       arity: 0,
+       original_wasm_depth: 0,
+       is_loop: false,
+   }
+```
+
+### 5. Handler Table (`HANDLER_TABLE`)
+
+*   **Role:** Provides mapping from instruction index to the corresponding handler function.
+*   **Implementation:** Uses `lazy_static!` for safe initialization of function pointer array.
+
+```rust
+lazy_static! {
+    static ref HANDLER_TABLE: Vec<HandlerFn> = {
+        let mut table: Vec<HandlerFn> = vec![handle_unimplemented; MAX_HANDLER_INDEX];
+        table[HANDLER_IDX_I32_ADD] = handle_i32_add;
+        table[HANDLER_IDX_LOCAL_GET] = handle_local_get;
+        table[HANDLER_IDX_BR] = handle_br;
+        table[HANDLER_IDX_CALL] = handle_call;
+        // ... other handlers ...
+        table
+    };
+}
+```
+
+### 6. Instruction Handlers (`handle_*`)
+
+*   **Role:** Implement the semantics of individual Wasm instructions.
+*   **Return Values:**
+    *   `Ok(HandlerResult::Continue(ctx.ip + 1))`: Proceed to next instruction
+    *   `Ok(HandlerResult::Branch { target_ip, ... })`: Branch to target with value transfer
+    *   `Ok(HandlerResult::Invoke(func_addr))`: Call function
+    *   `Ok(HandlerResult::Return)`: Return from function
+
+```rust
+// Example: br
+fn handle_br(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerResult, RuntimeError> {
+    if let Operand::LabelIdx {
+        target_ip,
+        arity,
+        original_wasm_depth,
+        is_loop: _,
+    } = operand
+    {
+        if *target_ip == usize::MAX {
+            return Err(RuntimeError::ExecutionFailed(
+                "Branch fixup not done for Br",
+            ));
+        }
+
+        let values_to_push = ctx.pop_n_values(*arity)?;
+
+        Ok(HandlerResult::Branch {
+            target_ip: *target_ip,
+            values_to_push,
+            branch_depth: *original_wasm_depth,
+        })
+    } else {
+        Err(RuntimeError::InvalidOperand)
+    }
+}
+
+// Example: br_table
+fn handle_br_table(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerResult, RuntimeError> {
+    // First pop the index
+    let i_val = ctx
+        .value_stack
+        .pop()
+        .ok_or(RuntimeError::ValueStackUnderflow)?;
+    let i = i_val.to_i32()?;
+
+    if let Operand::BrTable { targets, default } = operand {
+        let chosen_operand = if let Some(target_operand) = targets.get(i as usize) {
+            target_operand
+        } else {
+            default
         };
-    }
-    ```
 
-### 4. 命令ハンドラ (`handle_*` )
+        if let Operand::LabelIdx {
+            target_ip,
+            arity,
+            original_wasm_depth,
+            is_loop: _,
+        } = chosen_operand
+        {
+            if *target_ip == usize::MAX {
+                return Err(RuntimeError::ExecutionFailed(
+                    "Branch fixup not done for BrTable target",
+                ));
+            }
 
-*   **役割:** 個々の Wasm 命令のセマンティクス（スタック操作、計算、メモリ/テーブル/グローバルアクセスなど）を実装する。
-*   **戻り値:**
-    *   `Ok(ctx.ip + 1)`: 最も一般的なケース。単純に次の命令に進む。
-    *   `Ok(target_ip)`: 分岐命令用。前処理で計算済みの絶対 PC を返すことで、ループ側での計算が不要。
-    *   `Ok(usize::MAX - 1)` / `Ok(usize::MAX)`: Call/Return 用の値。実行ループに特別なアクション（フレーム操作）が必要であることを伝える。
+            // Then pop the values needed for the branch target
+            let values_to_push = if *arity > 0 {
+                ctx.pop_n_values(*arity)?
+            } else {
+                Vec::new()
+            };
 
-    ```rust
-    // 例: i32.add (マクロ使用)
-    fn handle_i32_add(ctx: &mut ExecutionContext, _operand: Operand) -> Result<usize, RuntimeError> {
-        // binop_wrapping! マクロで定型的なスタック操作と計算を隠蔽
-        binop_wrapping!(ctx, I32, wrapping_add) // 結果: Ok(ctx.ip + 1)
-    }
-
-    // 例: br (値の受け渡しは TODO)
-    fn handle_br(_ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
-        if let Operand::LabelIdx(target_ip) = operand { // ★解決済み PC を利用
-            // TODO: Handle value transfer
-            Ok(target_ip) // ★次の IP としてターゲット PC を返す
-        } else { /* エラー */ }
-    }
-
-    // 例: call
-    fn handle_call(_ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
-        if let Operand::FuncIdx(_) = operand {
-             Ok(usize::MAX - 1) // Call シグナルを返す
+            Ok(HandlerResult::Branch {
+                target_ip: *target_ip,
+                values_to_push,
+                branch_depth: *original_wasm_depth,
+            })
         } else {
             Err(RuntimeError::InvalidOperand)
         }
+    } else {
+        Err(RuntimeError::InvalidOperand)
     }
+}
+```
 
-    // 例: i32.load
-    fn handle_i32_load(ctx: &mut ExecutionContext, operand: Operand) -> Result<usize, RuntimeError> {
-        if let Operand::MemArg(arg) = operand {
-            let ptr = ctx.value_stack.pop()?.to_i32();
-            let mem_addr = &ctx.frame.module.upgrade()?.mem_addrs[0]; // memidx 0 を仮定
-            let val = mem_addr.load::<i32>(&arg, ptr)?;
-            ctx.value_stack.push(Val::Num(Num::I32(val)));
-            Ok(ctx.ip + 1)
-        } else { /* エラー */ }
+### 7. Execution Loop (`FrameStack::run_dtc_loop`)
+
+*   **Role:** Fast execution of `ProcessedInstr` sequences within the current function frame.
+*   Eliminates `match`-based dispatch through simple table lookup and function calls.
+
+```rust
+pub fn run_dtc_loop(&mut self, ...) -> Result<...> {
+    loop {
+        let ip = current_label_stack.ip;
+        let instruction_ref = &processed_code[ip];
+
+        let handler_fn = HANDLER_TABLE.get(instruction_ref.handler_index)?;
+
+        let mut context = ExecutionContext {
+            frame: &mut self.frame,
+            value_stack: &mut self.global_value_stack,
+            ip,
+            block_has_mutable_op: false,
+            accessed_globals: &mut self.current_block_accessed_globals,
+            accessed_locals: &mut self.current_block_accessed_locals,
+        };
+
+        let result = handler_fn(&mut context, &instruction_ref.operand);
+
+        // Process result (Continue, Branch, Invoke, Return, etc.)
     }
-    ```
+}
+```
 
-### 5. 実行ループ (`FrameStack::run_dtc_loop` )
+### 8. Tracking Mechanisms
 
-*   **役割:** 現在の関数フレーム内で `ProcessedInstr` 列を高速。
-*   `match` によるディスパッチを排除し、テーブルルックアップ (`HANDLER_TABLE.get(...)`) と関数呼び出し (`handler_fn(...)`) の単純な繰り返しにすることで、インタプリタの主要なオーバーヘッドを削減。Call/Return のようなフレームを跨ぐ操作は、 `exec_instr` に委譲。
+The current implementation includes tracking mechanisms for optimization:
 
-### 6. フレーム管理 (`Stacks::exec_instr` )
+*   **Global Access Tracking (`accessed_globals`):** Tracks which global variables are accessed during block execution
+*   **Local Access Tracking (`accessed_locals`):** Tracks which local variables are accessed during block execution
+*   **Mutable Operation Tracking (`block_has_mutable_op`):** Tracks whether a block contains operations that mutate state
 
-*   **役割:** 関数呼び出し全体の制御と、関数フレーム (`FrameStack`) の管理。
-*   `run_dtc_loop` は単一フレーム内の実行に特化しているため、フレーム作成（`Invoke` 時、`preprocess_instructions` 呼び出しを含む）や破棄（`Return` 時）、ホスト関数呼び出しといった、フレームを跨ぐ処理をこのメソッドが担当。
+These tracking mechanisms are used for caching and optimization strategies.
