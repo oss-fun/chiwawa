@@ -2,123 +2,310 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## コードベース概要
+## Codebase Overview
 
-chiwawaは、WebAssembly（Wasm）ランタイムをWasm上で実行するセルフホステッド型のランタイムです。ライブマイグレーション機能とインストルメンテーション機能を提供し、インタープリター、JIT、AOTなどの実行方式やアーキテクチャに中立な設計になっています。
+Chiwawa is a self-hosted WebAssembly (Wasm) runtime that runs on top of WebAssembly. It provides live migration and instrumentation capabilities, with a design that is neutral to execution methods (interpreter, JIT, AOT) and architectures.
 
-### 基本方針
-- チャット応答は日本語、コード・コメント・ドキュメントは英語を使用
-- DTC(Direct-threaded Code)方式のインタープリタ実装
-- セルフホストランタイムとして任意のWasmランタイム上で動作し、ランタイム実装やコンパイル方式に非依存
+### Basic Policy
+- Use English for code, comments, and documentation
+- Claude responds in English to user messages (user may use Japanese, English, or both)
+- Claude provides English grammar corrections when errors affect clarity or upon request
+- DTC (Direct-Threaded Code) interpreter implementation
+- Self-hosted runtime that runs on any Wasm runtime, independent of runtime implementation and compilation methods
 
-## 主要コマンド
+## Main Commands
 
-### ビルド
+### Build
 ```bash
-# セルフホストビルド（必須：wasm32-wasip1ターゲット）
+# Self-hosted build (required: wasm32-wasip1 target)
 ~/.cargo/bin/cargo build --target wasm32-wasip1 --release
 
-# コンパイルエラー確認
+# Check compilation errors
 ~/.cargo/bin/cargo check --target wasm32-wasip1
 ```
 
-### テスト実行
+### Test Execution
 ```bash
-
-# Wasmターゲット（セルフホスト）でのテスト実行
+# Run tests on Wasm target (self-hosted)
 ~/.cargo/bin/cargo test --target wasm32-wasip1
 
-# 特定のテスト実行（Wasmターゲット）
-~/.cargo/bin/cargo test --target wasm32-wasip1 <テスト名>
+# Run specific test (Wasm target)
+~/.cargo/bin/cargo test --target wasm32-wasip1 <test-name>
 
-# 複数Wasmランタイムでのテスト実行
-./test-wasmtime.sh <テスト名>   # wasmtimeでテスト実行（デフォルト）
-./test-wasmedge.sh <テスト名>    # wasmedgeでテスト実行
+# Run tests with multiple Wasm runtimes
+./test-wasmtime.sh <test-name>   # Run tests with wasmtime (default)
+./test-wasmedge.sh <test-name>    # Run tests with wasmedge
 
-# 注意：Wasmターゲットテストでは .cargo/config.toml の設定により
-# wasmtimeが --dir . オプション付きで実行されファイルアクセスが可能
+# Note: Wasm target tests use wasmtime with --dir . option (configured in .cargo/config.toml)
+# to enable file access
 ```
 
-### Wasmファイル実行
+### Wasm File Execution
+
+#### CLI Options
+```
+chiwawa [OPTIONS] <WASM_FILE>
+
+Arguments:
+  <WASM_FILE>              WebAssembly file to execute
+
+Options:
+  -i, --invoke <INVOKE>    Function name to invoke [default: _start]
+  -p, --params <PARAMS>    Function parameters (comma-separated)
+                           Format: I32(value), I64(value), F32(value), F64(value)
+  --restore <FILE>         Restore from checkpoint file
+  --app-args <ARGS>        Additional arguments to pass to WASM application
+                           These become argv[1], argv[2], ... in the guest
+  --cr                     Enable checkpoint/restore functionality
+  --superinstructions      Enable superinstructions optimizations (const + local.set)
+  --memoization            Enable memoization optimizations for pure instructions
+  --stats                  Enable statistics output
+  -h, --help               Print help
+  -v, --version            Print version
+```
+
+#### Execution Examples
 ```bash
-# 基本実行（任意のWasmランタイム：wasmtime, WasmEdge, wasmer等）
-wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --params "I64(100)"
+# Basic execution (any Wasm runtime: wasmtime, WasmEdge, wasmer, etc.)
+wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm
 
-# チェックポイント・リストア実行
-touch ./checkpoint.trigger  # チェックポイントトリガー
-wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --restore checkpoint.bin
+# Invoke specific function
+wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name
 
-# アプリケーション引数の指定
-wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --app-args "--help"
+# Execute with parameters
+wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm \
+  --invoke add --params "I32(10),I32(20)"
 
-# --invokeのデフォルトは_startのため、メイン関数実行であれば指定不要
+# Specify application arguments
+wasmtime target/wasm32-wasip1/release/chiwawa.wasm sqlite-bench.wasm \
+  --app-args "--database test.db --iterations 1000"
 
-# 他のランタイム例：
-# WasmEdge target/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --params "I64(100)"
-# wasmer target/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --params "I64(100)"
+# Execute with optimization options
+wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm \
+  --superinstructions --memoization --stats
+
+# Checkpoint/Restore execution
+# 1. Execute with checkpoint enabled
+touch ./checkpoint.trigger  # Create checkpoint trigger file
+wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm \
+  --invoke func-name --cr
+# checkpoint.bin is generated when checkpoint.trigger file is detected during execution
+
+# 2. Restore from checkpoint
+wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm \
+  --invoke func-name --cr --restore checkpoint.bin
+
+# Other runtime examples:
+# WasmEdge target/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name
+# wasmer target/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name
 ```
 
-## アーキテクチャ構造
+## Architecture
 
-### 主要モジュール
-- `src/lib.rs`: ライブラリのエントリーポイント
-- `src/main.rs`: CLIインターフェースとメイン実行ロジック、テストコード
-- `src/parser.rs`: WebAssemblyバイトコード解析
-- `src/structure/`: Wasmバイトコード内部保持用データ構造
-  - `instructions.rs`: 命令定義
-  - `module.rs`: モジュール構造
-  - `types.rs`: 型定義
-- `src/execution/`: DTCインタープリタ実行エンジン
-  - `runtime.rs`: ランタイムコア
-  - `stack.rs`: スタック管理
-  - `store.rs`: ストア管理
-  - `migration.rs`: マイグレーション機能
-- `src/wasi/`: WASI実装（context.rs, standard.rs, types.rs等）
-- `src/error.rs`: エラー定義
+### Main Modules
+- `src/lib.rs`: Library entry point
+- `src/main.rs`: CLI interface and main execution logic
+- `src/parser.rs`: WebAssembly bytecode parsing and DTC instruction generation
+- `src/error.rs`: Error type definitions
 
-### 実行フロー
-1. CLIでパラメータ解析（clap使用）
-2. WebAssemblyモジュールのパース（wasmparser使用）
-3. モジュールインスタンス作成
-4. Runtime初期化（通常実行またはリストア実行）
-5. 実行とチェックポイント/リストア処理
+- `src/structure/`: Data structures for internal Wasm bytecode representation
+  - `instructions.rs`: WebAssembly instruction definitions
+  - `module.rs`: Module structure (functions, memory, tables, etc.)
+  - `types.rs`: WebAssembly type definitions (function types, value types, etc.)
 
-### パラメータ形式
-関数パラメータは以下の形式で指定：
-- `I32(値)`: 32bit整数
-- `I64(値)`: 64bit整数  
-- `F32(値)`: 32bit浮動小数点
-- `F64(値)`: 64bit浮動小数点
+- `src/execution/`: DTC interpreter execution engine
+  - `runtime.rs`: Runtime core and host function invocation
+  - `stack.rs`: Stack management and DTC execution loop (preprocessing, branch resolution)
+  - `module.rs`: Module instance management
+  - `func.rs`: Function instances and call handling
+  - `mem.rs`: Memory instances and load/store operations
+  - `table.rs`: Table instances and reference management
+  - `global.rs`: Global variable instance management
+  - `data.rs`: Data segment initialization
+  - `elem.rs`: Element segment initialization
+  - `export.rs`: Export resolution and mapping
+  - `value.rs`: Value types and stack value definitions
+  - `migration.rs`: Checkpoint/restore functionality (serialization)
+  - `memoization.rs`: Memoization optimization implementation (LRU cache)
 
-### 主要依存関係
-- `wasmparser`: WebAssemblyバイトコード解析
-- `clap`: CLI引数解析
-- `anyhow`: エラーハンドリング
-- `serde`/`bincode`: シリアライゼーション（チェックポイント機能用）
+- `src/wasi/`: WASI Preview 1 implementation (passthrough only)
+  - `context.rs`: WASI context and file descriptor management
+  - `passthrough.rs`: WASI function passthrough implementation (delegates to wasi-libc)
+  - `types.rs`: WASI type definitions and mappings
+  - `error.rs`: WASI error type definitions
 
-## テスト構成
+### Execution Flow
+1. Parse CLI parameters (using clap, optimization flags, etc.)
+2. Parse WebAssembly module (using wasmparser)
+3. DTC preprocessing
+   - Convert WebAssembly instructions to DTC format (ProcessedInstr)
+   - Pre-calculate absolute jump targets for branch instructions (Fixup process)
+   - Superinstruction optimization (when `--superinstructions` enabled)
+4. Create module instance (memory, tables, global variables, etc.)
+5. Initialize Runtime
+   - Normal execution: Start from entry point function
+   - Restore execution: Restore state from checkpoint file
+6. DTC execution loop
+   - Fast dispatch via handler table
+   - Memoization optimization (when `--memoization` enabled)
+7. Checkpoint processing (when `--cr` enabled)
+   - Create snapshot when checkpoint.trigger file is detected
+   - Serialize execution state to checkpoint.bin
 
-テストは`tests/`ディレクトリに配置されており、各WebAssembly機能別にテストファイルが分かれています：
-- `call.rs`, `call_indirect.rs`: 関数呼び出しテスト
-- `i32.rs`, `i64.rs`: 整数演算テスト
-- `conversion.rs`: 型変換テスト
-- `loop.rs`: ループ制御テスト
-- `tests/wasm/`: テスト用Wasmファイル（.wasmと.watペア）
+### Parameter Format
+Function parameters are specified in the following format:
+- `I32(value)`: 32-bit integer
+- `I64(value)`: 64-bit integer
+- `F32(value)`: 32-bit floating point
+- `F64(value)`: 64-bit floating point
 
-## 開発時の注意事項
+### Main Dependencies
 
-### 開発方針
-- 段階的に考える：要件理解 → 擬似コード設計 → 実装 → 検証
-- モジュール構造、エンドポイント、データフローを擬似コードで詳細設計してから実装
-- 実装後は必ずlinterやテストを実行して動作検証
-- テストコードが存在しない場合は必ずテストコードを作成
-- 常にcargoでコードフォーマットを統一する（`~/.cargo/bin/cargo fmt`）
+**Core:**
+- `wasmparser`: WebAssembly bytecode parsing
+- `clap`: CLI argument parsing (with derive features)
+- `anyhow`: Error handling
+- `thiserror`: Error type derivation macro
 
-### WASI実装について
-- chiwawaは **passthrough実装のみ** 使用（standard実装は使用されていない）
-- WASI関数はerrnoを返すべきで、Errで終了すべきではない
-- passthroughではwasi-libcの実装に処理を委譲
+**Optimization & Performance:**
+- `lru`: LRU cache (for memoization optimization)
+- `rustc-hash`: Fast hash map (FxHashMap)
+- `lazy_static`: Static variable initialization (for DTC handler table)
 
-### WebAssembly仕様参考
-- Wasmコア仕様: https://webassembly.github.io/spec/core/bikeshed/
-- Wasi関数一覧: https://github.com/WebAssembly/wasi-libc/blob/main/libc-bottom-half/headers/public/wasi/api.h
+**Serialization:**
+- `serde`: Serialization framework
+- `bincode`: Binary serialization (for checkpoints)
+- `rmp`: MessagePack serialization
+
+**WASI:**
+- `getrandom`: Random number generation (for WASI random_get implementation)
+
+**Utilities:**
+- `fancy-regex`: Regular expressions (for parameter parsing)
+- `itertools`: Iterator extensions
+- `byteorder`: Byte order conversion
+- `num`: Numeric type traits
+- `typenum`: Type-level numbers
+- `maplit`: Macro-based collection initialization
+
+**Development & Testing:**
+- `wat`: WAT→Wasm compiler (for test code)
+
+## Test Configuration
+
+Tests are located in the `tests/` directory and are based on WebAssembly and WASI specifications.
+
+### WebAssembly Core Tests (23 files)
+**Control Flow:**
+- `block.rs`, `br.rs`, `br_if.rs`, `if.rs`, `loop.rs`, `labels.rs`, `switch.rs`
+
+**Function Calls:**
+- `call.rs`, `call_indirect.rs`
+
+**Numeric Operations:**
+- `i32.rs`, `i64.rs`, `f32.rs`, `conversions.rs`
+
+**Memory Operations:**
+- `memory.rs`, `memorycopy.rs`, `memoryfill.rs`, `memoryinit.rs`, `memorysize.rs`
+
+**Table Operations:**
+- `table_get.rs`, `table_set.rs`, `table_fill.rs`
+
+**Reference Types:**
+- `ref_null.rs`, `ref_is_null.rs`
+
+**Others:**
+- `select.rs`, `stack.rs`, `store.rs`, `parser.rs`
+
+### WASI Preview 1 Tests (25 files)
+**File I/O:**
+- `wasi_file_pread_pwrite.rs`, `wasi_file_seek_tell.rs`, `wasi_file_allocate.rs`
+
+**Directory Operations:**
+- `wasi_fd_readdir.rs`, `wasi_directory_seek.rs`
+
+**Path Operations:**
+- `wasi_path_open_preopen.rs`, `wasi_path_open_read_write.rs`, `wasi_path_filestat.rs`
+- `wasi_path_link.rs`, `wasi_path_rename.rs`, `wasi_path_rename_dir_trailing_slashes.rs`
+- `wasi_unlink_file_trailing_slashes.rs`
+
+**File Descriptors:**
+- `wasi_fd_advise.rs`, `wasi_fd_fdstat_set_rights.rs`, `wasi_fd_filestat_set.rs`
+- `wasi_close_preopen.rs`, `wasi_dangling_fd.rs`, `wasi_renumber.rs`
+
+**System:**
+- `wasi_clock_time_get.rs`, `wasi_sched_yield.rs`, `wasi_poll_oneoff_stdio.rs`
+
+**Others:**
+- `wasi_big_random_buf.rs`, `wasi_readlink.rs`, `wasi_dangling_symlink.rs`
+- `wasi_parser_test.rs`
+
+### Test Files
+- `tests/wasm/`: WebAssembly core test binaries (.wasm and .wat pairs)
+- `tests/wasi/`: WASI test binaries
+
+## Optimization Features
+
+Chiwawa provides the following optimization features:
+
+### Superinstructions
+Enable with `--superinstructions` flag.
+
+**Overview:**
+Fuses frequently occurring instruction patterns (e.g., `i32.const` + `local.set`) into a single superinstruction, reducing instruction dispatch overhead.
+
+**Benefits:**
+- Reduced instruction fetch and dispatch count
+- Improved cache locality
+- Particularly effective for code with many constant assignments
+
+### Memoization - WIP
+Enable with `--memoization` flag.
+
+**Overview:**
+Caches results of pure instructions (side-effect-free operations like arithmetic and logical operations) in an LRU cache to avoid recomputation for identical inputs.
+
+**Target Instructions:**
+- Arithmetic: `i32.add`, `i32.mul`, `f64.div`, etc.
+- Logical: `i32.and`, `i32.or`, `i32.xor`, etc.
+- Comparison: `i32.eq`, `i64.lt_s`, etc.
+
+**Implementation:**
+- LRU cache implementation in `src/execution/memoization.rs`
+- Efficient cache management using the `lru` crate
+
+**Current Limitations:**
+- **Experimental feature**: Currently does not achieve sufficient performance improvement
+- Cache lookup overhead often exceeds computation cost
+- Particularly low cache hit rates when running on WebAssembly
+- Requires future tuning and strategy refinement
+
+### Statistics Output
+Enable with `--stats` flag.
+
+**Output Information:**
+- Instruction execution count
+- Memoization cache hit rate (when used with `--memoization`)
+- Superinstruction execution count (when used with `--superinstructions`)
+- Execution time statistics
+
+**Use Cases:**
+- Performance analysis
+- Measuring optimization effectiveness
+- Identifying bottlenecks
+
+## Development Guidelines
+
+### Development Approach
+- Think step by step: Understand requirements → Design pseudocode → Implement → Verify
+- Design module structure, endpoints, and data flow in pseudocode before implementation
+- Always format code with cargo after completing features (`~/.cargo/bin/cargo fmt`)
+
+### WASI Implementation
+- Chiwawa uses **passthrough implementation only** (standard implementation is not used)
+- WASI functions should return errno, not terminate with Err
+- Passthrough delegates processing to wasi-libc implementation
+
+### WebAssembly Specification References
+- Wasm Core Spec: https://webassembly.github.io/spec/core/bikeshed/
+- WASI function list: https://github.com/WebAssembly/wasi-libc/blob/main/libc-bottom-half/headers/public/wasi/api.h
