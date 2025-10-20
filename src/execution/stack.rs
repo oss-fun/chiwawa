@@ -552,6 +552,7 @@ impl FrameStack {
         _called_func_addr_out: &mut Option<FuncAddr>,
         mut get_block_cache: F,
         mut store_block_cache: G,
+        mut execution_stats: Option<&mut super::stats::ExecutionStats>,
     ) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError>
     where
         F: FnMut(usize, usize, &[Val], &[Val], &[u64]) -> Option<Vec<Val>>, // Cache lookup callback with locals and versions
@@ -627,6 +628,11 @@ impl FrameStack {
             }
 
             let instruction_ref = &processed_code[ip];
+
+            // Record instruction execution for statistics
+            if let Some(ref mut stats) = execution_stats {
+                stats.record_instruction(instruction_ref.handler_index);
+            }
 
             let handler_fn = HANDLER_TABLE
                 .get(instruction_ref.handler_index)
