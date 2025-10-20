@@ -27,13 +27,6 @@ impl ExecutionStats {
 
     fn get_instruction_name(handler_index: usize) -> &'static str {
         match handler_index {
-            6..=10 => "reserved",
-            18..=25 => "reserved",
-            28..=31 => "reserved",
-            37..=39 => "reserved",
-            213..=359 => "extended",
-            _ => "invalid_handler",
-
             // Control Instructions
             HANDLER_IDX_UNREACHABLE => "unreachable",
             HANDLER_IDX_NOP => "nop",
@@ -254,6 +247,13 @@ impl ExecutionStats {
             HANDLER_IDX_TABLE_GET => "table.get",
             HANDLER_IDX_TABLE_SET => "table.set",
             HANDLER_IDX_TABLE_FILL => "table.fill",
+
+            6..=10 => "reserved",
+            18..=25 => "reserved",
+            28..=31 => "reserved",
+            37..=39 => "reserved",
+            213..=359 => "extended",
+            _ => "invalid_handler",
         }
     }
 
