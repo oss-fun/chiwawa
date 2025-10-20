@@ -6,6 +6,7 @@ use crate::execution::memoization::{
 use crate::execution::migration;
 use crate::execution::module::ModuleInst;
 use crate::execution::stack::{Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, Stacks};
+use crate::execution::stats::ExecutionStats;
 use crate::execution::value::{Num, Val, Vec_};
 use crate::structure::module::WasiFuncType;
 use crate::structure::types::{NumType, ValueType, VecType};
@@ -19,6 +20,7 @@ pub struct Runtime {
     module_inst: Rc<ModuleInst>,
     stacks: Stacks,
     block_cache: Option<BlockMemoizationCache>,
+    execution_stats: Option<ExecutionStats>,
     enable_stats: bool,
     enable_checkpoint: bool,
 }
@@ -26,6 +28,11 @@ pub struct Runtime {
 impl Drop for Runtime {
     fn drop(&mut self) {
         if self.enable_stats {
+            if let Some(ref stats) = self.execution_stats {
+                stats.report();
+                eprintln!();
+            }
+
             if let Some(ref cache) = self.block_cache {
                 cache.stats.report();
             }
@@ -51,6 +58,11 @@ impl Runtime {
             } else {
                 None
             },
+            execution_stats: if enable_stats {
+                Some(ExecutionStats::new())
+            } else {
+                None
+            },
             enable_stats,
             enable_checkpoint,
         })
@@ -68,6 +80,11 @@ impl Runtime {
             stacks,
             block_cache: if enable_memoization {
                 Some(BlockMemoizationCache::new())
+            } else {
+                None
+            },
+            execution_stats: if enable_stats {
+                Some(ExecutionStats::new())
             } else {
                 None
             },
@@ -174,7 +191,9 @@ impl Runtime {
                     }
                 };
 
-            frame_stack.run_dtc_loop(called_func_addr, get_cache, store_cache)
+            // Get mutable reference to execution_stats for passing to run_dtc_loop
+            let stats_ref = self.execution_stats.as_mut();
+            frame_stack.run_dtc_loop(called_func_addr, get_cache, store_cache, stats_ref)
         }?;
 
         self.block_cache = cache_opt.map(|cache_rc| match Rc::try_unwrap(cache_rc) {

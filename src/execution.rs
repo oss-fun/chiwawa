@@ -9,5 +9,6 @@ pub mod migration;
 pub mod module;
 pub mod runtime;
 pub mod stack;
+pub mod stats;
 mod table;
 pub mod value;
