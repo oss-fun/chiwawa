@@ -189,12 +189,18 @@ pub enum ModuleLevelInstr {
     Return,
 }
 
+// Control Instructions
 pub const HANDLER_IDX_UNREACHABLE: usize = 0x00;
 pub const HANDLER_IDX_NOP: usize = 0x01;
 pub const HANDLER_IDX_BLOCK: usize = 0x02;
 pub const HANDLER_IDX_LOOP: usize = 0x03;
 pub const HANDLER_IDX_IF: usize = 0x04;
 pub const HANDLER_IDX_ELSE: usize = 0x05;
+// pub const HANDLER_IDX_TRY: usize = 0x06;           // Exception handling (unsupported)
+// pub const HANDLER_IDX_CATCH: usize = 0x07;         // Exception handling (unsupported)
+// pub const HANDLER_IDX_THROW: usize = 0x08;         // Exception handling (unsupported)
+// pub const HANDLER_IDX_RETHROW: usize = 0x09;       // Exception handling (unsupported)
+// pub const HANDLER_IDX_RESERVED_0A: usize = 0x0A;   // Reserved
 pub const HANDLER_IDX_END: usize = 0x0B;
 pub const HANDLER_IDX_BR: usize = 0x0C;
 pub const HANDLER_IDX_BR_IF: usize = 0x0D;
@@ -202,19 +208,34 @@ pub const HANDLER_IDX_BR_TABLE: usize = 0x0E;
 pub const HANDLER_IDX_RETURN: usize = 0x0F;
 pub const HANDLER_IDX_CALL: usize = 0x10;
 pub const HANDLER_IDX_CALL_INDIRECT: usize = 0x11;
+// pub const HANDLER_IDX_RESERVED_12: usize = 0x12;   // Reserved
+// pub const HANDLER_IDX_RESERVED_13: usize = 0x13;   // Reserved
+// pub const HANDLER_IDX_RESERVED_14: usize = 0x14;   // Reserved
+// pub const HANDLER_IDX_RESERVED_15: usize = 0x15;   // Reserved
+// pub const HANDLER_IDX_RESERVED_16: usize = 0x16;   // Reserved
+// pub const HANDLER_IDX_RESERVED_17: usize = 0x17;   // Reserved
+// pub const HANDLER_IDX_RESERVED_18: usize = 0x18;   // Reserved
+// pub const HANDLER_IDX_RESERVED_19: usize = 0x19;   // Reserved
 
+// Parametric Instructions
 pub const HANDLER_IDX_DROP: usize = 0x1A;
 pub const HANDLER_IDX_SELECT: usize = 0x1B;
-// pub const HANDLER_IDX_SELECT_T: usize = 0x1C;
+// pub const HANDLER_IDX_SELECT_T: usize = 0x1C;      // Select with type (unsupported)
+// pub const HANDLER_IDX_RESERVED_1D: usize = 0x1D;   // Reserved
+// pub const HANDLER_IDX_RESERVED_1E: usize = 0x1E;   // Reserved
+// pub const HANDLER_IDX_RESERVED_1F: usize = 0x1F;   // Reserved
 
+// Variable Instructions
 pub const HANDLER_IDX_LOCAL_GET: usize = 0x20;
 pub const HANDLER_IDX_LOCAL_SET: usize = 0x21;
 pub const HANDLER_IDX_LOCAL_TEE: usize = 0x22;
 pub const HANDLER_IDX_GLOBAL_GET: usize = 0x23;
 pub const HANDLER_IDX_GLOBAL_SET: usize = 0x24;
-// pub const HANDLER_IDX_TABLE_GET: usize = 0x26;
-// pub const HANDLER_IDX_TABLE_SET: usize = 0x27;
+// pub const HANDLER_IDX_TABLE_GET_OLD: usize = 0x25; // Old table.get (moved to 0xD2, unsupported)
+// pub const HANDLER_IDX_TABLE_SET_OLD: usize = 0x26; // Old table.set (moved to 0xD3, unsupported)
+// pub const HANDLER_IDX_RESERVED_27: usize = 0x27;   // Reserved
 
+// Memory Instructions
 pub const HANDLER_IDX_I32_LOAD: usize = 0x28;
 pub const HANDLER_IDX_I64_LOAD: usize = 0x29;
 pub const HANDLER_IDX_F32_LOAD: usize = 0x2A;
@@ -240,20 +261,14 @@ pub const HANDLER_IDX_I64_STORE16: usize = 0x3D;
 pub const HANDLER_IDX_I64_STORE32: usize = 0x3E;
 pub const HANDLER_IDX_MEMORY_SIZE: usize = 0x3F;
 pub const HANDLER_IDX_MEMORY_GROW: usize = 0x40;
-pub const HANDLER_IDX_MEMORY_COPY: usize = 0xC5;
-pub const HANDLER_IDX_MEMORY_INIT: usize = 0xC6;
-pub const HANDLER_IDX_MEMORY_FILL: usize = 0xC7;
-pub const HANDLER_IDX_REF_NULL: usize = 0xD0;
-pub const HANDLER_IDX_REF_IS_NULL: usize = 0xD1;
-pub const HANDLER_IDX_TABLE_GET: usize = 0xD2;
-pub const HANDLER_IDX_TABLE_SET: usize = 0xD3;
-pub const HANDLER_IDX_TABLE_FILL: usize = 0xD4;
 
+// Const Instructions
 pub const HANDLER_IDX_I32_CONST: usize = 0x41;
 pub const HANDLER_IDX_I64_CONST: usize = 0x42;
 pub const HANDLER_IDX_F32_CONST: usize = 0x43;
 pub const HANDLER_IDX_F64_CONST: usize = 0x44;
 
+// Numeric Instructions - i32
 pub const HANDLER_IDX_I32_EQZ: usize = 0x45;
 pub const HANDLER_IDX_I32_EQ: usize = 0x46;
 pub const HANDLER_IDX_I32_NE: usize = 0x47;
@@ -266,6 +281,7 @@ pub const HANDLER_IDX_I32_LE_U: usize = 0x4D;
 pub const HANDLER_IDX_I32_GE_S: usize = 0x4E;
 pub const HANDLER_IDX_I32_GE_U: usize = 0x4F;
 
+// Numeric Instructions - i64
 pub const HANDLER_IDX_I64_EQZ: usize = 0x50;
 pub const HANDLER_IDX_I64_EQ: usize = 0x51;
 pub const HANDLER_IDX_I64_NE: usize = 0x52;
@@ -278,6 +294,7 @@ pub const HANDLER_IDX_I64_LE_U: usize = 0x58;
 pub const HANDLER_IDX_I64_GE_S: usize = 0x59;
 pub const HANDLER_IDX_I64_GE_U: usize = 0x5A;
 
+// Numeric Instructions - f32
 pub const HANDLER_IDX_F32_EQ: usize = 0x5B;
 pub const HANDLER_IDX_F32_NE: usize = 0x5C;
 pub const HANDLER_IDX_F32_LT: usize = 0x5D;
@@ -285,6 +302,7 @@ pub const HANDLER_IDX_F32_GT: usize = 0x5E;
 pub const HANDLER_IDX_F32_LE: usize = 0x5F;
 pub const HANDLER_IDX_F32_GE: usize = 0x60;
 
+// Numeric Instructions - f64
 pub const HANDLER_IDX_F64_EQ: usize = 0x61;
 pub const HANDLER_IDX_F64_NE: usize = 0x62;
 pub const HANDLER_IDX_F64_LT: usize = 0x63;
@@ -345,6 +363,7 @@ pub const HANDLER_IDX_F32_MIN: usize = 0x96;
 pub const HANDLER_IDX_F32_MAX: usize = 0x97;
 pub const HANDLER_IDX_F32_COPYSIGN: usize = 0x98;
 
+// Numeric Instructions - f64 (continued)
 pub const HANDLER_IDX_F64_ABS: usize = 0x99;
 pub const HANDLER_IDX_F64_NEG: usize = 0x9A;
 pub const HANDLER_IDX_F64_CEIL: usize = 0x9B;
@@ -360,6 +379,7 @@ pub const HANDLER_IDX_F64_MIN: usize = 0xA4;
 pub const HANDLER_IDX_F64_MAX: usize = 0xA5;
 pub const HANDLER_IDX_F64_COPYSIGN: usize = 0xA6;
 
+// Conversion Instructions
 pub const HANDLER_IDX_I32_WRAP_I64: usize = 0xA7;
 pub const HANDLER_IDX_I32_TRUNC_F32_S: usize = 0xA8;
 pub const HANDLER_IDX_I32_TRUNC_F32_U: usize = 0xA9;
@@ -386,13 +406,19 @@ pub const HANDLER_IDX_I64_REINTERPRET_F64: usize = 0xBD;
 pub const HANDLER_IDX_F32_REINTERPRET_I32: usize = 0xBE;
 pub const HANDLER_IDX_F64_REINTERPRET_I64: usize = 0xBF;
 
+// Sign Extension Instructions
 pub const HANDLER_IDX_I32_EXTEND8_S: usize = 0xC0;
 pub const HANDLER_IDX_I32_EXTEND16_S: usize = 0xC1;
 pub const HANDLER_IDX_I64_EXTEND8_S: usize = 0xC2;
 pub const HANDLER_IDX_I64_EXTEND16_S: usize = 0xC3;
 pub const HANDLER_IDX_I64_EXTEND32_S: usize = 0xC4;
 
-// TruncSat instructions
+// Bulk Memory Instructions (0xFC prefix, mapped to 0xC5-0xC7 range)
+pub const HANDLER_IDX_MEMORY_COPY: usize = 0xC5;
+pub const HANDLER_IDX_MEMORY_INIT: usize = 0xC6;
+pub const HANDLER_IDX_MEMORY_FILL: usize = 0xC7;
+
+// Saturating Truncation Instructions (0xFC prefix, mapped to 0xC8-0xCF range)
 pub const HANDLER_IDX_I32_TRUNC_SAT_F32_S: usize = 0xC8;
 pub const HANDLER_IDX_I32_TRUNC_SAT_F32_U: usize = 0xC9;
 pub const HANDLER_IDX_I32_TRUNC_SAT_F64_S: usize = 0xCA;
@@ -402,7 +428,31 @@ pub const HANDLER_IDX_I64_TRUNC_SAT_F32_U: usize = 0xCD;
 pub const HANDLER_IDX_I64_TRUNC_SAT_F64_S: usize = 0xCE;
 pub const HANDLER_IDX_I64_TRUNC_SAT_F64_U: usize = 0xCF;
 
-// TODO: Add remaining indices (Ref types, Table, Bulk Memory, SIMD)
+// Reference Instructions
+pub const HANDLER_IDX_REF_NULL: usize = 0xD0;
+pub const HANDLER_IDX_REF_IS_NULL: usize = 0xD1;
+// pub const HANDLER_IDX_REF_FUNC: usize = 0xD2;       // Unsupported
+// pub const HANDLER_IDX_REF_AS_NON_NULL: usize = 0xD3; // Unsupported
+// pub const HANDLER_IDX_BR_ON_NULL: usize = 0xD4;      // Unsupported
+// pub const HANDLER_IDX_BR_ON_NON_NULL: usize = 0xD5;  // Unsupported
+// ... 0xD6-0xDF reserved/unsupported ...
+
+// Table Instructions (0xFC prefix, mapped to 0xE0-0xE2 range for convenience)
+pub const HANDLER_IDX_TABLE_GET: usize = 0xE0;
+pub const HANDLER_IDX_TABLE_SET: usize = 0xE1;
+pub const HANDLER_IDX_TABLE_FILL: usize = 0xE2;
+// pub const HANDLER_IDX_TABLE_SIZE: usize = 0xE3;     // Unsupported (0xFC 0x10)
+// pub const HANDLER_IDX_TABLE_GROW: usize = 0xE4;     // Unsupported (0xFC 0x0F)
+// pub const HANDLER_IDX_TABLE_COPY: usize = 0xE5;     // Unsupported (0xFC 0x0E)
+// pub const HANDLER_IDX_TABLE_INIT: usize = 0xE6;     // Unsupported (0xFC 0x0C)
+// pub const HANDLER_IDX_ELEM_DROP: usize = 0xE7;      // Unsupported (0xFC 0x0D)
+// pub const HANDLER_IDX_DATA_DROP: usize = 0xE8;      // Unsupported (0xFC 0x0D for data)
+
+// SIMD Instructions (0xFD prefix) - not implemented
+// Vector instructions would start here (0xFD00 - 0xFDFF range)
+
+// Thread Instructions (0xFE prefix) - not implemented
+// Atomic operations would use 0xFE prefix
 
 pub const MAX_HANDLER_INDEX: usize = 0x168;
 

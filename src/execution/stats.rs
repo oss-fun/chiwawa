@@ -248,11 +248,16 @@ impl ExecutionStats {
             HANDLER_IDX_TABLE_SET => "table.set",
             HANDLER_IDX_TABLE_FILL => "table.fill",
 
-            6..=10 => "reserved",
-            18..=25 => "reserved",
-            28..=31 => "reserved",
-            37..=39 => "reserved",
-            213..=359 => "extended",
+            // Reserved/Unsupported ranges
+            0x06..=0x0A => "reserved", // Exception handling (unsupported)
+            0x12..=0x19 => "reserved", // Reserved opcodes
+            0x1D..=0x1F => "reserved", // Reserved opcodes
+            0x25..=0x27 => "reserved", // Old table ops/reserved
+            0xD2..=0xDF => "reserved", // Reserved range (includes unsupported ref.func)
+            0xE3..=0xFB => "reserved", // Reserved range
+            0xFD => "simd",            // SIMD prefix (unsupported)
+            0xFE => "threads",         // Thread operations (unsupported)
+            0xFF => "reserved",        // Reserved prefix
             _ => "invalid_handler",
         }
     }
