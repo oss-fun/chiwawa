@@ -690,11 +690,18 @@ impl FrameStack {
                 .ok_or(RuntimeError::InvalidHandlerIndex)?;
 
             if let Some(ref mut tracer) = tracer {
+                let module_inst = self
+                    .frame
+                    .module
+                    .upgrade()
+                    .ok_or(RuntimeError::ModuleInstanceGone)?;
+
                 tracer.trace_instruction(
                     ip,
                     instruction_ref.handler_index,
                     &self.global_value_stack,
                     &self.frame.locals,
+                    &module_inst.global_addrs,
                 );
             }
 

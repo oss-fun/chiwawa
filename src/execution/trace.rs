@@ -83,6 +83,7 @@ impl TraceConfig {
                 TraceResource::PC,
                 TraceResource::Stack,
                 TraceResource::Locals,
+                TraceResource::Globals,
             ]
         };
 
@@ -156,6 +157,7 @@ impl Tracer {
         handler_index: usize,
         value_stack: &[Val],
         locals: &[Val],
+        global_addrs: &[super::global::GlobalAddr],
     ) {
         if !self.config.should_trace_event(handler_index) {
             return;
@@ -184,10 +186,28 @@ impl Tracer {
             parts.push(format!("Locals:{}", locals_str));
         }
 
+        // Globals
+        if self.config.resources.contains(&TraceResource::Globals) {
+            let globals_str = self.format_globals(global_addrs);
+            parts.push(format!("Globals:{}", globals_str));
+        }
+
         // Write trace line
         let trace_line = format!("[{}]\n", parts.join(" | "));
         let _ = self.output.write_all(trace_line.as_bytes());
         let _ = self.output.flush();
+    }
+
+    fn format_globals(&self, global_addrs: &[super::global::GlobalAddr]) -> String {
+        if global_addrs.is_empty() {
+            return "[]".to_string();
+        }
+
+        let values: Vec<String> = global_addrs
+            .iter()
+            .map(|g| Self::format_val(&g.get()))
+            .collect();
+        format!("[{}]", values.join(","))
     }
 
     fn format_stack(&self, stack: &[Val]) -> String {
