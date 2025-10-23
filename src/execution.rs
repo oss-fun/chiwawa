@@ -11,4 +11,5 @@ pub mod runtime;
 pub mod stack;
 pub mod stats;
 mod table;
+pub mod trace;
 pub mod value;

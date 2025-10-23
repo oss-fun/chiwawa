@@ -7,6 +7,7 @@ use crate::execution::migration;
 use crate::execution::module::ModuleInst;
 use crate::execution::stack::{Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, Stacks};
 use crate::execution::stats::ExecutionStats;
+use crate::execution::trace::{TraceConfig, Tracer};
 use crate::execution::value::{Num, Val, Vec_};
 use crate::structure::module::WasiFuncType;
 use crate::structure::types::{NumType, ValueType, VecType};
@@ -21,6 +22,7 @@ pub struct Runtime {
     stacks: Stacks,
     block_cache: Option<BlockMemoizationCache>,
     execution_stats: Option<ExecutionStats>,
+    tracer: Option<Tracer>,
     enable_stats: bool,
     enable_checkpoint: bool,
 }
@@ -48,8 +50,22 @@ impl Runtime {
         enable_memoization: bool,
         enable_stats: bool,
         enable_checkpoint: bool,
+        trace_config: Option<TraceConfig>,
     ) -> Result<Self, RuntimeError> {
         let stacks = Stacks::new(func_addr, params)?;
+
+        let tracer = if let Some(config) = trace_config {
+            match Tracer::new(config) {
+                Ok(tracer) => Some(tracer),
+                Err(e) => {
+                    eprintln!("Failed to create tracer: {:?}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(Runtime {
             module_inst,
             stacks,
@@ -63,6 +79,7 @@ impl Runtime {
             } else {
                 None
             },
+            tracer,
             enable_stats,
             enable_checkpoint,
         })
@@ -74,7 +91,20 @@ impl Runtime {
         enable_memoization: bool,
         enable_stats: bool,
         enable_checkpoint: bool,
+        trace_config: Option<TraceConfig>,
     ) -> Self {
+        let tracer = if let Some(config) = trace_config {
+            match Tracer::new(config) {
+                Ok(tracer) => Some(tracer),
+                Err(e) => {
+                    eprintln!("Failed to create tracer: {:?}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Runtime {
             module_inst,
             stacks,
@@ -88,6 +118,7 @@ impl Runtime {
             } else {
                 None
             },
+            tracer,
             enable_stats,
             enable_checkpoint,
         }
@@ -193,7 +224,14 @@ impl Runtime {
 
             // Get mutable reference to execution_stats for passing to run_dtc_loop
             let stats_ref = self.execution_stats.as_mut();
-            frame_stack.run_dtc_loop(called_func_addr, get_cache, store_cache, stats_ref)
+            let tracer_ref = self.tracer.as_mut();
+            frame_stack.run_dtc_loop(
+                called_func_addr,
+                get_cache,
+                store_cache,
+                stats_ref,
+                tracer_ref,
+            )
         }?;
 
         self.block_cache = cache_opt.map(|cache_rc| match Rc::try_unwrap(cache_rc) {

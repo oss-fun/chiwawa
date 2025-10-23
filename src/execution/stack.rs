@@ -603,6 +603,7 @@ impl FrameStack {
         mut get_block_cache: F,
         mut store_block_cache: G,
         mut execution_stats: Option<&mut super::stats::ExecutionStats>,
+        mut tracer: Option<&mut super::trace::Tracer>,
     ) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError>
     where
         F: FnMut(usize, usize, &[Val], &[Val], &[u64]) -> Option<Vec<Val>>, // Cache lookup callback with locals and versions
@@ -687,6 +688,15 @@ impl FrameStack {
             let handler_fn = HANDLER_TABLE
                 .get(instruction_ref.handler_index)
                 .ok_or(RuntimeError::InvalidHandlerIndex)?;
+
+            if let Some(ref mut tracer) = tracer {
+                tracer.trace_instruction(
+                    ip,
+                    instruction_ref.handler_index,
+                    &self.global_value_stack,
+                    &self.frame.locals,
+                );
+            }
 
             let mut context = ExecutionContext {
                 frame: &mut self.frame,
