@@ -25,7 +25,15 @@ mod tests {
         params: Vec<Val>,
     ) -> Result<Vec<Val>, chiwawa::error::RuntimeError> {
         let func_addr = inst.get_export_func(func_name)?;
-        let mut runtime = Runtime::new(Rc::clone(inst), &func_addr, params, true, false, false)?;
+        let mut runtime = Runtime::new(
+            Rc::clone(inst),
+            &func_addr,
+            params,
+            true,
+            false,
+            false,
+            None,
+        )?;
         runtime.run()
     }
 

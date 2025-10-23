@@ -2,6 +2,7 @@ use anyhow::Result;
 use chiwawa::{
     execution::module::*,
     execution::runtime::Runtime,
+    execution::trace::TraceConfig,
     execution::value::*,
     execution::{migration, stack::Stacks},
     parser,
@@ -39,6 +40,18 @@ struct Cli {
     /// Enable checkpoint/restore
     #[arg(long = "cr", default_value = "false")]
     enable_checkpoint: bool,
+    /// Enable trace output
+    #[arg(long = "trace", default_value = "false")]
+    enable_trace: bool,
+    /// Trace events to monitor (all,store,load,call,branch)
+    #[arg(long = "trace-events", value_delimiter = ',', num_args = 0..)]
+    trace_events: Option<Vec<String>>,
+    /// Resources to trace (stack,memory,locals,globals,pc)
+    #[arg(long = "trace-resource", value_delimiter = ',', num_args = 0..)]
+    trace_resource: Option<Vec<String>>,
+    /// Trace output destination (defaults to stderr)
+    #[arg(long = "trace-output")]
+    trace_output: Option<String>,
 }
 
 fn parse_args_string(args: &str) -> Vec<String> {
@@ -135,6 +148,17 @@ fn main() -> Result<()> {
 
     let inst = ModuleInst::new(&module, imports, wasm_argv).unwrap();
 
+    // Create trace configuration if trace is enabled
+    let trace_config = if cli.enable_trace {
+        Some(TraceConfig::new(
+            cli.trace_events,
+            cli.trace_resource,
+            cli.trace_output,
+        ))
+    } else {
+        None
+    };
+
     if let Some(restore_path) = cli.restore {
         println!("Restoring from checkpoint: {}", restore_path);
 
@@ -153,6 +177,7 @@ fn main() -> Result<()> {
             cli.enable_memoization,
             cli.enable_stats,
             cli.enable_checkpoint,
+            trace_config,
         );
         println!("Runtime reconstructed. Resuming execution...");
 
@@ -169,6 +194,7 @@ fn main() -> Result<()> {
             cli.enable_memoization,
             cli.enable_stats,
             cli.enable_checkpoint,
+            trace_config,
         ) {
             Ok(mut runtime) => {
                 let result = runtime.run();
