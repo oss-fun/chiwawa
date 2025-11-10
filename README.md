@@ -47,7 +47,7 @@ somethingWasmRuntime target/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm
   -  The Ninth ACM/IEEE Symposium on Edge Computing (SEC)
 
 
-### Community
+### Tech Community
 - Y.Nakata, [What If the Runtime Was Portable Too? Self-Hosted Runtime Capabilities in Wasm](https://colocatedeventsna2025.sched.com/event/28D8u/cllightning-talk-what-if-the-runtime-was-portable-too-self-hosted-runtime-capabilities-in-wasm-yuki-nakata-sakura-internet-inc?iframe=no)
   - WasmCon NA (KubeCon + CloudNativeCon NA 2025 Co-located)
 - Y. Nakata and D. Fujii, [Beyond Portability: Live Migration for Evolving WebAssembly Workloads](https://speakerdeck.com/chikuwait/beyond-portability-live-migration-for-evolving-webassembly-workloads)
