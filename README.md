@@ -50,7 +50,7 @@ somethingWasmRuntime target/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm
 - Y. Nakata, and D. Fujii, [Beyond Portability: Live Migration for Evolving WebAssembly Workloads](https://speakerdeck.com/chikuwait/beyond-portability-live-migration-for-evolving-webassembly-workloads), In Japan Community Day at KubeCon + CloudNativeCon Japan 2025.
 
 ## References
-I referred to these repositories. I appreciate our ancestor's wisdom!
+I referred to these repositories for initial implementation. I appreciate ancestor's wisdom!
 
 - Wasm-rs
   - [GitHub Repo](https://github.com/kgtkr/wasm-rs)
