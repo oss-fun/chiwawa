@@ -41,13 +41,17 @@ somethingWasmRuntime target/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm
 
 ## Artifacts
 ### Academic
-- Y. Nakata, and K. Matsubara, Self-Hosted WebAssembly Runtime for Runtime-Neutral Checkpoint/Restore in Edge–Cloud Continuum (Just Accepted), the 3rd International Workshop on Middleware for the Computing Continuum (Mid4CC, 26th ACM/IFIP International Middleware Conference Co-located Workshop)
-- Y. Nakata, and K. Matsubara, [Feasibility of Runtime-Neutral Wasm Instrumentation for Edge-Cloud Workload Handover](https://ieeexplore.ieee.org/document/10817975), [The Ninth ACM/IEEE Symposium on Edge Computing (SEC)](https://acm-ieee-sec.org/2024/index.php).
+- Y. Nakata and K. Matsubara, Self-Hosted WebAssembly Runtime for Runtime-Neutral Checkpoint/Restore in Edge–Cloud Continuum (Just Accepted)
+  - The 3rd International Workshop on Middleware for the Computing Continuum (Mid4CC, 26th ACM/IFIP International Middleware Conference Co-located Workshop)
+- Y. Nakata and K. Matsubara, [Feasibility of Runtime-Neutral Wasm Instrumentation for Edge-Cloud Workload Handover](https://ieeexplore.ieee.org/document/10817975)
+  -  The Ninth ACM/IEEE Symposium on Edge Computing (SEC)
 
 
 ### Community
-- Y.Nakata, [Lightning Talk: What If the Runtime Was Portable Too? Self-Hosted Runtime Capabilities in Wasm](https://colocatedeventsna2025.sched.com/event/28D8u/cllightning-talk-what-if-the-runtime-was-portable-too-self-hosted-runtime-capabilities-in-wasm-yuki-nakata-sakura-internet-inc?iframe=no), In WasmCon NA (KubeCon + CloudNativeCon NA 2025 Co-located).
-- Y. Nakata, and D. Fujii, [Beyond Portability: Live Migration for Evolving WebAssembly Workloads](https://speakerdeck.com/chikuwait/beyond-portability-live-migration-for-evolving-webassembly-workloads), In Japan Community Day at KubeCon + CloudNativeCon Japan 2025.
+- Y.Nakata, [What If the Runtime Was Portable Too? Self-Hosted Runtime Capabilities in Wasm](https://colocatedeventsna2025.sched.com/event/28D8u/cllightning-talk-what-if-the-runtime-was-portable-too-self-hosted-runtime-capabilities-in-wasm-yuki-nakata-sakura-internet-inc?iframe=no)
+  - WasmCon NA (KubeCon + CloudNativeCon NA 2025 Co-located)
+- Y. Nakata and D. Fujii, [Beyond Portability: Live Migration for Evolving WebAssembly Workloads](https://speakerdeck.com/chikuwait/beyond-portability-live-migration-for-evolving-webassembly-workloads)
+  - Japan Community Day at KubeCon + CloudNativeCon Japan 2025
 
 ## References
 I referred to these repositories for initial implementation. I appreciate ancestor's wisdom!
