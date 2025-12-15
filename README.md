@@ -41,7 +41,7 @@ somethingWasmRuntime target/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm
 
 ## Artifacts
 ### Academic
-- Y. Nakata and K. Matsubara, Self-Hosted WebAssembly Runtime for Runtime-Neutral Checkpoint/Restore in Edge–Cloud Continuum (Just Accepted)
+- Y. Nakata and K. Matsubara, [Self-Hosted WebAssembly Runtime for Runtime-Neutral Checkpoint/Restore in Edge–Cloud Continuum](https://dl.acm.org/doi/abs/10.1145/3774898.3778040)
   - The 3rd International Workshop on Middleware for the Computing Continuum (Mid4CC, 26th ACM/IFIP International Middleware Conference Co-located Workshop)
 - Y. Nakata and K. Matsubara, [Feasibility of Runtime-Neutral Wasm Instrumentation for Edge-Cloud Workload Handover](https://ieeexplore.ieee.org/document/10817975)
   -  The Ninth ACM/IEEE Symposium on Edge Computing (SEC)
