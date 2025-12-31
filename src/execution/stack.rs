@@ -146,9 +146,46 @@ pub enum Operand {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProcessedInstr {
-    pub handler_index: usize,
-    pub operand: Operand,
+pub enum ProcessedInstr {
+    /// Legacy stack-based instruction format (backward compatible)
+    Legacy {
+        handler_index: usize,
+        operand: Operand,
+    },
+}
+
+impl ProcessedInstr {
+    /// Get handler_index (for backward compatibility)
+    #[inline(always)]
+    pub fn handler_index(&self) -> usize {
+        match self {
+            ProcessedInstr::Legacy { handler_index, .. } => *handler_index,
+        }
+    }
+
+    /// Get operand reference (for backward compatibility)
+    #[inline(always)]
+    pub fn operand(&self) -> &Operand {
+        match self {
+            ProcessedInstr::Legacy { operand, .. } => operand,
+        }
+    }
+
+    /// Get mutable operand reference (for backward compatibility)
+    #[inline(always)]
+    pub fn operand_mut(&mut self) -> &mut Operand {
+        match self {
+            ProcessedInstr::Legacy { operand, .. } => operand,
+        }
+    }
+
+    /// Set handler_index (for backward compatibility)
+    #[inline(always)]
+    pub fn set_handler_index(&mut self, new_handler_index: usize) {
+        match self {
+            ProcessedInstr::Legacy { handler_index, .. } => *handler_index = new_handler_index,
+        }
+    }
 }
 
 pub struct ExecutionContext<'a> {
@@ -680,13 +717,21 @@ impl FrameStack {
 
             let instruction_ref = &processed_code[ip];
 
+            // Match on instruction type (currently only Legacy is supported)
+            let (handler_index, operand) = match instruction_ref {
+                ProcessedInstr::Legacy {
+                    handler_index,
+                    operand,
+                } => (handler_index, operand),
+            };
+
             // Record instruction execution for statistics
             if let Some(ref mut stats) = execution_stats {
-                stats.record_instruction(instruction_ref.handler_index);
+                stats.record_instruction(*handler_index);
             }
 
             let handler_fn = HANDLER_TABLE
-                .get(instruction_ref.handler_index)
+                .get(*handler_index)
                 .ok_or(RuntimeError::InvalidHandlerIndex)?;
 
             if let Some(ref mut tracer) = tracer {
@@ -698,7 +743,7 @@ impl FrameStack {
 
                 tracer.trace_instruction(
                     ip,
-                    instruction_ref.handler_index,
+                    *handler_index,
                     &self.global_value_stack,
                     &self.frame.locals,
                     &module_inst.global_addrs,
@@ -714,7 +759,7 @@ impl FrameStack {
                 accessed_locals: &mut self.current_block_accessed_locals,
             };
 
-            let result = handler_fn(&mut context, &instruction_ref.operand);
+            let result = handler_fn(&mut context, operand);
             let has_mutable_op = context.block_has_mutable_op;
 
             // Track if this block executed a mutable operation
@@ -726,7 +771,7 @@ impl FrameStack {
                 Err(e) => {
                     eprintln!(
                         "Error at IP {}, handler_index: {}: {:?}",
-                        ip, instruction_ref.handler_index, e
+                        ip, handler_index, e
                     );
                     return Ok(Err(e));
                 }

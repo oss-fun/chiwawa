@@ -194,7 +194,7 @@ fn get_operation_type(op: &wasmparser::Operator) -> OperationType {
 fn try_apply_optimization<'a>(
     op: &wasmparser::Operator,
     recent_instrs: &mut VecDeque<(wasmparser::Operator, usize)>,
-    processed_instr: &mut ProcessedInstr,
+    mut processed_instr: &mut ProcessedInstr,
     initial_processed_instrs: &mut Vec<ProcessedInstr>,
     current_processed_pc: &mut usize,
     ops: &mut itertools::structs::MultiPeek<
@@ -251,12 +251,14 @@ fn try_apply_optimization<'a>(
                     }
                 }
 
-                processed_instr.operand = Operand::Optimized(OptimizedOperand::Double {
-                    first: Some(first),
-                    second: Some(second),
-                    memarg: None,
-                    store_target,
-                });
+                if let ProcessedInstr::Legacy { operand, .. } = &mut processed_instr {
+                    *operand = Operand::Optimized(OptimizedOperand::Double {
+                        first: Some(first),
+                        second: Some(second),
+                        memarg: None,
+                        store_target,
+                    });
+                }
 
                 // Remove consumed instructions
                 for _ in 0..2 {
@@ -278,18 +280,20 @@ fn try_apply_optimization<'a>(
                 .next()
                 .and_then(|(instr, _)| operator_to_value_source(instr))
             {
-                if let Operand::MemArg(memarg) = &processed_instr.operand {
-                    processed_instr.operand = Operand::Optimized(OptimizedOperand::Single {
-                        value: Some(addr_source),
-                        memarg: Some(memarg.clone()),
-                        store_target: None,
-                    });
+                if let ProcessedInstr::Legacy { operand, .. } = &mut processed_instr {
+                    if let Operand::MemArg(memarg) = operand {
+                        *operand = Operand::Optimized(OptimizedOperand::Single {
+                            value: Some(addr_source),
+                            memarg: Some(memarg.clone()),
+                            store_target: None,
+                        });
 
-                    // Remove consumed instruction
-                    initial_processed_instrs.pop();
-                    recent_instrs.pop_back();
-                    *current_processed_pc -= 1;
-                    return true;
+                        // Remove consumed instruction
+                        initial_processed_instrs.pop();
+                        recent_instrs.pop_back();
+                        *current_processed_pc -= 1;
+                        return true;
+                    }
                 }
             }
         }
@@ -302,21 +306,23 @@ fn try_apply_optimization<'a>(
                 .and_then(|(instr, _)| operator_to_value_source(instr));
 
             if let (Some(addr), Some(value)) = (addr_source, value_source) {
-                if let Operand::MemArg(memarg) = &processed_instr.operand {
-                    processed_instr.operand = Operand::Optimized(OptimizedOperand::Double {
-                        first: Some(addr),
-                        second: Some(value),
-                        memarg: Some(memarg.clone()),
-                        store_target: None,
-                    });
+                if let ProcessedInstr::Legacy { operand, .. } = &mut processed_instr {
+                    if let Operand::MemArg(memarg) = operand {
+                        *operand = Operand::Optimized(OptimizedOperand::Double {
+                            first: Some(addr),
+                            second: Some(value),
+                            memarg: Some(memarg.clone()),
+                            store_target: None,
+                        });
 
-                    // Remove consumed instructions
-                    for _ in 0..2 {
-                        initial_processed_instrs.pop();
-                        recent_instrs.pop_back();
-                        *current_processed_pc -= 1;
+                        // Remove consumed instructions
+                        for _ in 0..2 {
+                            initial_processed_instrs.pop();
+                            recent_instrs.pop_back();
+                            *current_processed_pc -= 1;
+                        }
+                        return true;
                     }
-                    return true;
                 }
             }
         }
@@ -344,11 +350,13 @@ fn try_apply_optimization<'a>(
                     }
                 }
 
-                processed_instr.operand = Operand::Optimized(OptimizedOperand::Single {
-                    value: Some(value_source),
-                    memarg: None,
-                    store_target,
-                });
+                if let ProcessedInstr::Legacy { operand, .. } = &mut processed_instr {
+                    *operand = Operand::Optimized(OptimizedOperand::Single {
+                        value: Some(value_source),
+                        memarg: None,
+                        store_target,
+                    });
+                }
 
                 // Remove consumed instruction
                 initial_processed_instrs.pop();
@@ -524,7 +532,7 @@ impl ConservativePurityChecker {
 
     fn is_block_memoizable(&self, instructions: &[ProcessedInstr]) -> bool {
         for instr in instructions {
-            if !self.is_instruction_safe(instr.handler_index) {
+            if !self.is_instruction_safe(instr.handler_index()) {
                 return false;
             }
         }
@@ -569,7 +577,7 @@ impl ConservativePurityChecker {
         let mut block_depth = 0; // Track nesting level
 
         for (i, instr) in instructions.iter().enumerate() {
-            match instr.handler_index {
+            match instr.handler_index() {
                 HANDLER_IDX_BLOCK | HANDLER_IDX_LOOP | HANDLER_IDX_IF => {
                     // Record start position only for top-level blocks
                     if block_depth == 0 {
@@ -1174,7 +1182,7 @@ fn preprocess_instructions(
 
         let is_br_table_fixup = processed
             .get(current_fixup_pc)
-            .map_or(false, |instr| instr.handler_index == HANDLER_IDX_BR_TABLE);
+            .map_or(false, |instr| instr.handler_index() == HANDLER_IDX_BR_TABLE);
 
         if current_fixup_depth == usize::MAX || is_br_table_fixup {
             continue;
@@ -1183,7 +1191,7 @@ fn preprocess_instructions(
         // --- Rebuild control stack state up to the fixup instruction ---
         current_control_stack_pass2.clear();
         for (pc, instr) in processed.iter().enumerate().take(current_fixup_pc + 1) {
-            match instr.handler_index {
+            match instr.handler_index() {
                 HANDLER_IDX_BLOCK | HANDLER_IDX_IF => {
                     let block_type = block_type_map
                         .get(&pc)
@@ -1216,8 +1224,8 @@ fn preprocess_instructions(
                     fixups[fixup_index].original_wasm_depth = usize::MAX;
                     continue;
                 } else {
-                    instr_to_patch.handler_index = HANDLER_IDX_RETURN;
-                    instr_to_patch.operand = Operand::None;
+                    instr_to_patch.set_handler_index(HANDLER_IDX_RETURN);
+                    *instr_to_patch.operand_mut() = Operand::None;
                 }
             }
             fixups[fixup_index].original_wasm_depth = usize::MAX;
@@ -1261,7 +1269,7 @@ fn preprocess_instructions(
                     .unwrap_or(wasmparser::BlockType::Empty);
                 let if_arity = calculate_block_arity(&if_block_type, module, cache);
 
-                instr_to_patch.operand = Operand::LabelIdx {
+                *instr_to_patch.operand_mut() = Operand::LabelIdx {
                     target_ip: else_target,
                     arity: if_arity,
                     original_wasm_depth: current_fixup_depth,
@@ -1274,7 +1282,7 @@ fn preprocess_instructions(
                     .cloned()
                     .unwrap_or(wasmparser::BlockType::Empty);
                 let else_arity = calculate_block_arity(&else_block_type, module, cache);
-                instr_to_patch.operand = Operand::LabelIdx {
+                *instr_to_patch.operand_mut() = Operand::LabelIdx {
                     target_ip: target_ip,
                     arity: else_arity,
                     original_wasm_depth: current_fixup_depth,
@@ -1282,7 +1290,7 @@ fn preprocess_instructions(
                 };
             } else {
                 // Br or BrIf instruction
-                instr_to_patch.operand = Operand::LabelIdx {
+                *instr_to_patch.operand_mut() = Operand::LabelIdx {
                     target_ip,
                     arity: target_arity,
                     original_wasm_depth: current_fixup_depth,
@@ -1303,7 +1311,7 @@ fn preprocess_instructions(
 
     for pc in 0..processed.len() {
         if let Some(instr) = processed.get(pc) {
-            match instr.handler_index {
+            match instr.handler_index() {
                 HANDLER_IDX_BLOCK | HANDLER_IDX_IF => {
                     let block_type = block_type_map
                         .get(&pc)
@@ -1328,7 +1336,7 @@ fn preprocess_instructions(
 
             // Check if it's a BrTable needing resolution *after* simulating stack for current pc
             let needs_br_table_resolution =
-                instr.handler_index == HANDLER_IDX_BR_TABLE && instr.operand == Operand::None;
+                instr.handler_index() == HANDLER_IDX_BR_TABLE && *instr.operand() == Operand::None;
 
             if needs_br_table_resolution {
                 // Find fixup indices associated *only* with this BrTable pc that haven't been processed yet
@@ -1341,7 +1349,7 @@ fn preprocess_instructions(
 
                 if fixup_indices_for_this_br_table.is_empty() {
                     if let Some(instr_to_patch) = processed.get_mut(pc) {
-                        instr_to_patch.operand = Operand::BrTable {
+                        *instr_to_patch.operand_mut() = Operand::BrTable {
                             targets: vec![],
                             default: Box::new(Operand::None),
                         };
@@ -1446,7 +1454,7 @@ fn preprocess_instructions(
 
                 // --- Patch BrTable Instruction ---
                 if let Some(instr_to_patch) = processed.get_mut(pc) {
-                    instr_to_patch.operand = Operand::BrTable {
+                    *instr_to_patch.operand_mut() = Operand::BrTable {
                         targets: resolved_targets,
                         default: Box::new(default_target_operand),
                     };
@@ -1579,7 +1587,7 @@ fn decode_processed_instrs_and_fixups<'a>(
         }
 
         if let wasmparser::Operator::BrTable { ref targets } = op {
-            let processed_instr = ProcessedInstr {
+            let processed_instr = ProcessedInstr::Legacy {
                 handler_index: HANDLER_IDX_BR_TABLE,
                 operand: Operand::None,
             };
@@ -1666,7 +1674,7 @@ fn update_block_operands_with_ranges(
             is_loop: _,
             start_ip,
             end_ip,
-        } = &mut instr.operand
+        } = instr.operand_mut()
         {
             if let Some(&actual_end_ip) = block_end_map.get(&pc) {
                 // Block content starts from the instruction after the block/loop
@@ -2512,7 +2520,7 @@ fn map_operator_to_initial_instr_and_fixup(
         }
     };
 
-    let processed_instr = ProcessedInstr {
+    let processed_instr = ProcessedInstr::Legacy {
         handler_index,
         operand,
     };
