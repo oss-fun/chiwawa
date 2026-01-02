@@ -2531,10 +2531,16 @@ pub fn parse_bytecode(
     mut module: &mut Module,
     path: &str,
     enable_superinstructions: bool,
+    execution_mode: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut current_func_index = module.num_imported_funcs;
     let mut arity_cache = BlockArityCache::new();
     let purity_checker = ConservativePurityChecker::new();
+
+    // Check execution mode
+    if execution_mode == "slot" {
+        unimplemented!("Slot-based parsing not yet implemented in parser");
+    }
 
     let mut buf = Vec::new();
     let parser = Parser::new(0);

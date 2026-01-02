@@ -139,13 +139,10 @@ fn parse_params(params: Vec<String>) -> Vec<Val> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Check execution mode
+    // Validate execution mode
     match cli.execution_mode.as_str() {
-        "stack" => {
-            // Default stack-based execution
-        }
-        "slot" => {
-            unimplemented!("Slot-based execution is not yet implemented");
+        "stack" | "slot" => {
+            // Valid execution modes (slot will be checked in parser)
         }
         _ => {
             eprintln!(
@@ -157,7 +154,12 @@ fn main() -> Result<()> {
     }
 
     let mut module = Module::new("test");
-    let _ = parser::parse_bytecode(&mut module, &cli.wasm_file, cli.enable_superinstructions);
+    let _ = parser::parse_bytecode(
+        &mut module,
+        &cli.wasm_file,
+        cli.enable_superinstructions,
+        &cli.execution_mode,
+    );
     let imports: ImportObjects = FxHashMap::default();
 
     let mut wasm_argv = vec![cli.wasm_file.clone()];
