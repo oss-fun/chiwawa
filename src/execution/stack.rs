@@ -145,12 +145,71 @@ pub enum Operand {
     Optimized(OptimizedOperand),
 }
 
+/// Slot-based operand for I32 operations
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum I32SlotOperand {
+    Slot(u16),  // Read from slot
+    Const(i32), // Constant value
+    Param(u16), // Read from parameter/local
+}
+
+/// I32 operations for slot-based execution
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum I32Op {
+    // Constants and locals
+    Const,
+    GetParam,
+    SetLocal,
+    // Binary arithmetic operations
+    Add,
+    Sub,
+    Mul,
+    DivS,
+    DivU,
+    RemS,
+    RemU,
+    // Binary bitwise operations
+    And,
+    Or,
+    Xor,
+    Shl,
+    ShrS,
+    ShrU,
+    Rotl,
+    Rotr,
+    // Comparison operations
+    Eq,
+    Ne,
+    LtS,
+    LtU,
+    LeS,
+    LeU,
+    GtS,
+    GtU,
+    GeS,
+    GeU,
+    // Unary operations
+    Clz,
+    Ctz,
+    Popcnt,
+    Eqz,
+    Extend8S,
+    Extend16S,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProcessedInstr {
     /// Legacy stack-based instruction format (backward compatible)
     Legacy {
         handler_index: usize,
         operand: Operand,
+    },
+    /// Slot-based I32 instruction
+    I32Slot {
+        op: I32Op,
+        dst: u16,                     // Destination slot index
+        src1: I32SlotOperand,         // First operand
+        src2: Option<I32SlotOperand>, // Second operand (None for unary ops)
     },
 }
 
@@ -160,6 +219,7 @@ impl ProcessedInstr {
     pub fn handler_index(&self) -> usize {
         match self {
             ProcessedInstr::Legacy { handler_index, .. } => *handler_index,
+            _ => 0, // Slot-based instructions don't use handler_index
         }
     }
 
@@ -168,6 +228,7 @@ impl ProcessedInstr {
     pub fn operand(&self) -> &Operand {
         match self {
             ProcessedInstr::Legacy { operand, .. } => operand,
+            _ => panic!("operand() called on slot-based instruction"),
         }
     }
 
@@ -176,6 +237,7 @@ impl ProcessedInstr {
     pub fn operand_mut(&mut self) -> &mut Operand {
         match self {
             ProcessedInstr::Legacy { operand, .. } => operand,
+            _ => panic!("operand_mut() called on slot-based instruction"),
         }
     }
 
@@ -184,6 +246,7 @@ impl ProcessedInstr {
     pub fn set_handler_index(&mut self, new_handler_index: usize) {
         match self {
             ProcessedInstr::Legacy { handler_index, .. } => *handler_index = new_handler_index,
+            _ => {} // No-op for slot-based instructions
         }
     }
 }
@@ -525,12 +588,27 @@ impl Stacks {
                     }
                 }
 
+                // Initialize SlotFile if slot allocation is present
+                let slot_file = code.slot_allocation.as_ref().map(|alloc| {
+                    use crate::execution::slots::SlotFile;
+                    SlotFile::new(
+                        alloc.i32_count,
+                        alloc.i64_count,
+                        alloc.f32_count,
+                        alloc.f64_count,
+                        alloc.ref_count,
+                        alloc.v128_count,
+                    )
+                });
+
                 let initial_frame = FrameStack {
                     frame: Frame {
                         local_versions: vec![0; locals.len()],
                         locals,
                         module: module.clone(),
                         n: type_.results.len(),
+                        slot_file,
+                        result_slot: code.result_slot,
                     },
                     label_stack: vec![LabelStack {
                         label: Label {
@@ -581,6 +659,8 @@ pub struct Frame {
     #[serde(skip)]
     pub module: Weak<ModuleInst>,
     pub n: usize,
+    pub slot_file: Option<crate::execution::slots::SlotFile>, // Used in slot mode
+    pub result_slot: Option<u16>, // Slot index for return value (slot mode only)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -717,373 +797,588 @@ impl FrameStack {
 
             let instruction_ref = &processed_code[ip];
 
-            // Match on instruction type (currently only Legacy is supported)
-            let (handler_index, operand) = match instruction_ref {
+            // Match on instruction type
+            match instruction_ref {
+                ProcessedInstr::I32Slot {
+                    op,
+                    dst,
+                    src1,
+                    src2,
+                } => {
+                    // Execute slot-based I32 instruction
+                    let slot_file = self
+                        .frame
+                        .slot_file
+                        .as_mut()
+                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
+
+                    // Helper to read operand value
+                    let read_operand = |operand: &I32SlotOperand| -> Result<i32, RuntimeError> {
+                        match operand {
+                            I32SlotOperand::Slot(idx) => Ok(slot_file.get_i32(*idx)),
+                            I32SlotOperand::Const(val) => Ok(*val),
+                            I32SlotOperand::Param(idx) => self.frame.locals[*idx as usize].to_i32(),
+                        }
+                    };
+
+                    // Helper to read src2 (expects Some)
+                    let read_src2 = || -> Result<i32, RuntimeError> {
+                        src2.as_ref()
+                            .ok_or(RuntimeError::InvalidWasm("Missing src2 operand"))
+                            .and_then(|operand| read_operand(operand))
+                    };
+
+                    let result = match op {
+                        I32Op::Const => read_operand(src1)?,
+                        I32Op::GetParam => read_operand(src1)?,
+                        I32Op::SetLocal => {
+                            // For SetLocal, we need to write to locals AND return the value
+                            let val = read_operand(src1)?;
+                            if let Some(I32SlotOperand::Param(local_idx)) = src2 {
+                                self.frame.locals[*local_idx as usize] = Val::Num(Num::I32(val));
+                            }
+                            val
+                        }
+                        I32Op::Add => read_operand(src1)?.wrapping_add(read_src2()?),
+                        I32Op::Sub => read_operand(src1)?.wrapping_sub(read_src2()?),
+                        I32Op::Mul => read_operand(src1)?.wrapping_mul(read_src2()?),
+                        I32Op::DivS => {
+                            let divisor = read_src2()?;
+                            if divisor == 0 {
+                                return Err(RuntimeError::ZeroDivideError);
+                            }
+                            read_operand(src1)?.wrapping_div(divisor)
+                        }
+                        I32Op::DivU => {
+                            let divisor = read_src2()? as u32;
+                            if divisor == 0 {
+                                return Err(RuntimeError::ZeroDivideError);
+                            }
+                            ((read_operand(src1)? as u32) / divisor) as i32
+                        }
+                        I32Op::RemS => {
+                            let divisor = read_src2()?;
+                            if divisor == 0 {
+                                return Err(RuntimeError::ZeroDivideError);
+                            }
+                            read_operand(src1)?.wrapping_rem(divisor)
+                        }
+                        I32Op::RemU => {
+                            let divisor = read_src2()? as u32;
+                            if divisor == 0 {
+                                return Err(RuntimeError::ZeroDivideError);
+                            }
+                            ((read_operand(src1)? as u32) % divisor) as i32
+                        }
+                        I32Op::And => read_operand(src1)? & read_src2()?,
+                        I32Op::Or => read_operand(src1)? | read_src2()?,
+                        I32Op::Xor => read_operand(src1)? ^ read_src2()?,
+                        I32Op::Shl => read_operand(src1)?.wrapping_shl(read_src2()? as u32),
+                        I32Op::ShrS => read_operand(src1)?.wrapping_shr(read_src2()? as u32),
+                        I32Op::ShrU => {
+                            ((read_operand(src1)? as u32).wrapping_shr(read_src2()? as u32)) as i32
+                        }
+                        I32Op::Rotl => read_operand(src1)?.rotate_left(read_src2()? as u32),
+                        I32Op::Rotr => read_operand(src1)?.rotate_right(read_src2()? as u32),
+                        I32Op::Eq => {
+                            if read_operand(src1)? == read_src2()? {
+                                1
+                            } else {
+                                0
+                            }
+                        }
+                        I32Op::Ne => {
+                            if read_operand(src1)? != read_src2()? {
+                                1
+                            } else {
+                                0
+                            }
+                        }
+                        I32Op::LtS => {
+                            if read_operand(src1)? < read_src2()? {
+                                1
+                            } else {
+                                0
+                            }
+                        }
+                        I32Op::LtU => {
+                            if (read_operand(src1)? as u32) < (read_src2()? as u32) {
+                                1
+                            } else {
+                                0
+                            }
+                        }
+                        I32Op::LeS => {
+                            if read_operand(src1)? <= read_src2()? {
+                                1
+                            } else {
+                                0
+                            }
+                        }
+                        I32Op::LeU => {
+                            if (read_operand(src1)? as u32) <= (read_src2()? as u32) {
+                                1
+                            } else {
+                                0
+                            }
+                        }
+                        I32Op::GtS => {
+                            if read_operand(src1)? > read_src2()? {
+                                1
+                            } else {
+                                0
+                            }
+                        }
+                        I32Op::GtU => {
+                            if (read_operand(src1)? as u32) > (read_src2()? as u32) {
+                                1
+                            } else {
+                                0
+                            }
+                        }
+                        I32Op::GeS => {
+                            if read_operand(src1)? >= read_src2()? {
+                                1
+                            } else {
+                                0
+                            }
+                        }
+                        I32Op::GeU => {
+                            if (read_operand(src1)? as u32) >= (read_src2()? as u32) {
+                                1
+                            } else {
+                                0
+                            }
+                        }
+                        I32Op::Clz => read_operand(src1)?.leading_zeros() as i32,
+                        I32Op::Ctz => read_operand(src1)?.trailing_zeros() as i32,
+                        I32Op::Popcnt => read_operand(src1)?.count_ones() as i32,
+                        I32Op::Eqz => {
+                            if read_operand(src1)? == 0 {
+                                1
+                            } else {
+                                0
+                            }
+                        }
+                        I32Op::Extend8S => (read_operand(src1)? as i8) as i32,
+                        I32Op::Extend16S => (read_operand(src1)? as i16) as i32,
+                        _ => return Err(RuntimeError::InvalidWasm("Unsupported I32 operation")),
+                    };
+
+                    slot_file.set_i32(*dst, result);
+                    self.label_stack[current_label_stack_idx].ip = ip + 1;
+                    continue;
+                }
                 ProcessedInstr::Legacy {
                     handler_index,
                     operand,
-                } => (handler_index, operand),
-            };
+                } => {
+                    // Execute legacy stack-based instruction
+                    let (handler_index, operand) = (handler_index, operand);
 
-            // Record instruction execution for statistics
-            if let Some(ref mut stats) = execution_stats {
-                stats.record_instruction(*handler_index);
-            }
+                    // Record instruction execution for statistics
+                    if let Some(ref mut stats) = execution_stats {
+                        stats.record_instruction(*handler_index);
+                    }
 
-            let handler_fn = HANDLER_TABLE
-                .get(*handler_index)
-                .ok_or(RuntimeError::InvalidHandlerIndex)?;
+                    let handler_fn = HANDLER_TABLE
+                        .get(*handler_index)
+                        .ok_or(RuntimeError::InvalidHandlerIndex)?;
 
-            if let Some(ref mut tracer) = tracer {
-                let module_inst = self
-                    .frame
-                    .module
-                    .upgrade()
-                    .ok_or(RuntimeError::ModuleInstanceGone)?;
+                    if let Some(ref mut tracer) = tracer {
+                        let module_inst = self
+                            .frame
+                            .module
+                            .upgrade()
+                            .ok_or(RuntimeError::ModuleInstanceGone)?;
 
-                tracer.trace_instruction(
-                    ip,
-                    *handler_index,
-                    &self.global_value_stack,
-                    &self.frame.locals,
-                    &module_inst.global_addrs,
-                );
-            }
+                        tracer.trace_instruction(
+                            ip,
+                            *handler_index,
+                            &self.global_value_stack,
+                            &self.frame.locals,
+                            &module_inst.global_addrs,
+                        );
+                    }
 
-            let mut context = ExecutionContext {
-                frame: &mut self.frame,
-                value_stack: &mut self.global_value_stack,
-                ip,
-                block_has_mutable_op: false,
-                accessed_globals: &mut self.current_block_accessed_globals,
-                accessed_locals: &mut self.current_block_accessed_locals,
-            };
+                    let mut context = ExecutionContext {
+                        frame: &mut self.frame,
+                        value_stack: &mut self.global_value_stack,
+                        ip,
+                        block_has_mutable_op: false,
+                        accessed_globals: &mut self.current_block_accessed_globals,
+                        accessed_locals: &mut self.current_block_accessed_locals,
+                    };
 
-            let result = handler_fn(&mut context, operand);
-            let has_mutable_op = context.block_has_mutable_op;
+                    let result = handler_fn(&mut context, operand);
+                    let has_mutable_op = context.block_has_mutable_op;
 
-            // Track if this block executed a mutable operation
-            if has_mutable_op {
-                current_label_stack.block_has_mutable_ops = true;
-            }
+                    // Track if this block executed a mutable operation
+                    if has_mutable_op {
+                        current_label_stack.block_has_mutable_ops = true;
+                    }
 
-            match result {
-                Err(e) => {
-                    eprintln!(
-                        "Error at IP {}, handler_index: {}: {:?}",
-                        ip, handler_index, e
-                    );
-                    return Ok(Err(e));
-                }
-                Ok(handler_result) => {
-                    match handler_result {
-                        HandlerResult::Continue(next_ip) => {
-                            self.label_stack[current_label_stack_idx].ip = next_ip;
+                    match result {
+                        Err(e) => {
+                            eprintln!(
+                                "Error at IP {}, handler_index: {}: {:?}",
+                                ip, handler_index, e
+                            );
+                            return Ok(Err(e));
                         }
-                        HandlerResult::Return => {
-                            return Ok(Ok(Some(ModuleLevelInstr::Return)));
-                        }
-                        HandlerResult::Invoke(func_addr) => {
-                            if self.enable_checkpoint {
-                                #[cfg(all(
-                                    target_arch = "wasm32",
-                                    target_os = "wasi",
-                                    target_env = "p1",
-                                    not(target_feature = "atomics")
-                                ))]
-                                {
-                                    if migration::check_checkpoint_trigger(&self.frame)? {
-                                        return Ok(Err(RuntimeError::CheckpointRequested));
+                        Ok(handler_result) => {
+                            match handler_result {
+                                HandlerResult::Continue(next_ip) => {
+                                    self.label_stack[current_label_stack_idx].ip = next_ip;
+                                }
+                                HandlerResult::Return => {
+                                    return Ok(Ok(Some(ModuleLevelInstr::Return)));
+                                }
+                                HandlerResult::Invoke(func_addr) => {
+                                    if self.enable_checkpoint {
+                                        #[cfg(all(
+                                            target_arch = "wasm32",
+                                            target_os = "wasi",
+                                            target_env = "p1",
+                                            not(target_feature = "atomics")
+                                        ))]
+                                        {
+                                            if migration::check_checkpoint_trigger(&self.frame)? {
+                                                return Ok(Err(RuntimeError::CheckpointRequested));
+                                            }
+                                        }
                                     }
+
+                                    self.label_stack[current_label_stack_idx].ip = ip + 1;
+                                    return Ok(Ok(Some(ModuleLevelInstr::Invoke(func_addr))));
                                 }
-                            }
+                                HandlerResult::Branch {
+                                    target_ip,
+                                    values_to_push,
+                                    branch_depth,
+                                } => {
+                                    // Use the branch depth directly from the Branch result
+                                    // Calculate target label stack index from current position and branch depth
+                                    // Branch depth 0 = current block, 1 = parent block, etc.
+                                    if branch_depth <= current_label_stack_idx {
+                                        let target_depth = current_label_stack_idx - branch_depth;
+                                        let target_level = target_depth + 1;
 
-                            self.label_stack[current_label_stack_idx].ip = ip + 1;
-                            return Ok(Ok(Some(ModuleLevelInstr::Invoke(func_addr))));
-                        }
-                        HandlerResult::Branch {
-                            target_ip,
-                            values_to_push,
-                            branch_depth,
-                        } => {
-                            // Use the branch depth directly from the Branch result
-                            // Calculate target label stack index from current position and branch depth
-                            // Branch depth 0 = current block, 1 = parent block, etc.
-                            if branch_depth <= current_label_stack_idx {
-                                let target_depth = current_label_stack_idx - branch_depth;
-                                let target_level = target_depth + 1;
+                                        // Mark all blocks being exited as having executed a branch (early exit)
+                                        for i in target_level..self.label_stack.len() {
+                                            self.label_stack[i].block_has_mutable_ops = true;
+                                        }
 
-                                // Mark all blocks being exited as having executed a branch (early exit)
-                                for i in target_level..self.label_stack.len() {
-                                    self.label_stack[i].block_has_mutable_ops = true;
-                                }
+                                        let current_label_stack =
+                                            &self.label_stack[current_label_stack_idx];
+                                        let current_stack_height =
+                                            current_label_stack.label.stack_height;
 
-                                let current_label_stack =
-                                    &self.label_stack[current_label_stack_idx];
-                                let current_stack_height = current_label_stack.label.stack_height;
+                                        // For branch depth 0, we need to exit the current block
+                                        if branch_depth == 0 {
+                                            self.label_stack.pop();
+                                            if self.label_stack.len() > 0 {
+                                                current_label_stack_idx =
+                                                    self.label_stack.len() - 1;
+                                            } else {
+                                                return Err(RuntimeError::StackError(
+                                                    "Label stack underflow during branch",
+                                                ));
+                                            }
+                                        } else {
+                                            // For deeper branches, truncate to the target level
+                                            self.label_stack.truncate(target_level);
+                                            if self.label_stack.len() > 0 {
+                                                current_label_stack_idx =
+                                                    self.label_stack.len() - 1;
+                                            } else {
+                                                return Err(RuntimeError::StackError(
+                                                    "Label stack underflow during branch",
+                                                ));
+                                            }
+                                        }
 
-                                // For branch depth 0, we need to exit the current block
-                                if branch_depth == 0 {
-                                    self.label_stack.pop();
-                                    if self.label_stack.len() > 0 {
-                                        current_label_stack_idx = self.label_stack.len() - 1;
+                                        let target_label_stack =
+                                            &mut self.label_stack[current_label_stack_idx];
+
+                                        let stack_height = if branch_depth == 0 {
+                                            current_stack_height
+                                        } else {
+                                            target_label_stack.label.stack_height
+                                        };
+
+                                        let current_len = self.global_value_stack.len();
+                                        let actual_height = stack_height.min(current_len);
+                                        self.global_value_stack
+                                            .splice(actual_height.., values_to_push);
+                                        target_label_stack.ip = target_ip;
+
+                                        // Reset tracking for new block after branch
+                                        if self.current_block_accessed_globals.is_some() {
+                                            self.current_block_accessed_globals =
+                                                Some(GlobalAccessTracker::new());
+                                        }
+                                        if self.current_block_accessed_locals.is_some() {
+                                            self.current_block_accessed_locals =
+                                                Some(LocalAccessTracker::new());
+                                        }
                                     } else {
-                                        return Err(RuntimeError::StackError(
-                                            "Label stack underflow during branch",
-                                        ));
+                                        return Err(RuntimeError::InvalidBranchTarget);
                                     }
-                                } else {
-                                    // For deeper branches, truncate to the target level
-                                    self.label_stack.truncate(target_level);
-                                    if self.label_stack.len() > 0 {
-                                        current_label_stack_idx = self.label_stack.len() - 1;
-                                    } else {
-                                        return Err(RuntimeError::StackError(
-                                            "Label stack underflow during branch",
-                                        ));
-                                    }
+                                    continue;
                                 }
-
-                                let target_label_stack =
-                                    &mut self.label_stack[current_label_stack_idx];
-
-                                let stack_height = if branch_depth == 0 {
-                                    current_stack_height
-                                } else {
-                                    target_label_stack.label.stack_height
-                                };
-
-                                let current_len = self.global_value_stack.len();
-                                let actual_height = stack_height.min(current_len);
-                                self.global_value_stack
-                                    .splice(actual_height.., values_to_push);
-                                target_label_stack.ip = target_ip;
-
-                                // Reset tracking for new block after branch
-                                if self.current_block_accessed_globals.is_some() {
-                                    self.current_block_accessed_globals =
-                                        Some(GlobalAccessTracker::new());
-                                }
-                                if self.current_block_accessed_locals.is_some() {
-                                    self.current_block_accessed_locals =
-                                        Some(LocalAccessTracker::new());
-                                }
-                            } else {
-                                return Err(RuntimeError::InvalidBranchTarget);
-                            }
-                            continue;
-                        }
-                        HandlerResult::PushLabelStack {
-                            label,
-                            next_ip,
-                            start_ip,
-                            end_ip,
-                        } => {
-                            let mut cache_hit = false;
-                            let mut cached_result_values = Vec::new();
-
-                            if current_label_stack_idx > 0 && label.is_immutable != Some(false) {
-                                if let Some(cached_result) = get_block_cache(
+                                HandlerResult::PushLabelStack {
+                                    label,
+                                    next_ip,
                                     start_ip,
                                     end_ip,
-                                    &label.input_stack,
-                                    &self.frame.locals,
-                                    &self.frame.local_versions,
-                                ) {
-                                    cached_result_values = cached_result;
-                                    cache_hit = true;
-                                }
-                            }
+                                } => {
+                                    let mut cache_hit = false;
+                                    let mut cached_result_values = Vec::new();
 
-                            // Apply cache result if hit
-                            if cache_hit {
-                                let block_start_height = label.stack_height;
-                                let current_len = self.global_value_stack.len();
-                                let actual_height = block_start_height.min(current_len);
-                                self.global_value_stack
-                                    .splice(actual_height.., cached_result_values);
-                            }
-
-                            // Create new label stack
-                            let current_instrs =
-                                &self.label_stack[current_label_stack_idx].processed_instrs;
-                            // Inherit parent's mutable status if this is a nested structure
-                            let parent_has_mutable_ops =
-                                self.label_stack[current_label_stack_idx].block_has_mutable_ops;
-                            let new_label_stack = LabelStack {
-                                label,
-                                processed_instrs: current_instrs.clone(),
-                                value_stack: vec![],
-                                ip: if cache_hit { end_ip } else { next_ip },
-                                block_has_mutable_ops: parent_has_mutable_ops,
-                            };
-
-                            self.label_stack.push(new_label_stack);
-                            current_label_stack_idx = self.label_stack.len() - 1;
-
-                            // Reset tracking for new block
-                            if self.current_block_accessed_globals.is_some() {
-                                self.current_block_accessed_globals =
-                                    Some(GlobalAccessTracker::new());
-                            }
-                            if self.current_block_accessed_locals.is_some() {
-                                self.current_block_accessed_locals =
-                                    Some(LocalAccessTracker::new());
-                            }
-                        }
-                        HandlerResult::PopLabelStack { next_ip } => {
-                            // Pop the current label stack when ending a block/loop
-                            if self.label_stack.len() > 1 {
-                                // Determine if the block was immutable based on whether any mutable operations were executed
-                                let block_was_mutable =
-                                    self.label_stack[current_label_stack_idx].block_has_mutable_ops;
-
-                                // Update the label's immutability status
-                                self.label_stack[current_label_stack_idx].label.is_immutable =
-                                    Some(!block_was_mutable);
-
-                                // Extract values before mutating
-                                let (stack_height, arity, input_stack, start_ip, end_ip) = {
-                                    let current_label =
-                                        &self.label_stack[current_label_stack_idx].label;
-                                    (
-                                        current_label.stack_height,
-                                        current_label.arity,
-                                        current_label.input_stack.clone(),
-                                        current_label.start_ip,
-                                        current_label.end_ip,
-                                    )
-                                };
-
-                                // Extract the result values from the global stack
-                                let result_values = if arity > 0 {
-                                    if self.global_value_stack.len() >= arity {
-                                        let start_idx = self.global_value_stack.len() - arity;
-                                        self.global_value_stack[start_idx..].to_vec()
-                                    } else {
-                                        // Not enough values on stack for the required arity
-                                        if self.global_value_stack.len() > stack_height {
-                                            self.global_value_stack[stack_height..].to_vec()
-                                        } else {
-                                            Vec::new()
-                                        }
-                                    }
-                                } else {
-                                    Vec::new()
-                                };
-
-                                // Restore the global stack to the entry state
-                                if arity == 0 && result_values.is_empty() {
-                                    // For void blocks (arity=0) with no results, preserve the current stack state
-                                } else {
-                                    // Normal case: restore to entry state and add result values
-                                    let correct_stack_height =
-                                        if arity > 0 && self.global_value_stack.len() >= arity {
-                                            self.global_value_stack.len() - arity
-                                        } else {
-                                            stack_height
-                                        };
-
-                                    let current_len = self.global_value_stack.len();
-                                    let actual_height = correct_stack_height.min(current_len);
-                                    self.global_value_stack
-                                        .splice(actual_height.., result_values);
-                                }
-
-                                // Only cache nested blocks, not function level (index 0)
-                                if current_label_stack_idx > 0 {
-                                    // Update immutability status if not yet determined
-                                    let block_is_mutable = self.label_stack
-                                        [current_label_stack_idx]
-                                        .block_has_mutable_ops;
-                                    let block_start_height = stack_height;
-
-                                    if self.label_stack[current_label_stack_idx]
-                                        .label
-                                        .is_immutable
-                                        .is_none()
+                                    if current_label_stack_idx > 0
+                                        && label.is_immutable != Some(false)
                                     {
-                                        self.label_stack[current_label_stack_idx]
-                                            .label
-                                            .is_immutable = Some(!block_is_mutable);
-                                    }
-
-                                    // Check if block is immutable before caching
-                                    let is_immutable = self.label_stack[current_label_stack_idx]
-                                        .label
-                                        .is_immutable;
-                                    if is_immutable == Some(true) {
-                                        // Save block results from block start height
-                                        // For blocks (not functions), we always save from block_start_height
-                                        let final_stack_state = if block_start_height
-                                            <= self.global_value_stack.len()
-                                        {
-                                            self.global_value_stack[block_start_height..].to_vec()
-                                        } else {
-                                            Vec::new()
-                                        };
-                                        if get_block_cache(
+                                        if let Some(cached_result) = get_block_cache(
                                             start_ip,
                                             end_ip,
-                                            &input_stack,
+                                            &label.input_stack,
                                             &self.frame.locals,
                                             &self.frame.local_versions,
-                                        )
-                                        .is_none()
-                                        {
-                                            // Get tracked globals before storing
-                                            let tracked_globals = self
-                                                .current_block_accessed_globals
-                                                .take()
-                                                .unwrap_or_else(GlobalAccessTracker::new);
-                                            // Get tracked locals before storing
-                                            let tracked_locals = self
-                                                .current_block_accessed_locals
-                                                .take()
-                                                .unwrap_or_else(LocalAccessTracker::new);
-                                            store_block_cache(
-                                                start_ip,
-                                                end_ip,
-                                                &input_stack,
-                                                &self.frame.locals,
-                                                final_stack_state,
-                                                tracked_globals,
-                                                tracked_locals,
-                                            );
+                                        ) {
+                                            cached_result_values = cached_result;
+                                            cache_hit = true;
                                         }
                                     }
-                                }
 
-                                self.label_stack.pop();
-                                current_label_stack_idx = self.label_stack.len() - 1;
-                                self.label_stack[current_label_stack_idx].ip = next_ip;
-                            } else {
-                                let current_label =
-                                    &self.label_stack[current_label_stack_idx].label;
-                                let function_arity = current_label.arity;
-
-                                // Extract the function result values from the global stack
-                                if function_arity > 0 {
-                                    if self.global_value_stack.len() >= function_arity {
-                                        let start_idx =
-                                            self.global_value_stack.len() - function_arity;
-                                        let result_values =
-                                            self.global_value_stack[start_idx..].to_vec();
-                                        self.global_value_stack.clear();
-                                        self.global_value_stack.extend(result_values);
-                                    } else {
-                                        return Err(RuntimeError::ValueStackUnderflow);
+                                    // Apply cache result if hit
+                                    if cache_hit {
+                                        let block_start_height = label.stack_height;
+                                        let current_len = self.global_value_stack.len();
+                                        let actual_height = block_start_height.min(current_len);
+                                        self.global_value_stack
+                                            .splice(actual_height.., cached_result_values);
                                     }
-                                } else {
-                                    // If arity is 0, keep the stack as is
-                                };
-                                break;
+
+                                    // Create new label stack
+                                    let current_instrs =
+                                        &self.label_stack[current_label_stack_idx].processed_instrs;
+                                    // Inherit parent's mutable status if this is a nested structure
+                                    let parent_has_mutable_ops = self.label_stack
+                                        [current_label_stack_idx]
+                                        .block_has_mutable_ops;
+                                    let new_label_stack = LabelStack {
+                                        label,
+                                        processed_instrs: current_instrs.clone(),
+                                        value_stack: vec![],
+                                        ip: if cache_hit { end_ip } else { next_ip },
+                                        block_has_mutable_ops: parent_has_mutable_ops,
+                                    };
+
+                                    self.label_stack.push(new_label_stack);
+                                    current_label_stack_idx = self.label_stack.len() - 1;
+
+                                    // Reset tracking for new block
+                                    if self.current_block_accessed_globals.is_some() {
+                                        self.current_block_accessed_globals =
+                                            Some(GlobalAccessTracker::new());
+                                    }
+                                    if self.current_block_accessed_locals.is_some() {
+                                        self.current_block_accessed_locals =
+                                            Some(LocalAccessTracker::new());
+                                    }
+                                }
+                                HandlerResult::PopLabelStack { next_ip } => {
+                                    // Pop the current label stack when ending a block/loop
+                                    if self.label_stack.len() > 1 {
+                                        // Determine if the block was immutable based on whether any mutable operations were executed
+                                        let block_was_mutable = self.label_stack
+                                            [current_label_stack_idx]
+                                            .block_has_mutable_ops;
+
+                                        // Update the label's immutability status
+                                        self.label_stack[current_label_stack_idx]
+                                            .label
+                                            .is_immutable = Some(!block_was_mutable);
+
+                                        // Extract values before mutating
+                                        let (stack_height, arity, input_stack, start_ip, end_ip) = {
+                                            let current_label =
+                                                &self.label_stack[current_label_stack_idx].label;
+                                            (
+                                                current_label.stack_height,
+                                                current_label.arity,
+                                                current_label.input_stack.clone(),
+                                                current_label.start_ip,
+                                                current_label.end_ip,
+                                            )
+                                        };
+
+                                        // Extract the result values from slot_file or global stack
+                                        let result_values =
+                                            if let (Some(ref slot_file), Some(result_slot)) =
+                                                (&self.frame.slot_file, self.frame.result_slot)
+                                            {
+                                                // Slot mode: read result from specified slot
+                                                if arity > 0 {
+                                                    let value = slot_file.get_i32(result_slot);
+                                                    vec![Val::Num(Num::I32(value))]
+                                                } else {
+                                                    Vec::new()
+                                                }
+                                            } else {
+                                                // Stack mode: extract from global stack
+                                                if arity > 0 {
+                                                    if self.global_value_stack.len() >= arity {
+                                                        let start_idx =
+                                                            self.global_value_stack.len() - arity;
+                                                        self.global_value_stack[start_idx..]
+                                                            .to_vec()
+                                                    } else {
+                                                        // Not enough values on stack for the required arity
+                                                        if self.global_value_stack.len()
+                                                            > stack_height
+                                                        {
+                                                            self.global_value_stack[stack_height..]
+                                                                .to_vec()
+                                                        } else {
+                                                            Vec::new()
+                                                        }
+                                                    }
+                                                } else {
+                                                    Vec::new()
+                                                }
+                                            };
+
+                                        // Restore the global stack to the entry state
+                                        if arity == 0 && result_values.is_empty() {
+                                            // For void blocks (arity=0) with no results, preserve the current stack state
+                                        } else {
+                                            // Normal case: restore to entry state and add result values
+                                            let correct_stack_height = if arity > 0
+                                                && self.global_value_stack.len() >= arity
+                                            {
+                                                self.global_value_stack.len() - arity
+                                            } else {
+                                                stack_height
+                                            };
+
+                                            let current_len = self.global_value_stack.len();
+                                            let actual_height =
+                                                correct_stack_height.min(current_len);
+                                            self.global_value_stack
+                                                .splice(actual_height.., result_values);
+                                        }
+
+                                        // Only cache nested blocks, not function level (index 0)
+                                        if current_label_stack_idx > 0 {
+                                            // Update immutability status if not yet determined
+                                            let block_is_mutable = self.label_stack
+                                                [current_label_stack_idx]
+                                                .block_has_mutable_ops;
+                                            let block_start_height = stack_height;
+
+                                            if self.label_stack[current_label_stack_idx]
+                                                .label
+                                                .is_immutable
+                                                .is_none()
+                                            {
+                                                self.label_stack[current_label_stack_idx]
+                                                    .label
+                                                    .is_immutable = Some(!block_is_mutable);
+                                            }
+
+                                            // Check if block is immutable before caching
+                                            let is_immutable = self.label_stack
+                                                [current_label_stack_idx]
+                                                .label
+                                                .is_immutable;
+                                            if is_immutable == Some(true) {
+                                                // Save block results from block start height
+                                                // For blocks (not functions), we always save from block_start_height
+                                                let final_stack_state = if block_start_height
+                                                    <= self.global_value_stack.len()
+                                                {
+                                                    self.global_value_stack[block_start_height..]
+                                                        .to_vec()
+                                                } else {
+                                                    Vec::new()
+                                                };
+                                                if get_block_cache(
+                                                    start_ip,
+                                                    end_ip,
+                                                    &input_stack,
+                                                    &self.frame.locals,
+                                                    &self.frame.local_versions,
+                                                )
+                                                .is_none()
+                                                {
+                                                    // Get tracked globals before storing
+                                                    let tracked_globals = self
+                                                        .current_block_accessed_globals
+                                                        .take()
+                                                        .unwrap_or_else(GlobalAccessTracker::new);
+                                                    // Get tracked locals before storing
+                                                    let tracked_locals = self
+                                                        .current_block_accessed_locals
+                                                        .take()
+                                                        .unwrap_or_else(LocalAccessTracker::new);
+                                                    store_block_cache(
+                                                        start_ip,
+                                                        end_ip,
+                                                        &input_stack,
+                                                        &self.frame.locals,
+                                                        final_stack_state,
+                                                        tracked_globals,
+                                                        tracked_locals,
+                                                    );
+                                                }
+                                            }
+                                        }
+
+                                        self.label_stack.pop();
+                                        current_label_stack_idx = self.label_stack.len() - 1;
+                                        self.label_stack[current_label_stack_idx].ip = next_ip;
+                                    } else {
+                                        let current_label =
+                                            &self.label_stack[current_label_stack_idx].label;
+                                        let function_arity = current_label.arity;
+
+                                        // Extract the function result values from slot_file or global stack
+                                        if function_arity > 0 {
+                                            if let (Some(ref slot_file), Some(result_slot)) =
+                                                (&self.frame.slot_file, self.frame.result_slot)
+                                            {
+                                                // Slot mode: read result from specified slot
+                                                let value = slot_file.get_i32(result_slot);
+                                                self.global_value_stack.clear();
+                                                self.global_value_stack
+                                                    .push(Val::Num(Num::I32(value)));
+                                            } else if self.global_value_stack.len()
+                                                >= function_arity
+                                            {
+                                                // Stack mode: extract from global stack
+                                                let start_idx =
+                                                    self.global_value_stack.len() - function_arity;
+                                                let result_values =
+                                                    self.global_value_stack[start_idx..].to_vec();
+                                                self.global_value_stack.clear();
+                                                self.global_value_stack.extend(result_values);
+                                            } else {
+                                                return Err(RuntimeError::ValueStackUnderflow);
+                                            }
+                                        } else {
+                                            // If arity is 0, keep the stack as is
+                                        };
+                                        break;
+                                    }
+                                }
                             }
                         }
                     }
-                }
-            }
-        }
+                } // End of Legacy match arm
+            } // End of instruction match
+        } // End of main loop
         Ok(Ok(None))
     }
 }

@@ -79,6 +79,8 @@ impl FuncAddr {
                 type_: TypeIdx(0),
                 locals: Vec::new(),
                 body: Rc::new(Vec::new()),
+                slot_allocation: None,
+                result_slot: None,
             },
         })))
     }
