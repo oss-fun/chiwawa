@@ -8,6 +8,7 @@ pub mod memoization;
 pub mod migration;
 pub mod module;
 pub mod runtime;
+pub mod slots;
 pub mod stack;
 pub mod stats;
 mod table;

@@ -344,6 +344,8 @@ impl Runtime {
                                             locals,
                                             module: func_module_weak.clone(),
                                             n: type_.results.len(),
+                                            slot_file: None, // TODO: Initialize from SlotAllocation
+                                            result_slot: None,
                                         },
                                         label_stack: vec![LabelStack {
                                             label: Label {

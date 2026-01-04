@@ -9,6 +9,8 @@ pub struct Func {
     pub type_: TypeIdx,
     pub locals: Vec<(u32, ValueType)>,
     pub body: Rc<Vec<ProcessedInstr>>,
+    pub slot_allocation: Option<crate::execution::slots::SlotAllocation>,
+    pub result_slot: Option<u16>, // Slot index for return value (slot mode only)
 }
 
 #[derive(Clone)]
