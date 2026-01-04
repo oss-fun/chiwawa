@@ -131,6 +131,11 @@ impl SlotFile {
     pub fn set_v128(&mut self, slot: u16, val: i128) {
         self.v128_slots[slot as usize] = val;
     }
+
+    #[inline(always)]
+    pub fn get_i32_slots(&mut self) -> &mut [i32] {
+        &mut self.i32_slots
+    }
 }
 
 /// Slot allocation information (number of slots needed per function)

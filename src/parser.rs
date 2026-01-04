@@ -1595,7 +1595,7 @@ fn decode_processed_instrs_and_fixups<'a>(
         let (mut processed_instr, fixup_info_opt) = if let Some(ref mut allocator) = slot_allocator
         {
             // Slot-based mode: convert i32 instructions to slot format
-            use crate::execution::stack::{I32Op, I32SlotOperand, ProcessedInstr};
+            use crate::execution::stack::{I32SlotOperand, ProcessedInstr};
             match &op {
                 wasmparser::Operator::LocalGet { local_index } => {
                     let local_type = get_local_type(locals, *local_index);
@@ -1604,7 +1604,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         let dst = allocator.push(local_type);
                         (
                             ProcessedInstr::I32Slot {
-                                op: I32Op::GetParam,
+                                handler_index: HANDLER_IDX_LOCAL_GET,
                                 dst: dst.index(),
                                 src1: I32SlotOperand::Param(*local_index as u16),
                                 src2: None,
@@ -1617,7 +1617,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         let dst = allocator.push(local_type);
                         (
                             ProcessedInstr::I32Slot {
-                                op: I32Op::GetParam,
+                                handler_index: HANDLER_IDX_LOCAL_GET,
                                 dst: dst.index(),
                                 src1: I32SlotOperand::Param(*local_index as u16),
                                 src2: None,
@@ -1633,7 +1633,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::Add,
+                            handler_index: HANDLER_IDX_I32_ADD,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1647,7 +1647,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::Sub,
+                            handler_index: HANDLER_IDX_I32_SUB,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1661,7 +1661,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::Mul,
+                            handler_index: HANDLER_IDX_I32_MUL,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1675,7 +1675,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::DivS,
+                            handler_index: HANDLER_IDX_I32_DIV_S,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1689,7 +1689,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::DivU,
+                            handler_index: HANDLER_IDX_I32_DIV_U,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1703,7 +1703,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::RemS,
+                            handler_index: HANDLER_IDX_I32_REM_S,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1717,7 +1717,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::RemU,
+                            handler_index: HANDLER_IDX_I32_REM_U,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1731,7 +1731,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::And,
+                            handler_index: HANDLER_IDX_I32_AND,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1745,7 +1745,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::Or,
+                            handler_index: HANDLER_IDX_I32_OR,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1759,7 +1759,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::Xor,
+                            handler_index: HANDLER_IDX_I32_XOR,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1773,7 +1773,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::Shl,
+                            handler_index: HANDLER_IDX_I32_SHL,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1787,7 +1787,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::ShrS,
+                            handler_index: HANDLER_IDX_I32_SHR_S,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1801,7 +1801,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::ShrU,
+                            handler_index: HANDLER_IDX_I32_SHR_U,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1815,7 +1815,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::Rotl,
+                            handler_index: HANDLER_IDX_I32_ROTL,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1829,7 +1829,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::Rotr,
+                            handler_index: HANDLER_IDX_I32_ROTR,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1844,7 +1844,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::Eq,
+                            handler_index: HANDLER_IDX_I32_EQ,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1858,7 +1858,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::Ne,
+                            handler_index: HANDLER_IDX_I32_NE,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1872,7 +1872,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::LtS,
+                            handler_index: HANDLER_IDX_I32_LT_S,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1886,7 +1886,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::LtU,
+                            handler_index: HANDLER_IDX_I32_LT_U,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1900,7 +1900,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::LeS,
+                            handler_index: HANDLER_IDX_I32_LE_S,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1914,7 +1914,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::LeU,
+                            handler_index: HANDLER_IDX_I32_LE_U,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1928,7 +1928,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::GtS,
+                            handler_index: HANDLER_IDX_I32_GT_S,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1942,7 +1942,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::GtU,
+                            handler_index: HANDLER_IDX_I32_GT_U,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1956,7 +1956,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::GeS,
+                            handler_index: HANDLER_IDX_I32_GE_S,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1970,7 +1970,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::GeU,
+                            handler_index: HANDLER_IDX_I32_GE_U,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: Some(I32SlotOperand::Slot(src2.index())),
@@ -1984,7 +1984,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::Clz,
+                            handler_index: HANDLER_IDX_I32_CLZ,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: None,
@@ -1997,7 +1997,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::Ctz,
+                            handler_index: HANDLER_IDX_I32_CTZ,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: None,
@@ -2010,7 +2010,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::Popcnt,
+                            handler_index: HANDLER_IDX_I32_POPCNT,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: None,
@@ -2023,7 +2023,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::Eqz,
+                            handler_index: HANDLER_IDX_I32_EQZ,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: None,
@@ -2036,7 +2036,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::Extend8S,
+                            handler_index: HANDLER_IDX_I32_EXTEND8_S,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: None,
@@ -2049,7 +2049,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
-                            op: I32Op::Extend16S,
+                            handler_index: HANDLER_IDX_I32_EXTEND16_S,
                             dst: dst.index(),
                             src1: I32SlotOperand::Slot(src1.index()),
                             src2: None,

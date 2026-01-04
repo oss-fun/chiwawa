@@ -206,7 +206,7 @@ pub enum ProcessedInstr {
     },
     /// Slot-based I32 instruction
     I32Slot {
-        op: I32Op,
+        handler_index: usize,
         dst: u16,                     // Destination slot index
         src1: I32SlotOperand,         // First operand
         src2: Option<I32SlotOperand>, // Second operand (None for unary ops)
@@ -219,7 +219,7 @@ impl ProcessedInstr {
     pub fn handler_index(&self) -> usize {
         match self {
             ProcessedInstr::Legacy { handler_index, .. } => *handler_index,
-            _ => 0, // Slot-based instructions don't use handler_index
+            ProcessedInstr::I32Slot { handler_index, .. } => *handler_index,
         }
     }
 
@@ -800,172 +800,28 @@ impl FrameStack {
             // Match on instruction type
             match instruction_ref {
                 ProcessedInstr::I32Slot {
-                    op,
+                    handler_index,
                     dst,
                     src1,
                     src2,
                 } => {
-                    // Execute slot-based I32 instruction
                     let slot_file = self
                         .frame
                         .slot_file
                         .as_mut()
                         .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
 
-                    // Helper to read operand value
-                    let read_operand = |operand: &I32SlotOperand| -> Result<i32, RuntimeError> {
-                        match operand {
-                            I32SlotOperand::Slot(idx) => Ok(slot_file.get_i32(*idx)),
-                            I32SlotOperand::Const(val) => Ok(*val),
-                            I32SlotOperand::Param(idx) => self.frame.locals[*idx as usize].to_i32(),
-                        }
+                    // Create context for handler
+                    let ctx = I32SlotContext {
+                        slot_file: slot_file.get_i32_slots(),
+                        locals: &self.frame.locals,
+                        src1: src1.clone(),
+                        src2: src2.clone(),
                     };
 
-                    // Helper to read src2 (expects Some)
-                    let read_src2 = || -> Result<i32, RuntimeError> {
-                        src2.as_ref()
-                            .ok_or(RuntimeError::InvalidWasm("Missing src2 operand"))
-                            .and_then(|operand| read_operand(operand))
-                    };
+                    let handler = I32_SLOT_HANDLER_TABLE[*handler_index];
+                    handler(ctx, *dst)?;
 
-                    let result = match op {
-                        I32Op::Const => read_operand(src1)?,
-                        I32Op::GetParam => read_operand(src1)?,
-                        I32Op::SetLocal => {
-                            // For SetLocal, we need to write to locals AND return the value
-                            let val = read_operand(src1)?;
-                            if let Some(I32SlotOperand::Param(local_idx)) = src2 {
-                                self.frame.locals[*local_idx as usize] = Val::Num(Num::I32(val));
-                            }
-                            val
-                        }
-                        I32Op::Add => read_operand(src1)?.wrapping_add(read_src2()?),
-                        I32Op::Sub => read_operand(src1)?.wrapping_sub(read_src2()?),
-                        I32Op::Mul => read_operand(src1)?.wrapping_mul(read_src2()?),
-                        I32Op::DivS => {
-                            let divisor = read_src2()?;
-                            if divisor == 0 {
-                                return Err(RuntimeError::ZeroDivideError);
-                            }
-                            read_operand(src1)?.wrapping_div(divisor)
-                        }
-                        I32Op::DivU => {
-                            let divisor = read_src2()? as u32;
-                            if divisor == 0 {
-                                return Err(RuntimeError::ZeroDivideError);
-                            }
-                            ((read_operand(src1)? as u32) / divisor) as i32
-                        }
-                        I32Op::RemS => {
-                            let divisor = read_src2()?;
-                            if divisor == 0 {
-                                return Err(RuntimeError::ZeroDivideError);
-                            }
-                            read_operand(src1)?.wrapping_rem(divisor)
-                        }
-                        I32Op::RemU => {
-                            let divisor = read_src2()? as u32;
-                            if divisor == 0 {
-                                return Err(RuntimeError::ZeroDivideError);
-                            }
-                            ((read_operand(src1)? as u32) % divisor) as i32
-                        }
-                        I32Op::And => read_operand(src1)? & read_src2()?,
-                        I32Op::Or => read_operand(src1)? | read_src2()?,
-                        I32Op::Xor => read_operand(src1)? ^ read_src2()?,
-                        I32Op::Shl => read_operand(src1)?.wrapping_shl(read_src2()? as u32),
-                        I32Op::ShrS => read_operand(src1)?.wrapping_shr(read_src2()? as u32),
-                        I32Op::ShrU => {
-                            ((read_operand(src1)? as u32).wrapping_shr(read_src2()? as u32)) as i32
-                        }
-                        I32Op::Rotl => read_operand(src1)?.rotate_left(read_src2()? as u32),
-                        I32Op::Rotr => read_operand(src1)?.rotate_right(read_src2()? as u32),
-                        I32Op::Eq => {
-                            if read_operand(src1)? == read_src2()? {
-                                1
-                            } else {
-                                0
-                            }
-                        }
-                        I32Op::Ne => {
-                            if read_operand(src1)? != read_src2()? {
-                                1
-                            } else {
-                                0
-                            }
-                        }
-                        I32Op::LtS => {
-                            if read_operand(src1)? < read_src2()? {
-                                1
-                            } else {
-                                0
-                            }
-                        }
-                        I32Op::LtU => {
-                            if (read_operand(src1)? as u32) < (read_src2()? as u32) {
-                                1
-                            } else {
-                                0
-                            }
-                        }
-                        I32Op::LeS => {
-                            if read_operand(src1)? <= read_src2()? {
-                                1
-                            } else {
-                                0
-                            }
-                        }
-                        I32Op::LeU => {
-                            if (read_operand(src1)? as u32) <= (read_src2()? as u32) {
-                                1
-                            } else {
-                                0
-                            }
-                        }
-                        I32Op::GtS => {
-                            if read_operand(src1)? > read_src2()? {
-                                1
-                            } else {
-                                0
-                            }
-                        }
-                        I32Op::GtU => {
-                            if (read_operand(src1)? as u32) > (read_src2()? as u32) {
-                                1
-                            } else {
-                                0
-                            }
-                        }
-                        I32Op::GeS => {
-                            if read_operand(src1)? >= read_src2()? {
-                                1
-                            } else {
-                                0
-                            }
-                        }
-                        I32Op::GeU => {
-                            if (read_operand(src1)? as u32) >= (read_src2()? as u32) {
-                                1
-                            } else {
-                                0
-                            }
-                        }
-                        I32Op::Clz => read_operand(src1)?.leading_zeros() as i32,
-                        I32Op::Ctz => read_operand(src1)?.trailing_zeros() as i32,
-                        I32Op::Popcnt => read_operand(src1)?.count_ones() as i32,
-                        I32Op::Eqz => {
-                            if read_operand(src1)? == 0 {
-                                1
-                            } else {
-                                0
-                            }
-                        }
-                        I32Op::Extend8S => (read_operand(src1)? as i8) as i32,
-                        I32Op::Extend16S => (read_operand(src1)? as i16) as i32,
-                        _ => return Err(RuntimeError::InvalidWasm("Unsupported I32 operation")),
-                    };
-
-                    slot_file.set_i32(*dst, result);
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
                 }
@@ -5348,4 +5204,319 @@ impl<'a> ExecutionContext<'a> {
         values.reverse();
         Ok(values)
     }
+}
+
+struct I32SlotContext<'a> {
+    slot_file: &'a mut [i32],
+    locals: &'a [Val],
+    src1: I32SlotOperand,
+    src2: Option<I32SlotOperand>,
+}
+
+impl<'a> I32SlotContext<'a> {
+    #[inline]
+    fn get_operand(&self, operand: &I32SlotOperand) -> Result<i32, RuntimeError> {
+        match operand {
+            I32SlotOperand::Slot(idx) => Ok(self.slot_file[*idx as usize]),
+            I32SlotOperand::Const(val) => Ok(*val),
+            I32SlotOperand::Param(idx) => self.locals[*idx as usize].to_i32(),
+        }
+    }
+}
+
+fn i32_slot_local_get(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.slot_file[dst as usize] = val;
+    Ok(())
+}
+
+fn i32_slot_const(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.slot_file[dst as usize] = val;
+    Ok(())
+}
+
+fn i32_slot_add(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = lhs.wrapping_add(rhs);
+    Ok(())
+}
+
+fn i32_slot_sub(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = lhs.wrapping_sub(rhs);
+    Ok(())
+}
+
+fn i32_slot_mul(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = lhs.wrapping_mul(rhs);
+    Ok(())
+}
+
+fn i32_slot_div_s(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    if rhs == 0 {
+        return Err(RuntimeError::ZeroDivideError);
+    }
+    ctx.slot_file[dst as usize] = lhs.wrapping_div(rhs);
+    Ok(())
+}
+
+fn i32_slot_div_u(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    let rhs_u = rhs as u32;
+    if rhs_u == 0 {
+        return Err(RuntimeError::ZeroDivideError);
+    }
+    ctx.slot_file[dst as usize] = ((lhs as u32) / rhs_u) as i32;
+    Ok(())
+}
+
+fn i32_slot_rem_s(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    if rhs == 0 {
+        return Err(RuntimeError::ZeroDivideError);
+    }
+    ctx.slot_file[dst as usize] = lhs.wrapping_rem(rhs);
+    Ok(())
+}
+
+fn i32_slot_rem_u(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    let rhs_u = rhs as u32;
+    if rhs_u == 0 {
+        return Err(RuntimeError::ZeroDivideError);
+    }
+    ctx.slot_file[dst as usize] = ((lhs as u32) % rhs_u) as i32;
+    Ok(())
+}
+
+fn i32_slot_and(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = lhs & rhs;
+    Ok(())
+}
+
+fn i32_slot_or(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = lhs | rhs;
+    Ok(())
+}
+
+fn i32_slot_xor(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = lhs ^ rhs;
+    Ok(())
+}
+
+fn i32_slot_shl(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = lhs.wrapping_shl(rhs as u32);
+    Ok(())
+}
+
+fn i32_slot_shr_s(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = lhs.wrapping_shr(rhs as u32);
+    Ok(())
+}
+
+fn i32_slot_shr_u(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = ((lhs as u32).wrapping_shr(rhs as u32)) as i32;
+    Ok(())
+}
+
+fn i32_slot_rotl(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = lhs.rotate_left(rhs as u32);
+    Ok(())
+}
+
+fn i32_slot_rotr(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = lhs.rotate_right(rhs as u32);
+    Ok(())
+}
+
+// Comparison handlers
+fn i32_slot_eq(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = if lhs == rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn i32_slot_ne(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = if lhs != rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn i32_slot_lt_s(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = if lhs < rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn i32_slot_lt_u(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = if (lhs as u32) < (rhs as u32) { 1 } else { 0 };
+    Ok(())
+}
+
+fn i32_slot_le_s(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = if lhs <= rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn i32_slot_le_u(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = if (lhs as u32) <= (rhs as u32) { 1 } else { 0 };
+    Ok(())
+}
+
+fn i32_slot_gt_s(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = if lhs > rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn i32_slot_gt_u(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = if (lhs as u32) > (rhs as u32) { 1 } else { 0 };
+    Ok(())
+}
+
+fn i32_slot_ge_s(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = if lhs >= rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn i32_slot_ge_u(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.slot_file[dst as usize] = if (lhs as u32) >= (rhs as u32) { 1 } else { 0 };
+    Ok(())
+}
+
+// Unary operation handlers
+fn i32_slot_clz(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.slot_file[dst as usize] = val.leading_zeros() as i32;
+    Ok(())
+}
+
+fn i32_slot_ctz(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.slot_file[dst as usize] = val.trailing_zeros() as i32;
+    Ok(())
+}
+
+fn i32_slot_popcnt(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.slot_file[dst as usize] = val.count_ones() as i32;
+    Ok(())
+}
+
+fn i32_slot_eqz(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.slot_file[dst as usize] = if val == 0 { 1 } else { 0 };
+    Ok(())
+}
+
+fn i32_slot_extend8_s(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.slot_file[dst as usize] = (val as i8) as i32;
+    Ok(())
+}
+
+fn i32_slot_extend16_s(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.slot_file[dst as usize] = (val as i16) as i32;
+    Ok(())
+}
+
+// Handler function type
+type I32SlotHandler = fn(I32SlotContext, u16) -> Result<(), RuntimeError>;
+
+// Default error handler
+fn i32_slot_invalid_handler(_ctx: I32SlotContext, _dst: u16) -> Result<(), RuntimeError> {
+    Err(RuntimeError::InvalidHandlerIndex)
+}
+
+// I32 Slot Handler Table
+lazy_static! {
+    static ref I32_SLOT_HANDLER_TABLE: Vec<I32SlotHandler> = {
+        let mut table: Vec<I32SlotHandler> = vec![i32_slot_invalid_handler; 256];
+
+        // Special handlers
+        table[HANDLER_IDX_LOCAL_GET] = i32_slot_local_get;
+        table[HANDLER_IDX_I32_CONST] = i32_slot_const;
+
+        // Binary operations
+        table[HANDLER_IDX_I32_ADD] = i32_slot_add;
+        table[HANDLER_IDX_I32_SUB] = i32_slot_sub;
+        table[HANDLER_IDX_I32_MUL] = i32_slot_mul;
+        table[HANDLER_IDX_I32_DIV_S] = i32_slot_div_s;
+        table[HANDLER_IDX_I32_DIV_U] = i32_slot_div_u;
+        table[HANDLER_IDX_I32_REM_S] = i32_slot_rem_s;
+        table[HANDLER_IDX_I32_REM_U] = i32_slot_rem_u;
+        table[HANDLER_IDX_I32_AND] = i32_slot_and;
+        table[HANDLER_IDX_I32_OR] = i32_slot_or;
+        table[HANDLER_IDX_I32_XOR] = i32_slot_xor;
+        table[HANDLER_IDX_I32_SHL] = i32_slot_shl;
+        table[HANDLER_IDX_I32_SHR_S] = i32_slot_shr_s;
+        table[HANDLER_IDX_I32_SHR_U] = i32_slot_shr_u;
+        table[HANDLER_IDX_I32_ROTL] = i32_slot_rotl;
+        table[HANDLER_IDX_I32_ROTR] = i32_slot_rotr;
+
+        // Comparisons
+        table[HANDLER_IDX_I32_EQ] = i32_slot_eq;
+        table[HANDLER_IDX_I32_NE] = i32_slot_ne;
+        table[HANDLER_IDX_I32_LT_S] = i32_slot_lt_s;
+        table[HANDLER_IDX_I32_LT_U] = i32_slot_lt_u;
+        table[HANDLER_IDX_I32_LE_S] = i32_slot_le_s;
+        table[HANDLER_IDX_I32_LE_U] = i32_slot_le_u;
+        table[HANDLER_IDX_I32_GT_S] = i32_slot_gt_s;
+        table[HANDLER_IDX_I32_GT_U] = i32_slot_gt_u;
+        table[HANDLER_IDX_I32_GE_S] = i32_slot_ge_s;
+        table[HANDLER_IDX_I32_GE_U] = i32_slot_ge_u;
+
+        // Unary operations
+        table[HANDLER_IDX_I32_CLZ] = i32_slot_clz;
+        table[HANDLER_IDX_I32_CTZ] = i32_slot_ctz;
+        table[HANDLER_IDX_I32_POPCNT] = i32_slot_popcnt;
+        table[HANDLER_IDX_I32_EQZ] = i32_slot_eqz;
+        table[HANDLER_IDX_I32_EXTEND8_S] = i32_slot_extend8_s;
+        table[HANDLER_IDX_I32_EXTEND16_S] = i32_slot_extend16_s;
+
+        table
+    };
 }
