@@ -148,6 +148,12 @@ impl SlotFile {
         (&mut self.i32_slots, &mut self.i64_slots)
     }
 
+    /// Get both i32 and f32 slots (for f32 comparison operations that write to i32)
+    #[inline(always)]
+    pub fn get_i32_and_f32_slots(&mut self) -> (&mut [i32], &mut [f32]) {
+        (&mut self.i32_slots, &mut self.f32_slots)
+    }
+
     /// Get value from slot as Val
     #[inline(always)]
     pub fn get_val(&self, slot: &Slot) -> Val {

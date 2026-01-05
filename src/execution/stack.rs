@@ -154,12 +154,18 @@ pub enum I32SlotOperand {
     Param(u16), // Read from parameter/local
 }
 
-/// Operand type for I64 slot-based instructions
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum I64SlotOperand {
-    Slot(u16),  // Read from slot
-    Const(i64), // Constant value
-    Param(u16), // Read from parameter/local
+    Slot(u16),
+    Const(i64),
+    Param(u16),
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum F32SlotOperand {
+    Slot(u16),
+    Const(f32),
+    Param(u16),
 }
 
 /// I32 operations for slot-based execution
@@ -223,9 +229,16 @@ pub enum ProcessedInstr {
     /// Slot-based I64 instruction
     I64Slot {
         handler_index: usize,
-        dst: Slot,            // Destination slot (I64 for arithmetic, I32 for comparisons)
-        src1: I64SlotOperand, // First operand
-        src2: Option<I64SlotOperand>, // Second operand (None for unary ops)
+        dst: Slot, // Destination slot (I64 for arithmetic, I32 for comparisons)
+        src1: I64SlotOperand,
+        src2: Option<I64SlotOperand>,
+    },
+
+    F32Slot {
+        handler_index: usize,
+        dst: Slot,
+        src1: F32SlotOperand,
+        src2: Option<F32SlotOperand>,
     },
 }
 
@@ -237,6 +250,7 @@ impl ProcessedInstr {
             ProcessedInstr::Legacy { handler_index, .. } => *handler_index,
             ProcessedInstr::I32Slot { handler_index, .. } => *handler_index,
             ProcessedInstr::I64Slot { handler_index, .. } => *handler_index,
+            ProcessedInstr::F32Slot { handler_index, .. } => *handler_index,
         }
     }
 
@@ -866,6 +880,35 @@ impl FrameStack {
                     };
 
                     let handler = I64_SLOT_HANDLER_TABLE[*handler_index];
+                    handler(ctx)?;
+
+                    self.label_stack[current_label_stack_idx].ip = ip + 1;
+                    continue;
+                }
+                ProcessedInstr::F32Slot {
+                    handler_index,
+                    dst,
+                    src1,
+                    src2,
+                } => {
+                    let slot_file = self
+                        .frame
+                        .slot_file
+                        .as_mut()
+                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
+
+                    // Get both i32 and f32 slots for comparison operations
+                    let (i32_slots, f32_slots) = slot_file.get_i32_and_f32_slots();
+                    let ctx = F32SlotContext {
+                        f32_slots,
+                        i32_slots,
+                        locals: &self.frame.locals,
+                        src1: src1.clone(),
+                        src2: src2.clone(),
+                        dst: dst.clone(),
+                    };
+
+                    let handler = F32_SLOT_HANDLER_TABLE[*handler_index];
                     handler(ctx)?;
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
@@ -5888,6 +5931,238 @@ lazy_static! {
         table[HANDLER_IDX_I64_LE_U] = i64_slot_le_u;
         table[HANDLER_IDX_I64_GE_S] = i64_slot_ge_s;
         table[HANDLER_IDX_I64_GE_U] = i64_slot_ge_u;
+
+        table
+    };
+}
+
+// F32 slot-based execution context and handlers
+type F32SlotHandler = fn(F32SlotContext) -> Result<(), RuntimeError>;
+
+fn f32_slot_invalid_handler(_ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    Err(RuntimeError::Trap)
+}
+
+struct F32SlotContext<'a> {
+    f32_slots: &'a mut [f32],
+    i32_slots: &'a mut [i32], // For comparison operations that return i32
+    locals: &'a [Val],
+    src1: F32SlotOperand,
+    src2: Option<F32SlotOperand>,
+    dst: Slot, // Destination slot (type determines which array to write to)
+}
+
+impl<'a> F32SlotContext<'a> {
+    #[inline]
+    fn get_operand(&self, operand: &F32SlotOperand) -> Result<f32, RuntimeError> {
+        match operand {
+            F32SlotOperand::Slot(idx) => Ok(self.f32_slots[*idx as usize]),
+            F32SlotOperand::Const(val) => Ok(*val),
+            F32SlotOperand::Param(idx) => self.locals[*idx as usize].to_f32(),
+        }
+    }
+}
+
+fn f32_slot_local_get(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.f32_slots[ctx.dst.index() as usize] = val;
+    Ok(())
+}
+
+fn f32_slot_const(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.f32_slots[ctx.dst.index() as usize] = val;
+    Ok(())
+}
+
+fn f32_slot_add(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.f32_slots[ctx.dst.index() as usize] = lhs + rhs;
+    Ok(())
+}
+
+fn f32_slot_sub(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.f32_slots[ctx.dst.index() as usize] = lhs - rhs;
+    Ok(())
+}
+
+fn f32_slot_mul(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.f32_slots[ctx.dst.index() as usize] = lhs * rhs;
+    Ok(())
+}
+
+fn f32_slot_div(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.f32_slots[ctx.dst.index() as usize] = lhs / rhs;
+    Ok(())
+}
+
+fn f32_slot_min(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.f32_slots[ctx.dst.index() as usize] = if lhs.is_nan() || rhs.is_nan() {
+        f32::NAN
+    } else if lhs == 0.0 && rhs == 0.0 {
+        if lhs.is_sign_negative() || rhs.is_sign_negative() {
+            -0.0
+        } else {
+            0.0
+        }
+    } else {
+        lhs.min(rhs)
+    };
+    Ok(())
+}
+
+fn f32_slot_max(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.f32_slots[ctx.dst.index() as usize] = if lhs.is_nan() || rhs.is_nan() {
+        f32::NAN
+    } else if lhs == 0.0 && rhs == 0.0 {
+        if lhs.is_sign_positive() || rhs.is_sign_positive() {
+            0.0
+        } else {
+            -0.0
+        }
+    } else {
+        lhs.max(rhs)
+    };
+    Ok(())
+}
+
+fn f32_slot_copysign(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.f32_slots[ctx.dst.index() as usize] = lhs.copysign(rhs);
+    Ok(())
+}
+
+// Unary operations
+fn f32_slot_abs(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.f32_slots[ctx.dst.index() as usize] = val.abs();
+    Ok(())
+}
+
+fn f32_slot_neg(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.f32_slots[ctx.dst.index() as usize] = -val;
+    Ok(())
+}
+
+fn f32_slot_ceil(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.f32_slots[ctx.dst.index() as usize] = val.ceil();
+    Ok(())
+}
+
+fn f32_slot_floor(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.f32_slots[ctx.dst.index() as usize] = val.floor();
+    Ok(())
+}
+
+fn f32_slot_trunc(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.f32_slots[ctx.dst.index() as usize] = val.trunc();
+    Ok(())
+}
+
+fn f32_slot_nearest(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.f32_slots[ctx.dst.index() as usize] = val.round_ties_even();
+    Ok(())
+}
+
+fn f32_slot_sqrt(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.f32_slots[ctx.dst.index() as usize] = val.sqrt();
+    Ok(())
+}
+
+// Comparison operations (return i32)
+fn f32_slot_eq(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if lhs == rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn f32_slot_ne(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if lhs != rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn f32_slot_lt(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if lhs < rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn f32_slot_gt(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if lhs > rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn f32_slot_le(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if lhs <= rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn f32_slot_ge(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if lhs >= rhs { 1 } else { 0 };
+    Ok(())
+}
+
+lazy_static! {
+    static ref F32_SLOT_HANDLER_TABLE: Vec<F32SlotHandler> = {
+        let mut table: Vec<F32SlotHandler> = vec![f32_slot_invalid_handler; 256];
+
+        // Special handlers
+        table[HANDLER_IDX_LOCAL_GET] = f32_slot_local_get;
+        table[HANDLER_IDX_F32_CONST] = f32_slot_const;
+
+        // Binary operations
+        table[HANDLER_IDX_F32_ADD] = f32_slot_add;
+        table[HANDLER_IDX_F32_SUB] = f32_slot_sub;
+        table[HANDLER_IDX_F32_MUL] = f32_slot_mul;
+        table[HANDLER_IDX_F32_DIV] = f32_slot_div;
+        table[HANDLER_IDX_F32_MIN] = f32_slot_min;
+        table[HANDLER_IDX_F32_MAX] = f32_slot_max;
+        table[HANDLER_IDX_F32_COPYSIGN] = f32_slot_copysign;
+
+        // Unary operations
+        table[HANDLER_IDX_F32_ABS] = f32_slot_abs;
+        table[HANDLER_IDX_F32_NEG] = f32_slot_neg;
+        table[HANDLER_IDX_F32_CEIL] = f32_slot_ceil;
+        table[HANDLER_IDX_F32_FLOOR] = f32_slot_floor;
+        table[HANDLER_IDX_F32_TRUNC] = f32_slot_trunc;
+        table[HANDLER_IDX_F32_NEAREST] = f32_slot_nearest;
+        table[HANDLER_IDX_F32_SQRT] = f32_slot_sqrt;
+
+        // Comparison operations (return i32)
+        table[HANDLER_IDX_F32_EQ] = f32_slot_eq;
+        table[HANDLER_IDX_F32_NE] = f32_slot_ne;
+        table[HANDLER_IDX_F32_LT] = f32_slot_lt;
+        table[HANDLER_IDX_F32_GT] = f32_slot_gt;
+        table[HANDLER_IDX_F32_LE] = f32_slot_le;
+        table[HANDLER_IDX_F32_GE] = f32_slot_ge;
 
         table
     };

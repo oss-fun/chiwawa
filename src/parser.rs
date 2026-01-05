@@ -1657,6 +1657,18 @@ fn decode_processed_instrs_and_fixups<'a>(
                                 None,
                             )
                         }
+                        ValueType::NumType(NumType::F32) => {
+                            let dst = allocator.push(local_type);
+                            (
+                                ProcessedInstr::F32Slot {
+                                    handler_index: HANDLER_IDX_LOCAL_GET,
+                                    dst,
+                                    src1: F32SlotOperand::Param(*local_index as u16),
+                                    src2: None,
+                                },
+                                None,
+                            )
+                        }
                         _ => {
                             // For other types, fall back to Legacy mode
                             map_operator_to_initial_instr_and_fixup(
@@ -2556,6 +2568,295 @@ fn decode_processed_instrs_and_fixups<'a>(
                             dst,
                             src1: I64SlotOperand::Slot(src1.index()),
                             src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                // F32 Const
+                wasmparser::Operator::F32Const { value } => {
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_CONST,
+                            dst,
+                            src1: F32SlotOperand::Const(f32::from_bits(value.bits())),
+                            src2: None,
+                        },
+                        None,
+                    )
+                }
+                // F32 Binary arithmetic operations
+                wasmparser::Operator::F32Add => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_ADD,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Sub => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_SUB,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Mul => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_MUL,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Div => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_DIV,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Min => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_MIN,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Max => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_MAX,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Copysign => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_COPYSIGN,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                // F32 Unary operations
+                wasmparser::Operator::F32Abs => {
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_ABS,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: None,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Neg => {
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_NEG,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: None,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Ceil => {
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_CEIL,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: None,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Floor => {
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_FLOOR,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: None,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Trunc => {
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_TRUNC,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: None,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Nearest => {
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_NEAREST,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: None,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Sqrt => {
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_SQRT,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: None,
+                        },
+                        None,
+                    )
+                }
+                // F32 Comparison operations (return i32)
+                wasmparser::Operator::F32Eq => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_EQ,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Ne => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_NE,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Lt => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_LT,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Gt => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_GT,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Le => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_LE,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Ge => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::F32Slot {
+                            handler_index: HANDLER_IDX_F32_GE,
+                            dst,
+                            src1: F32SlotOperand::Slot(src1.index()),
+                            src2: Some(F32SlotOperand::Slot(src2.index())),
                         },
                         None,
                     )
