@@ -168,6 +168,13 @@ pub enum F32SlotOperand {
     Param(u16),
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum F64SlotOperand {
+    Slot(u16),
+    Const(f64),
+    Param(u16),
+}
+
 /// I32 operations for slot-based execution
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum I32Op {
@@ -240,6 +247,13 @@ pub enum ProcessedInstr {
         src1: F32SlotOperand,
         src2: Option<F32SlotOperand>,
     },
+
+    F64Slot {
+        handler_index: usize,
+        dst: Slot,
+        src1: F64SlotOperand,
+        src2: Option<F64SlotOperand>,
+    },
 }
 
 impl ProcessedInstr {
@@ -251,6 +265,7 @@ impl ProcessedInstr {
             ProcessedInstr::I32Slot { handler_index, .. } => *handler_index,
             ProcessedInstr::I64Slot { handler_index, .. } => *handler_index,
             ProcessedInstr::F32Slot { handler_index, .. } => *handler_index,
+            ProcessedInstr::F64Slot { handler_index, .. } => *handler_index,
         }
     }
 
@@ -909,6 +924,35 @@ impl FrameStack {
                     };
 
                     let handler = F32_SLOT_HANDLER_TABLE[*handler_index];
+                    handler(ctx)?;
+
+                    self.label_stack[current_label_stack_idx].ip = ip + 1;
+                    continue;
+                }
+                ProcessedInstr::F64Slot {
+                    handler_index,
+                    dst,
+                    src1,
+                    src2,
+                } => {
+                    let slot_file = self
+                        .frame
+                        .slot_file
+                        .as_mut()
+                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
+
+                    // Get both i32 and f64 slots for comparison operations
+                    let (i32_slots, f64_slots) = slot_file.get_i32_and_f64_slots();
+                    let ctx = F64SlotContext {
+                        f64_slots,
+                        i32_slots,
+                        locals: &self.frame.locals,
+                        src1: src1.clone(),
+                        src2: src2.clone(),
+                        dst: dst.clone(),
+                    };
+
+                    let handler = F64_SLOT_HANDLER_TABLE[*handler_index];
                     handler(ctx)?;
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
@@ -6163,6 +6207,238 @@ lazy_static! {
         table[HANDLER_IDX_F32_GT] = f32_slot_gt;
         table[HANDLER_IDX_F32_LE] = f32_slot_le;
         table[HANDLER_IDX_F32_GE] = f32_slot_ge;
+
+        table
+    };
+}
+
+// F64 slot-based execution context and handlers
+type F64SlotHandler = fn(F64SlotContext) -> Result<(), RuntimeError>;
+
+fn f64_slot_invalid_handler(_ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    Err(RuntimeError::Trap)
+}
+
+struct F64SlotContext<'a> {
+    f64_slots: &'a mut [f64],
+    i32_slots: &'a mut [i32], // For comparison operations that return i32
+    locals: &'a [Val],
+    src1: F64SlotOperand,
+    src2: Option<F64SlotOperand>,
+    dst: Slot,
+}
+
+impl<'a> F64SlotContext<'a> {
+    #[inline]
+    fn get_operand(&self, operand: &F64SlotOperand) -> Result<f64, RuntimeError> {
+        match operand {
+            F64SlotOperand::Slot(idx) => Ok(self.f64_slots[*idx as usize]),
+            F64SlotOperand::Const(val) => Ok(*val),
+            F64SlotOperand::Param(idx) => self.locals[*idx as usize].to_f64(),
+        }
+    }
+}
+
+fn f64_slot_local_get(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.f64_slots[ctx.dst.index() as usize] = val;
+    Ok(())
+}
+
+fn f64_slot_const(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.f64_slots[ctx.dst.index() as usize] = val;
+    Ok(())
+}
+
+fn f64_slot_add(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.f64_slots[ctx.dst.index() as usize] = lhs + rhs;
+    Ok(())
+}
+
+fn f64_slot_sub(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.f64_slots[ctx.dst.index() as usize] = lhs - rhs;
+    Ok(())
+}
+
+fn f64_slot_mul(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.f64_slots[ctx.dst.index() as usize] = lhs * rhs;
+    Ok(())
+}
+
+fn f64_slot_div(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.f64_slots[ctx.dst.index() as usize] = lhs / rhs;
+    Ok(())
+}
+
+fn f64_slot_min(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.f64_slots[ctx.dst.index() as usize] = if lhs.is_nan() || rhs.is_nan() {
+        f64::NAN
+    } else if lhs == 0.0 && rhs == 0.0 {
+        if lhs.is_sign_negative() || rhs.is_sign_negative() {
+            -0.0
+        } else {
+            0.0
+        }
+    } else {
+        lhs.min(rhs)
+    };
+    Ok(())
+}
+
+fn f64_slot_max(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.f64_slots[ctx.dst.index() as usize] = if lhs.is_nan() || rhs.is_nan() {
+        f64::NAN
+    } else if lhs == 0.0 && rhs == 0.0 {
+        if lhs.is_sign_positive() || rhs.is_sign_positive() {
+            0.0
+        } else {
+            -0.0
+        }
+    } else {
+        lhs.max(rhs)
+    };
+    Ok(())
+}
+
+fn f64_slot_copysign(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.f64_slots[ctx.dst.index() as usize] = lhs.copysign(rhs);
+    Ok(())
+}
+
+// Unary operations
+fn f64_slot_abs(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.f64_slots[ctx.dst.index() as usize] = val.abs();
+    Ok(())
+}
+
+fn f64_slot_neg(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.f64_slots[ctx.dst.index() as usize] = -val;
+    Ok(())
+}
+
+fn f64_slot_ceil(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.f64_slots[ctx.dst.index() as usize] = val.ceil();
+    Ok(())
+}
+
+fn f64_slot_floor(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.f64_slots[ctx.dst.index() as usize] = val.floor();
+    Ok(())
+}
+
+fn f64_slot_trunc(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.f64_slots[ctx.dst.index() as usize] = val.trunc();
+    Ok(())
+}
+
+fn f64_slot_nearest(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.f64_slots[ctx.dst.index() as usize] = val.round_ties_even();
+    Ok(())
+}
+
+fn f64_slot_sqrt(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.f64_slots[ctx.dst.index() as usize] = val.sqrt();
+    Ok(())
+}
+
+// Comparison operations (return i32)
+fn f64_slot_eq(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if lhs == rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn f64_slot_ne(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if lhs != rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn f64_slot_lt(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if lhs < rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn f64_slot_gt(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if lhs > rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn f64_slot_le(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if lhs <= rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn f64_slot_ge(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if lhs >= rhs { 1 } else { 0 };
+    Ok(())
+}
+
+lazy_static! {
+    static ref F64_SLOT_HANDLER_TABLE: Vec<F64SlotHandler> = {
+        let mut table: Vec<F64SlotHandler> = vec![f64_slot_invalid_handler; 256];
+
+        // Special handlers
+        table[HANDLER_IDX_LOCAL_GET] = f64_slot_local_get;
+        table[HANDLER_IDX_F64_CONST] = f64_slot_const;
+
+        // Binary operations
+        table[HANDLER_IDX_F64_ADD] = f64_slot_add;
+        table[HANDLER_IDX_F64_SUB] = f64_slot_sub;
+        table[HANDLER_IDX_F64_MUL] = f64_slot_mul;
+        table[HANDLER_IDX_F64_DIV] = f64_slot_div;
+        table[HANDLER_IDX_F64_MIN] = f64_slot_min;
+        table[HANDLER_IDX_F64_MAX] = f64_slot_max;
+        table[HANDLER_IDX_F64_COPYSIGN] = f64_slot_copysign;
+
+        // Unary operations
+        table[HANDLER_IDX_F64_ABS] = f64_slot_abs;
+        table[HANDLER_IDX_F64_NEG] = f64_slot_neg;
+        table[HANDLER_IDX_F64_CEIL] = f64_slot_ceil;
+        table[HANDLER_IDX_F64_FLOOR] = f64_slot_floor;
+        table[HANDLER_IDX_F64_TRUNC] = f64_slot_trunc;
+        table[HANDLER_IDX_F64_NEAREST] = f64_slot_nearest;
+        table[HANDLER_IDX_F64_SQRT] = f64_slot_sqrt;
+
+        // Comparison operations (return i32)
+        table[HANDLER_IDX_F64_EQ] = f64_slot_eq;
+        table[HANDLER_IDX_F64_NE] = f64_slot_ne;
+        table[HANDLER_IDX_F64_LT] = f64_slot_lt;
+        table[HANDLER_IDX_F64_GT] = f64_slot_gt;
+        table[HANDLER_IDX_F64_LE] = f64_slot_le;
+        table[HANDLER_IDX_F64_GE] = f64_slot_ge;
 
         table
     };
