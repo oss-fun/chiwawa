@@ -5,6 +5,7 @@ use crate::execution::{
     memoization::{GlobalAccessTracker, LocalAccessTracker},
     migration,
     module::*,
+    slots::Slot,
 };
 use crate::structure::types::LabelIdx as StructureLabelIdx;
 use crate::structure::{instructions::*, types::*};
@@ -153,6 +154,14 @@ pub enum I32SlotOperand {
     Param(u16), // Read from parameter/local
 }
 
+/// Operand type for I64 slot-based instructions
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum I64SlotOperand {
+    Slot(u16),  // Read from slot
+    Const(i64), // Constant value
+    Param(u16), // Read from parameter/local
+}
+
 /// I32 operations for slot-based execution
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum I32Op {
@@ -211,6 +220,13 @@ pub enum ProcessedInstr {
         src1: I32SlotOperand,         // First operand
         src2: Option<I32SlotOperand>, // Second operand (None for unary ops)
     },
+    /// Slot-based I64 instruction
+    I64Slot {
+        handler_index: usize,
+        dst: Slot,            // Destination slot (I64 for arithmetic, I32 for comparisons)
+        src1: I64SlotOperand, // First operand
+        src2: Option<I64SlotOperand>, // Second operand (None for unary ops)
+    },
 }
 
 impl ProcessedInstr {
@@ -220,6 +236,7 @@ impl ProcessedInstr {
         match self {
             ProcessedInstr::Legacy { handler_index, .. } => *handler_index,
             ProcessedInstr::I32Slot { handler_index, .. } => *handler_index,
+            ProcessedInstr::I64Slot { handler_index, .. } => *handler_index,
         }
     }
 
@@ -660,7 +677,7 @@ pub struct Frame {
     pub module: Weak<ModuleInst>,
     pub n: usize,
     pub slot_file: Option<crate::execution::slots::SlotFile>, // Used in slot mode
-    pub result_slot: Option<u16>, // Slot index for return value (slot mode only)
+    pub result_slot: Option<crate::execution::slots::Slot>, // Slot for return value (slot mode only)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -821,6 +838,35 @@ impl FrameStack {
 
                     let handler = I32_SLOT_HANDLER_TABLE[*handler_index];
                     handler(ctx, *dst)?;
+
+                    self.label_stack[current_label_stack_idx].ip = ip + 1;
+                    continue;
+                }
+                ProcessedInstr::I64Slot {
+                    handler_index,
+                    dst,
+                    src1,
+                    src2,
+                } => {
+                    let slot_file = self
+                        .frame
+                        .slot_file
+                        .as_mut()
+                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
+
+                    // Get both i32 and i64 slots for comparison operations
+                    let (i32_slots, i64_slots) = slot_file.get_i32_and_i64_slots();
+                    let ctx = I64SlotContext {
+                        i64_slots,
+                        i32_slots,
+                        locals: &self.frame.locals,
+                        src1: src1.clone(),
+                        src2: src2.clone(),
+                        dst: dst.clone(),
+                    };
+
+                    let handler = I64_SLOT_HANDLER_TABLE[*handler_index];
+                    handler(ctx)?;
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
@@ -1072,13 +1118,14 @@ impl FrameStack {
 
                                         // Extract the result values from slot_file or global stack
                                         let result_values =
-                                            if let (Some(ref slot_file), Some(result_slot)) =
-                                                (&self.frame.slot_file, self.frame.result_slot)
+                                            if let (Some(ref slot_file), Some(ref result_slot)) =
+                                                (&self.frame.slot_file, &self.frame.result_slot)
                                             {
                                                 // Slot mode: read result from specified slot
+                                                // TODO: Optimize slot-to-slot return value passing
+                                                // (eliminate global_value_stack for slot mode -> slot mode calls)
                                                 if arity > 0 {
-                                                    let value = slot_file.get_i32(result_slot);
-                                                    vec![Val::Num(Num::I32(value))]
+                                                    vec![slot_file.get_val(result_slot)]
                                                 } else {
                                                     Vec::new()
                                                 }
@@ -1202,14 +1249,15 @@ impl FrameStack {
 
                                         // Extract the function result values from slot_file or global stack
                                         if function_arity > 0 {
-                                            if let (Some(ref slot_file), Some(result_slot)) =
-                                                (&self.frame.slot_file, self.frame.result_slot)
+                                            if let (Some(ref slot_file), Some(ref result_slot)) =
+                                                (&self.frame.slot_file, &self.frame.result_slot)
                                             {
                                                 // Slot mode: read result from specified slot
-                                                let value = slot_file.get_i32(result_slot);
+                                                // TODO: Optimize slot-to-slot return value passing
+                                                // (eliminate global_value_stack for slot mode -> slot mode calls)
+                                                let result_val = slot_file.get_val(result_slot);
                                                 self.global_value_stack.clear();
-                                                self.global_value_stack
-                                                    .push(Val::Num(Num::I32(value)));
+                                                self.global_value_stack.push(result_val);
                                             } else if self.global_value_stack.len()
                                                 >= function_arity
                                             {
@@ -5516,6 +5564,330 @@ lazy_static! {
         table[HANDLER_IDX_I32_EQZ] = i32_slot_eqz;
         table[HANDLER_IDX_I32_EXTEND8_S] = i32_slot_extend8_s;
         table[HANDLER_IDX_I32_EXTEND16_S] = i32_slot_extend16_s;
+
+        table
+    };
+}
+
+struct I64SlotContext<'a> {
+    i64_slots: &'a mut [i64],
+    i32_slots: &'a mut [i32], // For comparison operations that return i32
+    locals: &'a [Val],
+    src1: I64SlotOperand,
+    src2: Option<I64SlotOperand>,
+    dst: Slot, // Destination slot (type determines which array to write to)
+}
+
+impl<'a> I64SlotContext<'a> {
+    #[inline]
+    fn get_operand(&self, operand: &I64SlotOperand) -> Result<i64, RuntimeError> {
+        match operand {
+            I64SlotOperand::Slot(idx) => Ok(self.i64_slots[*idx as usize]),
+            I64SlotOperand::Const(val) => Ok(*val),
+            I64SlotOperand::Param(idx) => self.locals[*idx as usize].to_i64(),
+        }
+    }
+}
+
+fn i64_slot_local_get(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.i64_slots[ctx.dst.index() as usize] = val;
+    Ok(())
+}
+
+fn i64_slot_const(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.i64_slots[ctx.dst.index() as usize] = val;
+    Ok(())
+}
+
+fn i64_slot_add(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i64_slots[ctx.dst.index() as usize] = lhs.wrapping_add(rhs);
+    Ok(())
+}
+
+fn i64_slot_sub(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i64_slots[ctx.dst.index() as usize] = lhs.wrapping_sub(rhs);
+    Ok(())
+}
+
+fn i64_slot_mul(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i64_slots[ctx.dst.index() as usize] = lhs.wrapping_mul(rhs);
+    Ok(())
+}
+
+fn i64_slot_div_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    if rhs == 0 {
+        return Err(RuntimeError::ZeroDivideError);
+    }
+    if lhs == i64::MIN && rhs == -1 {
+        return Err(RuntimeError::IntegerOverflow);
+    }
+    ctx.i64_slots[ctx.dst.index() as usize] = lhs.wrapping_div(rhs);
+    Ok(())
+}
+
+fn i64_slot_div_u(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    let rhs_u = rhs as u64;
+    if rhs_u == 0 {
+        return Err(RuntimeError::ZeroDivideError);
+    }
+    ctx.i64_slots[ctx.dst.index() as usize] = ((lhs as u64) / rhs_u) as i64;
+    Ok(())
+}
+
+fn i64_slot_rem_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    if rhs == 0 {
+        return Err(RuntimeError::ZeroDivideError);
+    }
+    ctx.i64_slots[ctx.dst.index() as usize] = lhs.wrapping_rem(rhs);
+    Ok(())
+}
+
+fn i64_slot_rem_u(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    let rhs_u = rhs as u64;
+    if rhs_u == 0 {
+        return Err(RuntimeError::ZeroDivideError);
+    }
+    ctx.i64_slots[ctx.dst.index() as usize] = ((lhs as u64) % rhs_u) as i64;
+    Ok(())
+}
+
+fn i64_slot_and(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i64_slots[ctx.dst.index() as usize] = lhs & rhs;
+    Ok(())
+}
+
+fn i64_slot_or(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i64_slots[ctx.dst.index() as usize] = lhs | rhs;
+    Ok(())
+}
+
+fn i64_slot_xor(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i64_slots[ctx.dst.index() as usize] = lhs ^ rhs;
+    Ok(())
+}
+
+fn i64_slot_shl(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i64_slots[ctx.dst.index() as usize] = lhs.wrapping_shl((rhs & 0x3f) as u32);
+    Ok(())
+}
+
+fn i64_slot_shr_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i64_slots[ctx.dst.index() as usize] = lhs.wrapping_shr((rhs & 0x3f) as u32);
+    Ok(())
+}
+
+fn i64_slot_shr_u(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i64_slots[ctx.dst.index() as usize] =
+        ((lhs as u64).wrapping_shr((rhs & 0x3f) as u32)) as i64;
+    Ok(())
+}
+
+fn i64_slot_rotl(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i64_slots[ctx.dst.index() as usize] = (lhs as u64).rotate_left((rhs & 0x3f) as u32) as i64;
+    Ok(())
+}
+
+fn i64_slot_rotr(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i64_slots[ctx.dst.index() as usize] = (lhs as u64).rotate_right((rhs & 0x3f) as u32) as i64;
+    Ok(())
+}
+
+fn i64_slot_clz(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.i64_slots[ctx.dst.index() as usize] = val.leading_zeros() as i64;
+    Ok(())
+}
+
+fn i64_slot_ctz(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.i64_slots[ctx.dst.index() as usize] = val.trailing_zeros() as i64;
+    Ok(())
+}
+
+fn i64_slot_popcnt(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.i64_slots[ctx.dst.index() as usize] = val.count_ones() as i64;
+    Ok(())
+}
+
+fn i64_slot_extend8_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.i64_slots[ctx.dst.index() as usize] = (val as i8) as i64;
+    Ok(())
+}
+
+fn i64_slot_extend16_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.i64_slots[ctx.dst.index() as usize] = (val as i16) as i64;
+    Ok(())
+}
+
+fn i64_slot_extend32_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.i64_slots[ctx.dst.index() as usize] = (val as i32) as i64;
+    Ok(())
+}
+
+// Comparison operations - write to i32_slots (ctx.dst is Slot::I32)
+fn i64_slot_eq(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if lhs == rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn i64_slot_ne(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if lhs != rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn i64_slot_lt_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if lhs < rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn i64_slot_lt_u(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if (lhs as u64) < (rhs as u64) { 1 } else { 0 };
+    Ok(())
+}
+
+fn i64_slot_le_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if lhs <= rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn i64_slot_le_u(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if (lhs as u64) <= (rhs as u64) { 1 } else { 0 };
+    Ok(())
+}
+
+fn i64_slot_gt_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if lhs > rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn i64_slot_gt_u(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if (lhs as u64) > (rhs as u64) { 1 } else { 0 };
+    Ok(())
+}
+
+fn i64_slot_ge_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if lhs >= rhs { 1 } else { 0 };
+    Ok(())
+}
+
+fn i64_slot_ge_u(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let lhs = ctx.get_operand(&ctx.src1)?;
+    let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if (lhs as u64) >= (rhs as u64) { 1 } else { 0 };
+    Ok(())
+}
+
+fn i64_slot_eqz(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.i32_slots[ctx.dst.index() as usize] = if val == 0 { 1 } else { 0 };
+    Ok(())
+}
+
+type I64SlotHandler = fn(I64SlotContext) -> Result<(), RuntimeError>;
+
+fn i64_slot_invalid_handler(_ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    Err(RuntimeError::InvalidHandlerIndex)
+}
+
+lazy_static! {
+    static ref I64_SLOT_HANDLER_TABLE: Vec<I64SlotHandler> = {
+        let mut table: Vec<I64SlotHandler> = vec![i64_slot_invalid_handler; 256];
+
+        // Special handlers
+        table[HANDLER_IDX_LOCAL_GET] = i64_slot_local_get;
+        table[HANDLER_IDX_I64_CONST] = i64_slot_const;
+
+        // Binary operations
+        table[HANDLER_IDX_I64_ADD] = i64_slot_add;
+        table[HANDLER_IDX_I64_SUB] = i64_slot_sub;
+        table[HANDLER_IDX_I64_MUL] = i64_slot_mul;
+        table[HANDLER_IDX_I64_DIV_S] = i64_slot_div_s;
+        table[HANDLER_IDX_I64_DIV_U] = i64_slot_div_u;
+        table[HANDLER_IDX_I64_REM_S] = i64_slot_rem_s;
+        table[HANDLER_IDX_I64_REM_U] = i64_slot_rem_u;
+        table[HANDLER_IDX_I64_AND] = i64_slot_and;
+        table[HANDLER_IDX_I64_OR] = i64_slot_or;
+        table[HANDLER_IDX_I64_XOR] = i64_slot_xor;
+        table[HANDLER_IDX_I64_SHL] = i64_slot_shl;
+        table[HANDLER_IDX_I64_SHR_S] = i64_slot_shr_s;
+        table[HANDLER_IDX_I64_SHR_U] = i64_slot_shr_u;
+        table[HANDLER_IDX_I64_ROTL] = i64_slot_rotl;
+        table[HANDLER_IDX_I64_ROTR] = i64_slot_rotr;
+
+        // Unary operations
+        table[HANDLER_IDX_I64_CLZ] = i64_slot_clz;
+        table[HANDLER_IDX_I64_CTZ] = i64_slot_ctz;
+        table[HANDLER_IDX_I64_POPCNT] = i64_slot_popcnt;
+        table[HANDLER_IDX_I64_EXTEND8_S] = i64_slot_extend8_s;
+        table[HANDLER_IDX_I64_EXTEND16_S] = i64_slot_extend16_s;
+        table[HANDLER_IDX_I64_EXTEND32_S] = i64_slot_extend32_s;
+
+        // Comparison operations (return i32)
+        table[HANDLER_IDX_I64_EQZ] = i64_slot_eqz;
+        table[HANDLER_IDX_I64_EQ] = i64_slot_eq;
+        table[HANDLER_IDX_I64_NE] = i64_slot_ne;
+        table[HANDLER_IDX_I64_LT_S] = i64_slot_lt_s;
+        table[HANDLER_IDX_I64_LT_U] = i64_slot_lt_u;
+        table[HANDLER_IDX_I64_GT_S] = i64_slot_gt_s;
+        table[HANDLER_IDX_I64_GT_U] = i64_slot_gt_u;
+        table[HANDLER_IDX_I64_LE_S] = i64_slot_le_s;
+        table[HANDLER_IDX_I64_LE_U] = i64_slot_le_u;
+        table[HANDLER_IDX_I64_GE_S] = i64_slot_ge_s;
+        table[HANDLER_IDX_I64_GE_U] = i64_slot_ge_u;
 
         table
     };

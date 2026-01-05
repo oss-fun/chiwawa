@@ -1105,6 +1105,19 @@ fn decode_code_section(
     let ops_reader = body.get_operators_reader()?;
     let ops_iter = ops_reader.into_iter_with_offsets();
 
+    // Get the function's parameter and result types for slot allocation
+    let relative_func_index_pre = func_index - module.num_imported_funcs;
+    let (param_types, result_types): (Vec<ValueType>, Vec<ValueType>) =
+        if let Some(func) = module.funcs.get(relative_func_index_pre) {
+            if let Some(func_type) = module.types.get(func.type_.0 as usize) {
+                (func_type.params.clone(), func_type.results.clone())
+            } else {
+                (Vec::new(), Vec::new())
+            }
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
     // Phase 1: Decode instructions and get necessary info for preprocessing
     let (
         mut processed_instrs,
@@ -1120,6 +1133,8 @@ fn decode_code_section(
         enable_superinstructions,
         execution_mode,
         &locals,
+        &param_types,
+        &result_types,
     )?;
 
     let relative_func_index = func_index - module.num_imported_funcs;
@@ -1527,14 +1542,30 @@ fn preprocess_instructions(
 }
 
 /// Get the type of a local variable from its index
-/// Locals are stored in compressed format: [(count, type), ...]
-fn get_local_type(locals: &[(u32, ValueType)], local_index: u32) -> ValueType {
-    let mut index = local_index;
+/// In WebAssembly, local indices include function parameters first, then declared locals.
+/// params: The function parameter types
+/// locals: Declared local variables in compressed format: [(count, type), ...]
+fn get_local_type(
+    params: &[ValueType],
+    locals: &[(u32, ValueType)],
+    local_index: u32,
+) -> ValueType {
+    let mut index = local_index as usize;
+
+    // First, check if the index is within the parameters range
+    if index < params.len() {
+        return params[index].clone();
+    }
+
+    // Subtract parameter count to get index into locals
+    index -= params.len();
+
+    // Now search through declared locals
     for (count, vtype) in locals {
-        if index < *count {
+        if index < *count as usize {
             return vtype.clone();
         }
-        index -= count;
+        index -= *count as usize;
     }
     // Should not reach here in valid wasm (wasmparser validates indices)
     ValueType::NumType(NumType::I32)
@@ -1546,6 +1577,8 @@ fn decode_processed_instrs_and_fixups<'a>(
     enable_superinstructions: bool,
     execution_mode: &str,
     locals: &[(u32, ValueType)],
+    param_types: &[ValueType],
+    result_types: &[ValueType],
 ) -> Result<
     (
         Vec<ProcessedInstr>,
@@ -1554,7 +1587,7 @@ fn decode_processed_instrs_and_fixups<'a>(
         FxHashMap<usize, usize>,
         FxHashMap<usize, wasmparser::BlockType>,
         Option<crate::execution::slots::SlotAllocation>,
-        Option<u16>, // result_slot
+        Option<crate::execution::slots::Slot>, // result_slot
     ),
     Box<dyn std::error::Error>,
 > {
@@ -1598,32 +1631,42 @@ fn decode_processed_instrs_and_fixups<'a>(
             use crate::execution::stack::{I32SlotOperand, ProcessedInstr};
             match &op {
                 wasmparser::Operator::LocalGet { local_index } => {
-                    let local_type = get_local_type(locals, *local_index);
-                    // Only handle i32 locals in slot mode for now
-                    if matches!(local_type, ValueType::NumType(NumType::I32)) {
-                        let dst = allocator.push(local_type);
-                        (
-                            ProcessedInstr::I32Slot {
-                                handler_index: HANDLER_IDX_LOCAL_GET,
-                                dst: dst.index(),
-                                src1: I32SlotOperand::Param(*local_index as u16),
-                                src2: None,
-                            },
-                            None,
-                        )
-                    } else {
-                        // For now, generate slot instruction anyway
-                        // This should be extended to support other types
-                        let dst = allocator.push(local_type);
-                        (
-                            ProcessedInstr::I32Slot {
-                                handler_index: HANDLER_IDX_LOCAL_GET,
-                                dst: dst.index(),
-                                src1: I32SlotOperand::Param(*local_index as u16),
-                                src2: None,
-                            },
-                            None,
-                        )
+                    let local_type = get_local_type(param_types, locals, *local_index);
+                    match local_type {
+                        ValueType::NumType(NumType::I32) => {
+                            let dst = allocator.push(local_type);
+                            (
+                                ProcessedInstr::I32Slot {
+                                    handler_index: HANDLER_IDX_LOCAL_GET,
+                                    dst: dst.index(),
+                                    src1: I32SlotOperand::Param(*local_index as u16),
+                                    src2: None,
+                                },
+                                None,
+                            )
+                        }
+                        ValueType::NumType(NumType::I64) => {
+                            let dst = allocator.push(local_type);
+                            (
+                                ProcessedInstr::I64Slot {
+                                    handler_index: HANDLER_IDX_LOCAL_GET,
+                                    dst,
+                                    src1: I64SlotOperand::Param(*local_index as u16),
+                                    src2: None,
+                                },
+                                None,
+                            )
+                        }
+                        _ => {
+                            // For other types, fall back to Legacy mode
+                            map_operator_to_initial_instr_and_fixup(
+                                &op,
+                                current_processed_pc,
+                                &control_info_stack,
+                                module,
+                                &mut BlockArityCache::new(),
+                            )?
+                        }
                     }
                 }
                 // Binary operations - macro to reduce repetition
@@ -2057,6 +2100,466 @@ fn decode_processed_instrs_and_fixups<'a>(
                         None,
                     )
                 }
+                // ============================================================================
+                // I64 Slot-based instructions
+                // ============================================================================
+                wasmparser::Operator::I64Const { value } => {
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_CONST,
+                            dst,
+                            src1: I64SlotOperand::Const(*value),
+                            src2: None,
+                        },
+                        None,
+                    )
+                }
+                // I64 Binary arithmetic operations
+                wasmparser::Operator::I64Add => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_ADD,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Sub => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_SUB,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Mul => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_MUL,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64DivS => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_DIV_S,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64DivU => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_DIV_U,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64RemS => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_REM_S,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64RemU => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_REM_U,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                // I64 Binary bitwise operations
+                wasmparser::Operator::I64And => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_AND,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Or => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_OR,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Xor => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_XOR,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Shl => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_SHL,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64ShrS => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_SHR_S,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64ShrU => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_SHR_U,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Rotl => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_ROTL,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Rotr => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_ROTR,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                // I64 Unary operations
+                wasmparser::Operator::I64Clz => {
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_CLZ,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: None,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Ctz => {
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_CTZ,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: None,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Popcnt => {
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_POPCNT,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: None,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Extend8S => {
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_EXTEND8_S,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: None,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Extend16S => {
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_EXTEND16_S,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: None,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Extend32S => {
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_EXTEND32_S,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: None,
+                        },
+                        None,
+                    )
+                }
+                // I64 Comparison operations (return i32)
+                wasmparser::Operator::I64Eqz => {
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_EQZ,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: None,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Eq => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_EQ,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Ne => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_NE,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64LtS => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_LT_S,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64LtU => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_LT_U,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64GtS => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_GT_S,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64GtU => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_GT_U,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64LeS => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_LE_S,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64LeU => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_LE_U,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64GeS => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_GE_S,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64GeU => {
+                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::I64Slot {
+                            handler_index: HANDLER_IDX_I64_GE_U,
+                            dst,
+                            src1: I64SlotOperand::Slot(src1.index()),
+                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                        },
+                        None,
+                    )
+                }
                 wasmparser::Operator::End => {
                     // End is a control flow instruction, use Legacy
                     // In slot mode, the End handler will read the return value from slot_file
@@ -2069,7 +2572,14 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )?
                 }
                 _ => {
-                    return Err(format!("Unsupported instruction in slot mode: {:?}", op).into());
+                    // Fall back to Legacy mode for unsupported instructions
+                    map_operator_to_initial_instr_and_fixup(
+                        &op,
+                        current_processed_pc,
+                        &control_info_stack,
+                        module,
+                        &mut BlockArityCache::new(),
+                    )?
                 }
             }
         } else {
@@ -2210,11 +2720,14 @@ fn decode_processed_instrs_and_fixups<'a>(
     update_block_operands_with_ranges(&mut initial_processed_instrs, &block_end_map);
 
     // Get result slot before finalizing (the top of stack after all instructions)
+    // Use the function's result type to peek at the correct slot type
     let result_slot = slot_allocator.as_ref().and_then(|alloc| {
-        // Peek at the current stack top - this is where the return value is
-        alloc
-            .peek(ValueType::NumType(NumType::I32))
-            .map(|slot| slot.index())
+        if let Some(result_type) = result_types.first() {
+            // Peek at the current stack top for the result type
+            alloc.peek(result_type.clone())
+        } else {
+            None
+        }
     });
 
     // Finalize slot allocation if in slot mode

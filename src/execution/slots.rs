@@ -1,4 +1,4 @@
-use crate::execution::value::Ref;
+use crate::execution::value::{Num, Ref, Val, Vec_};
 use crate::structure::types::*;
 use serde::{Deserialize, Serialize};
 
@@ -135,6 +135,30 @@ impl SlotFile {
     #[inline(always)]
     pub fn get_i32_slots(&mut self) -> &mut [i32] {
         &mut self.i32_slots
+    }
+
+    #[inline(always)]
+    pub fn get_i64_slots(&mut self) -> &mut [i64] {
+        &mut self.i64_slots
+    }
+
+    /// Get both i32 and i64 slots (for i64 comparison operations that write to i32)
+    #[inline(always)]
+    pub fn get_i32_and_i64_slots(&mut self) -> (&mut [i32], &mut [i64]) {
+        (&mut self.i32_slots, &mut self.i64_slots)
+    }
+
+    /// Get value from slot as Val
+    #[inline(always)]
+    pub fn get_val(&self, slot: &Slot) -> Val {
+        match slot {
+            Slot::I32(idx) => Val::Num(Num::I32(self.get_i32(*idx))),
+            Slot::I64(idx) => Val::Num(Num::I64(self.get_i64(*idx))),
+            Slot::F32(idx) => Val::Num(Num::F32(self.get_f32(*idx))),
+            Slot::F64(idx) => Val::Num(Num::F64(self.get_f64(*idx))),
+            Slot::Ref(idx) => Val::Ref(self.get_ref(*idx)),
+            Slot::V128(idx) => Val::Vec_(Vec_::V128(self.get_v128(*idx))),
+        }
     }
 }
 
