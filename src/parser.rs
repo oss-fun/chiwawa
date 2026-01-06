@@ -3447,7 +3447,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     (instr, fixup)
                 }
                 wasmparser::Operator::BrIf { relative_depth } => {
-                    // Pop condition first
+                    //pop condition slot
+                    let condition_slot = allocator.peek(ValueType::NumType(NumType::I32));
                     allocator.pop(ValueType::NumType(NumType::I32));
 
                     // Get target block's result arity to sync only TOP N slots
@@ -3460,16 +3461,15 @@ fn decode_processed_instrs_and_fixups<'a>(
                     };
 
                     let all_slots = allocator.get_active_slots();
-                    let slots_to_stack = if all_slots.len() >= target_arity {
+                    let mut slots_to_stack = if all_slots.len() >= target_arity {
                         all_slots[all_slots.len() - target_arity..].to_vec()
                     } else {
                         all_slots
                     };
-
-                    // Push condition slot back for sync (it needs to be on value_stack for BrIf)
-                    let condition_slot = allocator.push(ValueType::NumType(NumType::I32));
-                    let mut full_slots = slots_to_stack;
-                    full_slots.push(condition_slot);
+                    // Add condition slot at the end if available
+                    if let Some(cond) = condition_slot {
+                        slots_to_stack.push(cond);
+                    }
 
                     let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
                         &op,
@@ -3483,7 +3483,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ..
                     } = instr
                     {
-                        *ss = full_slots;
+                        *ss = slots_to_stack;
                     }
                     (instr, fixup)
                 }

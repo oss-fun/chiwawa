@@ -969,11 +969,10 @@ impl FrameStack {
                     stack_to_slots,
                 } => {
                     // Copy slots to value_stack before executing legacy instruction
-                    // Skip sync if value_stack already has enough values (e.g., from br jump)
-                    if !slots_to_stack.is_empty()
-                        && self.global_value_stack.len() < slots_to_stack.len()
-                    {
+                    if !slots_to_stack.is_empty() {
                         if let Some(ref slot_file) = self.frame.slot_file {
+                            // Clear value_stack and sync fresh values from slots
+                            self.global_value_stack.clear();
                             for slot in slots_to_stack.iter() {
                                 let val = slot_file.get_val(slot);
                                 self.global_value_stack.push(val);
