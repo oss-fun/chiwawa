@@ -4076,6 +4076,377 @@ fn decode_processed_instrs_and_fixups<'a>(
                         None,
                     )
                 }
+                // Memory Load instructions
+                wasmparser::Operator::I32Load { memarg } => {
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryLoadSlot {
+                            handler_index: HANDLER_IDX_I32_LOAD,
+                            dst,
+                            addr,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Load { memarg } => {
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::MemoryLoadSlot {
+                            handler_index: HANDLER_IDX_I64_LOAD,
+                            dst,
+                            addr,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Load { memarg } => {
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::MemoryLoadSlot {
+                            handler_index: HANDLER_IDX_F32_LOAD,
+                            dst,
+                            addr,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F64Load { memarg } => {
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F64));
+                    (
+                        ProcessedInstr::MemoryLoadSlot {
+                            handler_index: HANDLER_IDX_F64_LOAD,
+                            dst,
+                            addr,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32Load8S { memarg } => {
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryLoadSlot {
+                            handler_index: HANDLER_IDX_I32_LOAD8_S,
+                            dst,
+                            addr,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32Load8U { memarg } => {
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryLoadSlot {
+                            handler_index: HANDLER_IDX_I32_LOAD8_U,
+                            dst,
+                            addr,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32Load16S { memarg } => {
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryLoadSlot {
+                            handler_index: HANDLER_IDX_I32_LOAD16_S,
+                            dst,
+                            addr,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32Load16U { memarg } => {
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryLoadSlot {
+                            handler_index: HANDLER_IDX_I32_LOAD16_U,
+                            dst,
+                            addr,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Load8S { memarg } => {
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::MemoryLoadSlot {
+                            handler_index: HANDLER_IDX_I64_LOAD8_S,
+                            dst,
+                            addr,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Load8U { memarg } => {
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::MemoryLoadSlot {
+                            handler_index: HANDLER_IDX_I64_LOAD8_U,
+                            dst,
+                            addr,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Load16S { memarg } => {
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::MemoryLoadSlot {
+                            handler_index: HANDLER_IDX_I64_LOAD16_S,
+                            dst,
+                            addr,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Load16U { memarg } => {
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::MemoryLoadSlot {
+                            handler_index: HANDLER_IDX_I64_LOAD16_U,
+                            dst,
+                            addr,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Load32S { memarg } => {
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::MemoryLoadSlot {
+                            handler_index: HANDLER_IDX_I64_LOAD32_S,
+                            dst,
+                            addr,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Load32U { memarg } => {
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::MemoryLoadSlot {
+                            handler_index: HANDLER_IDX_I64_LOAD32_U,
+                            dst,
+                            addr,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                // Memory Store instructions
+                wasmparser::Operator::I32Store { memarg } => {
+                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryStoreSlot {
+                            handler_index: HANDLER_IDX_I32_STORE,
+                            addr,
+                            value,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Store { memarg } => {
+                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryStoreSlot {
+                            handler_index: HANDLER_IDX_I64_STORE,
+                            addr,
+                            value,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32Store { memarg } => {
+                    let value = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryStoreSlot {
+                            handler_index: HANDLER_IDX_F32_STORE,
+                            addr,
+                            value,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F64Store { memarg } => {
+                    let value = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryStoreSlot {
+                            handler_index: HANDLER_IDX_F64_STORE,
+                            addr,
+                            value,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32Store8 { memarg } => {
+                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryStoreSlot {
+                            handler_index: HANDLER_IDX_I32_STORE8,
+                            addr,
+                            value,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32Store16 { memarg } => {
+                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryStoreSlot {
+                            handler_index: HANDLER_IDX_I32_STORE16,
+                            addr,
+                            value,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Store8 { memarg } => {
+                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryStoreSlot {
+                            handler_index: HANDLER_IDX_I64_STORE8,
+                            addr,
+                            value,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Store16 { memarg } => {
+                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryStoreSlot {
+                            handler_index: HANDLER_IDX_I64_STORE16,
+                            addr,
+                            value,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64Store32 { memarg } => {
+                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryStoreSlot {
+                            handler_index: HANDLER_IDX_I64_STORE32,
+                            addr,
+                            value,
+                            offset: memarg.offset,
+                        },
+                        None,
+                    )
+                }
+
+                // Memory Ops instructions (size, grow, copy, init, fill)
+                wasmparser::Operator::MemorySize { .. } => {
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryOpsSlot {
+                            handler_index: HANDLER_IDX_MEMORY_SIZE,
+                            dst: Some(dst),
+                            args: vec![],
+                            data_index: 0,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::MemoryGrow { .. } => {
+                    let delta = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryOpsSlot {
+                            handler_index: HANDLER_IDX_MEMORY_GROW,
+                            dst: Some(dst),
+                            args: vec![delta],
+                            data_index: 0,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::MemoryCopy { .. } => {
+                    let len = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dest = allocator.pop(&ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryOpsSlot {
+                            handler_index: HANDLER_IDX_MEMORY_COPY,
+                            dst: None,
+                            args: vec![dest, src, len],
+                            data_index: 0,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::MemoryInit { data_index, .. } => {
+                    let len = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let offset = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dest = allocator.pop(&ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryOpsSlot {
+                            handler_index: HANDLER_IDX_MEMORY_INIT,
+                            dst: None,
+                            args: vec![dest, offset, len],
+                            data_index: *data_index,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::MemoryFill { .. } => {
+                    let size = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let val = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dest = allocator.pop(&ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::MemoryOpsSlot {
+                            handler_index: HANDLER_IDX_MEMORY_FILL,
+                            dst: None,
+                            args: vec![dest, val, size],
+                            data_index: 0,
+                        },
+                        None,
+                    )
+                }
+
                 _ => {
                     // Fall back to Legacy mode for unsupported instructions
                     // Sync all active slots to value_stack before executing

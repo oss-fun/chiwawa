@@ -2,6 +2,7 @@ use super::value::*;
 use crate::error::RuntimeError;
 use crate::execution::{
     func::*,
+    mem::MemAddr,
     memoization::{GlobalAccessTracker, LocalAccessTracker},
     migration,
     module::*,
@@ -263,6 +264,26 @@ pub enum ProcessedInstr {
         dst: Slot, // Destination slot (type determined by output type)
         src: Slot, // Source slot (type determined by input type)
     },
+    MemoryLoadSlot {
+        handler_index: usize,
+        dst: Slot,   // Destination slot for loaded value
+        addr: Slot,  // Address slot (always I32)
+        offset: u64, // Memory offset
+    },
+    MemoryStoreSlot {
+        handler_index: usize,
+        addr: Slot,  // Address slot (always I32)
+        value: Slot, // Value slot to store
+        offset: u64, // Memory offset
+    },
+
+    /// Slot-based memory operations (size, grow, copy, init, fill)
+    MemoryOpsSlot {
+        handler_index: usize,
+        dst: Option<Slot>, // Destination slot (for size/grow results)
+        args: Vec<Slot>,   // Argument slots (varies by operation)
+        data_index: u32,   // Data segment index (for memory.init)
+    },
 }
 
 impl ProcessedInstr {
@@ -276,6 +297,9 @@ impl ProcessedInstr {
             ProcessedInstr::F32Slot { handler_index, .. } => *handler_index,
             ProcessedInstr::F64Slot { handler_index, .. } => *handler_index,
             ProcessedInstr::ConversionSlot { handler_index, .. } => *handler_index,
+            ProcessedInstr::MemoryLoadSlot { handler_index, .. } => *handler_index,
+            ProcessedInstr::MemoryStoreSlot { handler_index, .. } => *handler_index,
+            ProcessedInstr::MemoryOpsSlot { handler_index, .. } => *handler_index,
         }
     }
 
@@ -1005,6 +1029,115 @@ impl FrameStack {
                     };
 
                     let handler = CONVERSION_SLOT_HANDLER_TABLE[*handler_index];
+                    handler(ctx)?;
+
+                    self.label_stack[current_label_stack_idx].ip = ip + 1;
+                    continue;
+                }
+                ProcessedInstr::MemoryLoadSlot {
+                    handler_index,
+                    dst,
+                    addr,
+                    offset,
+                } => {
+                    let slot_file = self
+                        .frame
+                        .slot_file
+                        .as_mut()
+                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
+
+                    let module_inst = self
+                        .frame
+                        .module
+                        .upgrade()
+                        .ok_or(RuntimeError::ModuleInstanceGone)?;
+                    let mem_addr = module_inst
+                        .mem_addrs
+                        .first()
+                        .ok_or(RuntimeError::MemoryNotFound)?;
+
+                    let ctx = MemoryLoadSlotContext {
+                        slot_file,
+                        mem_addr,
+                        addr: addr.clone(),
+                        dst: dst.clone(),
+                        offset: *offset,
+                    };
+
+                    let handler = MEMORY_LOAD_SLOT_HANDLER_TABLE[*handler_index];
+                    handler(ctx)?;
+
+                    self.label_stack[current_label_stack_idx].ip = ip + 1;
+                    continue;
+                }
+                ProcessedInstr::MemoryStoreSlot {
+                    handler_index,
+                    addr,
+                    value,
+                    offset,
+                } => {
+                    let slot_file = self
+                        .frame
+                        .slot_file
+                        .as_ref()
+                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
+
+                    let module_inst = self
+                        .frame
+                        .module
+                        .upgrade()
+                        .ok_or(RuntimeError::ModuleInstanceGone)?;
+                    let mem_addr = module_inst
+                        .mem_addrs
+                        .first()
+                        .ok_or(RuntimeError::MemoryNotFound)?;
+
+                    let ctx = MemoryStoreSlotContext {
+                        slot_file,
+                        mem_addr,
+                        addr: addr.clone(),
+                        value: value.clone(),
+                        offset: *offset,
+                    };
+
+                    let handler = MEMORY_STORE_SLOT_HANDLER_TABLE[*handler_index];
+                    handler(ctx)?;
+
+                    self.label_stack[current_label_stack_idx].ip = ip + 1;
+                    continue;
+                }
+                ProcessedInstr::MemoryOpsSlot {
+                    handler_index,
+                    dst,
+                    args,
+                    data_index,
+                } => {
+                    let slot_file = self
+                        .frame
+                        .slot_file
+                        .as_mut()
+                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
+
+                    let module_inst = self
+                        .frame
+                        .module
+                        .upgrade()
+                        .ok_or(RuntimeError::ModuleInstanceGone)?;
+                    let mem_addr = module_inst
+                        .mem_addrs
+                        .first()
+                        .ok_or(RuntimeError::MemoryNotFound)?;
+
+                    let ctx = MemoryOpsSlotContext {
+                        slot_file,
+                        mem_addr,
+                        module_inst: &module_inst,
+                        dst: dst.clone(),
+                        args: args.clone(),
+                        data_index: *data_index,
+                    };
+
+                    let handler = MEMORY_OPS_SLOT_HANDLER_TABLE[*handler_index];
                     handler(ctx)?;
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
@@ -7002,6 +7135,358 @@ lazy_static! {
         table[HANDLER_IDX_F32_REINTERPRET_I32] = conv_f32_reinterpret_i32;
         table[HANDLER_IDX_I64_REINTERPRET_F64] = conv_i64_reinterpret_f64;
         table[HANDLER_IDX_F64_REINTERPRET_I64] = conv_f64_reinterpret_i64;
+
+        table
+    };
+}
+
+// Memory Load Slot handlers
+struct MemoryLoadSlotContext<'a> {
+    slot_file: &'a mut SlotFile,
+    mem_addr: &'a MemAddr,
+    addr: Slot,
+    dst: Slot,
+    offset: u64,
+}
+
+type MemoryLoadSlotHandler = fn(MemoryLoadSlotContext) -> Result<(), RuntimeError>;
+
+fn memory_load_slot_invalid_handler(_ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
+    Err(RuntimeError::InvalidHandlerIndex)
+}
+
+#[inline]
+fn make_memarg(offset: u64) -> Memarg {
+    Memarg {
+        offset: offset as u32,
+        align: 0,
+    }
+}
+
+fn mem_load_i32(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let memarg = make_memarg(ctx.offset);
+    let val: i32 = ctx.mem_addr.load(&memarg, ptr)?;
+    ctx.slot_file.set_i32(ctx.dst.index(), val);
+    Ok(())
+}
+
+fn mem_load_i64(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let memarg = make_memarg(ctx.offset);
+    let val: i64 = ctx.mem_addr.load(&memarg, ptr)?;
+    ctx.slot_file.set_i64(ctx.dst.index(), val);
+    Ok(())
+}
+
+fn mem_load_f32(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let memarg = make_memarg(ctx.offset);
+    let val: f32 = ctx.mem_addr.load(&memarg, ptr)?;
+    ctx.slot_file.set_f32(ctx.dst.index(), val);
+    Ok(())
+}
+
+fn mem_load_f64(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let memarg = make_memarg(ctx.offset);
+    let val: f64 = ctx.mem_addr.load(&memarg, ptr)?;
+    ctx.slot_file.set_f64(ctx.dst.index(), val);
+    Ok(())
+}
+
+fn mem_load_i32_8s(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let memarg = make_memarg(ctx.offset);
+    let val: i8 = ctx.mem_addr.load(&memarg, ptr)?;
+    ctx.slot_file.set_i32(ctx.dst.index(), val as i32);
+    Ok(())
+}
+
+fn mem_load_i32_8u(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let memarg = make_memarg(ctx.offset);
+    let val: u8 = ctx.mem_addr.load(&memarg, ptr)?;
+    ctx.slot_file.set_i32(ctx.dst.index(), val as i32);
+    Ok(())
+}
+
+fn mem_load_i32_16s(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let memarg = make_memarg(ctx.offset);
+    let val: i16 = ctx.mem_addr.load(&memarg, ptr)?;
+    ctx.slot_file.set_i32(ctx.dst.index(), val as i32);
+    Ok(())
+}
+
+fn mem_load_i32_16u(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let memarg = make_memarg(ctx.offset);
+    let val: u16 = ctx.mem_addr.load(&memarg, ptr)?;
+    ctx.slot_file.set_i32(ctx.dst.index(), val as i32);
+    Ok(())
+}
+
+fn mem_load_i64_8s(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let memarg = make_memarg(ctx.offset);
+    let val: i8 = ctx.mem_addr.load(&memarg, ptr)?;
+    ctx.slot_file.set_i64(ctx.dst.index(), val as i64);
+    Ok(())
+}
+
+fn mem_load_i64_8u(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let memarg = make_memarg(ctx.offset);
+    let val: u8 = ctx.mem_addr.load(&memarg, ptr)?;
+    ctx.slot_file.set_i64(ctx.dst.index(), val as i64);
+    Ok(())
+}
+
+fn mem_load_i64_16s(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let memarg = make_memarg(ctx.offset);
+    let val: i16 = ctx.mem_addr.load(&memarg, ptr)?;
+    ctx.slot_file.set_i64(ctx.dst.index(), val as i64);
+    Ok(())
+}
+
+fn mem_load_i64_16u(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let memarg = make_memarg(ctx.offset);
+    let val: u16 = ctx.mem_addr.load(&memarg, ptr)?;
+    ctx.slot_file.set_i64(ctx.dst.index(), val as i64);
+    Ok(())
+}
+
+fn mem_load_i64_32s(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let memarg = make_memarg(ctx.offset);
+    let val: i32 = ctx.mem_addr.load(&memarg, ptr)?;
+    ctx.slot_file.set_i64(ctx.dst.index(), val as i64);
+    Ok(())
+}
+
+fn mem_load_i64_32u(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let memarg = make_memarg(ctx.offset);
+    let val: u32 = ctx.mem_addr.load(&memarg, ptr)?;
+    ctx.slot_file.set_i64(ctx.dst.index(), val as i64);
+    Ok(())
+}
+
+lazy_static! {
+    static ref MEMORY_LOAD_SLOT_HANDLER_TABLE: Vec<MemoryLoadSlotHandler> = {
+        let mut table: Vec<MemoryLoadSlotHandler> = vec![memory_load_slot_invalid_handler; 256];
+
+        table[HANDLER_IDX_I32_LOAD] = mem_load_i32;
+        table[HANDLER_IDX_I64_LOAD] = mem_load_i64;
+        table[HANDLER_IDX_F32_LOAD] = mem_load_f32;
+        table[HANDLER_IDX_F64_LOAD] = mem_load_f64;
+        table[HANDLER_IDX_I32_LOAD8_S] = mem_load_i32_8s;
+        table[HANDLER_IDX_I32_LOAD8_U] = mem_load_i32_8u;
+        table[HANDLER_IDX_I32_LOAD16_S] = mem_load_i32_16s;
+        table[HANDLER_IDX_I32_LOAD16_U] = mem_load_i32_16u;
+        table[HANDLER_IDX_I64_LOAD8_S] = mem_load_i64_8s;
+        table[HANDLER_IDX_I64_LOAD8_U] = mem_load_i64_8u;
+        table[HANDLER_IDX_I64_LOAD16_S] = mem_load_i64_16s;
+        table[HANDLER_IDX_I64_LOAD16_U] = mem_load_i64_16u;
+        table[HANDLER_IDX_I64_LOAD32_S] = mem_load_i64_32s;
+        table[HANDLER_IDX_I64_LOAD32_U] = mem_load_i64_32u;
+
+        table
+    };
+}
+
+// Memory Store Slot handlers
+struct MemoryStoreSlotContext<'a> {
+    slot_file: &'a SlotFile,
+    mem_addr: &'a MemAddr,
+    addr: Slot,
+    value: Slot,
+    offset: u64,
+}
+
+type MemoryStoreSlotHandler = fn(MemoryStoreSlotContext) -> Result<(), RuntimeError>;
+
+fn memory_store_slot_invalid_handler(_ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
+    Err(RuntimeError::InvalidHandlerIndex)
+}
+
+fn mem_store_i32(ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let val = ctx.slot_file.get_i32(ctx.value.index());
+    let memarg = make_memarg(ctx.offset);
+    ctx.mem_addr.store(&memarg, ptr, val)?;
+    Ok(())
+}
+
+fn mem_store_i64(ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let val = ctx.slot_file.get_i64(ctx.value.index());
+    let memarg = make_memarg(ctx.offset);
+    ctx.mem_addr.store(&memarg, ptr, val)?;
+    Ok(())
+}
+
+fn mem_store_f32(ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let val = ctx.slot_file.get_f32(ctx.value.index());
+    let memarg = make_memarg(ctx.offset);
+    ctx.mem_addr.store(&memarg, ptr, val)?;
+    Ok(())
+}
+
+fn mem_store_f64(ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let val = ctx.slot_file.get_f64(ctx.value.index());
+    let memarg = make_memarg(ctx.offset);
+    ctx.mem_addr.store(&memarg, ptr, val)?;
+    Ok(())
+}
+
+fn mem_store_i32_8(ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let val = ctx.slot_file.get_i32(ctx.value.index()) as u8;
+    let memarg = make_memarg(ctx.offset);
+    ctx.mem_addr.store(&memarg, ptr, val)?;
+    Ok(())
+}
+
+fn mem_store_i32_16(ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let val = ctx.slot_file.get_i32(ctx.value.index()) as u16;
+    let memarg = make_memarg(ctx.offset);
+    ctx.mem_addr.store(&memarg, ptr, val)?;
+    Ok(())
+}
+
+fn mem_store_i64_8(ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let val = ctx.slot_file.get_i64(ctx.value.index()) as u8;
+    let memarg = make_memarg(ctx.offset);
+    ctx.mem_addr.store(&memarg, ptr, val)?;
+    Ok(())
+}
+
+fn mem_store_i64_16(ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let val = ctx.slot_file.get_i64(ctx.value.index()) as u16;
+    let memarg = make_memarg(ctx.offset);
+    ctx.mem_addr.store(&memarg, ptr, val)?;
+    Ok(())
+}
+
+fn mem_store_i64_32(ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+    let val = ctx.slot_file.get_i64(ctx.value.index()) as u32;
+    let memarg = make_memarg(ctx.offset);
+    ctx.mem_addr.store(&memarg, ptr, val)?;
+    Ok(())
+}
+
+lazy_static! {
+    static ref MEMORY_STORE_SLOT_HANDLER_TABLE: Vec<MemoryStoreSlotHandler> = {
+        let mut table: Vec<MemoryStoreSlotHandler> = vec![memory_store_slot_invalid_handler; 256];
+
+        table[HANDLER_IDX_I32_STORE] = mem_store_i32;
+        table[HANDLER_IDX_I64_STORE] = mem_store_i64;
+        table[HANDLER_IDX_F32_STORE] = mem_store_f32;
+        table[HANDLER_IDX_F64_STORE] = mem_store_f64;
+        table[HANDLER_IDX_I32_STORE8] = mem_store_i32_8;
+        table[HANDLER_IDX_I32_STORE16] = mem_store_i32_16;
+        table[HANDLER_IDX_I64_STORE8] = mem_store_i64_8;
+        table[HANDLER_IDX_I64_STORE16] = mem_store_i64_16;
+        table[HANDLER_IDX_I64_STORE32] = mem_store_i64_32;
+
+        table
+    };
+}
+
+// Memory Ops Slot handlers (size, grow, copy, init, fill)
+struct MemoryOpsSlotContext<'a> {
+    slot_file: &'a mut SlotFile,
+    mem_addr: &'a MemAddr,
+    module_inst: &'a ModuleInst,
+    dst: Option<Slot>,
+    args: Vec<Slot>,
+    data_index: u32,
+}
+
+type MemoryOpsSlotHandler = fn(MemoryOpsSlotContext) -> Result<(), RuntimeError>;
+
+fn memory_ops_slot_invalid_handler(_ctx: MemoryOpsSlotContext) -> Result<(), RuntimeError> {
+    Err(RuntimeError::InvalidHandlerIndex)
+}
+
+fn mem_ops_size(ctx: MemoryOpsSlotContext) -> Result<(), RuntimeError> {
+    let size = ctx.mem_addr.mem_size();
+    if let Some(dst) = ctx.dst {
+        ctx.slot_file.set_i32(dst.index(), size);
+    }
+    Ok(())
+}
+
+fn mem_ops_grow(ctx: MemoryOpsSlotContext) -> Result<(), RuntimeError> {
+    let delta = ctx.slot_file.get_i32(ctx.args[0].index());
+    let delta_u32: u32 = delta
+        .try_into()
+        .map_err(|_| RuntimeError::InvalidParameterCount)?;
+    let prev_size = ctx.mem_addr.mem_grow(
+        delta_u32
+            .try_into()
+            .map_err(|_| RuntimeError::InvalidParameterCount)?,
+    );
+    if let Some(dst) = ctx.dst {
+        ctx.slot_file.set_i32(dst.index(), prev_size);
+    }
+    Ok(())
+}
+
+fn mem_ops_copy(ctx: MemoryOpsSlotContext) -> Result<(), RuntimeError> {
+    let dest = ctx.slot_file.get_i32(ctx.args[0].index());
+    let src = ctx.slot_file.get_i32(ctx.args[1].index());
+    let len = ctx.slot_file.get_i32(ctx.args[2].index());
+    ctx.mem_addr.memory_copy(dest, src, len)?;
+    Ok(())
+}
+
+fn mem_ops_init(ctx: MemoryOpsSlotContext) -> Result<(), RuntimeError> {
+    let dest = ctx.slot_file.get_i32(ctx.args[0].index()) as usize;
+    let offset = ctx.slot_file.get_i32(ctx.args[1].index()) as usize;
+    let len = ctx.slot_file.get_i32(ctx.args[2].index()) as usize;
+
+    if ctx.data_index as usize >= ctx.module_inst.data_addrs.len() {
+        return Err(RuntimeError::InvalidDataSegmentIndex);
+    }
+
+    let data_addr = &ctx.module_inst.data_addrs[ctx.data_index as usize];
+    let data_bytes = data_addr.get_data();
+
+    if len > 0 {
+        let init_data = data_bytes[offset..offset + len].to_vec();
+        ctx.mem_addr.init(dest, &init_data);
+    }
+    Ok(())
+}
+
+fn mem_ops_fill(ctx: MemoryOpsSlotContext) -> Result<(), RuntimeError> {
+    let dest = ctx.slot_file.get_i32(ctx.args[0].index());
+    let val = ctx.slot_file.get_i32(ctx.args[1].index()) as u8;
+    let size = ctx.slot_file.get_i32(ctx.args[2].index());
+    ctx.mem_addr.memory_fill(dest, val, size)?;
+    Ok(())
+}
+
+lazy_static! {
+    static ref MEMORY_OPS_SLOT_HANDLER_TABLE: Vec<MemoryOpsSlotHandler> = {
+        let mut table: Vec<MemoryOpsSlotHandler> = vec![memory_ops_slot_invalid_handler; 256];
+
+        table[HANDLER_IDX_MEMORY_SIZE] = mem_ops_size;
+        table[HANDLER_IDX_MEMORY_GROW] = mem_ops_grow;
+        table[HANDLER_IDX_MEMORY_COPY] = mem_ops_copy;
+        table[HANDLER_IDX_MEMORY_INIT] = mem_ops_init;
+        table[HANDLER_IDX_MEMORY_FILL] = mem_ops_fill;
 
         table
     };
