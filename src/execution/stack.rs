@@ -225,6 +225,10 @@ pub enum ProcessedInstr {
     Legacy {
         handler_index: usize,
         operand: Operand,
+        /// Slots to copy from slot_file to value_stack before executing this instruction
+        slots_to_stack: Vec<crate::execution::slots::Slot>,
+        /// Slots to write back from value_stack to slot_file after executing this instruction
+        stack_to_slots: Vec<crate::execution::slots::Slot>,
     },
     /// Slot-based I32 instruction
     I32Slot {
@@ -961,7 +965,20 @@ impl FrameStack {
                 ProcessedInstr::Legacy {
                     handler_index,
                     operand,
+                    slots_to_stack,
+                    stack_to_slots,
                 } => {
+                    // Copy slots to value_stack before executing legacy instruction
+                    if !slots_to_stack.is_empty() {
+                        if let Some(ref slot_file) = self.frame.slot_file {
+                            for slot in slots_to_stack.iter() {
+                                let val = slot_file.get_val(slot);
+                                self.global_value_stack.push(val);
+                            }
+                        }
+                    }
+                    let stack_to_slots = stack_to_slots.clone();
+
                     // Execute legacy stack-based instruction
                     let (handler_index, operand) = (handler_index, operand);
 
@@ -1018,6 +1035,46 @@ impl FrameStack {
                         Ok(handler_result) => {
                             match handler_result {
                                 HandlerResult::Continue(next_ip) => {
+                                    // Write back results to slot_file if specified (without pop/push)
+                                    if !stack_to_slots.is_empty() {
+                                        if let Some(ref mut slot_file) = self.frame.slot_file {
+                                            let stack_len = self.global_value_stack.len();
+                                            let slot_count = stack_to_slots.len();
+                                            // Peek values from value_stack and write to slots
+                                            for (i, slot) in stack_to_slots.iter().enumerate() {
+                                                let val = &self.global_value_stack
+                                                    [stack_len - slot_count + i];
+                                                match slot {
+                                                    crate::execution::slots::Slot::I32(idx) => {
+                                                        slot_file.set_i32(
+                                                            *idx,
+                                                            val.to_i32().unwrap_or(0),
+                                                        );
+                                                    }
+                                                    crate::execution::slots::Slot::I64(idx) => {
+                                                        slot_file.set_i64(
+                                                            *idx,
+                                                            val.to_i64().unwrap_or(0),
+                                                        );
+                                                    }
+                                                    crate::execution::slots::Slot::F32(idx) => {
+                                                        slot_file.set_f32(
+                                                            *idx,
+                                                            val.to_f32().unwrap_or(0.0),
+                                                        );
+                                                    }
+                                                    crate::execution::slots::Slot::F64(idx) => {
+                                                        slot_file.set_f64(
+                                                            *idx,
+                                                            val.to_f64().unwrap_or(0.0),
+                                                        );
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                            // value_stack is left as-is for legacy instructions that may follow
+                                        }
+                                    }
                                     self.label_stack[current_label_stack_idx].ip = next_ip;
                                 }
                                 HandlerResult::Return => {
@@ -1203,42 +1260,24 @@ impl FrameStack {
                                             )
                                         };
 
-                                        // Extract the result values from slot_file or global stack
-                                        let result_values =
-                                            if let (Some(ref slot_file), Some(ref result_slot)) =
-                                                (&self.frame.slot_file, &self.frame.result_slot)
-                                            {
-                                                // Slot mode: read result from specified slot
-                                                // TODO: Optimize slot-to-slot return value passing
-                                                // (eliminate global_value_stack for slot mode -> slot mode calls)
-                                                if arity > 0 {
-                                                    vec![slot_file.get_val(result_slot)]
-                                                } else {
-                                                    Vec::new()
-                                                }
+                                        // Extract the result values from global stack
+                                        // For internal blocks, always use value_stack (slot_file.result_slot is for function return)
+                                        let result_values = if arity > 0 {
+                                            if self.global_value_stack.len() >= arity {
+                                                let start_idx =
+                                                    self.global_value_stack.len() - arity;
+                                                self.global_value_stack[start_idx..].to_vec()
                                             } else {
-                                                // Stack mode: extract from global stack
-                                                if arity > 0 {
-                                                    if self.global_value_stack.len() >= arity {
-                                                        let start_idx =
-                                                            self.global_value_stack.len() - arity;
-                                                        self.global_value_stack[start_idx..]
-                                                            .to_vec()
-                                                    } else {
-                                                        // Not enough values on stack for the required arity
-                                                        if self.global_value_stack.len()
-                                                            > stack_height
-                                                        {
-                                                            self.global_value_stack[stack_height..]
-                                                                .to_vec()
-                                                        } else {
-                                                            Vec::new()
-                                                        }
-                                                    }
+                                                // Not enough values on stack for the required arity
+                                                if self.global_value_stack.len() > stack_height {
+                                                    self.global_value_stack[stack_height..].to_vec()
                                                 } else {
                                                     Vec::new()
                                                 }
-                                            };
+                                            }
+                                        } else {
+                                            Vec::new()
+                                        };
 
                                         // Restore the global stack to the entry state
                                         if arity == 0 && result_values.is_empty() {
@@ -1329,6 +1368,49 @@ impl FrameStack {
                                         self.label_stack.pop();
                                         current_label_stack_idx = self.label_stack.len() - 1;
                                         self.label_stack[current_label_stack_idx].ip = next_ip;
+
+                                        // Write back results to slot_file if specified (for End instructions)
+                                        if !stack_to_slots.is_empty() {
+                                            if let Some(ref mut slot_file) = self.frame.slot_file {
+                                                let stack_len = self.global_value_stack.len();
+                                                let slot_count = stack_to_slots.len();
+                                                // Peek values from value_stack and write to slots
+                                                for (i, slot) in stack_to_slots.iter().enumerate() {
+                                                    let val = &self.global_value_stack
+                                                        [stack_len - slot_count + i];
+                                                    match slot {
+                                                        crate::execution::slots::Slot::I32(idx) => {
+                                                            slot_file.set_i32(
+                                                                *idx,
+                                                                val.to_i32().unwrap_or(0),
+                                                            );
+                                                        }
+                                                        crate::execution::slots::Slot::I64(idx) => {
+                                                            slot_file.set_i64(
+                                                                *idx,
+                                                                val.to_i64().unwrap_or(0),
+                                                            );
+                                                        }
+                                                        crate::execution::slots::Slot::F32(idx) => {
+                                                            slot_file.set_f32(
+                                                                *idx,
+                                                                val.to_f32().unwrap_or(0.0),
+                                                            );
+                                                        }
+                                                        crate::execution::slots::Slot::F64(idx) => {
+                                                            slot_file.set_f64(
+                                                                *idx,
+                                                                val.to_f64().unwrap_or(0.0),
+                                                            );
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                                // Remove values from value_stack (slots_to_stack will handle pushing when needed)
+                                                self.global_value_stack
+                                                    .truncate(stack_len - slot_count);
+                                            }
+                                        }
                                     } else {
                                         let current_label =
                                             &self.label_stack[current_label_stack_idx].label;

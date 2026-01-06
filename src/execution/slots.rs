@@ -71,6 +71,18 @@ impl SlotFile {
         }
     }
 
+    /// Create a new slot file from SlotAllocation
+    pub fn from_allocation(allocation: &SlotAllocation) -> Self {
+        Self::new(
+            allocation.i32_count,
+            allocation.i64_count,
+            allocation.f32_count,
+            allocation.f64_count,
+            allocation.ref_count,
+            allocation.v128_count,
+        )
+    }
+
     /// Get/set methods for each type (inlined for performance)
     #[inline(always)]
     pub fn get_i32(&self, slot: u16) -> i32 {
@@ -200,6 +212,9 @@ pub struct SlotAllocator {
     max_f64_depth: usize,
     max_ref_depth: usize,
     max_v128_depth: usize,
+
+    // Stack order tracking for legacy sync
+    stack_order: Vec<Slot>,
 }
 
 impl SlotAllocator {
@@ -219,6 +234,7 @@ impl SlotAllocator {
             max_f64_depth: 0,
             max_ref_depth: 0,
             max_v128_depth: 0,
+            stack_order: Vec::new(),
         };
 
         // Reserve slots for local variables
@@ -248,7 +264,7 @@ impl SlotAllocator {
 
     /// Push a value onto the stack (allocate a new slot)
     pub fn push(&mut self, vtype: ValueType) -> Slot {
-        match vtype {
+        let slot = match vtype {
             ValueType::NumType(NumType::I32) => {
                 let slot = Slot::I32(self.i32_depth as u16);
                 self.i32_depth += 1;
@@ -285,11 +301,16 @@ impl SlotAllocator {
                 self.max_v128_depth = self.max_v128_depth.max(self.v128_depth);
                 slot
             }
-        }
+        };
+        // Track stack order for legacy sync
+        self.stack_order.push(slot.clone());
+        slot
     }
 
     /// Pop a value from the stack (decrease depth and return the slot)
     pub fn pop(&mut self, vtype: ValueType) -> Slot {
+        // Remove from stack order tracking
+        self.stack_order.pop();
         match vtype {
             ValueType::NumType(NumType::I32) => {
                 self.i32_depth = self.i32_depth.saturating_sub(1);
@@ -343,6 +364,47 @@ impl SlotAllocator {
         }
     }
 
+    /// Get all active slots on the stack (for syncing to legacy value_stack)
+    /// Returns slots in correct stack order (bottom to top)
+    pub fn get_active_slots(&self) -> Vec<Slot> {
+        self.stack_order.clone()
+    }
+
+    /// Clear the current stack depths (slots are consumed by legacy instruction)
+    pub fn clear_stack(&mut self) {
+        self.i32_depth = 0;
+        self.i64_depth = 0;
+        self.f32_depth = 0;
+        self.f64_depth = 0;
+        self.ref_depth = 0;
+        self.v128_depth = 0;
+        self.stack_order.clear();
+    }
+
+    /// Save current stack state for block entry
+    pub fn save_state(&self) -> SlotAllocatorState {
+        SlotAllocatorState {
+            i32_depth: self.i32_depth,
+            i64_depth: self.i64_depth,
+            f32_depth: self.f32_depth,
+            f64_depth: self.f64_depth,
+            ref_depth: self.ref_depth,
+            v128_depth: self.v128_depth,
+            stack_order_len: self.stack_order.len(),
+        }
+    }
+
+    /// Restore stack state for block exit (keeps max depths intact)
+    pub fn restore_state(&mut self, state: &SlotAllocatorState) {
+        self.i32_depth = state.i32_depth;
+        self.i64_depth = state.i64_depth;
+        self.f32_depth = state.f32_depth;
+        self.f64_depth = state.f64_depth;
+        self.ref_depth = state.ref_depth;
+        self.v128_depth = state.v128_depth;
+        self.stack_order.truncate(state.stack_order_len);
+    }
+
     /// Finalize and return allocation information
     pub fn finalize(self) -> SlotAllocation {
         SlotAllocation {
@@ -354,4 +416,16 @@ impl SlotAllocator {
             v128_count: self.max_v128_depth,
         }
     }
+}
+
+/// Saved state of SlotAllocator at block entry
+#[derive(Clone, Debug)]
+pub struct SlotAllocatorState {
+    pub i32_depth: usize,
+    pub i64_depth: usize,
+    pub f32_depth: usize,
+    pub f64_depth: usize,
+    pub ref_depth: usize,
+    pub v128_depth: usize,
+    pub stack_order_len: usize,
 }

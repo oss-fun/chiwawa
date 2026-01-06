@@ -5,6 +5,7 @@ use crate::execution::memoization::{
 };
 use crate::execution::migration;
 use crate::execution::module::ModuleInst;
+use crate::execution::slots::SlotFile;
 use crate::execution::stack::{Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, Stacks};
 use crate::execution::stats::ExecutionStats;
 use crate::execution::trace::{TraceConfig, Tracer};
@@ -338,14 +339,20 @@ impl Runtime {
                                         }
                                     }
 
+                                    // Initialize SlotFile from slot_allocation if available
+                                    let slot_file = code
+                                        .slot_allocation
+                                        .as_ref()
+                                        .map(|alloc| SlotFile::from_allocation(alloc));
+
                                     let new_frame = FrameStack {
                                         frame: Frame {
                                             local_versions: vec![0; locals.len()],
                                             locals,
                                             module: func_module_weak.clone(),
                                             n: type_.results.len(),
-                                            slot_file: None, // TODO: Initialize from SlotAllocation
-                                            result_slot: None,
+                                            slot_file,
+                                            result_slot: code.result_slot.clone(),
                                         },
                                         label_stack: vec![LabelStack {
                                             label: Label {

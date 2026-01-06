@@ -766,6 +766,38 @@ fn calculate_block_parameter_count(
     count
 }
 
+/// Get result types for a block type
+fn get_block_result_types(block_type: &wasmparser::BlockType, module: &Module) -> Vec<ValueType> {
+    match block_type {
+        wasmparser::BlockType::Empty => Vec::new(),
+        wasmparser::BlockType::Type(val_type) => {
+            vec![match_value_type(*val_type)]
+        }
+        wasmparser::BlockType::FuncType(type_idx) => {
+            if let Some(func_type) = module.types.get(*type_idx as usize) {
+                func_type.results.clone()
+            } else {
+                Vec::new()
+            }
+        }
+    }
+}
+
+/// Get param types for a block type (for multi-value blocks)
+fn get_block_param_types(block_type: &wasmparser::BlockType, module: &Module) -> Vec<ValueType> {
+    match block_type {
+        wasmparser::BlockType::Empty => Vec::new(),
+        wasmparser::BlockType::Type(_) => Vec::new(), // Single result type means no params
+        wasmparser::BlockType::FuncType(type_idx) => {
+            if let Some(func_type) = module.types.get(*type_idx as usize) {
+                func_type.params.clone()
+            } else {
+                Vec::new()
+            }
+        }
+    }
+}
+
 fn decode_type_section(
     body: SectionLimited<'_, wasmparser::RecGroup>,
     module: &mut Module,
@@ -1613,6 +1645,9 @@ fn decode_processed_instrs_and_fixups<'a>(
         None
     };
 
+    // Track allocator state at block entry for proper restoration on block exit
+    let mut allocator_state_stack: Vec<crate::execution::slots::SlotAllocatorState> = Vec::new();
+
     loop {
         if ops.peek().is_none() {
             break;
@@ -1692,6 +1727,18 @@ fn decode_processed_instrs_and_fixups<'a>(
                             )?
                         }
                     }
+                }
+                wasmparser::Operator::I32Const { value } => {
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::I32Slot {
+                            handler_index: HANDLER_IDX_I32_CONST,
+                            dst: dst.index(),
+                            src1: I32SlotOperand::Const(*value),
+                            src2: None,
+                        },
+                        None,
+                    )
                 }
                 // Binary operations - macro to reduce repetition
                 wasmparser::Operator::I32Add => {
@@ -3163,8 +3210,71 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::End => {
-                    // End is a control flow instruction, use Legacy
-                    // In slot mode, the End handler will read the return value from slot_file
+                    let result_arity = if let Some((blockty, _)) = control_info_stack.last() {
+                        get_block_result_types(blockty, module).len()
+                    } else {
+                        result_types.len()
+                    };
+
+                    // Only sync the TOP N slots (where N is result arity), not all active slots
+                    let all_slots = allocator.get_active_slots();
+                    let slots_to_stack = if all_slots.len() >= result_arity {
+                        all_slots[all_slots.len() - result_arity..].to_vec()
+                    } else {
+                        all_slots
+                    };
+
+                    // Restore allocator state to block entry, then push results
+                    // This ensures result slots are allocated at the correct depth
+                    let mut stack_to_slots = Vec::new();
+                    if let Some(saved_state) = allocator_state_stack.pop() {
+                        allocator.restore_state(&saved_state);
+                        // Push result types to allocator (at the restored depth)
+                        if let Some((blockty, _)) = control_info_stack.last() {
+                            let result_types = get_block_result_types(blockty, module);
+                            for vtype in result_types {
+                                let slot = allocator.push(vtype);
+                                stack_to_slots.push(slot);
+                            }
+                        }
+                    }
+
+                    let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
+                        &op,
+                        current_processed_pc,
+                        &control_info_stack,
+                        module,
+                        &mut BlockArityCache::new(),
+                    )?;
+                    // Set slots_to_stack and stack_to_slots on the legacy instruction
+                    if let ProcessedInstr::Legacy {
+                        slots_to_stack: ref mut ss,
+                        stack_to_slots: ref mut rs,
+                        ..
+                    } = instr
+                    {
+                        *ss = slots_to_stack;
+                        *rs = stack_to_slots;
+                    }
+                    (instr, fixup)
+                }
+                wasmparser::Operator::Block { blockty }
+                | wasmparser::Operator::Loop { blockty } => {
+                    let param_types = get_block_param_types(&blockty, module);
+
+                    // Pop params from allocator to get state BEFORE params
+                    for vtype in param_types.iter().rev() {
+                        allocator.pop(vtype.clone());
+                    }
+
+                    // Save allocator state BEFORE params
+                    allocator_state_stack.push(allocator.save_state());
+
+                    // Push params back - they're still on the stack inside the block
+                    for vtype in param_types.iter() {
+                        allocator.push(vtype.clone());
+                    }
+
                     map_operator_to_initial_instr_and_fixup(
                         &op,
                         current_processed_pc,
@@ -3173,8 +3283,54 @@ fn decode_processed_instrs_and_fixups<'a>(
                         &mut BlockArityCache::new(),
                     )?
                 }
-                _ => {
-                    // Fall back to Legacy mode for unsupported instructions
+                wasmparser::Operator::If { blockty } => {
+                    let condition_slot = allocator.pop(ValueType::NumType(NumType::I32));
+
+                    let param_types = get_block_param_types(&blockty, module);
+
+                    for vtype in param_types.iter().rev() {
+                        allocator.pop(vtype.clone());
+                    }
+
+                    let slots_to_stack = allocator.get_active_slots();
+
+                    allocator_state_stack.push(allocator.save_state());
+
+                    for vtype in param_types.iter() {
+                        allocator.push(vtype.clone());
+                    }
+
+                    let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
+                        &op,
+                        current_processed_pc,
+                        &control_info_stack,
+                        module,
+                        &mut BlockArityCache::new(),
+                    )?;
+
+                    let mut full_slots_to_stack = slots_to_stack;
+                    full_slots_to_stack.push(condition_slot);
+                    if let ProcessedInstr::Legacy {
+                        slots_to_stack: ss, ..
+                    } = &mut instr
+                    {
+                        *ss = full_slots_to_stack;
+                    }
+                    (instr, fixup)
+                }
+                wasmparser::Operator::Else => {
+                    if let Some(state) = allocator_state_stack.last() {
+                        allocator.restore_state(state);
+                    }
+
+                    // Get the If's block type from control_info_stack and push params back
+                    if let Some((blockty, _)) = control_info_stack.last() {
+                        let param_types = get_block_param_types(blockty, module);
+                        for vtype in param_types.iter() {
+                            allocator.push(vtype.clone());
+                        }
+                    }
+
                     map_operator_to_initial_instr_and_fixup(
                         &op,
                         current_processed_pc,
@@ -3182,6 +3338,121 @@ fn decode_processed_instrs_and_fixups<'a>(
                         module,
                         &mut BlockArityCache::new(),
                     )?
+                }
+
+                wasmparser::Operator::Call { function_index } => {
+                    let func_type_idx = if (*function_index as usize) < module.num_imported_funcs {
+                        if let Some(import) = module.imports.get(*function_index as usize) {
+                            match &import.desc {
+                                crate::structure::module::ImportDesc::Func(type_idx) => {
+                                    Some(type_idx.0 as usize)
+                                }
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        let local_idx = *function_index as usize - module.num_imported_funcs;
+                        if let Some(func) = module.funcs.get(local_idx) {
+                            Some(func.type_.0 as usize)
+                        } else {
+                            None
+                        }
+                    };
+
+                    let (param_count, result_count, result_types) =
+                        if let Some(type_idx) = func_type_idx {
+                            if let Some(func_type) = module.types.get(type_idx) {
+                                (
+                                    func_type.params.len(),
+                                    func_type.results.len(),
+                                    func_type.results.clone(),
+                                )
+                            } else {
+                                (0, 0, Vec::new())
+                            }
+                        } else {
+                            (0, 0, Vec::new())
+                        };
+
+                    if param_count == 0 && result_count == 0 {
+                        map_operator_to_initial_instr_and_fixup(
+                            &op,
+                            current_processed_pc,
+                            &control_info_stack,
+                            module,
+                            &mut BlockArityCache::new(),
+                        )?
+                    } else {
+                        for _ in 0..param_count {
+                            // We don't know the types here, so fall back to legacy
+                        }
+                        let slots_to_stack = allocator.get_active_slots();
+                        allocator.clear_stack();
+                        for result_type in &result_types {
+                            allocator.push(result_type.clone());
+                        }
+                        let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
+                            &op,
+                            current_processed_pc,
+                            &control_info_stack,
+                            module,
+                            &mut BlockArityCache::new(),
+                        )?;
+                        if let ProcessedInstr::Legacy {
+                            slots_to_stack: ref mut ss,
+                            ..
+                        } = instr
+                        {
+                            *ss = slots_to_stack;
+                        }
+                        (instr, fixup)
+                    }
+                }
+
+                wasmparser::Operator::Br { .. }
+                | wasmparser::Operator::BrIf { .. }
+                | wasmparser::Operator::BrTable { .. }
+                | wasmparser::Operator::Return => {
+                    let slots_to_stack = allocator.get_active_slots();
+                    let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
+                        &op,
+                        current_processed_pc,
+                        &control_info_stack,
+                        module,
+                        &mut BlockArityCache::new(),
+                    )?;
+                    if let ProcessedInstr::Legacy {
+                        slots_to_stack: ref mut ss,
+                        ..
+                    } = instr
+                    {
+                        *ss = slots_to_stack;
+                    }
+                    (instr, fixup)
+                }
+                _ => {
+                    // Fall back to Legacy mode for unsupported instructions
+                    // Sync all active slots to value_stack before executing
+                    let slots_to_stack = allocator.get_active_slots();
+                    allocator.clear_stack();
+                    let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
+                        &op,
+                        current_processed_pc,
+                        &control_info_stack,
+                        module,
+                        &mut BlockArityCache::new(),
+                    )?;
+                    // Set slots_to_stack on the legacy instruction
+                    if let ProcessedInstr::Legacy {
+                        slots_to_stack: ref mut ss,
+                        ..
+                    } = instr
+                    {
+                        *ss = slots_to_stack;
+                    }
+                    (instr, fixup)
                 }
             }
         } else {
@@ -3252,9 +3523,18 @@ fn decode_processed_instrs_and_fixups<'a>(
         }
 
         if let wasmparser::Operator::BrTable { ref targets } = op {
+            // Use slots_to_stack from processed_instr_template (set by slot mode default handler)
+            let slots_to_stack =
+                if let ProcessedInstr::Legacy { slots_to_stack, .. } = &processed_instr_template {
+                    slots_to_stack.clone()
+                } else {
+                    Vec::new()
+                };
             let processed_instr = ProcessedInstr::Legacy {
                 handler_index: HANDLER_IDX_BR_TABLE,
                 operand: Operand::None,
+                slots_to_stack,
+                stack_to_slots: Vec::new(),
             };
             initial_processed_instrs.push(processed_instr);
 
@@ -4210,6 +4490,8 @@ fn map_operator_to_initial_instr_and_fixup(
     let processed_instr = ProcessedInstr::Legacy {
         handler_index,
         operand,
+        slots_to_stack: Vec::new(),
+        stack_to_slots: Vec::new(),
     };
     Ok((processed_instr, fixup_info))
 }
