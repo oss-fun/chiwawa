@@ -182,6 +182,33 @@ impl SlotFile {
             Slot::V128(idx) => Val::Vec_(Vec_::V128(self.get_v128(*idx))),
         }
     }
+
+    /// Set value to slot from Val
+    #[inline(always)]
+    pub fn set_val(&mut self, slot: &Slot, val: &Val) {
+        match slot {
+            Slot::I32(idx) => self.set_i32(*idx, val.to_i32().unwrap_or(0)),
+            Slot::I64(idx) => self.set_i64(*idx, val.to_i64().unwrap_or(0)),
+            Slot::F32(idx) => self.set_f32(*idx, val.to_f32().unwrap_or(0.0)),
+            Slot::F64(idx) => self.set_f64(*idx, val.to_f64().unwrap_or(0.0)),
+            Slot::Ref(_) | Slot::V128(_) => {} // Not commonly used in numeric operations
+        }
+    }
+
+    /// Write values from value_stack to slots (stack_to_slots operation)
+    /// Returns the number of values consumed from value_stack
+    #[inline]
+    pub fn write_from_stack(&mut self, stack_to_slots: &[Slot], value_stack: &[Val]) -> usize {
+        let slot_count = stack_to_slots.len();
+        let stack_len = value_stack.len();
+        if slot_count == 0 || stack_len < slot_count {
+            return 0;
+        }
+        for (i, slot) in stack_to_slots.iter().enumerate() {
+            self.set_val(slot, &value_stack[stack_len - slot_count + i]);
+        }
+        slot_count
+    }
 }
 
 /// Slot allocation information (number of slots needed per function)
@@ -336,6 +363,36 @@ impl SlotAllocator {
                 self.v128_depth = self.v128_depth.saturating_sub(1);
                 Slot::V128(self.v128_depth as u16)
             }
+        }
+    }
+
+    /// Pop a value of any type from the stack (uses stack_order to determine type)
+    /// Returns the popped slot, or None if stack is empty
+    pub fn pop_any_type(&mut self) -> Option<Slot> {
+        if let Some(slot) = self.stack_order.pop() {
+            match &slot {
+                Slot::I32(_) => {
+                    self.i32_depth = self.i32_depth.saturating_sub(1);
+                }
+                Slot::I64(_) => {
+                    self.i64_depth = self.i64_depth.saturating_sub(1);
+                }
+                Slot::F32(_) => {
+                    self.f32_depth = self.f32_depth.saturating_sub(1);
+                }
+                Slot::F64(_) => {
+                    self.f64_depth = self.f64_depth.saturating_sub(1);
+                }
+                Slot::Ref(_) => {
+                    self.ref_depth = self.ref_depth.saturating_sub(1);
+                }
+                Slot::V128(_) => {
+                    self.v128_depth = self.v128_depth.saturating_sub(1);
+                }
+            }
+            Some(slot)
+        } else {
+            None
         }
     }
 

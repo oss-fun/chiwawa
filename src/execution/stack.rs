@@ -969,7 +969,10 @@ impl FrameStack {
                     stack_to_slots,
                 } => {
                     // Copy slots to value_stack before executing legacy instruction
-                    if !slots_to_stack.is_empty() {
+                    // Skip sync if value_stack already has enough values (e.g., from br jump)
+                    if !slots_to_stack.is_empty()
+                        && self.global_value_stack.len() < slots_to_stack.len()
+                    {
                         if let Some(ref slot_file) = self.frame.slot_file {
                             for slot in slots_to_stack.iter() {
                                 let val = slot_file.get_val(slot);
@@ -1035,45 +1038,13 @@ impl FrameStack {
                         Ok(handler_result) => {
                             match handler_result {
                                 HandlerResult::Continue(next_ip) => {
-                                    // Write back results to slot_file if specified (without pop/push)
-                                    if !stack_to_slots.is_empty() {
-                                        if let Some(ref mut slot_file) = self.frame.slot_file {
-                                            let stack_len = self.global_value_stack.len();
-                                            let slot_count = stack_to_slots.len();
-                                            // Peek values from value_stack and write to slots
-                                            for (i, slot) in stack_to_slots.iter().enumerate() {
-                                                let val = &self.global_value_stack
-                                                    [stack_len - slot_count + i];
-                                                match slot {
-                                                    crate::execution::slots::Slot::I32(idx) => {
-                                                        slot_file.set_i32(
-                                                            *idx,
-                                                            val.to_i32().unwrap_or(0),
-                                                        );
-                                                    }
-                                                    crate::execution::slots::Slot::I64(idx) => {
-                                                        slot_file.set_i64(
-                                                            *idx,
-                                                            val.to_i64().unwrap_or(0),
-                                                        );
-                                                    }
-                                                    crate::execution::slots::Slot::F32(idx) => {
-                                                        slot_file.set_f32(
-                                                            *idx,
-                                                            val.to_f32().unwrap_or(0.0),
-                                                        );
-                                                    }
-                                                    crate::execution::slots::Slot::F64(idx) => {
-                                                        slot_file.set_f64(
-                                                            *idx,
-                                                            val.to_f64().unwrap_or(0.0),
-                                                        );
-                                                    }
-                                                    _ => {}
-                                                }
-                                            }
-                                            // value_stack is left as-is for legacy instructions that may follow
-                                        }
+                                    // Write back results to slot_file if specified
+                                    // (value_stack is left as-is for legacy instructions that may follow)
+                                    if let Some(ref mut slot_file) = self.frame.slot_file {
+                                        slot_file.write_from_stack(
+                                            &stack_to_slots,
+                                            &self.global_value_stack,
+                                        );
                                     }
                                     self.label_stack[current_label_stack_idx].ip = next_ip;
                                 }
@@ -1157,6 +1128,33 @@ impl FrameStack {
                                         let actual_height = stack_height.min(current_len);
                                         self.global_value_stack
                                             .splice(actual_height.., values_to_push);
+
+                                        // Apply the End instruction's stack_to_slots if in slot mode
+                                        // The End instruction is at target_ip - 1 (since target_ip = End_IP + 1)
+                                        if let (Some(ref mut slot_file), Some(end_instr)) = (
+                                            self.frame.slot_file.as_mut(),
+                                            target_ip.checked_sub(1).and_then(|ip| {
+                                                self.label_stack[current_label_stack_idx]
+                                                    .processed_instrs
+                                                    .get(ip)
+                                            }),
+                                        ) {
+                                            if let ProcessedInstr::Legacy {
+                                                stack_to_slots, ..
+                                            } = end_instr
+                                            {
+                                                let consumed = slot_file.write_from_stack(
+                                                    stack_to_slots,
+                                                    &self.global_value_stack,
+                                                );
+                                                self.global_value_stack.truncate(
+                                                    self.global_value_stack.len() - consumed,
+                                                );
+                                            }
+                                        }
+
+                                        let target_label_stack =
+                                            &mut self.label_stack[current_label_stack_idx];
                                         target_label_stack.ip = target_ip;
 
                                         // Reset tracking for new block after branch
@@ -1416,27 +1414,26 @@ impl FrameStack {
                                             &self.label_stack[current_label_stack_idx].label;
                                         let function_arity = current_label.arity;
 
-                                        // Extract the function result values from slot_file or global stack
+                                        // Extract the function result values from value_stack or slot_file
                                         if function_arity > 0 {
-                                            if let (Some(ref slot_file), Some(ref result_slot)) =
-                                                (&self.frame.slot_file, &self.frame.result_slot)
-                                            {
-                                                // Slot mode: read result from specified slot
-                                                // TODO: Optimize slot-to-slot return value passing
-                                                // (eliminate global_value_stack for slot mode -> slot mode calls)
-                                                let result_val = slot_file.get_val(result_slot);
-                                                self.global_value_stack.clear();
-                                                self.global_value_stack.push(result_val);
-                                            } else if self.global_value_stack.len()
-                                                >= function_arity
-                                            {
-                                                // Stack mode: extract from global stack
+                                            if self.global_value_stack.len() >= function_arity {
+                                                // Use value_stack (may contain result from br jump)
                                                 let start_idx =
                                                     self.global_value_stack.len() - function_arity;
                                                 let result_values =
                                                     self.global_value_stack[start_idx..].to_vec();
                                                 self.global_value_stack.clear();
                                                 self.global_value_stack.extend(result_values);
+                                            } else if let (
+                                                Some(ref slot_file),
+                                                Some(ref result_slot),
+                                            ) =
+                                                (&self.frame.slot_file, &self.frame.result_slot)
+                                            {
+                                                // Slot mode fallback: read result from specified slot
+                                                let result_val = slot_file.get_val(result_slot);
+                                                self.global_value_stack.clear();
+                                                self.global_value_stack.push(result_val);
                                             } else {
                                                 return Err(RuntimeError::ValueStackUnderflow);
                                             }

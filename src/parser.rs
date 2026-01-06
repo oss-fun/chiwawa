@@ -3411,11 +3411,111 @@ fn decode_processed_instrs_and_fixups<'a>(
                     }
                 }
 
-                wasmparser::Operator::Br { .. }
-                | wasmparser::Operator::BrIf { .. }
-                | wasmparser::Operator::BrTable { .. }
-                | wasmparser::Operator::Return => {
+                wasmparser::Operator::Br { relative_depth } => {
+                    // Get target block's result arity to sync only TOP N slots
+                    let target_arity = if *relative_depth as usize >= control_info_stack.len() {
+                        // Branching to function level - use function result types
+                        result_types.len()
+                    } else {
+                        let target_idx = control_info_stack.len() - 1 - *relative_depth as usize;
+                        let (blockty, _) = &control_info_stack[target_idx];
+                        get_block_result_types(blockty, module).len()
+                    };
+
+                    // Only sync TOP N slots (where N is target block's result arity)
+                    let all_slots = allocator.get_active_slots();
+                    let slots_to_stack = if all_slots.len() >= target_arity {
+                        all_slots[all_slots.len() - target_arity..].to_vec()
+                    } else {
+                        all_slots
+                    };
+
+                    let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
+                        &op,
+                        current_processed_pc,
+                        &control_info_stack,
+                        module,
+                        &mut BlockArityCache::new(),
+                    )?;
+                    if let ProcessedInstr::Legacy {
+                        slots_to_stack: ref mut ss,
+                        ..
+                    } = instr
+                    {
+                        *ss = slots_to_stack;
+                    }
+                    (instr, fixup)
+                }
+                wasmparser::Operator::BrIf { relative_depth } => {
+                    // Pop condition first
+                    allocator.pop(ValueType::NumType(NumType::I32));
+
+                    // Get target block's result arity to sync only TOP N slots
+                    let target_arity = if *relative_depth as usize >= control_info_stack.len() {
+                        result_types.len()
+                    } else {
+                        let target_idx = control_info_stack.len() - 1 - *relative_depth as usize;
+                        let (blockty, _) = &control_info_stack[target_idx];
+                        get_block_result_types(blockty, module).len()
+                    };
+
+                    let all_slots = allocator.get_active_slots();
+                    let slots_to_stack = if all_slots.len() >= target_arity {
+                        all_slots[all_slots.len() - target_arity..].to_vec()
+                    } else {
+                        all_slots
+                    };
+
+                    // Push condition slot back for sync (it needs to be on value_stack for BrIf)
+                    let condition_slot = allocator.push(ValueType::NumType(NumType::I32));
+                    let mut full_slots = slots_to_stack;
+                    full_slots.push(condition_slot);
+
+                    let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
+                        &op,
+                        current_processed_pc,
+                        &control_info_stack,
+                        module,
+                        &mut BlockArityCache::new(),
+                    )?;
+                    if let ProcessedInstr::Legacy {
+                        slots_to_stack: ref mut ss,
+                        ..
+                    } = instr
+                    {
+                        *ss = full_slots;
+                    }
+                    (instr, fixup)
+                }
+                wasmparser::Operator::BrTable { .. } | wasmparser::Operator::Return => {
+                    // For BrTable and Return, sync all slots (conservative approach)
                     let slots_to_stack = allocator.get_active_slots();
+                    let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
+                        &op,
+                        current_processed_pc,
+                        &control_info_stack,
+                        module,
+                        &mut BlockArityCache::new(),
+                    )?;
+                    if let ProcessedInstr::Legacy {
+                        slots_to_stack: ref mut ss,
+                        ..
+                    } = instr
+                    {
+                        *ss = slots_to_stack;
+                    }
+                    (instr, fixup)
+                }
+                wasmparser::Operator::Drop => {
+                    // Drop consumes one value - pop from allocator and sync just that slot
+                    // We need to determine the type of the value being dropped
+                    // For now, try to pop from each type stack starting with I32
+                    let slot_to_drop = allocator.pop_any_type();
+                    let slots_to_stack = if let Some(slot) = slot_to_drop {
+                        vec![slot]
+                    } else {
+                        Vec::new()
+                    };
                     let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
                         &op,
                         current_processed_pc,
