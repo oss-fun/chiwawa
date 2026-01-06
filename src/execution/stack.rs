@@ -5,7 +5,7 @@ use crate::execution::{
     memoization::{GlobalAccessTracker, LocalAccessTracker},
     migration,
     module::*,
-    slots::Slot,
+    slots::{Slot, SlotFile},
 };
 use crate::structure::types::LabelIdx as StructureLabelIdx;
 use crate::structure::{instructions::*, types::*};
@@ -258,6 +258,11 @@ pub enum ProcessedInstr {
         src1: F64SlotOperand,
         src2: Option<F64SlotOperand>,
     },
+    ConversionSlot {
+        handler_index: usize,
+        dst: Slot, // Destination slot (type determined by output type)
+        src: Slot, // Source slot (type determined by input type)
+    },
 }
 
 impl ProcessedInstr {
@@ -270,6 +275,7 @@ impl ProcessedInstr {
             ProcessedInstr::I64Slot { handler_index, .. } => *handler_index,
             ProcessedInstr::F32Slot { handler_index, .. } => *handler_index,
             ProcessedInstr::F64Slot { handler_index, .. } => *handler_index,
+            ProcessedInstr::ConversionSlot { handler_index, .. } => *handler_index,
         }
     }
 
@@ -976,6 +982,29 @@ impl FrameStack {
                     };
 
                     let handler = F64_SLOT_HANDLER_TABLE[*handler_index];
+                    handler(ctx)?;
+
+                    self.label_stack[current_label_stack_idx].ip = ip + 1;
+                    continue;
+                }
+                ProcessedInstr::ConversionSlot {
+                    handler_index,
+                    dst,
+                    src,
+                } => {
+                    let slot_file = self
+                        .frame
+                        .slot_file
+                        .as_mut()
+                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
+
+                    let ctx = ConversionSlotContext {
+                        slot_file,
+                        src: src.clone(),
+                        dst: dst.clone(),
+                    };
+
+                    let handler = CONVERSION_SLOT_HANDLER_TABLE[*handler_index];
                     handler(ctx)?;
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
@@ -6568,6 +6597,411 @@ lazy_static! {
         table[HANDLER_IDX_F64_GT] = f64_slot_gt;
         table[HANDLER_IDX_F64_LE] = f64_slot_le;
         table[HANDLER_IDX_F64_GE] = f64_slot_ge;
+
+        table
+    };
+}
+
+// Conversion Slot handlers
+struct ConversionSlotContext<'a> {
+    slot_file: &'a mut SlotFile,
+    src: Slot,
+    dst: Slot,
+}
+
+type ConversionSlotHandler = fn(ConversionSlotContext) -> Result<(), RuntimeError>;
+
+fn conversion_slot_invalid_handler(_ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    Err(RuntimeError::InvalidHandlerIndex)
+}
+
+// i32 -> i64
+fn conv_i64_extend_i32_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_i32(ctx.src.index());
+    ctx.slot_file.set_i64(ctx.dst.index(), val as i64);
+    Ok(())
+}
+
+fn conv_i64_extend_i32_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_i32(ctx.src.index());
+    ctx.slot_file.set_i64(ctx.dst.index(), (val as u32) as i64);
+    Ok(())
+}
+
+// i64 -> i32
+fn conv_i32_wrap_i64(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_i64(ctx.src.index());
+    ctx.slot_file.set_i32(ctx.dst.index(), val as i32);
+    Ok(())
+}
+
+// f32 -> i32
+fn conv_i32_trunc_f32_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f32(ctx.src.index());
+    if val.is_nan() {
+        return Err(RuntimeError::InvalidConversionToInt);
+    }
+    let truncated = val.trunc();
+    if truncated < (i32::MIN as f32) || truncated > (i32::MAX as f32) {
+        return Err(RuntimeError::IntegerOverflow);
+    }
+    ctx.slot_file.set_i32(ctx.dst.index(), truncated as i32);
+    Ok(())
+}
+
+fn conv_i32_trunc_f32_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f32(ctx.src.index());
+    if val.is_nan() {
+        return Err(RuntimeError::InvalidConversionToInt);
+    }
+    let truncated = val.trunc();
+    if truncated < 0.0 || truncated > (u32::MAX as f32) {
+        return Err(RuntimeError::IntegerOverflow);
+    }
+    ctx.slot_file
+        .set_i32(ctx.dst.index(), (truncated as u32) as i32);
+    Ok(())
+}
+
+// f64 -> i32
+fn conv_i32_trunc_f64_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f64(ctx.src.index());
+    if val.is_nan() {
+        return Err(RuntimeError::InvalidConversionToInt);
+    }
+    let truncated = val.trunc();
+    if truncated < (i32::MIN as f64) || truncated > (i32::MAX as f64) {
+        return Err(RuntimeError::IntegerOverflow);
+    }
+    ctx.slot_file.set_i32(ctx.dst.index(), truncated as i32);
+    Ok(())
+}
+
+fn conv_i32_trunc_f64_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f64(ctx.src.index());
+    if val.is_nan() {
+        return Err(RuntimeError::InvalidConversionToInt);
+    }
+    let truncated = val.trunc();
+    if truncated < 0.0 || truncated > (u32::MAX as f64) {
+        return Err(RuntimeError::IntegerOverflow);
+    }
+    ctx.slot_file
+        .set_i32(ctx.dst.index(), (truncated as u32) as i32);
+    Ok(())
+}
+
+// f32 -> i64
+fn conv_i64_trunc_f32_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f32(ctx.src.index());
+    if val.is_nan() {
+        return Err(RuntimeError::InvalidConversionToInt);
+    }
+    let truncated = val.trunc();
+    if truncated < (i64::MIN as f32) || truncated >= (i64::MAX as f32) {
+        return Err(RuntimeError::IntegerOverflow);
+    }
+    ctx.slot_file.set_i64(ctx.dst.index(), truncated as i64);
+    Ok(())
+}
+
+fn conv_i64_trunc_f32_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f32(ctx.src.index());
+    if val.is_nan() {
+        return Err(RuntimeError::InvalidConversionToInt);
+    }
+    let truncated = val.trunc();
+    if truncated < 0.0 || truncated >= (u64::MAX as f32) {
+        return Err(RuntimeError::IntegerOverflow);
+    }
+    ctx.slot_file
+        .set_i64(ctx.dst.index(), (truncated as u64) as i64);
+    Ok(())
+}
+
+// f64 -> i64
+fn conv_i64_trunc_f64_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f64(ctx.src.index());
+    if val.is_nan() {
+        return Err(RuntimeError::InvalidConversionToInt);
+    }
+    let truncated = val.trunc();
+    if truncated < (i64::MIN as f64) || truncated >= (i64::MAX as f64) {
+        return Err(RuntimeError::IntegerOverflow);
+    }
+    ctx.slot_file.set_i64(ctx.dst.index(), truncated as i64);
+    Ok(())
+}
+
+fn conv_i64_trunc_f64_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f64(ctx.src.index());
+    if val.is_nan() {
+        return Err(RuntimeError::InvalidConversionToInt);
+    }
+    let truncated = val.trunc();
+    if truncated < 0.0 || truncated >= (u64::MAX as f64) {
+        return Err(RuntimeError::IntegerOverflow);
+    }
+    ctx.slot_file
+        .set_i64(ctx.dst.index(), (truncated as u64) as i64);
+    Ok(())
+}
+
+// Saturating truncations (i32)
+fn conv_i32_trunc_sat_f32_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f32(ctx.src.index());
+    let result = if val.is_nan() {
+        0
+    } else if val <= (i32::MIN as f32) {
+        i32::MIN
+    } else if val >= (i32::MAX as f32) {
+        i32::MAX
+    } else {
+        val.trunc() as i32
+    };
+    ctx.slot_file.set_i32(ctx.dst.index(), result);
+    Ok(())
+}
+
+fn conv_i32_trunc_sat_f32_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f32(ctx.src.index());
+    let result = if val.is_nan() || val <= 0.0 {
+        0
+    } else if val >= (u32::MAX as f32) {
+        u32::MAX
+    } else {
+        val.trunc() as u32
+    };
+    ctx.slot_file.set_i32(ctx.dst.index(), result as i32);
+    Ok(())
+}
+
+fn conv_i32_trunc_sat_f64_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f64(ctx.src.index());
+    let result = if val.is_nan() {
+        0
+    } else if val <= (i32::MIN as f64) {
+        i32::MIN
+    } else if val >= (i32::MAX as f64) {
+        i32::MAX
+    } else {
+        val.trunc() as i32
+    };
+    ctx.slot_file.set_i32(ctx.dst.index(), result);
+    Ok(())
+}
+
+fn conv_i32_trunc_sat_f64_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f64(ctx.src.index());
+    let result = if val.is_nan() || val <= 0.0 {
+        0
+    } else if val >= (u32::MAX as f64) {
+        u32::MAX
+    } else {
+        val.trunc() as u32
+    };
+    ctx.slot_file.set_i32(ctx.dst.index(), result as i32);
+    Ok(())
+}
+
+// Saturating truncations (i64)
+fn conv_i64_trunc_sat_f32_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f32(ctx.src.index());
+    let result = if val.is_nan() {
+        0
+    } else if val <= (i64::MIN as f32) {
+        i64::MIN
+    } else if val >= (i64::MAX as f32) {
+        i64::MAX
+    } else {
+        val.trunc() as i64
+    };
+    ctx.slot_file.set_i64(ctx.dst.index(), result);
+    Ok(())
+}
+
+fn conv_i64_trunc_sat_f32_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f32(ctx.src.index());
+    let result = if val.is_nan() || val <= 0.0 {
+        0
+    } else if val >= (u64::MAX as f32) {
+        u64::MAX
+    } else {
+        val.trunc() as u64
+    };
+    ctx.slot_file.set_i64(ctx.dst.index(), result as i64);
+    Ok(())
+}
+
+fn conv_i64_trunc_sat_f64_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f64(ctx.src.index());
+    let result = if val.is_nan() {
+        0
+    } else if val <= (i64::MIN as f64) {
+        i64::MIN
+    } else if val >= (i64::MAX as f64) {
+        i64::MAX
+    } else {
+        val.trunc() as i64
+    };
+    ctx.slot_file.set_i64(ctx.dst.index(), result);
+    Ok(())
+}
+
+fn conv_i64_trunc_sat_f64_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f64(ctx.src.index());
+    let result = if val.is_nan() || val <= 0.0 {
+        0
+    } else if val >= (u64::MAX as f64) {
+        u64::MAX
+    } else {
+        val.trunc() as u64
+    };
+    ctx.slot_file.set_i64(ctx.dst.index(), result as i64);
+    Ok(())
+}
+
+// i32 -> f32
+fn conv_f32_convert_i32_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_i32(ctx.src.index());
+    ctx.slot_file.set_f32(ctx.dst.index(), val as f32);
+    Ok(())
+}
+
+fn conv_f32_convert_i32_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_i32(ctx.src.index());
+    ctx.slot_file.set_f32(ctx.dst.index(), (val as u32) as f32);
+    Ok(())
+}
+
+// i64 -> f32
+fn conv_f32_convert_i64_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_i64(ctx.src.index());
+    ctx.slot_file.set_f32(ctx.dst.index(), val as f32);
+    Ok(())
+}
+
+fn conv_f32_convert_i64_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_i64(ctx.src.index());
+    ctx.slot_file.set_f32(ctx.dst.index(), (val as u64) as f32);
+    Ok(())
+}
+
+// i32 -> f64
+fn conv_f64_convert_i32_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_i32(ctx.src.index());
+    ctx.slot_file.set_f64(ctx.dst.index(), val as f64);
+    Ok(())
+}
+
+fn conv_f64_convert_i32_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_i32(ctx.src.index());
+    ctx.slot_file.set_f64(ctx.dst.index(), (val as u32) as f64);
+    Ok(())
+}
+
+// i64 -> f64
+fn conv_f64_convert_i64_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_i64(ctx.src.index());
+    ctx.slot_file.set_f64(ctx.dst.index(), val as f64);
+    Ok(())
+}
+
+fn conv_f64_convert_i64_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_i64(ctx.src.index());
+    ctx.slot_file.set_f64(ctx.dst.index(), (val as u64) as f64);
+    Ok(())
+}
+
+// f64 -> f32
+fn conv_f32_demote_f64(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f64(ctx.src.index());
+    ctx.slot_file.set_f32(ctx.dst.index(), val as f32);
+    Ok(())
+}
+
+// f32 -> f64
+fn conv_f64_promote_f32(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f32(ctx.src.index());
+    ctx.slot_file.set_f64(ctx.dst.index(), val as f64);
+    Ok(())
+}
+
+// Reinterpret operations
+fn conv_i32_reinterpret_f32(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f32(ctx.src.index());
+    ctx.slot_file.set_i32(ctx.dst.index(), val.to_bits() as i32);
+    Ok(())
+}
+
+fn conv_f32_reinterpret_i32(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_i32(ctx.src.index());
+    ctx.slot_file
+        .set_f32(ctx.dst.index(), f32::from_bits(val as u32));
+    Ok(())
+}
+
+fn conv_i64_reinterpret_f64(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_f64(ctx.src.index());
+    ctx.slot_file.set_i64(ctx.dst.index(), val.to_bits() as i64);
+    Ok(())
+}
+
+fn conv_f64_reinterpret_i64(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx.slot_file.get_i64(ctx.src.index());
+    ctx.slot_file
+        .set_f64(ctx.dst.index(), f64::from_bits(val as u64));
+    Ok(())
+}
+
+lazy_static! {
+    static ref CONVERSION_SLOT_HANDLER_TABLE: Vec<ConversionSlotHandler> = {
+        let mut table: Vec<ConversionSlotHandler> = vec![conversion_slot_invalid_handler; 256];
+
+        // Integer conversions
+        table[HANDLER_IDX_I64_EXTEND_I32_S] = conv_i64_extend_i32_s;
+        table[HANDLER_IDX_I64_EXTEND_I32_U] = conv_i64_extend_i32_u;
+        table[HANDLER_IDX_I32_WRAP_I64] = conv_i32_wrap_i64;
+
+        // Float to integer (trapping)
+        table[HANDLER_IDX_I32_TRUNC_F32_S] = conv_i32_trunc_f32_s;
+        table[HANDLER_IDX_I32_TRUNC_F32_U] = conv_i32_trunc_f32_u;
+        table[HANDLER_IDX_I32_TRUNC_F64_S] = conv_i32_trunc_f64_s;
+        table[HANDLER_IDX_I32_TRUNC_F64_U] = conv_i32_trunc_f64_u;
+        table[HANDLER_IDX_I64_TRUNC_F32_S] = conv_i64_trunc_f32_s;
+        table[HANDLER_IDX_I64_TRUNC_F32_U] = conv_i64_trunc_f32_u;
+        table[HANDLER_IDX_I64_TRUNC_F64_S] = conv_i64_trunc_f64_s;
+        table[HANDLER_IDX_I64_TRUNC_F64_U] = conv_i64_trunc_f64_u;
+
+        // Float to integer (saturating)
+        table[HANDLER_IDX_I32_TRUNC_SAT_F32_S] = conv_i32_trunc_sat_f32_s;
+        table[HANDLER_IDX_I32_TRUNC_SAT_F32_U] = conv_i32_trunc_sat_f32_u;
+        table[HANDLER_IDX_I32_TRUNC_SAT_F64_S] = conv_i32_trunc_sat_f64_s;
+        table[HANDLER_IDX_I32_TRUNC_SAT_F64_U] = conv_i32_trunc_sat_f64_u;
+        table[HANDLER_IDX_I64_TRUNC_SAT_F32_S] = conv_i64_trunc_sat_f32_s;
+        table[HANDLER_IDX_I64_TRUNC_SAT_F32_U] = conv_i64_trunc_sat_f32_u;
+        table[HANDLER_IDX_I64_TRUNC_SAT_F64_S] = conv_i64_trunc_sat_f64_s;
+        table[HANDLER_IDX_I64_TRUNC_SAT_F64_U] = conv_i64_trunc_sat_f64_u;
+
+        // Integer to float
+        table[HANDLER_IDX_F32_CONVERT_I32_S] = conv_f32_convert_i32_s;
+        table[HANDLER_IDX_F32_CONVERT_I32_U] = conv_f32_convert_i32_u;
+        table[HANDLER_IDX_F32_CONVERT_I64_S] = conv_f32_convert_i64_s;
+        table[HANDLER_IDX_F32_CONVERT_I64_U] = conv_f32_convert_i64_u;
+        table[HANDLER_IDX_F64_CONVERT_I32_S] = conv_f64_convert_i32_s;
+        table[HANDLER_IDX_F64_CONVERT_I32_U] = conv_f64_convert_i32_u;
+        table[HANDLER_IDX_F64_CONVERT_I64_S] = conv_f64_convert_i64_s;
+        table[HANDLER_IDX_F64_CONVERT_I64_U] = conv_f64_convert_i64_u;
+
+        // Float conversions
+        table[HANDLER_IDX_F32_DEMOTE_F64] = conv_f32_demote_f64;
+        table[HANDLER_IDX_F64_PROMOTE_F32] = conv_f64_promote_f32;
+
+        // Reinterpret
+        table[HANDLER_IDX_I32_REINTERPRET_F32] = conv_i32_reinterpret_f32;
+        table[HANDLER_IDX_F32_REINTERPRET_I32] = conv_f32_reinterpret_i32;
+        table[HANDLER_IDX_I64_REINTERPRET_F64] = conv_i64_reinterpret_f64;
+        table[HANDLER_IDX_F64_REINTERPRET_I64] = conv_f64_reinterpret_i64;
 
         table
     };

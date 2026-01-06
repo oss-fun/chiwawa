@@ -3679,6 +3679,403 @@ fn decode_processed_instrs_and_fixups<'a>(
                     }
                     (instr, fixup)
                 }
+                // Conversion instructions - use ConversionSlot
+                wasmparser::Operator::I64ExtendI32S => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I64_EXTEND_I32_S,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64ExtendI32U => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I64_EXTEND_I32_U,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32WrapI64 => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I32_WRAP_I64,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32TruncF32S => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I32_TRUNC_F32_S,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32TruncF32U => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I32_TRUNC_F32_U,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32TruncF64S => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I32_TRUNC_F64_S,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32TruncF64U => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I32_TRUNC_F64_U,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64TruncF32S => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I64_TRUNC_F32_S,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64TruncF32U => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I64_TRUNC_F32_U,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64TruncF64S => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I64_TRUNC_F64_S,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64TruncF64U => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I64_TRUNC_F64_U,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32TruncSatF32S => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I32_TRUNC_SAT_F32_S,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32TruncSatF32U => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I32_TRUNC_SAT_F32_U,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32TruncSatF64S => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I32_TRUNC_SAT_F64_S,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32TruncSatF64U => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I32_TRUNC_SAT_F64_U,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64TruncSatF32S => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I64_TRUNC_SAT_F32_S,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64TruncSatF32U => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I64_TRUNC_SAT_F32_U,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64TruncSatF64S => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I64_TRUNC_SAT_F64_S,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64TruncSatF64U => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I64_TRUNC_SAT_F64_U,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32ConvertI32S => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_F32_CONVERT_I32_S,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32ConvertI32U => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_F32_CONVERT_I32_U,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32ConvertI64S => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_F32_CONVERT_I64_S,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32ConvertI64U => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_F32_CONVERT_I64_U,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F64ConvertI32S => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F64));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_F64_CONVERT_I32_S,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F64ConvertI32U => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F64));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_F64_CONVERT_I32_U,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F64ConvertI64S => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::F64));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_F64_CONVERT_I64_S,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F64ConvertI64U => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::F64));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_F64_CONVERT_I64_U,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32DemoteF64 => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_F32_DEMOTE_F64,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F64PromoteF32 => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F64));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_F64_PROMOTE_F32,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32ReinterpretF32 => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I32_REINTERPRET_F32,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64ReinterpretF64 => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_I64_REINTERPRET_F64,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F32ReinterpretI32 => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::F32));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_F32_REINTERPRET_I32,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::F64ReinterpretI64 => {
+                    let src = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let dst = allocator.push(ValueType::NumType(NumType::F64));
+                    (
+                        ProcessedInstr::ConversionSlot {
+                            handler_index: HANDLER_IDX_F64_REINTERPRET_I64,
+                            dst,
+                            src,
+                        },
+                        None,
+                    )
+                }
                 _ => {
                     // Fall back to Legacy mode for unsupported instructions
                     // Sync all active slots to value_stack before executing
