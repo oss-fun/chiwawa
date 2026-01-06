@@ -883,7 +883,7 @@ impl FrameStack {
                     // Create context for handler
                     let ctx = I32SlotContext {
                         slot_file: slot_file.get_i32_slots(),
-                        locals: &self.frame.locals,
+                        locals: &mut self.frame.locals,
                         src1: src1.clone(),
                         src2: src2.clone(),
                     };
@@ -911,7 +911,7 @@ impl FrameStack {
                     let ctx = I64SlotContext {
                         i64_slots,
                         i32_slots,
-                        locals: &self.frame.locals,
+                        locals: &mut self.frame.locals,
                         src1: src1.clone(),
                         src2: src2.clone(),
                         dst: dst.clone(),
@@ -940,7 +940,7 @@ impl FrameStack {
                     let ctx = F32SlotContext {
                         f32_slots,
                         i32_slots,
-                        locals: &self.frame.locals,
+                        locals: &mut self.frame.locals,
                         src1: src1.clone(),
                         src2: src2.clone(),
                         dst: dst.clone(),
@@ -969,7 +969,7 @@ impl FrameStack {
                     let ctx = F64SlotContext {
                         f64_slots,
                         i32_slots,
-                        locals: &self.frame.locals,
+                        locals: &mut self.frame.locals,
                         src1: src1.clone(),
                         src2: src2.clone(),
                         dst: dst.clone(),
@@ -5440,7 +5440,7 @@ impl<'a> ExecutionContext<'a> {
 
 struct I32SlotContext<'a> {
     slot_file: &'a mut [i32],
-    locals: &'a [Val],
+    locals: &'a mut [Val],
     src1: I32SlotOperand,
     src2: Option<I32SlotOperand>,
 }
@@ -5459,6 +5459,13 @@ impl<'a> I32SlotContext<'a> {
 fn i32_slot_local_get(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
     ctx.slot_file[dst as usize] = val;
+    Ok(())
+}
+
+fn i32_slot_local_set(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+    // dst is the local variable index, src1 is the value source
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.locals[dst as usize] = Val::Num(Num::I32(val));
     Ok(())
 }
 
@@ -5710,6 +5717,7 @@ lazy_static! {
 
         // Special handlers
         table[HANDLER_IDX_LOCAL_GET] = i32_slot_local_get;
+        table[HANDLER_IDX_LOCAL_SET] = i32_slot_local_set;
         table[HANDLER_IDX_I32_CONST] = i32_slot_const;
 
         // Binary operations
@@ -5756,7 +5764,7 @@ lazy_static! {
 struct I64SlotContext<'a> {
     i64_slots: &'a mut [i64],
     i32_slots: &'a mut [i32], // For comparison operations that return i32
-    locals: &'a [Val],
+    locals: &'a mut [Val],
     src1: I64SlotOperand,
     src2: Option<I64SlotOperand>,
     dst: Slot, // Destination slot (type determines which array to write to)
@@ -5776,6 +5784,13 @@ impl<'a> I64SlotContext<'a> {
 fn i64_slot_local_get(ctx: I64SlotContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
     ctx.i64_slots[ctx.dst.index() as usize] = val;
+    Ok(())
+}
+
+fn i64_slot_local_set(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+    // dst.index() is the local variable index, src1 is the value source
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.locals[ctx.dst.index() as usize] = Val::Num(Num::I64(val));
     Ok(())
 }
 
@@ -6033,6 +6048,7 @@ lazy_static! {
 
         // Special handlers
         table[HANDLER_IDX_LOCAL_GET] = i64_slot_local_get;
+        table[HANDLER_IDX_LOCAL_SET] = i64_slot_local_set;
         table[HANDLER_IDX_I64_CONST] = i64_slot_const;
 
         // Binary operations
@@ -6087,7 +6103,7 @@ fn f32_slot_invalid_handler(_ctx: F32SlotContext) -> Result<(), RuntimeError> {
 struct F32SlotContext<'a> {
     f32_slots: &'a mut [f32],
     i32_slots: &'a mut [i32], // For comparison operations that return i32
-    locals: &'a [Val],
+    locals: &'a mut [Val],
     src1: F32SlotOperand,
     src2: Option<F32SlotOperand>,
     dst: Slot, // Destination slot (type determines which array to write to)
@@ -6107,6 +6123,13 @@ impl<'a> F32SlotContext<'a> {
 fn f32_slot_local_get(ctx: F32SlotContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
     ctx.f32_slots[ctx.dst.index() as usize] = val;
+    Ok(())
+}
+
+fn f32_slot_local_set(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+    // dst.index() is the local variable index, src1 is the value source
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.locals[ctx.dst.index() as usize] = Val::Num(Num::F32(val));
     Ok(())
 }
 
@@ -6277,6 +6300,7 @@ lazy_static! {
 
         // Special handlers
         table[HANDLER_IDX_LOCAL_GET] = f32_slot_local_get;
+        table[HANDLER_IDX_LOCAL_SET] = f32_slot_local_set;
         table[HANDLER_IDX_F32_CONST] = f32_slot_const;
 
         // Binary operations
@@ -6319,7 +6343,7 @@ fn f64_slot_invalid_handler(_ctx: F64SlotContext) -> Result<(), RuntimeError> {
 struct F64SlotContext<'a> {
     f64_slots: &'a mut [f64],
     i32_slots: &'a mut [i32], // For comparison operations that return i32
-    locals: &'a [Val],
+    locals: &'a mut [Val],
     src1: F64SlotOperand,
     src2: Option<F64SlotOperand>,
     dst: Slot,
@@ -6339,6 +6363,13 @@ impl<'a> F64SlotContext<'a> {
 fn f64_slot_local_get(ctx: F64SlotContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
     ctx.f64_slots[ctx.dst.index() as usize] = val;
+    Ok(())
+}
+
+fn f64_slot_local_set(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+    // dst.index() is the local variable index, src1 is the value source
+    let val = ctx.get_operand(&ctx.src1)?;
+    ctx.locals[ctx.dst.index() as usize] = Val::Num(Num::F64(val));
     Ok(())
 }
 
@@ -6509,6 +6540,7 @@ lazy_static! {
 
         // Special handlers
         table[HANDLER_IDX_LOCAL_GET] = f64_slot_local_get;
+        table[HANDLER_IDX_LOCAL_SET] = f64_slot_local_set;
         table[HANDLER_IDX_F64_CONST] = f64_slot_const;
 
         // Binary operations

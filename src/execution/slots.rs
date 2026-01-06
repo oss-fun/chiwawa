@@ -335,7 +335,7 @@ impl SlotAllocator {
     }
 
     /// Pop a value from the stack (decrease depth and return the slot)
-    pub fn pop(&mut self, vtype: ValueType) -> Slot {
+    pub fn pop(&mut self, vtype: &ValueType) -> Slot {
         // Remove from stack order tracking
         self.stack_order.pop();
         match vtype {
@@ -397,7 +397,7 @@ impl SlotAllocator {
     }
 
     /// Peek at the current stack top (without popping)
-    pub fn peek(&self, vtype: ValueType) -> Option<Slot> {
+    pub fn peek(&self, vtype: &ValueType) -> Option<Slot> {
         match vtype {
             ValueType::NumType(NumType::I32) if self.i32_depth > 0 => {
                 Some(Slot::I32((self.i32_depth - 1) as u16))

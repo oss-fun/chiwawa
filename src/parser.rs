@@ -5,6 +5,7 @@ use wasmparser::{
 };
 
 use crate::error::{ParserError, RuntimeError};
+use crate::execution::slots::Slot;
 use crate::execution::stack::ProcessedInstr;
 use crate::execution::stack::*;
 use crate::structure::{instructions::*, module::*, types::*};
@@ -1627,7 +1628,8 @@ fn decode_processed_instrs_and_fixups<'a>(
     let mut initial_processed_instrs = Vec::new();
     let mut initial_fixups = Vec::new();
     let mut current_processed_pc = 0;
-    let mut control_info_stack: Vec<(wasmparser::BlockType, usize)> = Vec::new();
+    // (blockty, pc, is_loop)
+    let mut control_info_stack: Vec<(wasmparser::BlockType, usize, bool)> = Vec::new();
 
     let mut block_end_map: FxHashMap<usize, usize> = FxHashMap::default();
     let mut if_else_map: FxHashMap<usize, usize> = FxHashMap::default();
@@ -1728,6 +1730,123 @@ fn decode_processed_instrs_and_fixups<'a>(
                         }
                     }
                 }
+                wasmparser::Operator::LocalSet { local_index } => {
+                    let local_type = get_local_type(param_types, locals, *local_index);
+                    let local_idx = *local_index as u16;
+                    let src = allocator.pop(&local_type);
+                    let src_idx = src.index();
+                    macro_rules! make_local_set {
+                        ($instr:ident, $slot:ident, $operand:ident) => {
+                            (
+                                ProcessedInstr::$instr {
+                                    handler_index: HANDLER_IDX_LOCAL_SET,
+                                    dst: Slot::$slot(local_idx),
+                                    src1: $operand::Slot(src_idx),
+                                    src2: None,
+                                },
+                                None,
+                            )
+                        };
+                    }
+                    match local_type {
+                        ValueType::NumType(NumType::I32) => (
+                            ProcessedInstr::I32Slot {
+                                handler_index: HANDLER_IDX_LOCAL_SET,
+                                dst: local_idx,
+                                src1: I32SlotOperand::Slot(src_idx),
+                                src2: None,
+                            },
+                            None,
+                        ),
+                        ValueType::NumType(NumType::I64) => {
+                            make_local_set!(I64Slot, I64, I64SlotOperand)
+                        }
+                        ValueType::NumType(NumType::F32) => {
+                            make_local_set!(F32Slot, F32, F32SlotOperand)
+                        }
+                        ValueType::NumType(NumType::F64) => {
+                            make_local_set!(F64Slot, F64, F64SlotOperand)
+                        }
+                        _ => {
+                            // For other types, fall back to Legacy mode
+                            let slots_to_stack = allocator.get_active_slots();
+                            let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
+                                &op,
+                                current_processed_pc,
+                                &control_info_stack,
+                                module,
+                                &mut BlockArityCache::new(),
+                            )?;
+                            if let ProcessedInstr::Legacy {
+                                slots_to_stack: ref mut ss,
+                                ..
+                            } = instr
+                            {
+                                *ss = slots_to_stack;
+                            }
+                            (instr, fixup)
+                        }
+                    }
+                }
+                wasmparser::Operator::LocalTee { local_index } => {
+                    // LocalTee: copy value to local, value stays on stack
+                    let local_type = get_local_type(param_types, locals, *local_index);
+                    let local_idx = *local_index as u16;
+                    // Peek the top slot (don't pop - value stays on stack)
+                    let src_idx = allocator.peek(&local_type).unwrap().index();
+                    macro_rules! make_local_tee {
+                        ($instr:ident, $slot:ident, $operand:ident) => {
+                            (
+                                ProcessedInstr::$instr {
+                                    handler_index: HANDLER_IDX_LOCAL_SET, // Reuse local.set handler
+                                    dst: Slot::$slot(local_idx),
+                                    src1: $operand::Slot(src_idx),
+                                    src2: None,
+                                },
+                                None,
+                            )
+                        };
+                    }
+                    match local_type {
+                        ValueType::NumType(NumType::I32) => (
+                            ProcessedInstr::I32Slot {
+                                handler_index: HANDLER_IDX_LOCAL_SET,
+                                dst: local_idx,
+                                src1: I32SlotOperand::Slot(src_idx),
+                                src2: None,
+                            },
+                            None,
+                        ),
+                        ValueType::NumType(NumType::I64) => {
+                            make_local_tee!(I64Slot, I64, I64SlotOperand)
+                        }
+                        ValueType::NumType(NumType::F32) => {
+                            make_local_tee!(F32Slot, F32, F32SlotOperand)
+                        }
+                        ValueType::NumType(NumType::F64) => {
+                            make_local_tee!(F64Slot, F64, F64SlotOperand)
+                        }
+                        _ => {
+                            // For other types, fall back to Legacy mode
+                            let slots_to_stack = allocator.get_active_slots();
+                            let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
+                                &op,
+                                current_processed_pc,
+                                &control_info_stack,
+                                module,
+                                &mut BlockArityCache::new(),
+                            )?;
+                            if let ProcessedInstr::Legacy {
+                                slots_to_stack: ref mut ss,
+                                ..
+                            } = instr
+                            {
+                                *ss = slots_to_stack;
+                            }
+                            (instr, fixup)
+                        }
+                    }
+                }
                 wasmparser::Operator::I32Const { value } => {
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
@@ -1742,8 +1861,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 // Binary operations - macro to reduce repetition
                 wasmparser::Operator::I32Add => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -1756,8 +1875,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32Sub => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -1770,8 +1889,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32Mul => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -1784,8 +1903,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32DivS => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -1798,8 +1917,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32DivU => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -1812,8 +1931,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32RemS => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -1826,8 +1945,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32RemU => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -1840,8 +1959,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32And => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -1854,8 +1973,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32Or => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -1868,8 +1987,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32Xor => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -1882,8 +2001,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32Shl => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -1896,8 +2015,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32ShrS => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -1910,8 +2029,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32ShrU => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -1924,8 +2043,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32Rotl => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -1938,8 +2057,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32Rotr => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -1953,8 +2072,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 // Comparison operations
                 wasmparser::Operator::I32Eq => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -1967,8 +2086,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32Ne => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -1981,8 +2100,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32LtS => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -1995,8 +2114,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32LtU => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -2009,8 +2128,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32LeS => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -2023,8 +2142,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32LeU => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -2037,8 +2156,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32GtS => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -2051,8 +2170,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32GtU => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -2065,8 +2184,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32GeS => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -2079,8 +2198,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32GeU => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -2094,7 +2213,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 // Unary operations
                 wasmparser::Operator::I32Clz => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -2107,7 +2226,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32Ctz => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -2120,7 +2239,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32Popcnt => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -2133,7 +2252,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32Eqz => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -2146,7 +2265,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32Extend8S => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -2159,7 +2278,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32Extend16S => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I32Slot {
@@ -2188,8 +2307,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 // I64 Binary arithmetic operations
                 wasmparser::Operator::I64Add => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2202,8 +2321,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Sub => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2216,8 +2335,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Mul => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2230,8 +2349,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64DivS => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2244,8 +2363,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64DivU => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2258,8 +2377,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64RemS => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2272,8 +2391,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64RemU => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2287,8 +2406,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 // I64 Binary bitwise operations
                 wasmparser::Operator::I64And => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2301,8 +2420,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Or => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2315,8 +2434,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Xor => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2329,8 +2448,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Shl => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2343,8 +2462,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64ShrS => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2357,8 +2476,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64ShrU => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2371,8 +2490,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Rotl => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2385,8 +2504,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Rotr => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2400,7 +2519,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 // I64 Unary operations
                 wasmparser::Operator::I64Clz => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2413,7 +2532,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Ctz => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2426,7 +2545,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Popcnt => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2439,7 +2558,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Extend8S => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2452,7 +2571,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Extend16S => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2465,7 +2584,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Extend32S => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::I64Slot {
@@ -2479,7 +2598,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 // I64 Comparison operations (return i32)
                 wasmparser::Operator::I64Eqz => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I64Slot {
@@ -2492,8 +2611,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Eq => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I64Slot {
@@ -2506,8 +2625,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Ne => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I64Slot {
@@ -2520,8 +2639,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64LtS => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I64Slot {
@@ -2534,8 +2653,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64LtU => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I64Slot {
@@ -2548,8 +2667,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64GtS => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I64Slot {
@@ -2562,8 +2681,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64GtU => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I64Slot {
@@ -2576,8 +2695,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64LeS => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I64Slot {
@@ -2590,8 +2709,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64LeU => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I64Slot {
@@ -2604,8 +2723,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64GeS => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I64Slot {
@@ -2618,8 +2737,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64GeU => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::I64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::I64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::I64Slot {
@@ -2646,8 +2765,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 // F32 Binary arithmetic operations
                 wasmparser::Operator::F32Add => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2660,8 +2779,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F32Sub => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2674,8 +2793,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F32Mul => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2688,8 +2807,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F32Div => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2702,8 +2821,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F32Min => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2716,8 +2835,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F32Max => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2730,8 +2849,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F32Copysign => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2745,7 +2864,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 // F32 Unary operations
                 wasmparser::Operator::F32Abs => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2758,7 +2877,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F32Neg => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2771,7 +2890,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F32Ceil => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2784,7 +2903,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F32Floor => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2797,7 +2916,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F32Trunc => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2810,7 +2929,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F32Nearest => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2823,7 +2942,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F32Sqrt => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2837,8 +2956,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 // F32 Comparison operations (return i32)
                 wasmparser::Operator::F32Eq => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2851,8 +2970,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F32Ne => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2865,8 +2984,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F32Lt => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2879,8 +2998,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F32Gt => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2893,8 +3012,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F32Le => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2907,8 +3026,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F32Ge => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F32));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F32));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F32));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::F32Slot {
@@ -2935,8 +3054,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 // F64 Binary arithmetic operations
                 wasmparser::Operator::F64Add => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
                         ProcessedInstr::F64Slot {
@@ -2949,8 +3068,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F64Sub => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
                         ProcessedInstr::F64Slot {
@@ -2963,8 +3082,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F64Mul => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
                         ProcessedInstr::F64Slot {
@@ -2977,8 +3096,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F64Div => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
                         ProcessedInstr::F64Slot {
@@ -2991,8 +3110,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F64Min => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
                         ProcessedInstr::F64Slot {
@@ -3005,8 +3124,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F64Max => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
                         ProcessedInstr::F64Slot {
@@ -3019,8 +3138,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F64Copysign => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
                         ProcessedInstr::F64Slot {
@@ -3034,7 +3153,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 // F64 Unary operations
                 wasmparser::Operator::F64Abs => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
                         ProcessedInstr::F64Slot {
@@ -3047,7 +3166,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F64Neg => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
                         ProcessedInstr::F64Slot {
@@ -3060,7 +3179,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F64Ceil => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
                         ProcessedInstr::F64Slot {
@@ -3073,7 +3192,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F64Floor => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
                         ProcessedInstr::F64Slot {
@@ -3086,7 +3205,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F64Trunc => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
                         ProcessedInstr::F64Slot {
@@ -3099,7 +3218,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F64Nearest => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
                         ProcessedInstr::F64Slot {
@@ -3112,7 +3231,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F64Sqrt => {
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
                         ProcessedInstr::F64Slot {
@@ -3126,8 +3245,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 // F64 Comparison operations (return i32)
                 wasmparser::Operator::F64Eq => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::F64Slot {
@@ -3140,8 +3259,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F64Ne => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::F64Slot {
@@ -3154,8 +3273,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F64Lt => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::F64Slot {
@@ -3168,8 +3287,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F64Gt => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::F64Slot {
@@ -3182,8 +3301,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F64Le => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::F64Slot {
@@ -3196,8 +3315,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F64Ge => {
-                    let src2 = allocator.pop(ValueType::NumType(NumType::F64));
-                    let src1 = allocator.pop(ValueType::NumType(NumType::F64));
+                    let src2 = allocator.pop(&ValueType::NumType(NumType::F64));
+                    let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::F64Slot {
@@ -3210,7 +3329,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::End => {
-                    let result_arity = if let Some((blockty, _)) = control_info_stack.last() {
+                    let result_arity = if let Some((blockty, _, _)) = control_info_stack.last() {
                         get_block_result_types(blockty, module).len()
                     } else {
                         result_types.len()
@@ -3230,7 +3349,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     if let Some(saved_state) = allocator_state_stack.pop() {
                         allocator.restore_state(&saved_state);
                         // Push result types to allocator (at the restored depth)
-                        if let Some((blockty, _)) = control_info_stack.last() {
+                        if let Some((blockty, _, _)) = control_info_stack.last() {
                             let result_types = get_block_result_types(blockty, module);
                             for vtype in result_types {
                                 let slot = allocator.push(vtype);
@@ -3264,7 +3383,7 @@ fn decode_processed_instrs_and_fixups<'a>(
 
                     // Pop params from allocator to get state BEFORE params
                     for vtype in param_types.iter().rev() {
-                        allocator.pop(vtype.clone());
+                        allocator.pop(&vtype);
                     }
 
                     // Save allocator state BEFORE params
@@ -3284,12 +3403,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )?
                 }
                 wasmparser::Operator::If { blockty } => {
-                    let condition_slot = allocator.pop(ValueType::NumType(NumType::I32));
+                    let condition_slot = allocator.pop(&ValueType::NumType(NumType::I32));
 
                     let param_types = get_block_param_types(&blockty, module);
 
                     for vtype in param_types.iter().rev() {
-                        allocator.pop(vtype.clone());
+                        allocator.pop(&vtype);
                     }
 
                     let slots_to_stack = allocator.get_active_slots();
@@ -3324,7 +3443,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     }
 
                     // Get the If's block type from control_info_stack and push params back
-                    if let Some((blockty, _)) = control_info_stack.last() {
+                    if let Some((blockty, _, _)) = control_info_stack.last() {
                         let param_types = get_block_param_types(blockty, module);
                         for vtype in param_types.iter() {
                             allocator.push(vtype.clone());
@@ -3385,7 +3504,7 @@ fn decode_processed_instrs_and_fixups<'a>(
 
                         // Pop consumed params in reverse order
                         for param_type in param_types.iter().rev() {
-                            allocator.pop(param_type.clone());
+                            allocator.pop(&param_type);
                         }
 
                         // Push result types and collect for stack_to_slots
@@ -3429,10 +3548,10 @@ fn decode_processed_instrs_and_fixups<'a>(
 
                     // Pop consumed values: params + 1 (table index)
                     // Table index is always i32
-                    allocator.pop(ValueType::NumType(NumType::I32));
+                    allocator.pop(&ValueType::NumType(NumType::I32));
                     // Pop params in reverse order
                     for param_type in param_types.iter().rev() {
-                        allocator.pop(param_type.clone());
+                        allocator.pop(&param_type);
                     }
 
                     // Push result types to allocator and collect for stack_to_slots
@@ -3461,62 +3580,40 @@ fn decode_processed_instrs_and_fixups<'a>(
                     (instr, fixup)
                 }
 
-                wasmparser::Operator::Br { relative_depth } => {
-                    // Get target block's result arity to sync only TOP N slots
-                    let target_arity = if *relative_depth as usize >= control_info_stack.len() {
-                        // Branching to function level - use function result types
-                        result_types.len()
+                wasmparser::Operator::Br { relative_depth }
+                | wasmparser::Operator::BrIf { relative_depth } => {
+                    // Pop condition slot for BrIf
+                    let condition_slot = if matches!(op, wasmparser::Operator::BrIf { .. }) {
+                        let cond = allocator.peek(&ValueType::NumType(NumType::I32));
+                        allocator.pop(&ValueType::NumType(NumType::I32));
+                        cond
                     } else {
-                        let target_idx = control_info_stack.len() - 1 - *relative_depth as usize;
-                        let (blockty, _) = &control_info_stack[target_idx];
-                        get_block_result_types(blockty, module).len()
+                        None
                     };
 
-                    // Only sync TOP N slots (where N is target block's result arity)
-                    let all_slots = allocator.get_active_slots();
-                    let slots_to_stack = if all_slots.len() >= target_arity {
-                        all_slots[all_slots.len() - target_arity..].to_vec()
-                    } else {
-                        all_slots
-                    };
-
-                    let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
-                        &op,
-                        current_processed_pc,
-                        &control_info_stack,
-                        module,
-                        &mut BlockArityCache::new(),
-                    )?;
-                    if let ProcessedInstr::Legacy {
-                        slots_to_stack: ref mut ss,
-                        ..
-                    } = instr
-                    {
-                        *ss = slots_to_stack;
-                    }
-                    (instr, fixup)
-                }
-                wasmparser::Operator::BrIf { relative_depth } => {
-                    //pop condition slot
-                    let condition_slot = allocator.peek(ValueType::NumType(NumType::I32));
-                    allocator.pop(ValueType::NumType(NumType::I32));
-
-                    // Get target block's result arity to sync only TOP N slots
+                    // Get target block's arity
+                    // For loop: use param count (branch to loop start)
+                    // For block/if: use result count (branch to block end)
                     let target_arity = if *relative_depth as usize >= control_info_stack.len() {
                         result_types.len()
                     } else {
                         let target_idx = control_info_stack.len() - 1 - *relative_depth as usize;
-                        let (blockty, _) = &control_info_stack[target_idx];
-                        get_block_result_types(blockty, module).len()
+                        let (blockty, _, is_loop) = &control_info_stack[target_idx];
+                        if *is_loop {
+                            get_block_param_types(blockty, module).len()
+                        } else {
+                            get_block_result_types(blockty, module).len()
+                        }
                     };
 
+                    // Only sync TOP N slots (where N is target block's arity)
                     let all_slots = allocator.get_active_slots();
                     let mut slots_to_stack = if all_slots.len() >= target_arity {
                         all_slots[all_slots.len() - target_arity..].to_vec()
                     } else {
                         all_slots
                     };
-                    // Add condition slot at the end if available
+                    // Add condition slot at the end for BrIf
                     if let Some(cond) = condition_slot {
                         slots_to_stack.push(cond);
                     }
@@ -3713,13 +3810,13 @@ fn decode_processed_instrs_and_fixups<'a>(
 
             match op {
                 wasmparser::Operator::Block { blockty } => {
-                    control_info_stack.push((blockty, current_processed_pc));
+                    control_info_stack.push((blockty, current_processed_pc, false));
                 }
                 wasmparser::Operator::Loop { blockty } => {
-                    control_info_stack.push((blockty, current_processed_pc));
+                    control_info_stack.push((blockty, current_processed_pc, true));
                 }
                 wasmparser::Operator::If { blockty } => {
-                    control_info_stack.push((blockty, current_processed_pc));
+                    control_info_stack.push((blockty, current_processed_pc, false));
                 }
                 wasmparser::Operator::End => {
                     if !control_info_stack.is_empty() {
@@ -3756,7 +3853,7 @@ fn decode_processed_instrs_and_fixups<'a>(
     let result_slot = slot_allocator.as_ref().and_then(|alloc| {
         if let Some(result_type) = result_types.first() {
             // Peek at the current stack top for the result type
-            alloc.peek(result_type.clone())
+            alloc.peek(result_type)
         } else {
             None
         }
@@ -3806,7 +3903,7 @@ fn update_block_operands_with_ranges(
 fn map_operator_to_initial_instr_and_fixup(
     op: &wasmparser::Operator,
     current_processed_pc: usize,
-    _control_info_stack: &[(wasmparser::BlockType, usize)],
+    _control_info_stack: &[(wasmparser::BlockType, usize, bool)],
     module: &Module,
     cache: &mut BlockArityCache,
 ) -> Result<(ProcessedInstr, Option<FixupInfo>), Box<dyn std::error::Error>> {
