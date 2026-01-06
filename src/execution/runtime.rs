@@ -16,7 +16,6 @@ use crate::wasi::{WasiError, WasiResult};
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::Once;
 
 pub struct Runtime {
     module_inst: Rc<ModuleInst>,
@@ -400,6 +399,7 @@ impl Runtime {
                                             current_frame_stack_mut
                                                 .global_value_stack
                                                 .extend(results);
+                                            current_frame_stack_mut.apply_call_stack_to_slots();
                                         }
                                         Err(e) => return Err(e),
                                     }
@@ -425,16 +425,17 @@ impl Runtime {
                                     // Call WASI function
                                     match self.call_wasi_function(&wasi_func_type, params) {
                                         Ok(result) => {
+                                            let current_frame_stack_mut = self
+                                                .stacks
+                                                .activation_frame_stack
+                                                .last_mut()
+                                                .unwrap();
                                             if let Some(val) = result {
-                                                let current_frame_stack_mut = self
-                                                    .stacks
-                                                    .activation_frame_stack
-                                                    .last_mut()
-                                                    .unwrap();
                                                 current_frame_stack_mut
                                                     .global_value_stack
                                                     .push(val);
                                             }
+                                            current_frame_stack_mut.apply_call_stack_to_slots();
                                         }
                                         Err(WasiError::ProcessExit(_code)) => {
                                             return Err(RuntimeError::ExecutionFailed(
@@ -478,6 +479,7 @@ impl Runtime {
                                 let caller_frame =
                                     self.stacks.activation_frame_stack.last_mut().unwrap();
                                 caller_frame.global_value_stack.extend(values_to_pass);
+                                caller_frame.apply_call_stack_to_slots();
                             }
                         }
                         None => {
@@ -504,6 +506,7 @@ impl Runtime {
                                 let caller_frame =
                                     self.stacks.activation_frame_stack.last_mut().unwrap();
                                 caller_frame.global_value_stack.extend(values_to_pass);
+                                caller_frame.apply_call_stack_to_slots();
                             }
                         }
                     }

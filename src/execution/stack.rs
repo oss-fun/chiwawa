@@ -759,6 +759,25 @@ impl FrameStack {
         }
     }
 
+    pub fn apply_call_stack_to_slots(&mut self) {
+        let Some(current_label) = self.label_stack.last() else {
+            return;
+        };
+        let call_ip = current_label.ip.saturating_sub(1);
+        let Some(ProcessedInstr::Legacy { stack_to_slots, .. }) =
+            current_label.processed_instrs.get(call_ip)
+        else {
+            return;
+        };
+        if stack_to_slots.is_empty() {
+            return;
+        }
+        let Some(ref mut slot_file) = self.frame.slot_file else {
+            return;
+        };
+        slot_file.write_from_stack(stack_to_slots, &self.global_value_stack);
+    }
+
     /// DTC execution loop with block memoization callbacks
     ///
     /// Uses callback functions to access Runtime's cache from Stack without borrowing conflicts.

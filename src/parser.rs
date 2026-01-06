@@ -3361,22 +3361,17 @@ fn decode_processed_instrs_and_fixups<'a>(
                         }
                     };
 
-                    let (param_count, result_count, result_types) =
-                        if let Some(type_idx) = func_type_idx {
-                            if let Some(func_type) = module.types.get(type_idx) {
-                                (
-                                    func_type.params.len(),
-                                    func_type.results.len(),
-                                    func_type.results.clone(),
-                                )
-                            } else {
-                                (0, 0, Vec::new())
-                            }
+                    let (param_types, result_types) = if let Some(type_idx) = func_type_idx {
+                        if let Some(func_type) = module.types.get(type_idx) {
+                            (func_type.params.clone(), func_type.results.clone())
                         } else {
-                            (0, 0, Vec::new())
-                        };
+                            (Vec::new(), Vec::new())
+                        }
+                    } else {
+                        (Vec::new(), Vec::new())
+                    };
 
-                    if param_count == 0 && result_count == 0 {
+                    if param_types.is_empty() && result_types.is_empty() {
                         map_operator_to_initial_instr_and_fixup(
                             &op,
                             current_processed_pc,
@@ -3385,14 +3380,21 @@ fn decode_processed_instrs_and_fixups<'a>(
                             &mut BlockArityCache::new(),
                         )?
                     } else {
-                        for _ in 0..param_count {
-                            // We don't know the types here, so fall back to legacy
-                        }
+                        // Sync all active slots to stack
                         let slots_to_stack = allocator.get_active_slots();
-                        allocator.clear_stack();
-                        for result_type in &result_types {
-                            allocator.push(result_type.clone());
+
+                        // Pop consumed params in reverse order
+                        for param_type in param_types.iter().rev() {
+                            allocator.pop(param_type.clone());
                         }
+
+                        // Push result types and collect for stack_to_slots
+                        let mut stack_to_slots = Vec::new();
+                        for result_type in &result_types {
+                            let slot = allocator.push(result_type.clone());
+                            stack_to_slots.push(slot);
+                        }
+
                         let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
                             &op,
                             current_processed_pc,
@@ -3402,13 +3404,61 @@ fn decode_processed_instrs_and_fixups<'a>(
                         )?;
                         if let ProcessedInstr::Legacy {
                             slots_to_stack: ref mut ss,
+                            stack_to_slots: ref mut rs,
                             ..
                         } = instr
                         {
                             *ss = slots_to_stack;
+                            *rs = stack_to_slots;
                         }
                         (instr, fixup)
                     }
+                }
+
+                wasmparser::Operator::CallIndirect { type_index, .. } => {
+                    // Get function type from type_index
+                    let (param_types, result_types_vec) =
+                        if let Some(func_type) = module.types.get(*type_index as usize) {
+                            (func_type.params.clone(), func_type.results.clone())
+                        } else {
+                            (Vec::new(), Vec::new())
+                        };
+
+                    // Sync all active slots to stack
+                    let slots_to_stack = allocator.get_active_slots();
+
+                    // Pop consumed values: params + 1 (table index)
+                    // Table index is always i32
+                    allocator.pop(ValueType::NumType(NumType::I32));
+                    // Pop params in reverse order
+                    for param_type in param_types.iter().rev() {
+                        allocator.pop(param_type.clone());
+                    }
+
+                    // Push result types to allocator and collect for stack_to_slots
+                    let mut stack_to_slots = Vec::new();
+                    for result_type in &result_types_vec {
+                        let slot = allocator.push(result_type.clone());
+                        stack_to_slots.push(slot);
+                    }
+
+                    let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
+                        &op,
+                        current_processed_pc,
+                        &control_info_stack,
+                        module,
+                        &mut BlockArityCache::new(),
+                    )?;
+                    if let ProcessedInstr::Legacy {
+                        slots_to_stack: ref mut ss,
+                        stack_to_slots: ref mut rs,
+                        ..
+                    } = instr
+                    {
+                        *ss = slots_to_stack;
+                        *rs = stack_to_slots;
+                    }
+                    (instr, fixup)
                 }
 
                 wasmparser::Operator::Br { relative_depth } => {
