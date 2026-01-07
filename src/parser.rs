@@ -4447,6 +4447,66 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
 
+                // Select instructions
+                wasmparser::Operator::Select | wasmparser::Operator::TypedSelect { .. } => {
+                    let active_slots = allocator.get_active_slots();
+                    if let Some((handler_index, val_type)) = active_slots
+                        .get(active_slots.len().wrapping_sub(2))
+                        .and_then(|val2_peek| {
+                            let vt = val2_peek.value_type();
+                            match vt {
+                                ValueType::NumType(NumType::I32) => {
+                                    Some((HANDLER_IDX_SELECT_I32, vt))
+                                }
+                                ValueType::NumType(NumType::I64) => {
+                                    Some((HANDLER_IDX_SELECT_I64, vt))
+                                }
+                                ValueType::NumType(NumType::F32) => {
+                                    Some((HANDLER_IDX_SELECT_F32, vt))
+                                }
+                                ValueType::NumType(NumType::F64) => {
+                                    Some((HANDLER_IDX_SELECT_F64, vt))
+                                }
+                                _ => None,
+                            }
+                        })
+                    {
+                        let cond = allocator.pop(&ValueType::NumType(NumType::I32));
+                        let val2 = allocator.pop(&val_type);
+                        let val1 = allocator.pop(&val_type);
+                        let dst = allocator.push(val_type);
+                        (
+                            ProcessedInstr::SelectSlot {
+                                handler_index,
+                                dst,
+                                val1,
+                                val2,
+                                cond,
+                            },
+                            None,
+                        )
+                    } else {
+                        // Fall back to legacy for reference types or unreachable code
+                        let slots_to_stack = allocator.get_active_slots();
+                        allocator.clear_stack();
+                        let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
+                            &op,
+                            current_processed_pc,
+                            &control_info_stack,
+                            module,
+                            &mut BlockArityCache::new(),
+                        )?;
+                        if let ProcessedInstr::Legacy {
+                            slots_to_stack: ref mut ss,
+                            ..
+                        } = instr
+                        {
+                            *ss = slots_to_stack;
+                        }
+                        (instr, fixup)
+                    }
+                }
+
                 _ => {
                     // Fall back to Legacy mode for unsupported instructions
                     // Sync all active slots to value_stack before executing

@@ -284,6 +284,15 @@ pub enum ProcessedInstr {
         args: Vec<Slot>,   // Argument slots (varies by operation)
         data_index: u32,   // Data segment index (for memory.init)
     },
+
+    /// Slot-based select instruction
+    SelectSlot {
+        handler_index: usize,
+        dst: Slot,       // Destination slot
+        val1: Slot,      // First value (selected when cond != 0)
+        val2: Slot,      // Second value (selected when cond == 0)
+        cond: Slot,      // Condition slot (always I32)
+    },
 }
 
 impl ProcessedInstr {
@@ -300,6 +309,7 @@ impl ProcessedInstr {
             ProcessedInstr::MemoryLoadSlot { handler_index, .. } => *handler_index,
             ProcessedInstr::MemoryStoreSlot { handler_index, .. } => *handler_index,
             ProcessedInstr::MemoryOpsSlot { handler_index, .. } => *handler_index,
+            ProcessedInstr::SelectSlot { handler_index, .. } => *handler_index,
         }
     }
 
@@ -1138,6 +1148,33 @@ impl FrameStack {
                     };
 
                     let handler = MEMORY_OPS_SLOT_HANDLER_TABLE[*handler_index];
+                    handler(ctx)?;
+
+                    self.label_stack[current_label_stack_idx].ip = ip + 1;
+                    continue;
+                }
+                ProcessedInstr::SelectSlot {
+                    handler_index,
+                    dst,
+                    val1,
+                    val2,
+                    cond,
+                } => {
+                    let slot_file = self
+                        .frame
+                        .slot_file
+                        .as_mut()
+                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
+
+                    let ctx = SelectSlotContext {
+                        slot_file,
+                        dst: dst.clone(),
+                        val1: val1.clone(),
+                        val2: val2.clone(),
+                        cond: cond.clone(),
+                    };
+
+                    let handler = SELECT_SLOT_HANDLER_TABLE[*handler_index];
                     handler(ctx)?;
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
@@ -7487,6 +7524,83 @@ lazy_static! {
         table[HANDLER_IDX_MEMORY_COPY] = mem_ops_copy;
         table[HANDLER_IDX_MEMORY_INIT] = mem_ops_init;
         table[HANDLER_IDX_MEMORY_FILL] = mem_ops_fill;
+
+        table
+    };
+}
+
+// Select Slot handlers
+struct SelectSlotContext<'a> {
+    slot_file: &'a mut SlotFile,
+    dst: Slot,
+    val1: Slot,
+    val2: Slot,
+    cond: Slot,
+}
+
+type SelectSlotHandler = fn(SelectSlotContext) -> Result<(), RuntimeError>;
+
+fn select_slot_invalid_handler(_ctx: SelectSlotContext) -> Result<(), RuntimeError> {
+    Err(RuntimeError::InvalidHandlerIndex)
+}
+
+fn select_i32(ctx: SelectSlotContext) -> Result<(), RuntimeError> {
+    let cond = ctx.slot_file.get_i32(ctx.cond.index());
+    let result = if cond != 0 {
+        ctx.slot_file.get_i32(ctx.val1.index())
+    } else {
+        ctx.slot_file.get_i32(ctx.val2.index())
+    };
+    ctx.slot_file.set_i32(ctx.dst.index(), result);
+    Ok(())
+}
+
+fn select_i64(ctx: SelectSlotContext) -> Result<(), RuntimeError> {
+    let cond = ctx.slot_file.get_i32(ctx.cond.index());
+    let result = if cond != 0 {
+        ctx.slot_file.get_i64(ctx.val1.index())
+    } else {
+        ctx.slot_file.get_i64(ctx.val2.index())
+    };
+    ctx.slot_file.set_i64(ctx.dst.index(), result);
+    Ok(())
+}
+
+fn select_f32(ctx: SelectSlotContext) -> Result<(), RuntimeError> {
+    let cond = ctx.slot_file.get_i32(ctx.cond.index());
+    let result = if cond != 0 {
+        ctx.slot_file.get_f32(ctx.val1.index())
+    } else {
+        ctx.slot_file.get_f32(ctx.val2.index())
+    };
+    ctx.slot_file.set_f32(ctx.dst.index(), result);
+    Ok(())
+}
+
+fn select_f64(ctx: SelectSlotContext) -> Result<(), RuntimeError> {
+    let cond = ctx.slot_file.get_i32(ctx.cond.index());
+    let result = if cond != 0 {
+        ctx.slot_file.get_f64(ctx.val1.index())
+    } else {
+        ctx.slot_file.get_f64(ctx.val2.index())
+    };
+    ctx.slot_file.set_f64(ctx.dst.index(), result);
+    Ok(())
+}
+
+pub const HANDLER_IDX_SELECT_I32: usize = 0xF0;
+pub const HANDLER_IDX_SELECT_I64: usize = 0xF1;
+pub const HANDLER_IDX_SELECT_F32: usize = 0xF2;
+pub const HANDLER_IDX_SELECT_F64: usize = 0xF3;
+
+lazy_static! {
+    static ref SELECT_SLOT_HANDLER_TABLE: Vec<SelectSlotHandler> = {
+        let mut table: Vec<SelectSlotHandler> = vec![select_slot_invalid_handler; 256];
+
+        table[HANDLER_IDX_SELECT_I32] = select_i32;
+        table[HANDLER_IDX_SELECT_I64] = select_i64;
+        table[HANDLER_IDX_SELECT_F32] = select_f32;
+        table[HANDLER_IDX_SELECT_F64] = select_f64;
 
         table
     };
