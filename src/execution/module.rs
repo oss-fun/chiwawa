@@ -6,7 +6,7 @@ use super::{
 use crate::error::RuntimeError;
 use crate::structure::{instructions::*, module::*, types::*};
 use crate::wasi::passthrough::PassthroughWasiImpl;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -236,31 +236,6 @@ impl ModuleInst {
         } else {
             Err(RuntimeError::ExportFuncNotFound)
         }
-    }
-
-    pub fn get_all_global_versions(&self) -> Vec<(u32, u64)> {
-        self.global_addrs
-            .iter()
-            .enumerate()
-            .map(|(idx, global_addr)| (idx as u32, global_addr.get_version()))
-            .collect()
-    }
-
-    pub fn get_global_versions_for_indices(&self, indices: &FxHashSet<u32>) -> Vec<(u32, u64)> {
-        indices
-            .iter()
-            .map(|&idx| (idx, self.global_addrs[idx as usize].get_version()))
-            .collect()
-    }
-
-    pub fn get_global_versions_for_tracker(
-        &self,
-        tracker: &crate::execution::memoization::GlobalAccessTracker,
-    ) -> Vec<(u32, u64)> {
-        tracker
-            .iter()
-            .map(|idx| (idx, self.global_addrs[idx as usize].get_version()))
-            .collect()
     }
 
     fn expr_to_const(&self, expr: &Expr) -> Option<Val> {

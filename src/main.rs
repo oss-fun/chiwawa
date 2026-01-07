@@ -31,9 +31,6 @@ struct Cli {
     /// Enable superinstructions optimizations (const + local.set)
     #[arg(long = "superinstructions", default_value = "false")]
     enable_superinstructions: bool,
-    /// Enable memoization optimizations for pure instructions
-    #[arg(long = "memoization", default_value = "false")]
-    enable_memoization: bool,
     /// Enable statistics output
     #[arg(long = "stats", default_value = "false")]
     enable_stats: bool,
@@ -196,7 +193,6 @@ fn main() -> Result<()> {
         let mut runtime = Runtime::new_restored(
             Rc::clone(&inst),
             restored_stacks,
-            cli.enable_memoization,
             cli.enable_stats,
             cli.enable_checkpoint,
             trace_config,
@@ -213,7 +209,6 @@ fn main() -> Result<()> {
             Rc::clone(&inst),
             &func_addr,
             params,
-            cli.enable_memoization,
             cli.enable_stats,
             cli.enable_checkpoint,
             trace_config,

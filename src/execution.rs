@@ -4,7 +4,6 @@ mod export;
 pub mod func;
 mod global;
 pub mod mem;
-pub mod memoization;
 pub mod migration;
 pub mod module;
 pub mod runtime;
