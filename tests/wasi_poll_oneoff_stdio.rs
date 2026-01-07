@@ -11,7 +11,7 @@ mod tests {
 
     fn load_wasi_instance(wasm_path: &str) -> Rc<ModuleInst> {
         let mut module = Module::new("test");
-        let _ = parser::parse_bytecode(&mut module, wasm_path, true, "stack");
+        let _ = parser::parse_bytecode(&mut module, wasm_path, true, "slot");
 
         let imports: ImportObjects = FxHashMap::default();
         ModuleInst::new(&module, imports, Vec::new()).unwrap()

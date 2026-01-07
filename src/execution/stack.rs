@@ -8,6 +8,7 @@ use crate::execution::{
     module::*,
     slots::{Slot, SlotFile},
 };
+use crate::structure::module::WasiFuncType;
 use crate::structure::types::LabelIdx as StructureLabelIdx;
 use crate::structure::{instructions::*, types::*};
 use lazy_static::lazy_static;
@@ -318,6 +319,11 @@ pub enum ProcessedInstr {
         slots: [u16; 3],   // Operand slots (usage depends on handler)
         ref_type: RefType, // Used for RefNull
     },
+    CallWasiSlot {
+        wasi_func_type: WasiFuncType,
+        param_slots: Vec<Slot>,    // Parameter slots
+        result_slot: Option<Slot>, // Result slot (most WASI functions return i32)
+    },
 }
 
 impl ProcessedInstr {
@@ -339,6 +345,7 @@ impl ProcessedInstr {
             ProcessedInstr::GlobalSetSlot { handler_index, .. } => *handler_index,
             ProcessedInstr::RefLocalSlot { handler_index, .. } => *handler_index,
             ProcessedInstr::TableRefSlot { handler_index, .. } => *handler_index,
+            ProcessedInstr::CallWasiSlot { .. } => HANDLER_IDX_CALL_WASI_SLOT,
         }
     }
 
@@ -406,6 +413,11 @@ type HandlerFn = fn(&mut ExecutionContext, &Operand) -> Result<HandlerResult, Ru
 pub enum ModuleLevelInstr {
     Invoke(FuncAddr),
     Return,
+    InvokeWasiSlot {
+        wasi_func_type: WasiFuncType,
+        params: Vec<Val>,          // Parameters read from slots
+        result_slot: Option<Slot>, // Slot to write result to
+    },
 }
 
 // Control Instructions
@@ -1351,6 +1363,33 @@ impl FrameStack {
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
                 }
+                ProcessedInstr::CallWasiSlot {
+                    wasi_func_type,
+                    param_slots,
+                    result_slot,
+                } => {
+                    let wasi_func_type_copy = *wasi_func_type;
+                    let param_slots_copy = param_slots.clone();
+                    let result_slot_copy = *result_slot;
+
+                    // Read parameters from slots
+                    let params = if let Some(ref slot_file) = self.frame.slot_file {
+                        param_slots_copy
+                            .iter()
+                            .map(|slot| slot_file.get_val(slot))
+                            .collect()
+                    } else {
+                        // Fall back to empty params if no slot file
+                        Vec::new()
+                    };
+
+                    self.label_stack[current_label_stack_idx].ip = ip + 1;
+                    return Ok(Ok(Some(ModuleLevelInstr::InvokeWasiSlot {
+                        wasi_func_type: wasi_func_type_copy,
+                        params,
+                        result_slot: result_slot_copy,
+                    })));
+                }
                 ProcessedInstr::Legacy {
                     handler_index,
                     operand,
@@ -1416,13 +1455,7 @@ impl FrameStack {
                     }
 
                     match result {
-                        Err(e) => {
-                            eprintln!(
-                                "Error at IP {}, handler_index: {}: {:?}",
-                                ip, handler_index, e
-                            );
-                            return Ok(Err(e));
-                        }
+                        Err(e) => return Err(e),
                         Ok(handler_result) => {
                             match handler_result {
                                 HandlerResult::Continue(next_ip) => {
@@ -7804,6 +7837,9 @@ pub const HANDLER_IDX_TABLE_FILL_SLOT: usize = 0x100;
 // RefLocalSlot handler constants
 pub const HANDLER_IDX_REF_LOCAL_GET_SLOT: usize = 0x101;
 pub const HANDLER_IDX_REF_LOCAL_SET_SLOT: usize = 0x102;
+
+// CallWasiSlot handler constant
+pub const HANDLER_IDX_CALL_WASI_SLOT: usize = 0x103;
 
 // RefLocalSlot handler infrastructure
 struct RefLocalSlotContext<'a> {

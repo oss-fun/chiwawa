@@ -3689,11 +3689,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
 
                 wasmparser::Operator::Call { function_index } => {
-                    let func_type_idx = if (*function_index as usize) < module.num_imported_funcs {
+                    let wasi_func_type = if (*function_index as usize) < module.num_imported_funcs {
                         if let Some(import) = module.imports.get(*function_index as usize) {
                             match &import.desc {
-                                crate::structure::module::ImportDesc::Func(type_idx) => {
-                                    Some(type_idx.0 as usize)
+                                crate::structure::module::ImportDesc::WasiFunc(wasi_type) => {
+                                    Some(*wasi_type)
                                 }
                                 _ => None,
                             }
@@ -3701,65 +3701,113 @@ fn decode_processed_instrs_and_fixups<'a>(
                             None
                         }
                     } else {
-                        let local_idx = *function_index as usize - module.num_imported_funcs;
-                        if let Some(func) = module.funcs.get(local_idx) {
-                            Some(func.type_.0 as usize)
-                        } else {
-                            None
-                        }
+                        None
                     };
 
-                    let (param_types, result_types) = if let Some(type_idx) = func_type_idx {
-                        if let Some(func_type) = module.types.get(type_idx) {
-                            (func_type.params.clone(), func_type.results.clone())
+                    if let Some(wasi_type) = wasi_func_type {
+                        let func_type = wasi_type.expected_func_type();
+                        let param_types = func_type.params;
+                        let result_types = func_type.results;
+
+                        let active_slots = allocator.get_active_slots();
+                        let param_count = param_types.len();
+                        let param_slots = if active_slots.len() >= param_count {
+                            active_slots[active_slots.len() - param_count..].to_vec()
                         } else {
-                            (Vec::new(), Vec::new())
-                        }
-                    } else {
-                        (Vec::new(), Vec::new())
-                    };
+                            active_slots
+                        };
 
-                    if param_types.is_empty() && result_types.is_empty() {
-                        map_operator_to_initial_instr_and_fixup(
-                            &op,
-                            current_processed_pc,
-                            &control_info_stack,
-                            module,
-                            &mut BlockArityCache::new(),
-                        )?
-                    } else {
-                        // Sync all active slots to stack
-                        let slots_to_stack = allocator.get_active_slots();
-
-                        // Pop consumed params in reverse order
                         for param_type in param_types.iter().rev() {
                             allocator.pop(&param_type);
                         }
 
-                        // Push result types and collect for stack_to_slots
-                        let mut stack_to_slots = Vec::new();
-                        for result_type in &result_types {
-                            let slot = allocator.push(result_type.clone());
-                            stack_to_slots.push(slot);
-                        }
+                        let result_slot = if let Some(result_type) = result_types.first() {
+                            Some(allocator.push(result_type.clone()))
+                        } else {
+                            None
+                        };
 
-                        let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
-                            &op,
-                            current_processed_pc,
-                            &control_info_stack,
-                            module,
-                            &mut BlockArityCache::new(),
-                        )?;
-                        if let ProcessedInstr::Legacy {
-                            slots_to_stack: ref mut ss,
-                            stack_to_slots: ref mut rs,
-                            ..
-                        } = instr
+                        (
+                            ProcessedInstr::CallWasiSlot {
+                                wasi_func_type: wasi_type,
+                                param_slots,
+                                result_slot,
+                            },
+                            None,
+                        )
+                    } else {
+                        let (param_types, result_types) = if (*function_index as usize)
+                            < module.num_imported_funcs
                         {
-                            *ss = slots_to_stack;
-                            *rs = stack_to_slots;
+                            if let Some(import) = module.imports.get(*function_index as usize) {
+                                match &import.desc {
+                                    crate::structure::module::ImportDesc::Func(type_idx) => {
+                                        if let Some(func_type) =
+                                            module.types.get(type_idx.0 as usize)
+                                        {
+                                            (func_type.params.clone(), func_type.results.clone())
+                                        } else {
+                                            (Vec::new(), Vec::new())
+                                        }
+                                    }
+                                    _ => (Vec::new(), Vec::new()),
+                                }
+                            } else {
+                                (Vec::new(), Vec::new())
+                            }
+                        } else {
+                            let local_idx = *function_index as usize - module.num_imported_funcs;
+                            if let Some(func) = module.funcs.get(local_idx) {
+                                if let Some(func_type) = module.types.get(func.type_.0 as usize) {
+                                    (func_type.params.clone(), func_type.results.clone())
+                                } else {
+                                    (Vec::new(), Vec::new())
+                                }
+                            } else {
+                                (Vec::new(), Vec::new())
+                            }
+                        };
+
+                        if param_types.is_empty() && result_types.is_empty() {
+                            map_operator_to_initial_instr_and_fixup(
+                                &op,
+                                current_processed_pc,
+                                &control_info_stack,
+                                module,
+                                &mut BlockArityCache::new(),
+                            )?
+                        } else {
+                            // Sync all active slots to stack
+                            let slots_to_stack = allocator.get_active_slots();
+
+                            for param_type in param_types.iter().rev() {
+                                allocator.pop(&param_type);
+                            }
+
+                            let mut stack_to_slots = Vec::new();
+                            for result_type in &result_types {
+                                let slot = allocator.push(result_type.clone());
+                                stack_to_slots.push(slot);
+                            }
+
+                            let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
+                                &op,
+                                current_processed_pc,
+                                &control_info_stack,
+                                module,
+                                &mut BlockArityCache::new(),
+                            )?;
+                            if let ProcessedInstr::Legacy {
+                                slots_to_stack: ref mut ss,
+                                stack_to_slots: ref mut rs,
+                                ..
+                            } = instr
+                            {
+                                *ss = slots_to_stack;
+                                *rs = stack_to_slots;
+                            }
+                            (instr, fixup)
                         }
-                        (instr, fixup)
                     }
                 }
 

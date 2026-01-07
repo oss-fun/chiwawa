@@ -387,7 +387,11 @@ impl Runtime {
                                     let params_len = type_.params.len();
                                     if current_frame_stack_mut.global_value_stack.len() < params_len
                                     {
-                                        return Err(RuntimeError::ValueStackUnderflow);
+                                        panic!(
+                                            "ValueStackUnderflow at HostFunc Invoke: stack_len={}, params_len={}",
+                                            current_frame_stack_mut.global_value_stack.len(),
+                                            params_len
+                                        );
                                     }
                                     let params =
                                         current_frame_stack_mut.global_value_stack.split_off(
@@ -452,6 +456,37 @@ impl Runtime {
                                             ));
                                         }
                                     }
+                                }
+                            }
+                        }
+                        Some(ModuleLevelInstr::InvokeWasiSlot {
+                            wasi_func_type,
+                            params,
+                            result_slot,
+                        }) => {
+                            // Call WASI function directly with params from slots
+                            match self.call_wasi_function(&wasi_func_type, params) {
+                                Ok(result) => {
+                                    if let Some(slot) = result_slot {
+                                        let current_frame =
+                                            self.stacks.activation_frame_stack.last_mut().unwrap();
+                                        if let Some(ref mut slot_file) =
+                                            current_frame.frame.slot_file
+                                        {
+                                            if let Some(val) = result {
+                                                slot_file.set_val(&slot, &val);
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "WASI slot function failed: {:?}, error: {:?}",
+                                        wasi_func_type, e
+                                    );
+                                    return Err(RuntimeError::ExecutionFailed(
+                                        "WASI slot function failed",
+                                    ));
                                 }
                             }
                         }

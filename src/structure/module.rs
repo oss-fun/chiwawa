@@ -77,7 +77,7 @@ pub enum ImportDesc {
     WasiFunc(WasiFuncType),
 }
 
-#[derive(PartialEq, Debug, Clone, Copy)]
+#[derive(PartialEq, Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum WasiFuncType {
     ProcExit,
     FdWrite,
