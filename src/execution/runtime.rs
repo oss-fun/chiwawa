@@ -5,6 +5,7 @@ use crate::execution::memoization::{
 };
 use crate::execution::migration;
 use crate::execution::module::ModuleInst;
+use crate::execution::slots::SlotFile;
 use crate::execution::stack::{Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, Stacks};
 use crate::execution::stats::ExecutionStats;
 use crate::execution::trace::{TraceConfig, Tracer};
@@ -15,7 +16,6 @@ use crate::wasi::{WasiError, WasiResult};
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::Once;
 
 pub struct Runtime {
     module_inst: Rc<ModuleInst>,
@@ -338,12 +338,20 @@ impl Runtime {
                                         }
                                     }
 
+                                    // Initialize SlotFile from slot_allocation if available
+                                    let slot_file = code
+                                        .slot_allocation
+                                        .as_ref()
+                                        .map(|alloc| SlotFile::from_allocation(alloc));
+
                                     let new_frame = FrameStack {
                                         frame: Frame {
                                             local_versions: vec![0; locals.len()],
                                             locals,
                                             module: func_module_weak.clone(),
                                             n: type_.results.len(),
+                                            slot_file,
+                                            result_slot: code.result_slot.clone(),
                                         },
                                         label_stack: vec![LabelStack {
                                             label: Label {
@@ -379,7 +387,11 @@ impl Runtime {
                                     let params_len = type_.params.len();
                                     if current_frame_stack_mut.global_value_stack.len() < params_len
                                     {
-                                        return Err(RuntimeError::ValueStackUnderflow);
+                                        panic!(
+                                            "ValueStackUnderflow at HostFunc Invoke: stack_len={}, params_len={}",
+                                            current_frame_stack_mut.global_value_stack.len(),
+                                            params_len
+                                        );
                                     }
                                     let params =
                                         current_frame_stack_mut.global_value_stack.split_off(
@@ -391,6 +403,7 @@ impl Runtime {
                                             current_frame_stack_mut
                                                 .global_value_stack
                                                 .extend(results);
+                                            current_frame_stack_mut.apply_call_stack_to_slots();
                                         }
                                         Err(e) => return Err(e),
                                     }
@@ -416,16 +429,17 @@ impl Runtime {
                                     // Call WASI function
                                     match self.call_wasi_function(&wasi_func_type, params) {
                                         Ok(result) => {
+                                            let current_frame_stack_mut = self
+                                                .stacks
+                                                .activation_frame_stack
+                                                .last_mut()
+                                                .unwrap();
                                             if let Some(val) = result {
-                                                let current_frame_stack_mut = self
-                                                    .stacks
-                                                    .activation_frame_stack
-                                                    .last_mut()
-                                                    .unwrap();
                                                 current_frame_stack_mut
                                                     .global_value_stack
                                                     .push(val);
                                             }
+                                            current_frame_stack_mut.apply_call_stack_to_slots();
                                         }
                                         Err(WasiError::ProcessExit(_code)) => {
                                             return Err(RuntimeError::ExecutionFailed(
@@ -442,6 +456,37 @@ impl Runtime {
                                             ));
                                         }
                                     }
+                                }
+                            }
+                        }
+                        Some(ModuleLevelInstr::InvokeWasiSlot {
+                            wasi_func_type,
+                            params,
+                            result_slot,
+                        }) => {
+                            // Call WASI function directly with params from slots
+                            match self.call_wasi_function(&wasi_func_type, params) {
+                                Ok(result) => {
+                                    if let Some(slot) = result_slot {
+                                        let current_frame =
+                                            self.stacks.activation_frame_stack.last_mut().unwrap();
+                                        if let Some(ref mut slot_file) =
+                                            current_frame.frame.slot_file
+                                        {
+                                            if let Some(val) = result {
+                                                slot_file.set_val(&slot, &val);
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "WASI slot function failed: {:?}, error: {:?}",
+                                        wasi_func_type, e
+                                    );
+                                    return Err(RuntimeError::ExecutionFailed(
+                                        "WASI slot function failed",
+                                    ));
                                 }
                             }
                         }
@@ -469,6 +514,7 @@ impl Runtime {
                                 let caller_frame =
                                     self.stacks.activation_frame_stack.last_mut().unwrap();
                                 caller_frame.global_value_stack.extend(values_to_pass);
+                                caller_frame.apply_call_stack_to_slots();
                             }
                         }
                         None => {
@@ -495,6 +541,7 @@ impl Runtime {
                                 let caller_frame =
                                     self.stacks.activation_frame_stack.last_mut().unwrap();
                                 caller_frame.global_value_stack.extend(values_to_pass);
+                                caller_frame.apply_call_stack_to_slots();
                             }
                         }
                     }

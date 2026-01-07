@@ -55,6 +55,18 @@ impl TableAddr {
         }
     }
 
+    pub fn fill(&self, i: usize, val: Val, n: usize) -> Result<(), RuntimeError> {
+        let mut inst = self.0.borrow_mut();
+        let len = inst.elem.len();
+        if i.saturating_add(n) > len {
+            return Err(RuntimeError::InvalidTableIndex);
+        }
+        for idx in i..i + n {
+            inst.elem[idx] = val.clone();
+        }
+        Ok(())
+    }
+
     pub fn get_func_addr(&self, i: usize) -> Option<FuncAddr> {
         let inst = self.0.borrow();
         if i < inst.elem.len() as usize {

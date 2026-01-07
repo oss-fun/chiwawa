@@ -20,7 +20,7 @@ pub enum VecType {
     V128,
 }
 
-#[derive(PartialEq, Eq, Hash, Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Hash, Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum RefType {
     FuncRef,
     ExternalRef,

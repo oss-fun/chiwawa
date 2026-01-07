@@ -40,6 +40,9 @@ struct Cli {
     /// Enable checkpoint/restore
     #[arg(long = "cr", default_value = "false")]
     enable_checkpoint: bool,
+    /// Execution mode (stack or slot)
+    #[arg(long = "execution-mode", default_value = "stack")]
+    execution_mode: String,
     /// Enable trace output
     #[arg(long = "trace", default_value = "false")]
     enable_trace: bool,
@@ -136,8 +139,27 @@ fn parse_params(params: Vec<String>) -> Vec<Val> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Validate execution mode
+    match cli.execution_mode.as_str() {
+        "stack" | "slot" => {
+            // Valid execution modes (slot will be checked in parser)
+        }
+        _ => {
+            eprintln!(
+                "Error: Invalid execution mode '{}'. Valid options: stack, slot",
+                cli.execution_mode
+            );
+            std::process::exit(1);
+        }
+    }
+
     let mut module = Module::new("test");
-    let _ = parser::parse_bytecode(&mut module, &cli.wasm_file, cli.enable_superinstructions);
+    let _ = parser::parse_bytecode(
+        &mut module,
+        &cli.wasm_file,
+        cli.enable_superinstructions,
+        &cli.execution_mode,
+    );
     let imports: ImportObjects = FxHashMap::default();
 
     let mut wasm_argv = vec![cli.wasm_file.clone()];
