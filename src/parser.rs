@@ -1604,6 +1604,25 @@ fn get_local_type(
     ValueType::NumType(NumType::I32)
 }
 
+fn get_global_type(module: &Module, global_index: u32) -> ValueType {
+    let mut imported_global_count = 0u32;
+    for import in &module.imports {
+        if let ImportDesc::Global(global_type) = &import.desc {
+            if imported_global_count == global_index {
+                return global_type.1.clone();
+            }
+            imported_global_count += 1;
+        }
+    }
+
+    let local_global_index = (global_index - imported_global_count) as usize;
+    if local_global_index < module.globals.len() {
+        return module.globals[local_global_index].type_.1.clone();
+    }
+
+    ValueType::NumType(NumType::I32)
+}
+
 fn decode_processed_instrs_and_fixups<'a>(
     ops_iter: wasmparser::OperatorsIteratorWithOffsets<'a>,
     module: &Module,
@@ -1829,6 +1848,142 @@ fn decode_processed_instrs_and_fixups<'a>(
                         _ => {
                             // For other types, fall back to Legacy mode
                             let slots_to_stack = allocator.get_active_slots();
+                            let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
+                                &op,
+                                current_processed_pc,
+                                &control_info_stack,
+                                module,
+                                &mut BlockArityCache::new(),
+                            )?;
+                            if let ProcessedInstr::Legacy {
+                                slots_to_stack: ref mut ss,
+                                ..
+                            } = instr
+                            {
+                                *ss = slots_to_stack;
+                            }
+                            (instr, fixup)
+                        }
+                    }
+                }
+                wasmparser::Operator::GlobalGet { global_index } => {
+                    let global_type = get_global_type(module, *global_index);
+                    match global_type {
+                        ValueType::NumType(NumType::I32) => {
+                            let dst = allocator.push(global_type);
+                            (
+                                ProcessedInstr::GlobalGetSlot {
+                                    handler_index: HANDLER_IDX_GLOBAL_GET_I32,
+                                    dst,
+                                    global_index: *global_index,
+                                },
+                                None,
+                            )
+                        }
+                        ValueType::NumType(NumType::I64) => {
+                            let dst = allocator.push(global_type);
+                            (
+                                ProcessedInstr::GlobalGetSlot {
+                                    handler_index: HANDLER_IDX_GLOBAL_GET_I64,
+                                    dst,
+                                    global_index: *global_index,
+                                },
+                                None,
+                            )
+                        }
+                        ValueType::NumType(NumType::F32) => {
+                            let dst = allocator.push(global_type);
+                            (
+                                ProcessedInstr::GlobalGetSlot {
+                                    handler_index: HANDLER_IDX_GLOBAL_GET_F32,
+                                    dst,
+                                    global_index: *global_index,
+                                },
+                                None,
+                            )
+                        }
+                        ValueType::NumType(NumType::F64) => {
+                            let dst = allocator.push(global_type);
+                            (
+                                ProcessedInstr::GlobalGetSlot {
+                                    handler_index: HANDLER_IDX_GLOBAL_GET_F64,
+                                    dst,
+                                    global_index: *global_index,
+                                },
+                                None,
+                            )
+                        }
+                        _ => {
+                            let slots_to_stack = allocator.get_active_slots();
+                            allocator.clear_stack();
+                            let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
+                                &op,
+                                current_processed_pc,
+                                &control_info_stack,
+                                module,
+                                &mut BlockArityCache::new(),
+                            )?;
+                            if let ProcessedInstr::Legacy {
+                                slots_to_stack: ref mut ss,
+                                ..
+                            } = instr
+                            {
+                                *ss = slots_to_stack;
+                            }
+                            (instr, fixup)
+                        }
+                    }
+                }
+                wasmparser::Operator::GlobalSet { global_index } => {
+                    let global_type = get_global_type(module, *global_index);
+                    match global_type {
+                        ValueType::NumType(NumType::I32) => {
+                            let src = allocator.pop(&global_type);
+                            (
+                                ProcessedInstr::GlobalSetSlot {
+                                    handler_index: HANDLER_IDX_GLOBAL_SET_I32,
+                                    src,
+                                    global_index: *global_index,
+                                },
+                                None,
+                            )
+                        }
+                        ValueType::NumType(NumType::I64) => {
+                            let src = allocator.pop(&global_type);
+                            (
+                                ProcessedInstr::GlobalSetSlot {
+                                    handler_index: HANDLER_IDX_GLOBAL_SET_I64,
+                                    src,
+                                    global_index: *global_index,
+                                },
+                                None,
+                            )
+                        }
+                        ValueType::NumType(NumType::F32) => {
+                            let src = allocator.pop(&global_type);
+                            (
+                                ProcessedInstr::GlobalSetSlot {
+                                    handler_index: HANDLER_IDX_GLOBAL_SET_F32,
+                                    src,
+                                    global_index: *global_index,
+                                },
+                                None,
+                            )
+                        }
+                        ValueType::NumType(NumType::F64) => {
+                            let src = allocator.pop(&global_type);
+                            (
+                                ProcessedInstr::GlobalSetSlot {
+                                    handler_index: HANDLER_IDX_GLOBAL_SET_F64,
+                                    src,
+                                    global_index: *global_index,
+                                },
+                                None,
+                            )
+                        }
+                        _ => {
+                            let slots_to_stack = allocator.get_active_slots();
+                            allocator.clear_stack();
                             let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
                                 &op,
                                 current_processed_pc,

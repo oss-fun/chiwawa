@@ -288,10 +288,24 @@ pub enum ProcessedInstr {
     /// Slot-based select instruction
     SelectSlot {
         handler_index: usize,
-        dst: Slot,       // Destination slot
-        val1: Slot,      // First value (selected when cond != 0)
-        val2: Slot,      // Second value (selected when cond == 0)
-        cond: Slot,      // Condition slot (always I32)
+        dst: Slot,  // Destination slot
+        val1: Slot, // First value (selected when cond != 0)
+        val2: Slot, // Second value (selected when cond == 0)
+        cond: Slot, // Condition slot (always I32)
+    },
+
+    /// Slot-based global.get instruction
+    GlobalGetSlot {
+        handler_index: usize,
+        dst: Slot,         // Destination slot
+        global_index: u32, // Global variable index
+    },
+
+    /// Slot-based global.set instruction
+    GlobalSetSlot {
+        handler_index: usize,
+        src: Slot,         // Source slot
+        global_index: u32, // Global variable index
     },
 }
 
@@ -310,6 +324,8 @@ impl ProcessedInstr {
             ProcessedInstr::MemoryStoreSlot { handler_index, .. } => *handler_index,
             ProcessedInstr::MemoryOpsSlot { handler_index, .. } => *handler_index,
             ProcessedInstr::SelectSlot { handler_index, .. } => *handler_index,
+            ProcessedInstr::GlobalGetSlot { handler_index, .. } => *handler_index,
+            ProcessedInstr::GlobalSetSlot { handler_index, .. } => *handler_index,
         }
     }
 
@@ -1176,6 +1192,88 @@ impl FrameStack {
 
                     let handler = SELECT_SLOT_HANDLER_TABLE[*handler_index];
                     handler(ctx)?;
+
+                    self.label_stack[current_label_stack_idx].ip = ip + 1;
+                    continue;
+                }
+                ProcessedInstr::GlobalGetSlot {
+                    handler_index,
+                    dst,
+                    global_index,
+                } => {
+                    let module_inst = self
+                        .frame
+                        .module
+                        .upgrade()
+                        .ok_or(RuntimeError::ModuleInstanceGone)?;
+                    let global_addr = module_inst
+                        .global_addrs
+                        .get_by_idx(GlobalIdx(*global_index))
+                        .clone();
+                    let val = global_addr.get();
+
+                    let slot_file = self
+                        .frame
+                        .slot_file
+                        .as_mut()
+                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
+
+                    match *handler_index {
+                        HANDLER_IDX_GLOBAL_GET_I32 => {
+                            slot_file.set_i32(dst.index(), val.to_i32().unwrap());
+                        }
+                        HANDLER_IDX_GLOBAL_GET_I64 => {
+                            slot_file.set_i64(dst.index(), val.to_i64().unwrap());
+                        }
+                        HANDLER_IDX_GLOBAL_GET_F32 => {
+                            slot_file.set_f32(dst.index(), val.to_f32().unwrap());
+                        }
+                        HANDLER_IDX_GLOBAL_GET_F64 => {
+                            slot_file.set_f64(dst.index(), val.to_f64().unwrap());
+                        }
+                        _ => return Err(RuntimeError::InvalidHandlerIndex),
+                    }
+
+                    self.label_stack[current_label_stack_idx].ip = ip + 1;
+                    continue;
+                }
+                ProcessedInstr::GlobalSetSlot {
+                    handler_index,
+                    src,
+                    global_index,
+                } => {
+                    let slot_file = self
+                        .frame
+                        .slot_file
+                        .as_ref()
+                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
+
+                    let val = match *handler_index {
+                        HANDLER_IDX_GLOBAL_SET_I32 => {
+                            Val::Num(Num::I32(slot_file.get_i32(src.index())))
+                        }
+                        HANDLER_IDX_GLOBAL_SET_I64 => {
+                            Val::Num(Num::I64(slot_file.get_i64(src.index())))
+                        }
+                        HANDLER_IDX_GLOBAL_SET_F32 => {
+                            Val::Num(Num::F32(slot_file.get_f32(src.index())))
+                        }
+                        HANDLER_IDX_GLOBAL_SET_F64 => {
+                            Val::Num(Num::F64(slot_file.get_f64(src.index())))
+                        }
+                        _ => return Err(RuntimeError::InvalidHandlerIndex),
+                    };
+
+                    let module_inst = self
+                        .frame
+                        .module
+                        .upgrade()
+                        .ok_or(RuntimeError::ModuleInstanceGone)?;
+                    let global_addr = module_inst
+                        .global_addrs
+                        .get_by_idx(GlobalIdx(*global_index))
+                        .clone();
+                    global_addr.set(val)?;
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
@@ -7605,3 +7703,15 @@ lazy_static! {
         table
     };
 }
+
+// GlobalGetSlot handler constants
+pub const HANDLER_IDX_GLOBAL_GET_I32: usize = 0xF4;
+pub const HANDLER_IDX_GLOBAL_GET_I64: usize = 0xF5;
+pub const HANDLER_IDX_GLOBAL_GET_F32: usize = 0xF6;
+pub const HANDLER_IDX_GLOBAL_GET_F64: usize = 0xF7;
+
+// GlobalSetSlot handler constants
+pub const HANDLER_IDX_GLOBAL_SET_I32: usize = 0xF8;
+pub const HANDLER_IDX_GLOBAL_SET_I64: usize = 0xF9;
+pub const HANDLER_IDX_GLOBAL_SET_F32: usize = 0xFA;
+pub const HANDLER_IDX_GLOBAL_SET_F64: usize = 0xFB;
