@@ -191,7 +191,12 @@ impl SlotFile {
             Slot::I64(idx) => self.set_i64(*idx, val.to_i64().unwrap_or(0)),
             Slot::F32(idx) => self.set_f32(*idx, val.to_f32().unwrap_or(0.0)),
             Slot::F64(idx) => self.set_f64(*idx, val.to_f64().unwrap_or(0.0)),
-            Slot::Ref(_) | Slot::V128(_) => {} // Not commonly used in numeric operations
+            Slot::Ref(idx) => {
+                if let Val::Ref(r) = val {
+                    self.set_ref(*idx, r.clone());
+                }
+            }
+            Slot::V128(_) => {}
         }
     }
 

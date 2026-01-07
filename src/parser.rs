@@ -1623,6 +1623,28 @@ fn get_global_type(module: &Module, global_index: u32) -> ValueType {
     ValueType::NumType(NumType::I32)
 }
 
+fn get_table_element_type(module: &Module, table_index: u32) -> ValueType {
+    // Count imported tables first
+    let mut imported_table_count = 0u32;
+    for import in &module.imports {
+        if let ImportDesc::Table(table_type) = &import.desc {
+            if imported_table_count == table_index {
+                return ValueType::RefType(table_type.1.clone());
+            }
+            imported_table_count += 1;
+        }
+    }
+
+    // Check module-defined tables
+    let local_table_index = (table_index - imported_table_count) as usize;
+    if local_table_index < module.tables.len() {
+        return ValueType::RefType(module.tables[local_table_index].type_.1.clone());
+    }
+
+    // Default to funcref
+    ValueType::RefType(RefType::FuncRef)
+}
+
 fn decode_processed_instrs_and_fixups<'a>(
     ops_iter: wasmparser::OperatorsIteratorWithOffsets<'a>,
     module: &Module,
@@ -1737,15 +1759,42 @@ fn decode_processed_instrs_and_fixups<'a>(
                                 None,
                             )
                         }
+                        ValueType::RefType(_) => {
+                            // For RefType, use RefLocalSlot
+                            let dst = allocator.push(local_type);
+                            (
+                                ProcessedInstr::RefLocalSlot {
+                                    handler_index: HANDLER_IDX_REF_LOCAL_GET_SLOT,
+                                    dst: dst.index(),
+                                    src: 0, // unused for get
+                                    local_idx: *local_index as u16,
+                                },
+                                None,
+                            )
+                        }
                         _ => {
-                            // For other types, fall back to Legacy mode
-                            map_operator_to_initial_instr_and_fixup(
+                            // Unknown type, fall back to Legacy
+                            let slots_to_stack = allocator.get_active_slots();
+                            allocator.clear_stack();
+                            let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
                                 &op,
                                 current_processed_pc,
                                 &control_info_stack,
                                 module,
                                 &mut BlockArityCache::new(),
-                            )?
+                            )?;
+                            if let ProcessedInstr::Legacy {
+                                slots_to_stack: ref mut ss,
+                                stack_to_slots: ref mut sts,
+                                ..
+                            } = instr
+                            {
+                                *ss = slots_to_stack;
+                                // Result goes to a ref slot
+                                let dst = allocator.push(local_type);
+                                *sts = vec![dst];
+                            }
+                            (instr, fixup)
                         }
                     }
                 }
@@ -1786,9 +1835,24 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::NumType(NumType::F64) => {
                             make_local_set!(F64Slot, F64, F64SlotOperand)
                         }
+                        ValueType::RefType(_) => {
+                            (
+                                ProcessedInstr::RefLocalSlot {
+                                    handler_index: HANDLER_IDX_REF_LOCAL_SET_SLOT,
+                                    dst: 0, // unused for set
+                                    src: src_idx,
+                                    local_idx,
+                                },
+                                None,
+                            )
+                        }
                         _ => {
-                            // For other types, fall back to Legacy mode
+                            // Unknown type, fall back to Legacy mode
+                            // Get slots_to_stack BEFORE popping (includes the ref operand)
+                            allocator.push(local_type.clone());
                             let slots_to_stack = allocator.get_active_slots();
+                            let _src = allocator.pop(&local_type);
+                            allocator.clear_stack();
                             let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
                                 &op,
                                 current_processed_pc,
@@ -1845,8 +1909,18 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::NumType(NumType::F64) => {
                             make_local_tee!(F64Slot, F64, F64SlotOperand)
                         }
+                        ValueType::RefType(_) => {
+                            (
+                                ProcessedInstr::RefLocalSlot {
+                                    handler_index: HANDLER_IDX_REF_LOCAL_SET_SLOT,
+                                    dst: 0, // unused for set
+                                    src: src_idx,
+                                    local_idx,
+                                },
+                                None,
+                            )
+                        }
                         _ => {
-                            // For other types, fall back to Legacy mode
                             let slots_to_stack = allocator.get_active_slots();
                             let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
                                 &op,
@@ -4660,6 +4734,86 @@ fn decode_processed_instrs_and_fixups<'a>(
                         }
                         (instr, fixup)
                     }
+                }
+                wasmparser::Operator::RefNull { hty } => {
+                    let ref_type = match hty {
+                        wasmparser::HeapType::Func => RefType::FuncRef,
+                        wasmparser::HeapType::Extern => RefType::ExternalRef,
+                        _ => RefType::ExternalRef,
+                    };
+                    let dst = allocator.push(ValueType::RefType(ref_type.clone()));
+                    (
+                        ProcessedInstr::TableRefSlot {
+                            handler_index: HANDLER_IDX_REF_NULL_SLOT,
+                            table_idx: 0,
+                            slots: [dst.index(), 0, 0],
+                            ref_type,
+                        },
+                        None,
+                    )
+                }
+
+                wasmparser::Operator::RefIsNull => {
+                    let src = allocator.pop_any_type().unwrap_or(Slot::Ref(0));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::TableRefSlot {
+                            handler_index: HANDLER_IDX_REF_IS_NULL_SLOT,
+                            table_idx: 0,
+                            slots: [dst.index(), src.index(), 0],
+                            ref_type: RefType::FuncRef, // Not used for RefIsNull
+                        },
+                        None,
+                    )
+                }
+
+                wasmparser::Operator::TableGet { table } => {
+                    // table.get: [i32] -> [ref]
+                    let ref_type_vt = get_table_element_type(module, *table);
+                    let idx = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ref_type_vt.clone());
+                    let ref_type = match ref_type_vt {
+                        ValueType::RefType(rt) => rt,
+                        _ => RefType::FuncRef,
+                    };
+                    (
+                        ProcessedInstr::TableRefSlot {
+                            handler_index: HANDLER_IDX_TABLE_GET_SLOT,
+                            table_idx: *table,
+                            slots: [dst.index(), idx.index(), 0],
+                            ref_type,
+                        },
+                        None,
+                    )
+                }
+
+                wasmparser::Operator::TableSet { table } => {
+                    let val = allocator.pop_any_type().unwrap_or(Slot::Ref(0));
+                    let idx = allocator.pop(&ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::TableRefSlot {
+                            handler_index: HANDLER_IDX_TABLE_SET_SLOT,
+                            table_idx: *table,
+                            slots: [idx.index(), val.index(), 0],
+                            ref_type: RefType::FuncRef, // Not used for TableSet
+                        },
+                        None,
+                    )
+                }
+
+                wasmparser::Operator::TableFill { table } => {
+                    let n = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let val = allocator.pop_any_type().unwrap_or(Slot::Ref(0));
+                    let i = allocator.pop(&ValueType::NumType(NumType::I32));
+                    (
+                        ProcessedInstr::TableRefSlot {
+                            handler_index: HANDLER_IDX_TABLE_FILL_SLOT,
+                            table_idx: *table,
+                            slots: [i.index(), val.index(), n.index()],
+                            ref_type: RefType::FuncRef, // Not used for TableFill
+                        },
+                        None,
+                    )
                 }
 
                 _ => {

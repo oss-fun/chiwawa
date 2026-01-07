@@ -277,7 +277,6 @@ pub enum ProcessedInstr {
         offset: u64, // Memory offset
     },
 
-    /// Slot-based memory operations (size, grow, copy, init, fill)
     MemoryOpsSlot {
         handler_index: usize,
         dst: Option<Slot>, // Destination slot (for size/grow results)
@@ -285,7 +284,6 @@ pub enum ProcessedInstr {
         data_index: u32,   // Data segment index (for memory.init)
     },
 
-    /// Slot-based select instruction
     SelectSlot {
         handler_index: usize,
         dst: Slot,  // Destination slot
@@ -294,18 +292,31 @@ pub enum ProcessedInstr {
         cond: Slot, // Condition slot (always I32)
     },
 
-    /// Slot-based global.get instruction
     GlobalGetSlot {
         handler_index: usize,
         dst: Slot,         // Destination slot
         global_index: u32, // Global variable index
     },
 
-    /// Slot-based global.set instruction
     GlobalSetSlot {
         handler_index: usize,
         src: Slot,         // Source slot
         global_index: u32, // Global variable index
+    },
+
+    /// Slot-based ref local operations
+    RefLocalSlot {
+        handler_index: usize,
+        dst: u16,       // Destination slot index (for get) or unused (for set)
+        src: u16,       // Source slot index (for set) or unused (for get)
+        local_idx: u16, // Local variable index
+    },
+
+    TableRefSlot {
+        handler_index: usize,
+        table_idx: u32,
+        slots: [u16; 3],   // Operand slots (usage depends on handler)
+        ref_type: RefType, // Used for RefNull
     },
 }
 
@@ -326,6 +337,8 @@ impl ProcessedInstr {
             ProcessedInstr::SelectSlot { handler_index, .. } => *handler_index,
             ProcessedInstr::GlobalGetSlot { handler_index, .. } => *handler_index,
             ProcessedInstr::GlobalSetSlot { handler_index, .. } => *handler_index,
+            ProcessedInstr::RefLocalSlot { handler_index, .. } => *handler_index,
+            ProcessedInstr::TableRefSlot { handler_index, .. } => *handler_index,
         }
     }
 
@@ -1278,6 +1291,66 @@ impl FrameStack {
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
                 }
+                ProcessedInstr::RefLocalSlot {
+                    handler_index,
+                    dst,
+                    src,
+                    local_idx,
+                } => {
+                    let slot_file = self
+                        .frame
+                        .slot_file
+                        .as_mut()
+                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
+
+                    let handler_fn = REF_LOCAL_SLOT_HANDLER_TABLE
+                        .get(*handler_index)
+                        .ok_or(RuntimeError::InvalidHandlerIndex)?;
+
+                    handler_fn(RefLocalSlotContext {
+                        slot_file,
+                        locals: &mut self.frame.locals,
+                        dst: *dst,
+                        src: *src,
+                        local_idx: *local_idx,
+                    })?;
+
+                    self.label_stack[current_label_stack_idx].ip = ip + 1;
+                    continue;
+                }
+                ProcessedInstr::TableRefSlot {
+                    handler_index,
+                    table_idx,
+                    slots,
+                    ref_type,
+                } => {
+                    let slot_file = self
+                        .frame
+                        .slot_file
+                        .as_mut()
+                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
+
+                    let handler_fn = TABLE_REF_SLOT_HANDLER_TABLE
+                        .get(*handler_index)
+                        .ok_or(RuntimeError::InvalidHandlerIndex)?;
+
+                    let module_inst = self
+                        .frame
+                        .module
+                        .upgrade()
+                        .ok_or(RuntimeError::ModuleInstanceGone)?;
+
+                    handler_fn(TableRefSlotContext {
+                        slot_file,
+                        module_inst: &module_inst,
+                        table_idx: *table_idx,
+                        slots: *slots,
+                        ref_type: *ref_type,
+                    })?;
+
+                    self.label_stack[current_label_stack_idx].ip = ip + 1;
+                    continue;
+                }
                 ProcessedInstr::Legacy {
                     handler_index,
                     operand,
@@ -1716,7 +1789,12 @@ impl FrameStack {
                                                                 val.to_f64().unwrap_or(0.0),
                                                             );
                                                         }
-                                                        _ => {}
+                                                        crate::execution::slots::Slot::Ref(idx) => {
+                                                            if let Val::Ref(r) = val {
+                                                                slot_file.set_ref(*idx, r.clone());
+                                                            }
+                                                        }
+                                                        crate::execution::slots::Slot::V128(_) => {}
                                                     }
                                                 }
                                                 // Remove values from value_stack (slots_to_stack will handle pushing when needed)
@@ -7715,3 +7793,157 @@ pub const HANDLER_IDX_GLOBAL_SET_I32: usize = 0xF8;
 pub const HANDLER_IDX_GLOBAL_SET_I64: usize = 0xF9;
 pub const HANDLER_IDX_GLOBAL_SET_F32: usize = 0xFA;
 pub const HANDLER_IDX_GLOBAL_SET_F64: usize = 0xFB;
+
+// TableRefSlot handler constants
+pub const HANDLER_IDX_REF_NULL_SLOT: usize = 0xFC;
+pub const HANDLER_IDX_REF_IS_NULL_SLOT: usize = 0xFD;
+pub const HANDLER_IDX_TABLE_GET_SLOT: usize = 0xFE;
+pub const HANDLER_IDX_TABLE_SET_SLOT: usize = 0xFF;
+pub const HANDLER_IDX_TABLE_FILL_SLOT: usize = 0x100;
+
+// RefLocalSlot handler constants
+pub const HANDLER_IDX_REF_LOCAL_GET_SLOT: usize = 0x101;
+pub const HANDLER_IDX_REF_LOCAL_SET_SLOT: usize = 0x102;
+
+// RefLocalSlot handler infrastructure
+struct RefLocalSlotContext<'a> {
+    slot_file: &'a mut SlotFile,
+    locals: &'a mut Vec<Val>,
+    dst: u16,
+    src: u16,
+    local_idx: u16,
+}
+
+type RefLocalSlotHandler = fn(RefLocalSlotContext) -> Result<(), RuntimeError>;
+
+fn ref_local_slot_invalid_handler(_ctx: RefLocalSlotContext) -> Result<(), RuntimeError> {
+    Err(RuntimeError::InvalidHandlerIndex)
+}
+
+// local.get for ref type: [] -> [ref]
+fn ref_local_slot_get(ctx: RefLocalSlotContext) -> Result<(), RuntimeError> {
+    let val = ctx
+        .locals
+        .get(ctx.local_idx as usize)
+        .ok_or(RuntimeError::LocalIndexOutOfBounds)?
+        .clone();
+    if let Val::Ref(r) = val {
+        ctx.slot_file.set_ref(ctx.dst, r);
+    }
+    Ok(())
+}
+
+// local.set for ref type: [ref] -> []
+fn ref_local_slot_set(ctx: RefLocalSlotContext) -> Result<(), RuntimeError> {
+    let ref_val = ctx.slot_file.get_ref(ctx.src);
+    let idx = ctx.local_idx as usize;
+    if idx < ctx.locals.len() {
+        ctx.locals[idx] = Val::Ref(ref_val);
+    }
+    Ok(())
+}
+
+lazy_static! {
+    static ref REF_LOCAL_SLOT_HANDLER_TABLE: Vec<RefLocalSlotHandler> = {
+        let mut table: Vec<RefLocalSlotHandler> = vec![ref_local_slot_invalid_handler; 0x103];
+
+        table[HANDLER_IDX_REF_LOCAL_GET_SLOT] = ref_local_slot_get;
+        table[HANDLER_IDX_REF_LOCAL_SET_SLOT] = ref_local_slot_set;
+
+        table
+    };
+}
+
+// TableRefSlot handler infrastructure
+struct TableRefSlotContext<'a> {
+    slot_file: &'a mut SlotFile,
+    module_inst: &'a Rc<ModuleInst>,
+    table_idx: u32,
+    slots: [u16; 3],
+    ref_type: RefType,
+}
+
+type TableRefSlotHandler = fn(TableRefSlotContext) -> Result<(), RuntimeError>;
+
+fn table_ref_slot_invalid_handler(_ctx: TableRefSlotContext) -> Result<(), RuntimeError> {
+    Err(RuntimeError::InvalidHandlerIndex)
+}
+
+// ref.null: [] -> [ref]
+// dst = slots[0]
+fn table_ref_slot_null(ctx: TableRefSlotContext) -> Result<(), RuntimeError> {
+    ctx.slot_file.set_ref(ctx.slots[0], Ref::RefNull);
+    Ok(())
+}
+
+// ref.is_null: [ref] -> [i32]
+// src = slots[1], dst = slots[0]
+fn table_ref_slot_is_null(ctx: TableRefSlotContext) -> Result<(), RuntimeError> {
+    let ref_val = ctx.slot_file.get_ref(ctx.slots[1]);
+    let is_null = match ref_val {
+        Ref::RefNull => 1,
+        _ => 0,
+    };
+    ctx.slot_file.set_i32(ctx.slots[0], is_null);
+    Ok(())
+}
+
+// table.get: [i32] -> [ref]
+// idx = slots[1], dst = slots[0]
+fn table_ref_slot_get(ctx: TableRefSlotContext) -> Result<(), RuntimeError> {
+    let table_addr = ctx
+        .module_inst
+        .table_addrs
+        .get(ctx.table_idx as usize)
+        .ok_or(RuntimeError::TableNotFound)?;
+    let index = ctx.slot_file.get_i32(ctx.slots[1]) as usize;
+    let val = table_addr.get(index);
+    match val {
+        Val::Ref(r) => {
+            ctx.slot_file.set_ref(ctx.slots[0], r);
+            Ok(())
+        }
+        _ => Err(RuntimeError::TypeMismatch),
+    }
+}
+
+// table.set: [i32, ref] -> []
+// idx = slots[0], val = slots[1]
+fn table_ref_slot_set(ctx: TableRefSlotContext) -> Result<(), RuntimeError> {
+    let table_addr = ctx
+        .module_inst
+        .table_addrs
+        .get(ctx.table_idx as usize)
+        .ok_or(RuntimeError::TableNotFound)?;
+    let index = ctx.slot_file.get_i32(ctx.slots[0]) as usize;
+    let ref_val = ctx.slot_file.get_ref(ctx.slots[1]);
+    table_addr.set(index, Val::Ref(ref_val))
+}
+
+// table.fill: [i32, ref, i32] -> []
+// i = slots[0], val = slots[1], n = slots[2]
+fn table_ref_slot_fill(ctx: TableRefSlotContext) -> Result<(), RuntimeError> {
+    let table_addr = ctx
+        .module_inst
+        .table_addrs
+        .get(ctx.table_idx as usize)
+        .ok_or(RuntimeError::TableNotFound)?;
+    let i = ctx.slot_file.get_i32(ctx.slots[0]) as usize;
+    let ref_val = ctx.slot_file.get_ref(ctx.slots[1]);
+    let n = ctx.slot_file.get_i32(ctx.slots[2]) as usize;
+    table_addr.fill(i, Val::Ref(ref_val), n)
+}
+
+lazy_static! {
+    static ref TABLE_REF_SLOT_HANDLER_TABLE: Vec<TableRefSlotHandler> = {
+        let mut table: Vec<TableRefSlotHandler> = vec![table_ref_slot_invalid_handler; 0x101];
+
+        table[HANDLER_IDX_REF_NULL_SLOT] = table_ref_slot_null;
+        table[HANDLER_IDX_REF_IS_NULL_SLOT] = table_ref_slot_is_null;
+        table[HANDLER_IDX_TABLE_GET_SLOT] = table_ref_slot_get;
+        table[HANDLER_IDX_TABLE_SET_SLOT] = table_ref_slot_set;
+        table[HANDLER_IDX_TABLE_FILL_SLOT] = table_ref_slot_fill;
+
+        table
+    };
+}
