@@ -722,7 +722,7 @@ impl VMState {
 
                 // Push initial frame allocation if present
                 if let Some(alloc) = code.slot_allocation.as_ref() {
-                    slot_file.push_frame(alloc);
+                    slot_file.save_offsets(alloc);
                 }
 
                 let initial_frame = FrameStack {

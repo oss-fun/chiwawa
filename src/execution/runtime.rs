@@ -210,7 +210,7 @@ impl Runtime {
 
                                     // Push new frame to global slot file if allocation exists
                                     if let Some(ref alloc) = code.slot_allocation {
-                                        self.stacks.slot_file.push_frame(alloc);
+                                        self.stacks.slot_file.save_offsets(alloc);
                                     }
 
                                     let new_frame = FrameStack {
@@ -349,7 +349,7 @@ impl Runtime {
                         }
                         Some(ModuleLevelInstr::Return) => {
                             // Pop slot file frame
-                            self.stacks.slot_file.pop_frame();
+                            self.stacks.slot_file.restore_offsets();
 
                             let finished_frame = self.stacks.activation_frame_stack.pop().unwrap();
                             let expected_n = finished_frame.frame.n;
@@ -379,7 +379,7 @@ impl Runtime {
                             }
                         }
                         None => {
-                            self.stacks.slot_file.pop_frame();
+                            self.stacks.slot_file.restore_offsets();
 
                             let finished_frame = self.stacks.activation_frame_stack.pop().unwrap();
                             let expected_n = finished_frame.frame.n;

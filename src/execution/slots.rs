@@ -113,8 +113,16 @@ impl SlotFile {
         )
     }
 
-    /// Push a new frame with the given allocation
-    pub fn push_frame(&mut self, allocation: &SlotAllocation) {
+    /// Save current offsets and advance to a new frame
+    /// Only resizes slot arrays if they overflow (pre-allocated capacity is preferred)
+    pub fn save_offsets(&mut self, allocation: &SlotAllocation) {
+        let i32_new_end = self.i32_slots.len() + allocation.i32_count;
+        let i64_new_end = self.i64_slots.len() + allocation.i64_count;
+        let f32_new_end = self.f32_slots.len() + allocation.f32_count;
+        let f64_new_end = self.f64_slots.len() + allocation.f64_count;
+        let ref_new_end = self.ref_slots.len() + allocation.ref_count;
+        let v128_new_end = self.v128_slots.len() + allocation.v128_count;
+
         let new_offsets = FrameSlotOffsets {
             i32_offset: self.i32_slots.len() as u32,
             i64_offset: self.i64_slots.len() as u32,
@@ -125,31 +133,30 @@ impl SlotFile {
         };
         self.frame_offsets.push(new_offsets);
 
-        // Allocate slots for this frame
-        self.i32_slots
-            .resize(self.i32_slots.len() + allocation.i32_count, 0);
-        self.i64_slots
-            .resize(self.i64_slots.len() + allocation.i64_count, 0);
-        self.f32_slots
-            .resize(self.f32_slots.len() + allocation.f32_count, 0.0);
-        self.f64_slots
-            .resize(self.f64_slots.len() + allocation.f64_count, 0.0);
-        self.ref_slots
-            .resize(self.ref_slots.len() + allocation.ref_count, Ref::RefNull);
-        self.v128_slots
-            .resize(self.v128_slots.len() + allocation.v128_count, 0);
+        // Resize only if capacity is insufficient
+        if i32_new_end > self.i32_slots.len() {
+            self.i32_slots.resize(i32_new_end, 0);
+        }
+        if i64_new_end > self.i64_slots.len() {
+            self.i64_slots.resize(i64_new_end, 0);
+        }
+        if f32_new_end > self.f32_slots.len() {
+            self.f32_slots.resize(f32_new_end, 0.0);
+        }
+        if f64_new_end > self.f64_slots.len() {
+            self.f64_slots.resize(f64_new_end, 0.0);
+        }
+        if ref_new_end > self.ref_slots.len() {
+            self.ref_slots.resize(ref_new_end, Ref::RefNull);
+        }
+        if v128_new_end > self.v128_slots.len() {
+            self.v128_slots.resize(v128_new_end, 0);
+        }
     }
 
-    /// Pop the current frame
-    pub fn pop_frame(&mut self) {
-        if let Some(offsets) = self.frame_offsets.pop() {
-            self.i32_slots.truncate(offsets.i32_offset as usize);
-            self.i64_slots.truncate(offsets.i64_offset as usize);
-            self.f32_slots.truncate(offsets.f32_offset as usize);
-            self.f64_slots.truncate(offsets.f64_offset as usize);
-            self.ref_slots.truncate(offsets.ref_offset as usize);
-            self.v128_slots.truncate(offsets.v128_offset as usize);
-        }
+    /// Restore offsets to previous frame (does not deallocate slots)
+    pub fn restore_offsets(&mut self) {
+        self.frame_offsets.pop();
     }
 
     /// Get current frame offsets
