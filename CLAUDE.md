@@ -58,7 +58,6 @@ Options:
                            These become argv[1], argv[2], ... in the guest
   --cr                     Enable checkpoint/restore functionality
   --superinstructions      Enable superinstructions optimizations (const + local.set)
-  --memoization            Enable memoization optimizations for pure instructions
   --stats                  Enable statistics output
   -h, --help               Print help
   -v, --version            Print version
@@ -82,7 +81,7 @@ wasmtime target/wasm32-wasip1/release/chiwawa.wasm sqlite-bench.wasm \
 
 # Execute with optimization options
 wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm \
-  --superinstructions --memoization --stats
+  --superinstructions --stats
 
 # Checkpoint/Restore execution
 # 1. Execute with checkpoint enabled
@@ -126,7 +125,6 @@ wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm \
   - `export.rs`: Export resolution and mapping
   - `value.rs`: Value types and stack value definitions
   - `migration.rs`: Checkpoint/restore functionality (serialization)
-  - `memoization.rs`: Memoization optimization implementation (LRU cache)
 
 - `src/wasi/`: WASI Preview 1 implementation (passthrough only)
   - `context.rs`: WASI context and file descriptor management
@@ -147,7 +145,6 @@ wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm \
    - Restore execution: Restore state from checkpoint file
 6. DTC execution loop
    - Fast dispatch via handler table
-   - Memoization optimization (when `--memoization` enabled)
 7. Checkpoint processing (when `--cr` enabled)
    - Create snapshot when checkpoint.trigger file is detected
    - Serialize execution state to checkpoint.bin
@@ -168,7 +165,6 @@ Function parameters are specified in the following format:
 - `thiserror`: Error type derivation macro
 
 **Optimization & Performance:**
-- `lru`: LRU cache (for memoization optimization)
 - `rustc-hash`: Fast hash map (FxHashMap)
 - `lazy_static`: Static variable initialization (for DTC handler table)
 
@@ -259,33 +255,11 @@ Fuses frequently occurring instruction patterns (e.g., `i32.const` + `local.set`
 - Improved cache locality
 - Particularly effective for code with many constant assignments
 
-### Memoization - WIP
-Enable with `--memoization` flag.
-
-**Overview:**
-Caches results of pure instructions (side-effect-free operations like arithmetic and logical operations) in an LRU cache to avoid recomputation for identical inputs.
-
-**Target Instructions:**
-- Arithmetic: `i32.add`, `i32.mul`, `f64.div`, etc.
-- Logical: `i32.and`, `i32.or`, `i32.xor`, etc.
-- Comparison: `i32.eq`, `i64.lt_s`, etc.
-
-**Implementation:**
-- LRU cache implementation in `src/execution/memoization.rs`
-- Efficient cache management using the `lru` crate
-
-**Current Limitations:**
-- **Experimental feature**: Currently does not achieve sufficient performance improvement
-- Cache lookup overhead often exceeds computation cost
-- Particularly low cache hit rates when running on WebAssembly
-- Requires future tuning and strategy refinement
-
 ### Statistics Output
 Enable with `--stats` flag.
 
 **Output Information:**
 - Instruction execution count
-- Memoization cache hit rate (when used with `--memoization`)
 - Superinstruction execution count (when used with `--superinstructions`)
 - Execution time statistics
 

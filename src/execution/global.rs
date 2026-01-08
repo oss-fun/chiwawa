@@ -8,7 +8,6 @@ use std::rc::Rc;
 #[derive(Clone, Debug)]
 pub struct GlobalAddr {
     global_inst: Rc<RefCell<GlobalInst>>,
-    version: Rc<RefCell<u64>>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GlobalInst {
@@ -23,7 +22,6 @@ impl GlobalAddr {
                 _type_: type_.clone(),
                 value: value,
             })),
-            version: Rc::new(RefCell::new(0)),
         }
     }
 
@@ -35,15 +33,9 @@ impl GlobalAddr {
         let mut self_inst = self.global_inst.borrow_mut();
         if self_inst.value.val_type() == value.val_type() {
             self_inst.value = value;
-            drop(self_inst);
-            *self.version.borrow_mut() += 1;
             Ok(())
         } else {
             Err(RuntimeError::InstructionFailed)
         }
-    }
-
-    pub fn get_version(&self) -> u64 {
-        *self.version.borrow()
     }
 }

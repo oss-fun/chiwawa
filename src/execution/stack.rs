@@ -3,7 +3,6 @@ use crate::error::RuntimeError;
 use crate::execution::{
     func::*,
     mem::MemAddr,
-    memoization::{GlobalAccessTracker, LocalAccessTracker},
     migration,
     module::*,
     slots::{Slot, SlotFile},
@@ -66,7 +65,6 @@ fn store_result(
                     return Err(RuntimeError::LocalIndexOutOfBounds);
                 }
                 ctx.frame.locals[index] = result_val;
-                ctx.frame.local_versions[index] += 1;
             }
             StoreTarget::Global(idx) => {
                 let module_inst = ctx
@@ -140,8 +138,6 @@ pub enum Operand {
         arity: usize,
         param_count: usize,
         is_loop: bool,
-        start_ip: usize,
-        end_ip: usize,
     },
 
     // Unified optimized operand
@@ -381,9 +377,6 @@ pub struct ExecutionContext<'a> {
     pub frame: &'a mut crate::execution::stack::Frame,
     pub value_stack: &'a mut Vec<Val>,
     pub ip: usize,
-    pub block_has_mutable_op: bool,
-    pub accessed_globals: &'a mut Option<GlobalAccessTracker>,
-    pub accessed_locals: &'a mut Option<LocalAccessTracker>,
 }
 
 #[derive(Clone, Debug)]
@@ -399,8 +392,6 @@ enum HandlerResult {
     PushLabelStack {
         label: Label,
         next_ip: usize,
-        start_ip: usize,
-        end_ip: usize,
     },
     PopLabelStack {
         next_ip: usize,
@@ -734,7 +725,6 @@ impl Stacks {
 
                 let initial_frame = FrameStack {
                     frame: Frame {
-                        local_versions: vec![0; locals.len()],
                         locals,
                         module: module.clone(),
                         n: type_.results.len(),
@@ -748,21 +738,14 @@ impl Stacks {
                             is_loop: false,
                             stack_height: 0, // Function level starts with empty stack
                             return_ip: 0,    // No return needed for function level
-                            start_ip: 0,     // Function level starts at 0
-                            end_ip: code.body.len(), // Function level ends at body length
-                            input_stack: vec![], // Function level has empty input
-                            is_immutable: None, // Will be determined during execution
                         },
                         processed_instrs: code.body.clone(),
                         value_stack: vec![],
                         ip: 0,
-                        block_has_mutable_ops: false,
                     }],
                     void: type_.results.is_empty(),
                     instruction_count: 0,
                     global_value_stack: vec![],
-                    current_block_accessed_globals: Some(GlobalAccessTracker::new()),
-                    current_block_accessed_locals: Some(LocalAccessTracker::new()),
                     enable_checkpoint: false,
                 };
 
@@ -786,7 +769,6 @@ impl Stacks {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Frame {
     pub locals: Vec<Val>,
-    pub local_versions: Vec<u64>,
     #[serde(skip)]
     pub module: Weak<ModuleInst>,
     pub n: usize,
@@ -803,10 +785,6 @@ pub struct FrameStack {
     // Global value stack shared across all label stacks
     pub global_value_stack: Vec<Val>,
     #[serde(skip)]
-    pub current_block_accessed_globals: Option<GlobalAccessTracker>, // Track accessed globals when enabled
-    #[serde(skip)]
-    pub current_block_accessed_locals: Option<LocalAccessTracker>, // Track accessed locals when enabled
-    #[serde(skip)]
     pub enable_checkpoint: bool,
 }
 
@@ -818,7 +796,6 @@ impl FrameStack {
             processed_instrs: Rc::new(instructions),
             value_stack: vec![],
             ip: 0,
-            block_has_mutable_ops: false,
         };
         self.label_stack.push(new_label_stack);
     }
@@ -859,23 +836,13 @@ impl FrameStack {
         slot_file.write_from_stack(stack_to_slots, &self.global_value_stack);
     }
 
-    /// DTC execution loop with block memoization callbacks
-    ///
-    /// Uses callback functions to access Runtime's cache from Stack without borrowing conflicts.
-    /// - `get_block_cache`: Get block result from cache (returns Some if hit)
-    /// - `store_block_cache`: Store block execution result in cache
-    pub fn run_dtc_loop<F, G>(
+    /// DTC execution loop
+    pub fn run_dtc_loop(
         &mut self,
         _called_func_addr_out: &mut Option<FuncAddr>,
-        mut get_block_cache: F,
-        mut store_block_cache: G,
         mut execution_stats: Option<&mut super::stats::ExecutionStats>,
         mut tracer: Option<&mut super::trace::Tracer>,
-    ) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError>
-    where
-        F: FnMut(usize, usize, &[Val], &[Val], &[u64]) -> Option<Vec<Val>>, // Cache lookup callback with locals and versions
-        G: FnMut(usize, usize, &[Val], &[Val], Vec<Val>, GlobalAccessTracker, LocalAccessTracker), // Cache store callback with locals, globals and accessed locals
-    {
+    ) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError> {
         let mut current_label_stack_idx = self
             .label_stack
             .len()
@@ -1441,18 +1408,9 @@ impl FrameStack {
                         frame: &mut self.frame,
                         value_stack: &mut self.global_value_stack,
                         ip,
-                        block_has_mutable_op: false,
-                        accessed_globals: &mut self.current_block_accessed_globals,
-                        accessed_locals: &mut self.current_block_accessed_locals,
                     };
 
                     let result = handler_fn(&mut context, operand);
-                    let has_mutable_op = context.block_has_mutable_op;
-
-                    // Track if this block executed a mutable operation
-                    if has_mutable_op {
-                        current_label_stack.block_has_mutable_ops = true;
-                    }
 
                     match result {
                         Err(e) => return Err(e),
@@ -1501,11 +1459,6 @@ impl FrameStack {
                                     if branch_depth <= current_label_stack_idx {
                                         let target_depth = current_label_stack_idx - branch_depth;
                                         let target_level = target_depth + 1;
-
-                                        // Mark all blocks being exited as having executed a branch (early exit)
-                                        for i in target_level..self.label_stack.len() {
-                                            self.label_stack[i].block_has_mutable_ops = true;
-                                        }
 
                                         let current_label_stack =
                                             &self.label_stack[current_label_stack_idx];
@@ -1577,106 +1530,33 @@ impl FrameStack {
                                         let target_label_stack =
                                             &mut self.label_stack[current_label_stack_idx];
                                         target_label_stack.ip = target_ip;
-
-                                        // Reset tracking for new block after branch
-                                        if self.current_block_accessed_globals.is_some() {
-                                            self.current_block_accessed_globals =
-                                                Some(GlobalAccessTracker::new());
-                                        }
-                                        if self.current_block_accessed_locals.is_some() {
-                                            self.current_block_accessed_locals =
-                                                Some(LocalAccessTracker::new());
-                                        }
                                     } else {
                                         return Err(RuntimeError::InvalidBranchTarget);
                                     }
                                     continue;
                                 }
-                                HandlerResult::PushLabelStack {
-                                    label,
-                                    next_ip,
-                                    start_ip,
-                                    end_ip,
-                                } => {
-                                    let mut cache_hit = false;
-                                    let mut cached_result_values = Vec::new();
-
-                                    if current_label_stack_idx > 0
-                                        && label.is_immutable != Some(false)
-                                    {
-                                        if let Some(cached_result) = get_block_cache(
-                                            start_ip,
-                                            end_ip,
-                                            &label.input_stack,
-                                            &self.frame.locals,
-                                            &self.frame.local_versions,
-                                        ) {
-                                            cached_result_values = cached_result;
-                                            cache_hit = true;
-                                        }
-                                    }
-
-                                    // Apply cache result if hit
-                                    if cache_hit {
-                                        let block_start_height = label.stack_height;
-                                        let current_len = self.global_value_stack.len();
-                                        let actual_height = block_start_height.min(current_len);
-                                        self.global_value_stack
-                                            .splice(actual_height.., cached_result_values);
-                                    }
-
+                                HandlerResult::PushLabelStack { label, next_ip } => {
                                     // Create new label stack
                                     let current_instrs =
                                         &self.label_stack[current_label_stack_idx].processed_instrs;
-                                    // Inherit parent's mutable status if this is a nested structure
-                                    let parent_has_mutable_ops = self.label_stack
-                                        [current_label_stack_idx]
-                                        .block_has_mutable_ops;
                                     let new_label_stack = LabelStack {
                                         label,
                                         processed_instrs: current_instrs.clone(),
                                         value_stack: vec![],
-                                        ip: if cache_hit { end_ip } else { next_ip },
-                                        block_has_mutable_ops: parent_has_mutable_ops,
+                                        ip: next_ip,
                                     };
 
                                     self.label_stack.push(new_label_stack);
                                     current_label_stack_idx = self.label_stack.len() - 1;
-
-                                    // Reset tracking for new block
-                                    if self.current_block_accessed_globals.is_some() {
-                                        self.current_block_accessed_globals =
-                                            Some(GlobalAccessTracker::new());
-                                    }
-                                    if self.current_block_accessed_locals.is_some() {
-                                        self.current_block_accessed_locals =
-                                            Some(LocalAccessTracker::new());
-                                    }
                                 }
                                 HandlerResult::PopLabelStack { next_ip } => {
                                     // Pop the current label stack when ending a block/loop
                                     if self.label_stack.len() > 1 {
-                                        // Determine if the block was immutable based on whether any mutable operations were executed
-                                        let block_was_mutable = self.label_stack
-                                            [current_label_stack_idx]
-                                            .block_has_mutable_ops;
-
-                                        // Update the label's immutability status
-                                        self.label_stack[current_label_stack_idx]
-                                            .label
-                                            .is_immutable = Some(!block_was_mutable);
-
                                         // Extract values before mutating
-                                        let (stack_height, arity, input_stack, start_ip, end_ip) = {
+                                        let (stack_height, arity) = {
                                             let current_label =
                                                 &self.label_stack[current_label_stack_idx].label;
-                                            (
-                                                current_label.stack_height,
-                                                current_label.arity,
-                                                current_label.input_stack.clone(),
-                                                current_label.start_ip,
-                                                current_label.end_ip,
-                                            )
+                                            (current_label.stack_height, current_label.arity)
                                         };
 
                                         // Extract the result values from global stack
@@ -1716,72 +1596,6 @@ impl FrameStack {
                                                 correct_stack_height.min(current_len);
                                             self.global_value_stack
                                                 .splice(actual_height.., result_values);
-                                        }
-
-                                        // Only cache nested blocks, not function level (index 0)
-                                        if current_label_stack_idx > 0 {
-                                            // Update immutability status if not yet determined
-                                            let block_is_mutable = self.label_stack
-                                                [current_label_stack_idx]
-                                                .block_has_mutable_ops;
-                                            let block_start_height = stack_height;
-
-                                            if self.label_stack[current_label_stack_idx]
-                                                .label
-                                                .is_immutable
-                                                .is_none()
-                                            {
-                                                self.label_stack[current_label_stack_idx]
-                                                    .label
-                                                    .is_immutable = Some(!block_is_mutable);
-                                            }
-
-                                            // Check if block is immutable before caching
-                                            let is_immutable = self.label_stack
-                                                [current_label_stack_idx]
-                                                .label
-                                                .is_immutable;
-                                            if is_immutable == Some(true) {
-                                                // Save block results from block start height
-                                                // For blocks (not functions), we always save from block_start_height
-                                                let final_stack_state = if block_start_height
-                                                    <= self.global_value_stack.len()
-                                                {
-                                                    self.global_value_stack[block_start_height..]
-                                                        .to_vec()
-                                                } else {
-                                                    Vec::new()
-                                                };
-                                                if get_block_cache(
-                                                    start_ip,
-                                                    end_ip,
-                                                    &input_stack,
-                                                    &self.frame.locals,
-                                                    &self.frame.local_versions,
-                                                )
-                                                .is_none()
-                                                {
-                                                    // Get tracked globals before storing
-                                                    let tracked_globals = self
-                                                        .current_block_accessed_globals
-                                                        .take()
-                                                        .unwrap_or_else(GlobalAccessTracker::new);
-                                                    // Get tracked locals before storing
-                                                    let tracked_locals = self
-                                                        .current_block_accessed_locals
-                                                        .take()
-                                                        .unwrap_or_else(LocalAccessTracker::new);
-                                                    store_block_cache(
-                                                        start_ip,
-                                                        end_ip,
-                                                        &input_stack,
-                                                        &self.frame.locals,
-                                                        final_stack_state,
-                                                        tracked_globals,
-                                                        tracked_locals,
-                                                    );
-                                                }
-                                            }
                                         }
 
                                         self.label_stack.pop();
@@ -1886,10 +1700,6 @@ pub struct Label {
     pub is_loop: bool,
     pub stack_height: usize,
     pub return_ip: usize,
-    pub start_ip: usize,
-    pub end_ip: usize,
-    pub input_stack: Vec<Val>, // Cache input stack state at block start
-    pub is_immutable: Option<bool>, // None = not determined yet, Some(true/false) = determined
 }
 
 #[derive(Clone, Debug)]
@@ -1898,7 +1708,6 @@ pub struct LabelStack {
     pub processed_instrs: Rc<Vec<ProcessedInstr>>,
     pub value_stack: Vec<Val>,
     pub ip: usize,
-    pub block_has_mutable_ops: bool, // Track if this block executed mutable operations
 }
 
 impl Serialize for LabelStack {
@@ -1935,7 +1744,6 @@ impl<'de> Deserialize<'de> for LabelStack {
             processed_instrs: Rc::new(data.processed_instrs),
             value_stack: data.value_stack,
             ip: data.ip,
-            block_has_mutable_ops: false, // Default to false when deserializing
         })
     }
 }
@@ -2281,8 +2089,6 @@ fn handle_block(
         arity,
         param_count,
         is_loop,
-        start_ip,
-        end_ip,
     } = operand
     {
         // Create a new label for this block
@@ -2292,18 +2098,12 @@ fn handle_block(
             arity: *arity,
             is_loop: *is_loop,
             stack_height: current_stack_height,
-            return_ip: *end_ip + 1, // IP to return to after this block (after the end instruction)
-            start_ip: *start_ip,
-            end_ip: *end_ip,
-            input_stack: ctx.value_stack[..current_stack_height].to_vec(),
-            is_immutable: None, // Will be determined during execution
+            return_ip: ctx.ip + 1, // Will be updated when we find the end instruction
         };
 
         Ok(HandlerResult::PushLabelStack {
             label,
             next_ip: ctx.ip + 1,
-            start_ip: *start_ip,
-            end_ip: *end_ip,
         })
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -2318,8 +2118,6 @@ fn handle_loop(
         arity,
         param_count,
         is_loop,
-        start_ip,
-        end_ip,
     } = operand
     {
         let current_stack_height = ctx.value_stack.len();
@@ -2328,19 +2126,13 @@ fn handle_loop(
             arity: *arity,
             is_loop: *is_loop,
             stack_height: current_stack_height,
-            return_ip: *end_ip + 1, // IP to return to after this loop (after the end instruction)
-            start_ip: *start_ip,
-            end_ip: *end_ip,
-            input_stack: ctx.value_stack[..current_stack_height].to_vec(),
-            is_immutable: None, // Will be determined during execution
+            return_ip: ctx.ip + 1, // Loop returns to start
         };
 
         // Signal to the main execution loop to create a new label stack
         Ok(HandlerResult::PushLabelStack {
             label,
             next_ip: ctx.ip + 1,
-            start_ip: *start_ip,
-            end_ip: *end_ip,
         })
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -2374,21 +2166,12 @@ fn handle_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
             is_loop: false,
             stack_height: current_stack_height,
             return_ip: target_ip, // IP after the if block (either else or end)
-            start_ip: ctx.ip,     // Current IP as start
-            end_ip: target_ip,    // Target IP as end
-            input_stack: ctx.value_stack[..current_stack_height].to_vec(),
-            is_immutable: None, // Will be determined during execution
         };
 
         // WebAssembly if: 0 = false (else/skip), non-zero = true (then)
         let next_ip = if cond != 0 { ctx.ip + 1 } else { target_ip };
 
-        Ok(HandlerResult::PushLabelStack {
-            label,
-            next_ip,
-            start_ip: ctx.ip + 1,
-            end_ip: target_ip,
-        })
+        Ok(HandlerResult::PushLabelStack { label, next_ip })
     } else {
         Err(RuntimeError::InvalidOperand)
     }
@@ -2501,7 +2284,6 @@ fn handle_call(
             .upgrade()
             .ok_or(RuntimeError::ModuleInstanceGone)?;
         let func_addr = instance.func_addrs[func_idx.0 as usize].clone();
-        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Invoke(func_addr))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -4296,7 +4078,6 @@ fn handle_call_indirect(
             if actual_type != *expected_type {
                 return Err(RuntimeError::IndirectCallTypeMismatch);
             }
-            ctx.block_has_mutable_op = true;
             Ok(HandlerResult::Invoke(func_addr.clone()))
         } else {
             // TODO: Distinguish between UninitializedElement and TableOutOfBounds if necessary
@@ -4361,12 +4142,6 @@ fn handle_local_get(
             return Err(RuntimeError::LocalIndexOutOfBounds);
         }
 
-        // Track local access with version
-        if let Some(ref mut tracker) = ctx.accessed_locals {
-            let version = ctx.frame.local_versions[index];
-            tracker.track_access(index as u32, version);
-        }
-
         let val = ctx.frame.locals[index].clone();
         ctx.value_stack.push(val);
         Ok(HandlerResult::Continue(ctx.ip + 1))
@@ -4389,7 +4164,6 @@ fn handle_local_set(
             .pop()
             .ok_or(RuntimeError::ValueStackUnderflow)?;
         ctx.frame.locals[index] = val;
-        ctx.frame.local_versions[index] += 1;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -4411,15 +4185,7 @@ fn handle_local_tee(
             .ok_or(RuntimeError::ValueStackUnderflow)?
             .clone();
 
-        // Track local access with version before modification
-        if let Some(ref mut tracker) = ctx.accessed_locals {
-            let version = ctx.frame.local_versions[index];
-            tracker.track_access(index as u32, version);
-        }
-
         ctx.frame.locals[index] = val;
-        ctx.frame.local_versions[index] += 1;
-        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -4440,11 +4206,6 @@ fn handle_global_get(
             .global_addrs
             .get_by_idx(GlobalIdx(index_val))
             .clone();
-
-        // Track global access
-        if let Some(ref mut tracker) = ctx.accessed_globals {
-            tracker.track_access(index_val);
-        }
 
         ctx.value_stack.push(global_addr.get());
         Ok(HandlerResult::Continue(ctx.ip + 1))
@@ -4472,10 +4233,6 @@ fn handle_global_set(
             .get_by_idx(GlobalIdx(index_val))
             .clone();
         global_addr.set(val)?;
-        // Track global write
-        if let Some(ref mut tracker) = ctx.accessed_globals {
-            tracker.track_access(index_val);
-        }
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -5086,7 +4843,6 @@ fn handle_table_set(
             .ok_or(RuntimeError::InvalidTableIndex)?;
 
         table_addr.set(index, ref_val)?;
-        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -5132,7 +4888,6 @@ fn handle_table_fill(
             table_addr.set(index + i, fill_val.clone())?;
         }
 
-        ctx.block_has_mutable_op = true;
         Ok(HandlerResult::Continue(ctx.ip + 1))
     } else {
         Err(RuntimeError::InvalidOperand)

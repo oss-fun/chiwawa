@@ -1,23 +1,15 @@
 use crate::error::RuntimeError;
-use crate::execution::memoization::MemoryChunkTracker;
 use crate::structure::{instructions::Memarg, types::*};
 use byteorder::*;
-use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::io::Cursor;
 use std::rc::Rc;
 use typenum::*;
 
-// Chunk size for memory version tracking (4KB chunks for fine-grained invalidation)
-// Note: This is different from WebAssembly page size (64KB)
-pub const CHUNK_SIZE: usize = 4096;
-
 #[derive(Clone, Debug)]
 pub struct MemAddr {
     mem_inst: Rc<RefCell<MemInst>>,
-    chunk_versions: Rc<RefCell<Vec<u64>>>,
-    current_block_written_chunks: RefCell<Option<MemoryChunkTracker>>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MemInst {
@@ -41,43 +33,12 @@ impl MemAddr {
                     vec
                 },
             })),
-            chunk_versions: Rc::new(RefCell::new(Vec::new())),
-            current_block_written_chunks: RefCell::new(None),
-        }
-    }
-
-    fn update_chunk_versions(&self, start_pos: usize, len: usize) {
-        if len > 0 {
-            let start_chunk = start_pos / CHUNK_SIZE;
-            let end_chunk = (start_pos + len - 1) / CHUNK_SIZE;
-            let mut versions = self.chunk_versions.borrow_mut();
-
-            // Ensure vector is large enough
-            if end_chunk >= versions.len() {
-                versions.resize(end_chunk + 1, 0);
-            }
-
-            // Update chunk versions
-            for chunk in start_chunk..=end_chunk {
-                versions[chunk] += 1;
-            }
-
-            // Try to record in current_block_written_chunks if tracking
-            if let Ok(mut access_lock) = self.current_block_written_chunks.try_borrow_mut() {
-                if let Some(ref mut tracker) = *access_lock {
-                    for chunk in start_chunk..=end_chunk {
-                        tracker.track_access(chunk as u32);
-                    }
-                }
-            }
         }
     }
 
     pub fn init(&self, offset: usize, init: &Vec<u8>) {
         let mut addr_self = self.mem_inst.borrow_mut();
         addr_self.data[offset..offset + init.len()].copy_from_slice(init);
-        drop(addr_self);
-        self.update_chunk_versions(offset, init.len());
     }
     pub fn load<T: ByteMem>(&self, arg: &Memarg, ptr: i32) -> Result<T, RuntimeError> {
         let pos = (ptr as usize) + (arg.offset as usize);
@@ -98,10 +59,6 @@ impl MemAddr {
         unsafe {
             std::ptr::copy_nonoverlapping(buf.as_ptr(), raw.data.as_mut_ptr().add(pos), buf.len());
         }
-
-        let len = <T>::len();
-        drop(raw);
-        self.update_chunk_versions(pos, len);
 
         Ok(())
     }
@@ -133,16 +90,6 @@ impl MemAddr {
                 .data
                 .resize(new as usize * 65536, 0);
 
-            // Ensure chunk versions vector is large enough for new memory size
-            // Convert from WASM pages (64KB) to internal tracking chunks (4KB)
-            if new > 0 {
-                let mut versions = self.chunk_versions.borrow_mut();
-                let total_chunks = (new as usize * 65536) / CHUNK_SIZE;
-                if total_chunks > versions.len() {
-                    versions.resize(total_chunks, 0);
-                }
-            }
-
             prev_size
         }
     }
@@ -165,9 +112,6 @@ impl MemAddr {
             );
         }
 
-        drop(raw);
-        self.update_chunk_versions(pos, data.len());
-
         Ok(())
     }
 
@@ -189,9 +133,6 @@ impl MemAddr {
                 let dest_ptr = raw.data.as_mut_ptr().add(dest_pos);
                 std::ptr::copy(src_ptr, dest_ptr, len_usize);
             }
-
-            drop(raw);
-            self.update_chunk_versions(dest_pos, len_usize);
         }
 
         Ok(())
@@ -206,9 +147,6 @@ impl MemAddr {
             unsafe {
                 std::ptr::write_bytes(raw.data.as_mut_ptr().add(dest_pos), val, len_usize);
             }
-
-            drop(raw);
-            self.update_chunk_versions(dest_pos, len_usize);
         }
 
         Ok(())
@@ -216,66 +154,6 @@ impl MemAddr {
 
     pub fn get_memory_direct_access(&self) -> std::cell::Ref<MemInst> {
         self.mem_inst.borrow()
-    }
-
-    pub fn get_all_chunk_versions(&self) -> Vec<(u32, u64)> {
-        let versions = self.chunk_versions.borrow();
-        versions
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, &version)| {
-                if version > 0 {
-                    Some((idx as u32, version))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    pub fn start_tracking_access(&self) {
-        let mut access_lock = self.current_block_written_chunks.borrow_mut();
-        *access_lock = Some(MemoryChunkTracker::new());
-    }
-
-    pub fn get_and_stop_tracking_access(&self) -> Option<MemoryChunkTracker> {
-        let mut access_lock = self.current_block_written_chunks.borrow_mut();
-        access_lock.take()
-    }
-
-    pub fn get_chunk_versions_for_chunks(&self, chunks: &FxHashSet<u32>) -> Vec<(u32, u64)> {
-        let versions = self.chunk_versions.borrow();
-        let mut result: Vec<(u32, u64)> = chunks
-            .iter()
-            .filter_map(|&chunk| {
-                if (chunk as usize) < versions.len() && versions[chunk as usize] > 0 {
-                    Some((chunk, versions[chunk as usize]))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        result.sort_by_key(|&(chunk, _)| chunk);
-        result
-    }
-
-    pub fn get_chunk_versions_for_tracker(
-        &self,
-        tracker: &crate::execution::memoization::MemoryChunkTracker,
-    ) -> Vec<(u32, u64)> {
-        let versions = self.chunk_versions.borrow();
-        let mut result: Vec<(u32, u64)> = tracker
-            .iter()
-            .filter_map(|chunk| {
-                if (chunk as usize) < versions.len() && versions[chunk as usize] > 0 {
-                    Some((chunk, versions[chunk as usize]))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        result.sort_by_key(|&(chunk, _)| chunk);
-        result
     }
 }
 
