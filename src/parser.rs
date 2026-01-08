@@ -4865,7 +4865,6 @@ fn decode_processed_instrs_and_fixups<'a>(
     ))
 }
 
-
 fn map_operator_to_initial_instr_and_fixup(
     op: &wasmparser::Operator,
     current_processed_pc: usize,
