@@ -6,8 +6,7 @@ use wasmparser::{
 
 use crate::error::{ParserError, RuntimeError};
 use crate::execution::slots::Slot;
-use crate::execution::stack::ProcessedInstr;
-use crate::execution::stack::*;
+use crate::execution::vm::*;
 use crate::structure::{instructions::*, module::*, types::*};
 use itertools::Itertools;
 use rustc_hash::FxHashMap;
@@ -1516,7 +1515,6 @@ fn decode_processed_instrs_and_fixups<'a>(
         let (mut processed_instr, fixup_info_opt) = if let Some(ref mut allocator) = slot_allocator
         {
             // Slot-based mode: convert i32 instructions to slot format
-            use crate::execution::stack::{I32SlotOperand, ProcessedInstr};
             match &op {
                 wasmparser::Operator::LocalGet { local_index } => {
                     let local_type = get_local_type(param_types, locals, *local_index);

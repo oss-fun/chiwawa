@@ -2,11 +2,10 @@ use crate::error::RuntimeError;
 use crate::execution::func::{FuncAddr, FuncInst};
 use crate::execution::migration;
 use crate::execution::module::ModuleInst;
-use crate::execution::slots::SlotFile;
-use crate::execution::stack::{Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, Stacks};
 use crate::execution::stats::ExecutionStats;
 use crate::execution::trace::{TraceConfig, Tracer};
 use crate::execution::value::{Num, Val, Vec_};
+use crate::execution::vm::{Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, Stacks};
 use crate::structure::module::WasiFuncType;
 use crate::structure::types::{NumType, ValueType, VecType};
 use crate::wasi::{WasiError, WasiResult};
@@ -106,11 +105,12 @@ impl Runtime {
         &mut self,
         frame_stack_idx: usize,
         called_func_addr: &mut Option<FuncAddr>,
-    ) -> Result<Result<Option<super::stack::ModuleLevelInstr>, RuntimeError>, RuntimeError> {
+    ) -> Result<Result<Option<super::vm::ModuleLevelInstr>, RuntimeError>, RuntimeError> {
+        let slot_file = &mut self.stacks.slot_file;
         let frame_stack = &mut self.stacks.activation_frame_stack[frame_stack_idx];
         let stats_ref = self.execution_stats.as_mut();
         let tracer_ref = self.tracer.as_mut();
-        frame_stack.run_dtc_loop(called_func_addr, stats_ref, tracer_ref)
+        frame_stack.run_dtc_loop(slot_file, called_func_addr, stats_ref, tracer_ref)
     }
 
     pub fn run(&mut self) -> Result<Vec<Val>, RuntimeError> {
@@ -208,18 +208,16 @@ impl Runtime {
                                         }
                                     }
 
-                                    // Initialize SlotFile from slot_allocation if available
-                                    let slot_file = code
-                                        .slot_allocation
-                                        .as_ref()
-                                        .map(|alloc| SlotFile::from_allocation(alloc));
+                                    // Push new frame to global slot file if allocation exists
+                                    if let Some(ref alloc) = code.slot_allocation {
+                                        self.stacks.slot_file.push_frame(alloc);
+                                    }
 
                                     let new_frame = FrameStack {
                                         frame: Frame {
                                             locals,
                                             module: func_module_weak.clone(),
                                             n: type_.results.len(),
-                                            slot_file,
                                             result_slot: code.result_slot.clone(),
                                         },
                                         label_stack: vec![LabelStack {
@@ -261,7 +259,14 @@ impl Runtime {
                                             current_frame_stack_mut
                                                 .global_value_stack
                                                 .extend(results);
-                                            current_frame_stack_mut.apply_call_stack_to_slots();
+                                            // Drop current_frame_stack_mut to allow split borrow
+                                            drop(func_inst_guard);
+                                            let (slot_file, frames) =
+                                                self.stacks.get_slot_file_and_frames();
+                                            frames
+                                                .last_mut()
+                                                .unwrap()
+                                                .apply_call_stack_to_slots(slot_file);
                                         }
                                         Err(e) => return Err(e),
                                     }
@@ -287,17 +292,17 @@ impl Runtime {
                                     // Call WASI function
                                     match self.call_wasi_function(&wasi_func_type, params) {
                                         Ok(result) => {
-                                            let current_frame_stack_mut = self
-                                                .stacks
-                                                .activation_frame_stack
-                                                .last_mut()
-                                                .unwrap();
+                                            let (slot_file, frames) =
+                                                self.stacks.get_slot_file_and_frames();
+                                            let current_frame_stack_mut =
+                                                frames.last_mut().unwrap();
                                             if let Some(val) = result {
                                                 current_frame_stack_mut
                                                     .global_value_stack
                                                     .push(val);
                                             }
-                                            current_frame_stack_mut.apply_call_stack_to_slots();
+                                            current_frame_stack_mut
+                                                .apply_call_stack_to_slots(slot_file);
                                         }
                                         Err(WasiError::ProcessExit(_code)) => {
                                             return Err(RuntimeError::ExecutionFailed(
@@ -326,14 +331,8 @@ impl Runtime {
                             match self.call_wasi_function(&wasi_func_type, params) {
                                 Ok(result) => {
                                     if let Some(slot) = result_slot {
-                                        let current_frame =
-                                            self.stacks.activation_frame_stack.last_mut().unwrap();
-                                        if let Some(ref mut slot_file) =
-                                            current_frame.frame.slot_file
-                                        {
-                                            if let Some(val) = result {
-                                                slot_file.set_val(&slot, &val);
-                                            }
+                                        if let Some(val) = result {
+                                            self.stacks.slot_file.set_val(&slot, &val);
                                         }
                                     }
                                 }
@@ -349,6 +348,9 @@ impl Runtime {
                             }
                         }
                         Some(ModuleLevelInstr::Return) => {
+                            // Pop slot file frame
+                            self.stacks.slot_file.pop_frame();
+
                             let finished_frame = self.stacks.activation_frame_stack.pop().unwrap();
                             let expected_n = finished_frame.frame.n;
 
@@ -369,13 +371,16 @@ impl Runtime {
                             if self.stacks.activation_frame_stack.is_empty() {
                                 return Ok(values_to_pass);
                             } else {
-                                let caller_frame =
-                                    self.stacks.activation_frame_stack.last_mut().unwrap();
+                                // Split borrow: get both slot_file and frames at once
+                                let (slot_file, frames) = self.stacks.get_slot_file_and_frames();
+                                let caller_frame = frames.last_mut().unwrap();
                                 caller_frame.global_value_stack.extend(values_to_pass);
-                                caller_frame.apply_call_stack_to_slots();
+                                caller_frame.apply_call_stack_to_slots(slot_file);
                             }
                         }
                         None => {
+                            self.stacks.slot_file.pop_frame();
+
                             let finished_frame = self.stacks.activation_frame_stack.pop().unwrap();
                             let expected_n = finished_frame.frame.n;
 
@@ -396,10 +401,10 @@ impl Runtime {
                             if self.stacks.activation_frame_stack.is_empty() {
                                 return Ok(values_to_pass);
                             } else {
-                                let caller_frame =
-                                    self.stacks.activation_frame_stack.last_mut().unwrap();
+                                let (slot_file, frames) = self.stacks.get_slot_file_and_frames();
+                                let caller_frame = frames.last_mut().unwrap();
                                 caller_frame.global_value_stack.extend(values_to_pass);
-                                caller_frame.apply_call_stack_to_slots();
+                                caller_frame.apply_call_stack_to_slots(slot_file);
                             }
                         }
                     }

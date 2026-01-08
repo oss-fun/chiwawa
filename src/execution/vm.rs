@@ -374,7 +374,7 @@ impl ProcessedInstr {
 }
 
 pub struct ExecutionContext<'a> {
-    pub frame: &'a mut crate::execution::stack::Frame,
+    pub frame: &'a mut Frame,
     pub value_stack: &'a mut Vec<Val>,
     pub ip: usize,
 }
@@ -678,13 +678,20 @@ pub const HANDLER_IDX_TABLE_FILL: usize = 0xE2;
 
 pub const MAX_HANDLER_INDEX: usize = 0x168;
 
+/// VM execution state - holds all runtime state for WebAssembly execution
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Stacks {
+pub struct VMState {
+    /// Global slot file for all frames
+    pub slot_file: SlotFile,
+    /// Activation frame stack
     pub activation_frame_stack: Vec<FrameStack>,
 }
 
-impl Stacks {
-    pub fn new(funcaddr: &FuncAddr, params: Vec<Val>) -> Result<Stacks, RuntimeError> {
+/// Type alias for backward compatibility
+pub type Stacks = VMState;
+
+impl VMState {
+    pub fn new(funcaddr: &FuncAddr, params: Vec<Val>) -> Result<VMState, RuntimeError> {
         let func_inst_guard = funcaddr.read_lock();
         match &*func_inst_guard {
             FuncInst::RuntimeFunc {
@@ -710,25 +717,19 @@ impl Stacks {
                     }
                 }
 
-                // Initialize SlotFile if slot allocation is present
-                let slot_file = code.slot_allocation.as_ref().map(|alloc| {
-                    use crate::execution::slots::SlotFile;
-                    SlotFile::new(
-                        alloc.i32_count,
-                        alloc.i64_count,
-                        alloc.f32_count,
-                        alloc.f64_count,
-                        alloc.ref_count,
-                        alloc.v128_count,
-                    )
-                });
+                // Initialize global SlotFile
+                let mut slot_file = SlotFile::new_global();
+
+                // Push initial frame allocation if present
+                if let Some(alloc) = code.slot_allocation.as_ref() {
+                    slot_file.push_frame(alloc);
+                }
 
                 let initial_frame = FrameStack {
                     frame: Frame {
                         locals,
                         module: module.clone(),
                         n: type_.results.len(),
-                        slot_file,
                         result_slot: code.result_slot,
                     },
                     label_stack: vec![LabelStack {
@@ -749,7 +750,8 @@ impl Stacks {
                     enable_checkpoint: false,
                 };
 
-                Ok(Stacks {
+                Ok(VMState {
+                    slot_file,
                     activation_frame_stack: vec![initial_frame],
                 })
             }
@@ -764,6 +766,12 @@ impl Stacks {
             }
         }
     }
+
+    /// Get mutable references to both slot_file and activation_frame_stack
+    /// This allows split borrowing of VMState fields
+    pub fn get_slot_file_and_frames(&mut self) -> (&mut SlotFile, &mut Vec<FrameStack>) {
+        (&mut self.slot_file, &mut self.activation_frame_stack)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -772,7 +780,6 @@ pub struct Frame {
     #[serde(skip)]
     pub module: Weak<ModuleInst>,
     pub n: usize,
-    pub slot_file: Option<crate::execution::slots::SlotFile>, // Used in slot mode
     pub result_slot: Option<crate::execution::slots::Slot>, // Slot for return value (slot mode only)
 }
 
@@ -817,7 +824,7 @@ impl FrameStack {
         }
     }
 
-    pub fn apply_call_stack_to_slots(&mut self) {
+    pub fn apply_call_stack_to_slots(&mut self, slot_file: &mut SlotFile) {
         let Some(current_label) = self.label_stack.last() else {
             return;
         };
@@ -830,15 +837,13 @@ impl FrameStack {
         if stack_to_slots.is_empty() {
             return;
         }
-        let Some(ref mut slot_file) = self.frame.slot_file else {
-            return;
-        };
         slot_file.write_from_stack(stack_to_slots, &self.global_value_stack);
     }
 
     /// DTC execution loop
     pub fn run_dtc_loop(
         &mut self,
+        slot_file: &mut SlotFile,
         _called_func_addr_out: &mut Option<FuncAddr>,
         mut execution_stats: Option<&mut super::stats::ExecutionStats>,
         mut tracer: Option<&mut super::trace::Tracer>,
@@ -922,12 +927,6 @@ impl FrameStack {
                     src1,
                     src2,
                 } => {
-                    let slot_file = self
-                        .frame
-                        .slot_file
-                        .as_mut()
-                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
-
                     // Create context for handler
                     let ctx = I32SlotContext {
                         slot_file: slot_file.get_i32_slots(),
@@ -948,12 +947,6 @@ impl FrameStack {
                     src1,
                     src2,
                 } => {
-                    let slot_file = self
-                        .frame
-                        .slot_file
-                        .as_mut()
-                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
-
                     // Get both i32 and i64 slots for comparison operations
                     let (i32_slots, i64_slots) = slot_file.get_i32_and_i64_slots();
                     let ctx = I64SlotContext {
@@ -977,12 +970,6 @@ impl FrameStack {
                     src1,
                     src2,
                 } => {
-                    let slot_file = self
-                        .frame
-                        .slot_file
-                        .as_mut()
-                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
-
                     // Get both i32 and f32 slots for comparison operations
                     let (i32_slots, f32_slots) = slot_file.get_i32_and_f32_slots();
                     let ctx = F32SlotContext {
@@ -1006,12 +993,6 @@ impl FrameStack {
                     src1,
                     src2,
                 } => {
-                    let slot_file = self
-                        .frame
-                        .slot_file
-                        .as_mut()
-                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
-
                     // Get both i32 and f64 slots for comparison operations
                     let (i32_slots, f64_slots) = slot_file.get_i32_and_f64_slots();
                     let ctx = F64SlotContext {
@@ -1034,12 +1015,6 @@ impl FrameStack {
                     dst,
                     src,
                 } => {
-                    let slot_file = self
-                        .frame
-                        .slot_file
-                        .as_mut()
-                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
-
                     let ctx = ConversionSlotContext {
                         slot_file,
                         src: src.clone(),
@@ -1058,12 +1033,6 @@ impl FrameStack {
                     addr,
                     offset,
                 } => {
-                    let slot_file = self
-                        .frame
-                        .slot_file
-                        .as_mut()
-                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
-
                     let module_inst = self
                         .frame
                         .module
@@ -1094,12 +1063,6 @@ impl FrameStack {
                     value,
                     offset,
                 } => {
-                    let slot_file = self
-                        .frame
-                        .slot_file
-                        .as_ref()
-                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
-
                     let module_inst = self
                         .frame
                         .module
@@ -1130,12 +1093,6 @@ impl FrameStack {
                     args,
                     data_index,
                 } => {
-                    let slot_file = self
-                        .frame
-                        .slot_file
-                        .as_mut()
-                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
-
                     let module_inst = self
                         .frame
                         .module
@@ -1168,12 +1125,6 @@ impl FrameStack {
                     val2,
                     cond,
                 } => {
-                    let slot_file = self
-                        .frame
-                        .slot_file
-                        .as_mut()
-                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
-
                     let ctx = SelectSlotContext {
                         slot_file,
                         dst: dst.clone(),
@@ -1204,12 +1155,6 @@ impl FrameStack {
                         .clone();
                     let val = global_addr.get();
 
-                    let slot_file = self
-                        .frame
-                        .slot_file
-                        .as_mut()
-                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
-
                     match *handler_index {
                         HANDLER_IDX_GLOBAL_GET_I32 => {
                             slot_file.set_i32(dst.index(), val.to_i32().unwrap());
@@ -1234,12 +1179,6 @@ impl FrameStack {
                     src,
                     global_index,
                 } => {
-                    let slot_file = self
-                        .frame
-                        .slot_file
-                        .as_ref()
-                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
-
                     let val = match *handler_index {
                         HANDLER_IDX_GLOBAL_SET_I32 => {
                             Val::Num(Num::I32(slot_file.get_i32(src.index())))
@@ -1276,12 +1215,6 @@ impl FrameStack {
                     src,
                     local_idx,
                 } => {
-                    let slot_file = self
-                        .frame
-                        .slot_file
-                        .as_mut()
-                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
-
                     let handler_fn = REF_LOCAL_SLOT_HANDLER_TABLE
                         .get(*handler_index)
                         .ok_or(RuntimeError::InvalidHandlerIndex)?;
@@ -1303,12 +1236,6 @@ impl FrameStack {
                     slots,
                     ref_type,
                 } => {
-                    let slot_file = self
-                        .frame
-                        .slot_file
-                        .as_mut()
-                        .ok_or(RuntimeError::InvalidWasm("SlotFile not initialized"))?;
-
                     let handler_fn = TABLE_REF_SLOT_HANDLER_TABLE
                         .get(*handler_index)
                         .ok_or(RuntimeError::InvalidHandlerIndex)?;
@@ -1340,15 +1267,10 @@ impl FrameStack {
                     let result_slot_copy = *result_slot;
 
                     // Read parameters from slots
-                    let params = if let Some(ref slot_file) = self.frame.slot_file {
-                        param_slots_copy
-                            .iter()
-                            .map(|slot| slot_file.get_val(slot))
-                            .collect()
-                    } else {
-                        // Fall back to empty params if no slot file
-                        Vec::new()
-                    };
+                    let params: Vec<Val> = param_slots_copy
+                        .iter()
+                        .map(|slot| slot_file.get_val(slot))
+                        .collect();
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     return Ok(Ok(Some(ModuleLevelInstr::InvokeWasiSlot {
@@ -1365,13 +1287,11 @@ impl FrameStack {
                 } => {
                     // Copy slots to value_stack before executing legacy instruction
                     if !slots_to_stack.is_empty() {
-                        if let Some(ref slot_file) = self.frame.slot_file {
-                            // Clear value_stack and sync fresh values from slots
-                            self.global_value_stack.clear();
-                            for slot in slots_to_stack.iter() {
-                                let val = slot_file.get_val(slot);
-                                self.global_value_stack.push(val);
-                            }
+                        // Clear value_stack and sync fresh values from slots
+                        self.global_value_stack.clear();
+                        for slot in slots_to_stack.iter() {
+                            let val = slot_file.get_val(slot);
+                            self.global_value_stack.push(val);
                         }
                     }
                     let stack_to_slots = stack_to_slots.clone();
@@ -1419,12 +1339,10 @@ impl FrameStack {
                                 HandlerResult::Continue(next_ip) => {
                                     // Write back results to slot_file if specified
                                     // (value_stack is left as-is for legacy instructions that may follow)
-                                    if let Some(ref mut slot_file) = self.frame.slot_file {
-                                        slot_file.write_from_stack(
-                                            &stack_to_slots,
-                                            &self.global_value_stack,
-                                        );
-                                    }
+                                    slot_file.write_from_stack(
+                                        &stack_to_slots,
+                                        &self.global_value_stack,
+                                    );
                                     self.label_stack[current_label_stack_idx].ip = next_ip;
                                 }
                                 HandlerResult::Return => {
@@ -1505,14 +1423,13 @@ impl FrameStack {
 
                                         // Apply the End instruction's stack_to_slots if in slot mode
                                         // The End instruction is at target_ip - 1 (since target_ip = End_IP + 1)
-                                        if let (Some(ref mut slot_file), Some(end_instr)) = (
-                                            self.frame.slot_file.as_mut(),
+                                        if let Some(end_instr) =
                                             target_ip.checked_sub(1).and_then(|ip| {
                                                 self.label_stack[current_label_stack_idx]
                                                     .processed_instrs
                                                     .get(ip)
-                                            }),
-                                        ) {
+                                            })
+                                        {
                                             if let ProcessedInstr::Legacy {
                                                 stack_to_slots, ..
                                             } = end_instr
@@ -1604,50 +1521,48 @@ impl FrameStack {
 
                                         // Write back results to slot_file if specified (for End instructions)
                                         if !stack_to_slots.is_empty() {
-                                            if let Some(ref mut slot_file) = self.frame.slot_file {
-                                                let stack_len = self.global_value_stack.len();
-                                                let slot_count = stack_to_slots.len();
-                                                // Peek values from value_stack and write to slots
-                                                for (i, slot) in stack_to_slots.iter().enumerate() {
-                                                    let val = &self.global_value_stack
-                                                        [stack_len - slot_count + i];
-                                                    match slot {
-                                                        crate::execution::slots::Slot::I32(idx) => {
-                                                            slot_file.set_i32(
-                                                                *idx,
-                                                                val.to_i32().unwrap_or(0),
-                                                            );
-                                                        }
-                                                        crate::execution::slots::Slot::I64(idx) => {
-                                                            slot_file.set_i64(
-                                                                *idx,
-                                                                val.to_i64().unwrap_or(0),
-                                                            );
-                                                        }
-                                                        crate::execution::slots::Slot::F32(idx) => {
-                                                            slot_file.set_f32(
-                                                                *idx,
-                                                                val.to_f32().unwrap_or(0.0),
-                                                            );
-                                                        }
-                                                        crate::execution::slots::Slot::F64(idx) => {
-                                                            slot_file.set_f64(
-                                                                *idx,
-                                                                val.to_f64().unwrap_or(0.0),
-                                                            );
-                                                        }
-                                                        crate::execution::slots::Slot::Ref(idx) => {
-                                                            if let Val::Ref(r) = val {
-                                                                slot_file.set_ref(*idx, r.clone());
-                                                            }
-                                                        }
-                                                        crate::execution::slots::Slot::V128(_) => {}
+                                            let stack_len = self.global_value_stack.len();
+                                            let slot_count = stack_to_slots.len();
+                                            // Peek values from value_stack and write to slots
+                                            for (i, slot) in stack_to_slots.iter().enumerate() {
+                                                let val = &self.global_value_stack
+                                                    [stack_len - slot_count + i];
+                                                match slot {
+                                                    crate::execution::slots::Slot::I32(idx) => {
+                                                        slot_file.set_i32(
+                                                            *idx,
+                                                            val.to_i32().unwrap_or(0),
+                                                        );
                                                     }
+                                                    crate::execution::slots::Slot::I64(idx) => {
+                                                        slot_file.set_i64(
+                                                            *idx,
+                                                            val.to_i64().unwrap_or(0),
+                                                        );
+                                                    }
+                                                    crate::execution::slots::Slot::F32(idx) => {
+                                                        slot_file.set_f32(
+                                                            *idx,
+                                                            val.to_f32().unwrap_or(0.0),
+                                                        );
+                                                    }
+                                                    crate::execution::slots::Slot::F64(idx) => {
+                                                        slot_file.set_f64(
+                                                            *idx,
+                                                            val.to_f64().unwrap_or(0.0),
+                                                        );
+                                                    }
+                                                    crate::execution::slots::Slot::Ref(idx) => {
+                                                        if let Val::Ref(r) = val {
+                                                            slot_file.set_ref(*idx, r.clone());
+                                                        }
+                                                    }
+                                                    crate::execution::slots::Slot::V128(_) => {}
                                                 }
-                                                // Remove values from value_stack (slots_to_stack will handle pushing when needed)
-                                                self.global_value_stack
-                                                    .truncate(stack_len - slot_count);
                                             }
+                                            // Remove values from value_stack (slots_to_stack will handle pushing when needed)
+                                            self.global_value_stack
+                                                .truncate(stack_len - slot_count);
                                         }
                                     } else {
                                         let current_label =
@@ -1664,11 +1579,8 @@ impl FrameStack {
                                                     self.global_value_stack[start_idx..].to_vec();
                                                 self.global_value_stack.clear();
                                                 self.global_value_stack.extend(result_values);
-                                            } else if let (
-                                                Some(ref slot_file),
-                                                Some(ref result_slot),
-                                            ) =
-                                                (&self.frame.slot_file, &self.frame.result_slot)
+                                            } else if let Some(ref result_slot) =
+                                                self.frame.result_slot
                                             {
                                                 // Slot mode fallback: read result from specified slot
                                                 let result_val = slot_file.get_val(result_slot);

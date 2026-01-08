@@ -1,5 +1,5 @@
 use crate::execution::slots::Slot;
-use crate::execution::stack::ProcessedInstr;
+use crate::execution::vm::ProcessedInstr;
 use crate::structure::instructions::*;
 use crate::structure::types::*;
 use std::rc::Rc;

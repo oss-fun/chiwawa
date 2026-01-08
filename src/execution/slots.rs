@@ -40,7 +40,18 @@ impl Slot {
     }
 }
 
-/// Slot file - holds all type-specialized slots
+/// Frame slot offsets for global slot file
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct FrameSlotOffsets {
+    pub i32_offset: u32,
+    pub i64_offset: u32,
+    pub f32_offset: u32,
+    pub f64_offset: u32,
+    pub ref_offset: u32,
+    pub v128_offset: u32,
+}
+
+/// Slot file - holds all type-specialized slots (now global across frames)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SlotFile {
     pub i32_slots: Vec<i32>,
@@ -49,10 +60,25 @@ pub struct SlotFile {
     pub f64_slots: Vec<f64>,
     pub ref_slots: Vec<Ref>,
     pub v128_slots: Vec<i128>,
+    /// Frame slot offset stack
+    frame_offsets: Vec<FrameSlotOffsets>,
 }
 
 impl SlotFile {
-    /// Create a new slot file with specified capacities
+    /// Create a new empty global slot file
+    pub fn new_global() -> Self {
+        Self {
+            i32_slots: Vec::with_capacity(256),
+            i64_slots: Vec::with_capacity(64),
+            f32_slots: Vec::with_capacity(64),
+            f64_slots: Vec::with_capacity(64),
+            ref_slots: Vec::with_capacity(32),
+            v128_slots: Vec::with_capacity(16),
+            frame_offsets: Vec::with_capacity(64),
+        }
+    }
+
+    /// Create a new slot file with specified capacities (legacy, for single frame)
     pub fn new(
         i32_count: usize,
         i64_count: usize,
@@ -61,14 +87,18 @@ impl SlotFile {
         ref_count: usize,
         v128_count: usize,
     ) -> Self {
-        Self {
+        let mut sf = Self {
             i32_slots: vec![0; i32_count],
             i64_slots: vec![0; i64_count],
             f32_slots: vec![0.0; f32_count],
             f64_slots: vec![0.0; f64_count],
             ref_slots: vec![Ref::RefNull; ref_count],
             v128_slots: vec![0; v128_count],
-        }
+            frame_offsets: Vec::new(),
+        };
+        // Push initial frame offset at 0
+        sf.frame_offsets.push(FrameSlotOffsets::default());
+        sf
     }
 
     /// Create a new slot file from SlotAllocation
@@ -83,91 +113,176 @@ impl SlotFile {
         )
     }
 
-    /// Get/set methods for each type (inlined for performance)
+    /// Push a new frame with the given allocation
+    pub fn push_frame(&mut self, allocation: &SlotAllocation) {
+        let new_offsets = FrameSlotOffsets {
+            i32_offset: self.i32_slots.len() as u32,
+            i64_offset: self.i64_slots.len() as u32,
+            f32_offset: self.f32_slots.len() as u32,
+            f64_offset: self.f64_slots.len() as u32,
+            ref_offset: self.ref_slots.len() as u32,
+            v128_offset: self.v128_slots.len() as u32,
+        };
+        self.frame_offsets.push(new_offsets);
+
+        // Allocate slots for this frame
+        self.i32_slots
+            .resize(self.i32_slots.len() + allocation.i32_count, 0);
+        self.i64_slots
+            .resize(self.i64_slots.len() + allocation.i64_count, 0);
+        self.f32_slots
+            .resize(self.f32_slots.len() + allocation.f32_count, 0.0);
+        self.f64_slots
+            .resize(self.f64_slots.len() + allocation.f64_count, 0.0);
+        self.ref_slots
+            .resize(self.ref_slots.len() + allocation.ref_count, Ref::RefNull);
+        self.v128_slots
+            .resize(self.v128_slots.len() + allocation.v128_count, 0);
+    }
+
+    /// Pop the current frame
+    pub fn pop_frame(&mut self) {
+        if let Some(offsets) = self.frame_offsets.pop() {
+            self.i32_slots.truncate(offsets.i32_offset as usize);
+            self.i64_slots.truncate(offsets.i64_offset as usize);
+            self.f32_slots.truncate(offsets.f32_offset as usize);
+            self.f64_slots.truncate(offsets.f64_offset as usize);
+            self.ref_slots.truncate(offsets.ref_offset as usize);
+            self.v128_slots.truncate(offsets.v128_offset as usize);
+        }
+    }
+
+    /// Get current frame offsets
+    #[inline(always)]
+    fn current_offsets(&self) -> &FrameSlotOffsets {
+        self.frame_offsets.last().unwrap_or(&FrameSlotOffsets {
+            i32_offset: 0,
+            i64_offset: 0,
+            f32_offset: 0,
+            f64_offset: 0,
+            ref_offset: 0,
+            v128_offset: 0,
+        })
+    }
+
+    /// Get frame depth
+    pub fn frame_depth(&self) -> usize {
+        self.frame_offsets.len()
+    }
+
+    /// Get/set methods for each type (with frame offset)
     #[inline(always)]
     pub fn get_i32(&self, slot: u16) -> i32 {
-        self.i32_slots[slot as usize]
+        let offset = self.current_offsets().i32_offset as usize;
+        self.i32_slots[offset + slot as usize]
     }
 
     #[inline(always)]
     pub fn set_i32(&mut self, slot: u16, val: i32) {
-        self.i32_slots[slot as usize] = val;
+        let offset = self.current_offsets().i32_offset as usize;
+        self.i32_slots[offset + slot as usize] = val;
     }
 
     #[inline(always)]
     pub fn get_i64(&self, slot: u16) -> i64 {
-        self.i64_slots[slot as usize]
+        let offset = self.current_offsets().i64_offset as usize;
+        self.i64_slots[offset + slot as usize]
     }
 
     #[inline(always)]
     pub fn set_i64(&mut self, slot: u16, val: i64) {
-        self.i64_slots[slot as usize] = val;
+        let offset = self.current_offsets().i64_offset as usize;
+        self.i64_slots[offset + slot as usize] = val;
     }
 
     #[inline(always)]
     pub fn get_f32(&self, slot: u16) -> f32 {
-        self.f32_slots[slot as usize]
+        let offset = self.current_offsets().f32_offset as usize;
+        self.f32_slots[offset + slot as usize]
     }
 
     #[inline(always)]
     pub fn set_f32(&mut self, slot: u16, val: f32) {
-        self.f32_slots[slot as usize] = val;
+        let offset = self.current_offsets().f32_offset as usize;
+        self.f32_slots[offset + slot as usize] = val;
     }
 
     #[inline(always)]
     pub fn get_f64(&self, slot: u16) -> f64 {
-        self.f64_slots[slot as usize]
+        let offset = self.current_offsets().f64_offset as usize;
+        self.f64_slots[offset + slot as usize]
     }
 
     #[inline(always)]
     pub fn set_f64(&mut self, slot: u16, val: f64) {
-        self.f64_slots[slot as usize] = val;
+        let offset = self.current_offsets().f64_offset as usize;
+        self.f64_slots[offset + slot as usize] = val;
     }
 
     #[inline(always)]
     pub fn get_ref(&self, slot: u16) -> Ref {
-        self.ref_slots[slot as usize].clone()
+        let offset = self.current_offsets().ref_offset as usize;
+        self.ref_slots[offset + slot as usize].clone()
     }
 
     #[inline(always)]
     pub fn set_ref(&mut self, slot: u16, val: Ref) {
-        self.ref_slots[slot as usize] = val;
+        let offset = self.current_offsets().ref_offset as usize;
+        self.ref_slots[offset + slot as usize] = val;
     }
 
     #[inline(always)]
     pub fn get_v128(&self, slot: u16) -> i128 {
-        self.v128_slots[slot as usize]
+        let offset = self.current_offsets().v128_offset as usize;
+        self.v128_slots[offset + slot as usize]
     }
 
     #[inline(always)]
     pub fn set_v128(&mut self, slot: u16, val: i128) {
-        self.v128_slots[slot as usize] = val;
+        let offset = self.current_offsets().v128_offset as usize;
+        self.v128_slots[offset + slot as usize] = val;
     }
 
+    /// Get i32 slots slice for current frame
     #[inline(always)]
     pub fn get_i32_slots(&mut self) -> &mut [i32] {
-        &mut self.i32_slots
+        let offset = self.current_offsets().i32_offset as usize;
+        &mut self.i32_slots[offset..]
     }
 
+    /// Get i64 slots slice for current frame
     #[inline(always)]
     pub fn get_i64_slots(&mut self) -> &mut [i64] {
-        &mut self.i64_slots
+        let offset = self.current_offsets().i64_offset as usize;
+        &mut self.i64_slots[offset..]
     }
 
-    /// Get both i32 and i64 slots (for i64 comparison operations that write to i32)
+    /// Get both i32 and i64 slots for current frame (for i64 comparison operations)
     #[inline(always)]
     pub fn get_i32_and_i64_slots(&mut self) -> (&mut [i32], &mut [i64]) {
-        (&mut self.i32_slots, &mut self.i64_slots)
+        let i32_offset = self.current_offsets().i32_offset as usize;
+        let i64_offset = self.current_offsets().i64_offset as usize;
+        let i32_ptr = &mut self.i32_slots[i32_offset..] as *mut [i32];
+        let i64_ptr = &mut self.i64_slots[i64_offset..] as *mut [i64];
+        unsafe { (&mut *i32_ptr, &mut *i64_ptr) }
     }
 
     #[inline(always)]
     pub fn get_i32_and_f32_slots(&mut self) -> (&mut [i32], &mut [f32]) {
-        (&mut self.i32_slots, &mut self.f32_slots)
+        let i32_offset = self.current_offsets().i32_offset as usize;
+        let f32_offset = self.current_offsets().f32_offset as usize;
+        let i32_ptr = &mut self.i32_slots[i32_offset..] as *mut [i32];
+        let f32_ptr = &mut self.f32_slots[f32_offset..] as *mut [f32];
+        unsafe { (&mut *i32_ptr, &mut *f32_ptr) }
     }
 
     #[inline(always)]
     pub fn get_i32_and_f64_slots(&mut self) -> (&mut [i32], &mut [f64]) {
-        (&mut self.i32_slots, &mut self.f64_slots)
+        let i32_offset = self.current_offsets().i32_offset as usize;
+        let f64_offset = self.current_offsets().f64_offset as usize;
+        let i32_ptr = &mut self.i32_slots[i32_offset..] as *mut [i32];
+        let f64_ptr = &mut self.f64_slots[f64_offset..] as *mut [f64];
+        unsafe { (&mut *i32_ptr, &mut *f64_ptr) }
     }
 
     /// Get value from slot as Val
