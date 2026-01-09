@@ -50,7 +50,7 @@ where
     }
 }
 
-#[derive(PartialEq, Eq, Hash, Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Hash, Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct TypeIdx(pub u32);
 impl Into<u32> for TypeIdx {
     fn into(self) -> u32 {
@@ -59,7 +59,7 @@ impl Into<u32> for TypeIdx {
 }
 impl GetIdx for TypeIdx {}
 
-#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct TableIdx(pub u32);
 impl Into<u32> for TableIdx {
     fn into(self) -> u32 {
@@ -77,7 +77,7 @@ impl Into<u32> for MemIdx {
 }
 impl GetIdx for MemIdx {}
 
-#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct FuncIdx(pub u32);
 impl Into<u32> for FuncIdx {
     fn into(self) -> u32 {

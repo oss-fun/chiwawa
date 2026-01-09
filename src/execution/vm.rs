@@ -124,15 +124,20 @@ pub enum Operand {
         arity: usize,
         original_wasm_depth: usize,
         is_loop: bool,
+        source_slots: Vec<Slot>,
+        target_result_slots: Vec<Slot>,
+        condition_slot: Option<Slot>, // For br_if: slot containing condition value
     },
     MemArg(Memarg),
     BrTable {
         targets: Vec<Operand>,
         default: Box<Operand>,
+        index_slot: Option<Slot>, // Slot containing table index
     },
     CallIndirect {
         type_idx: TypeIdx,
         table_idx: TableIdx,
+        index_slot: Option<Slot>, // Slot containing table element index
     },
     Block {
         arity: usize,
@@ -320,6 +325,21 @@ pub enum ProcessedInstr {
         param_slots: Vec<Slot>,    // Parameter slots
         result_slot: Option<Slot>, // Result slot (most WASI functions return i32)
     },
+    CallIndirectSlot {
+        type_idx: TypeIdx,
+        table_idx: TableIdx,
+        index_slot: Slot,        // Table index slot
+        param_slots: Vec<Slot>,  // Parameter slots
+        result_slots: Vec<Slot>, // Result slots
+    },
+    CallSlot {
+        func_idx: FuncIdx,
+        param_slots: Vec<Slot>,  // Parameter slots
+        result_slots: Vec<Slot>, // Result slots
+    },
+    ReturnSlot {
+        result_slots: Vec<Slot>, // Result slots to return
+    },
 }
 
 impl ProcessedInstr {
@@ -342,6 +362,9 @@ impl ProcessedInstr {
             ProcessedInstr::RefLocalSlot { handler_index, .. } => *handler_index,
             ProcessedInstr::TableRefSlot { handler_index, .. } => *handler_index,
             ProcessedInstr::CallWasiSlot { .. } => HANDLER_IDX_CALL_WASI_SLOT,
+            ProcessedInstr::CallIndirectSlot { .. } => HANDLER_IDX_CALL_INDIRECT,
+            ProcessedInstr::CallSlot { .. } => HANDLER_IDX_CALL,
+            ProcessedInstr::ReturnSlot { .. } => HANDLER_IDX_RETURN,
         }
     }
 
@@ -384,10 +407,29 @@ enum HandlerResult {
     Continue(usize),
     Return,
     Invoke(FuncAddr),
+    CallIndirect {
+        type_idx: TypeIdx,
+        table_idx: TableIdx,
+        index_slot: Slot,
+    },
     Branch {
         target_ip: usize,
-        values_to_push: Vec<Val>,
         branch_depth: usize,
+        source_slots: Vec<Slot>,
+        target_result_slots: Vec<Slot>,
+    },
+    BranchConditional {
+        target_ip: usize,
+        branch_depth: usize,
+        source_slots: Vec<Slot>,
+        target_result_slots: Vec<Slot>,
+        condition_slot: Slot,
+        next_ip: usize, // IP if condition is false
+    },
+    BranchTable {
+        targets: Vec<(usize, usize, Vec<Slot>, Vec<Slot>)>, // (target_ip, branch_depth, source_slots, target_result_slots)
+        default: (usize, usize, Vec<Slot>, Vec<Slot>),
+        index_slot: Slot,
     },
     PushLabelStack {
         label: Label,
@@ -395,6 +437,8 @@ enum HandlerResult {
     },
     PopLabelStack {
         next_ip: usize,
+        source_slots: Vec<Slot>,
+        target_result_slots: Vec<Slot>,
     },
 }
 
@@ -408,6 +452,11 @@ pub enum ModuleLevelInstr {
         wasi_func_type: WasiFuncType,
         params: Vec<Val>,          // Parameters read from slots
         result_slot: Option<Slot>, // Slot to write result to
+    },
+    InvokeSlot {
+        func_addr: FuncAddr,
+        params: Vec<Val>,        // Parameters read from slots
+        result_slots: Vec<Slot>, // Slots to write results to
     },
 }
 
@@ -748,6 +797,7 @@ impl VMState {
                     instruction_count: 0,
                     global_value_stack: vec![],
                     enable_checkpoint: false,
+                    result_slots: vec![],
                 };
 
                 Ok(VMState {
@@ -793,6 +843,8 @@ pub struct FrameStack {
     pub global_value_stack: Vec<Val>,
     #[serde(skip)]
     pub enable_checkpoint: bool,
+    #[serde(skip)]
+    pub result_slots: Vec<Slot>,
 }
 
 impl FrameStack {
@@ -1279,6 +1331,131 @@ impl FrameStack {
                         result_slot: result_slot_copy,
                     })));
                 }
+                ProcessedInstr::CallIndirectSlot {
+                    type_idx,
+                    table_idx,
+                    index_slot,
+                    param_slots,
+                    result_slots,
+                } => {
+                    let type_idx = *type_idx;
+                    let table_idx = *table_idx;
+                    let index_slot = *index_slot;
+                    let param_slots = param_slots.clone();
+                    let result_slots = result_slots.clone();
+
+                    // Read table index from slot
+                    let i = slot_file.get_i32(index_slot.index());
+
+                    let module_inst = self
+                        .frame
+                        .module
+                        .upgrade()
+                        .ok_or(RuntimeError::ModuleInstanceGone)?;
+                    let table_addr = module_inst
+                        .table_addrs
+                        .get(table_idx.0 as usize)
+                        .ok_or(RuntimeError::TableNotFound)?;
+
+                    let func_ref_option = table_addr.get_func_addr(i as usize);
+
+                    if let Some(func_addr) = func_ref_option {
+                        let actual_type = func_addr.func_type();
+                        let expected_type = &module_inst.types[type_idx.0 as usize];
+
+                        if actual_type != *expected_type {
+                            return Err(RuntimeError::IndirectCallTypeMismatch);
+                        }
+
+                        if self.enable_checkpoint {
+                            #[cfg(all(
+                                target_arch = "wasm32",
+                                target_os = "wasi",
+                                target_env = "p1",
+                                not(target_feature = "atomics")
+                            ))]
+                            {
+                                if migration::check_checkpoint_trigger(&self.frame)? {
+                                    return Ok(Err(RuntimeError::CheckpointRequested));
+                                }
+                            }
+                        }
+
+                        let params: Vec<Val> = param_slots
+                            .iter()
+                            .map(|slot| slot_file.get_val(slot))
+                            .collect();
+
+                        self.label_stack[current_label_stack_idx].ip = ip + 1;
+                        return Ok(Ok(Some(ModuleLevelInstr::InvokeSlot {
+                            func_addr,
+                            params,
+                            result_slots,
+                        })));
+                    } else {
+                        return Err(RuntimeError::UninitializedElement);
+                    }
+                }
+                ProcessedInstr::CallSlot {
+                    func_idx,
+                    param_slots,
+                    result_slots,
+                } => {
+                    let func_idx = *func_idx;
+                    let param_slots = param_slots.clone();
+                    let result_slots = result_slots.clone();
+
+                    let module_inst = self
+                        .frame
+                        .module
+                        .upgrade()
+                        .ok_or(RuntimeError::ModuleInstanceGone)?;
+
+                    let func_addr = module_inst
+                        .func_addrs
+                        .get(func_idx.0 as usize)
+                        .ok_or(RuntimeError::ExportFuncNotFound)?
+                        .clone();
+
+                    if self.enable_checkpoint {
+                        #[cfg(all(
+                            target_arch = "wasm32",
+                            target_os = "wasi",
+                            target_env = "p1",
+                            not(target_feature = "atomics")
+                        ))]
+                        {
+                            if migration::check_checkpoint_trigger(&self.frame)? {
+                                return Ok(Err(RuntimeError::CheckpointRequested));
+                            }
+                        }
+                    }
+
+                    // Read parameters from slots
+                    let params: Vec<Val> = param_slots
+                        .iter()
+                        .map(|slot| slot_file.get_val(slot))
+                        .collect();
+
+                    self.label_stack[current_label_stack_idx].ip = ip + 1;
+                    return Ok(Ok(Some(ModuleLevelInstr::InvokeSlot {
+                        func_addr,
+                        params,
+                        result_slots,
+                    })));
+                }
+                ProcessedInstr::ReturnSlot { result_slots } => {
+                    let results: Vec<Val> = result_slots
+                        .iter()
+                        .map(|slot| slot_file.get_val(slot))
+                        .collect();
+
+                    // Store results in global_value_stack for caller to receive
+                    self.global_value_stack.clear();
+                    self.global_value_stack.extend(results);
+
+                    return Ok(Ok(Some(ModuleLevelInstr::Return)));
+                }
                 ProcessedInstr::Legacy {
                     handler_index,
                     operand,
@@ -1366,22 +1543,72 @@ impl FrameStack {
                                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                                     return Ok(Ok(Some(ModuleLevelInstr::Invoke(func_addr))));
                                 }
+                                HandlerResult::CallIndirect {
+                                    type_idx,
+                                    table_idx,
+                                    index_slot,
+                                } => {
+                                    // Read index from slot_file
+                                    let i = slot_file.get_i32(index_slot.index());
+                                    let module_inst = self
+                                        .frame
+                                        .module
+                                        .upgrade()
+                                        .ok_or(RuntimeError::ModuleInstanceGone)?;
+                                    let table_addr = module_inst
+                                        .table_addrs
+                                        .get(table_idx.0 as usize)
+                                        .ok_or(RuntimeError::TableNotFound)?;
+
+                                    let func_ref_option = table_addr.get_func_addr(i as usize);
+
+                                    if let Some(func_addr) = func_ref_option {
+                                        let actual_type = func_addr.func_type();
+                                        let expected_type = &module_inst.types[type_idx.0 as usize];
+
+                                        if actual_type != *expected_type {
+                                            return Err(RuntimeError::IndirectCallTypeMismatch);
+                                        }
+
+                                        if self.enable_checkpoint {
+                                            #[cfg(all(
+                                                target_arch = "wasm32",
+                                                target_os = "wasi",
+                                                target_env = "p1",
+                                                not(target_feature = "atomics")
+                                            ))]
+                                            {
+                                                if migration::check_checkpoint_trigger(&self.frame)?
+                                                {
+                                                    return Ok(Err(
+                                                        RuntimeError::CheckpointRequested,
+                                                    ));
+                                                }
+                                            }
+                                        }
+
+                                        self.label_stack[current_label_stack_idx].ip = ip + 1;
+                                        return Ok(Ok(Some(ModuleLevelInstr::Invoke(func_addr))));
+                                    } else {
+                                        return Err(RuntimeError::UninitializedElement);
+                                    }
+                                }
                                 HandlerResult::Branch {
                                     target_ip,
-                                    values_to_push,
                                     branch_depth,
+                                    source_slots,
+                                    target_result_slots,
                                 } => {
-                                    // Use the branch depth directly from the Branch result
+                                    // Copy values from source slots to target result slots
+                                    if !source_slots.is_empty() && !target_result_slots.is_empty() {
+                                        slot_file.copy_slots(&source_slots, &target_result_slots);
+                                    }
+
                                     // Calculate target label stack index from current position and branch depth
                                     // Branch depth 0 = current block, 1 = parent block, etc.
                                     if branch_depth <= current_label_stack_idx {
                                         let target_depth = current_label_stack_idx - branch_depth;
                                         let target_level = target_depth + 1;
-
-                                        let current_label_stack =
-                                            &self.label_stack[current_label_stack_idx];
-                                        let current_stack_height =
-                                            current_label_stack.label.stack_height;
 
                                         // For branch depth 0, we need to exit the current block
                                         if branch_depth == 0 {
@@ -1409,44 +1636,118 @@ impl FrameStack {
 
                                         let target_label_stack =
                                             &mut self.label_stack[current_label_stack_idx];
-
-                                        let stack_height = if branch_depth == 0 {
-                                            current_stack_height
-                                        } else {
-                                            target_label_stack.label.stack_height
-                                        };
-
-                                        let current_len = self.global_value_stack.len();
-                                        let actual_height = stack_height.min(current_len);
-                                        self.global_value_stack
-                                            .splice(actual_height.., values_to_push);
-
-                                        // Apply the End instruction's stack_to_slots if in slot mode
-                                        // The End instruction is at target_ip - 1 (since target_ip = End_IP + 1)
-                                        if let Some(end_instr) =
-                                            target_ip.checked_sub(1).and_then(|ip| {
-                                                self.label_stack[current_label_stack_idx]
-                                                    .processed_instrs
-                                                    .get(ip)
-                                            })
+                                        target_label_stack.ip = target_ip;
+                                    } else {
+                                        return Err(RuntimeError::InvalidBranchTarget);
+                                    }
+                                    continue;
+                                }
+                                HandlerResult::BranchConditional {
+                                    target_ip,
+                                    branch_depth,
+                                    source_slots,
+                                    target_result_slots,
+                                    condition_slot,
+                                    next_ip,
+                                } => {
+                                    // Read condition from slot_file
+                                    let cond = slot_file.get_i32(condition_slot.index());
+                                    if cond != 0 {
+                                        // Take the branch
+                                        if !source_slots.is_empty()
+                                            && !target_result_slots.is_empty()
                                         {
-                                            if let ProcessedInstr::Legacy {
-                                                stack_to_slots, ..
-                                            } = end_instr
-                                            {
-                                                let consumed = slot_file.write_from_stack(
-                                                    stack_to_slots,
-                                                    &self.global_value_stack,
-                                                );
-                                                self.global_value_stack.truncate(
-                                                    self.global_value_stack.len() - consumed,
-                                                );
+                                            slot_file
+                                                .copy_slots(&source_slots, &target_result_slots);
+                                        }
+
+                                        if branch_depth <= current_label_stack_idx {
+                                            let target_level =
+                                                current_label_stack_idx - branch_depth + 1;
+
+                                            if branch_depth == 0 {
+                                                self.label_stack.pop();
+                                                if self.label_stack.len() > 0 {
+                                                    current_label_stack_idx =
+                                                        self.label_stack.len() - 1;
+                                                } else {
+                                                    return Err(RuntimeError::StackError(
+                                                        "Label stack underflow during branch",
+                                                    ));
+                                                }
+                                            } else {
+                                                self.label_stack.truncate(target_level);
+                                                if self.label_stack.len() > 0 {
+                                                    current_label_stack_idx =
+                                                        self.label_stack.len() - 1;
+                                                } else {
+                                                    return Err(RuntimeError::StackError(
+                                                        "Label stack underflow during branch",
+                                                    ));
+                                                }
+                                            }
+
+                                            self.label_stack[current_label_stack_idx].ip =
+                                                target_ip;
+                                        } else {
+                                            return Err(RuntimeError::InvalidBranchTarget);
+                                        }
+                                    } else {
+                                        // Don't take the branch
+                                        self.label_stack[current_label_stack_idx].ip = next_ip;
+                                    }
+                                    continue;
+                                }
+                                HandlerResult::BranchTable {
+                                    targets,
+                                    default,
+                                    index_slot,
+                                } => {
+                                    // Read index from slot_file
+                                    let idx = slot_file.get_i32(index_slot.index()) as usize;
+
+                                    let (
+                                        target_ip,
+                                        branch_depth,
+                                        source_slots,
+                                        target_result_slots,
+                                    ) = if idx < targets.len() {
+                                        targets[idx].clone()
+                                    } else {
+                                        default
+                                    };
+
+                                    if !source_slots.is_empty() && !target_result_slots.is_empty() {
+                                        slot_file.copy_slots(&source_slots, &target_result_slots);
+                                    }
+
+                                    if branch_depth <= current_label_stack_idx {
+                                        let target_level =
+                                            current_label_stack_idx - branch_depth + 1;
+
+                                        if branch_depth == 0 {
+                                            self.label_stack.pop();
+                                            if self.label_stack.len() > 0 {
+                                                current_label_stack_idx =
+                                                    self.label_stack.len() - 1;
+                                            } else {
+                                                return Err(RuntimeError::StackError(
+                                                    "Label stack underflow during branch",
+                                                ));
+                                            }
+                                        } else {
+                                            self.label_stack.truncate(target_level);
+                                            if self.label_stack.len() > 0 {
+                                                current_label_stack_idx =
+                                                    self.label_stack.len() - 1;
+                                            } else {
+                                                return Err(RuntimeError::StackError(
+                                                    "Label stack underflow during branch",
+                                                ));
                                             }
                                         }
 
-                                        let target_label_stack =
-                                            &mut self.label_stack[current_label_stack_idx];
-                                        target_label_stack.ip = target_ip;
+                                        self.label_stack[current_label_stack_idx].ip = target_ip;
                                     } else {
                                         return Err(RuntimeError::InvalidBranchTarget);
                                     }
@@ -1466,132 +1767,28 @@ impl FrameStack {
                                     self.label_stack.push(new_label_stack);
                                     current_label_stack_idx = self.label_stack.len() - 1;
                                 }
-                                HandlerResult::PopLabelStack { next_ip } => {
+                                HandlerResult::PopLabelStack {
+                                    next_ip,
+                                    source_slots: end_source_slots,
+                                    target_result_slots: end_target_result_slots,
+                                } => {
                                     // Pop the current label stack when ending a block/loop
                                     if self.label_stack.len() > 1 {
-                                        // Extract values before mutating
-                                        let (stack_height, arity) = {
-                                            let current_label =
-                                                &self.label_stack[current_label_stack_idx].label;
-                                            (current_label.stack_height, current_label.arity)
-                                        };
-
-                                        // Extract the result values from global stack
-                                        // For internal blocks, always use value_stack (slot_file.result_slot is for function return)
-                                        let result_values = if arity > 0 {
-                                            if self.global_value_stack.len() >= arity {
-                                                let start_idx =
-                                                    self.global_value_stack.len() - arity;
-                                                self.global_value_stack[start_idx..].to_vec()
-                                            } else {
-                                                // Not enough values on stack for the required arity
-                                                if self.global_value_stack.len() > stack_height {
-                                                    self.global_value_stack[stack_height..].to_vec()
-                                                } else {
-                                                    Vec::new()
-                                                }
-                                            }
-                                        } else {
-                                            Vec::new()
-                                        };
-
-                                        // Restore the global stack to the entry state
-                                        if arity == 0 && result_values.is_empty() {
-                                            // For void blocks (arity=0) with no results, preserve the current stack state
-                                        } else {
-                                            // Normal case: restore to entry state and add result values
-                                            let correct_stack_height = if arity > 0
-                                                && self.global_value_stack.len() >= arity
-                                            {
-                                                self.global_value_stack.len() - arity
-                                            } else {
-                                                stack_height
-                                            };
-
-                                            let current_len = self.global_value_stack.len();
-                                            let actual_height =
-                                                correct_stack_height.min(current_len);
-                                            self.global_value_stack
-                                                .splice(actual_height.., result_values);
+                                        // Copy slots directly (slot-based execution)
+                                        if !end_source_slots.is_empty()
+                                            && !end_target_result_slots.is_empty()
+                                        {
+                                            slot_file.copy_slots(
+                                                &end_source_slots,
+                                                &end_target_result_slots,
+                                            );
                                         }
 
                                         self.label_stack.pop();
                                         current_label_stack_idx = self.label_stack.len() - 1;
                                         self.label_stack[current_label_stack_idx].ip = next_ip;
-
-                                        // Write back results to slot_file if specified (for End instructions)
-                                        if !stack_to_slots.is_empty() {
-                                            let stack_len = self.global_value_stack.len();
-                                            let slot_count = stack_to_slots.len();
-                                            // Peek values from value_stack and write to slots
-                                            for (i, slot) in stack_to_slots.iter().enumerate() {
-                                                let val = &self.global_value_stack
-                                                    [stack_len - slot_count + i];
-                                                match slot {
-                                                    crate::execution::slots::Slot::I32(idx) => {
-                                                        slot_file.set_i32(
-                                                            *idx,
-                                                            val.to_i32().unwrap_or(0),
-                                                        );
-                                                    }
-                                                    crate::execution::slots::Slot::I64(idx) => {
-                                                        slot_file.set_i64(
-                                                            *idx,
-                                                            val.to_i64().unwrap_or(0),
-                                                        );
-                                                    }
-                                                    crate::execution::slots::Slot::F32(idx) => {
-                                                        slot_file.set_f32(
-                                                            *idx,
-                                                            val.to_f32().unwrap_or(0.0),
-                                                        );
-                                                    }
-                                                    crate::execution::slots::Slot::F64(idx) => {
-                                                        slot_file.set_f64(
-                                                            *idx,
-                                                            val.to_f64().unwrap_or(0.0),
-                                                        );
-                                                    }
-                                                    crate::execution::slots::Slot::Ref(idx) => {
-                                                        if let Val::Ref(r) = val {
-                                                            slot_file.set_ref(*idx, r.clone());
-                                                        }
-                                                    }
-                                                    crate::execution::slots::Slot::V128(_) => {}
-                                                }
-                                            }
-                                            // Remove values from value_stack (slots_to_stack will handle pushing when needed)
-                                            self.global_value_stack
-                                                .truncate(stack_len - slot_count);
-                                        }
                                     } else {
-                                        let current_label =
-                                            &self.label_stack[current_label_stack_idx].label;
-                                        let function_arity = current_label.arity;
-
-                                        // Extract the function result values from value_stack or slot_file
-                                        if function_arity > 0 {
-                                            if self.global_value_stack.len() >= function_arity {
-                                                // Use value_stack (may contain result from br jump)
-                                                let start_idx =
-                                                    self.global_value_stack.len() - function_arity;
-                                                let result_values =
-                                                    self.global_value_stack[start_idx..].to_vec();
-                                                self.global_value_stack.clear();
-                                                self.global_value_stack.extend(result_values);
-                                            } else if let Some(ref result_slot) =
-                                                self.frame.result_slot
-                                            {
-                                                // Slot mode fallback: read result from specified slot
-                                                let result_val = slot_file.get_val(result_slot);
-                                                self.global_value_stack.clear();
-                                                self.global_value_stack.push(result_val);
-                                            } else {
-                                                return Err(RuntimeError::ValueStackUnderflow);
-                                            }
-                                        } else {
-                                            // If arity is 0, keep the stack as is
-                                        };
+                                        // Function level end - just break
                                         break;
                                     }
                                 }
@@ -2059,10 +2256,7 @@ fn handle_if(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
     let cond = cond_val.to_i32()?;
 
     if let &Operand::LabelIdx {
-        target_ip,
-        arity,
-        original_wasm_depth: _,
-        is_loop: _,
+        target_ip, arity, ..
     } = operand
     {
         if target_ip == usize::MAX {
@@ -2093,13 +2287,7 @@ fn handle_else(
     _ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    if let &Operand::LabelIdx {
-        target_ip,
-        arity: _,
-        original_wasm_depth: _,
-        is_loop: _,
-    } = operand
-    {
+    if let &Operand::LabelIdx { target_ip, .. } = operand {
         if target_ip == usize::MAX {
             return Err(RuntimeError::ExecutionFailed(
                 "Branch fixup not done for Else",
@@ -2113,19 +2301,33 @@ fn handle_else(
 
 fn handle_end(
     ctx: &mut ExecutionContext,
-    _operand: &Operand,
+    operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
+    // Extract source_slots and target_result_slots from operand if available
+    let (source_slots, target_result_slots) = if let Operand::LabelIdx {
+        source_slots,
+        target_result_slots,
+        ..
+    } = operand
+    {
+        (source_slots.clone(), target_result_slots.clone())
+    } else {
+        (vec![], vec![])
+    };
     Ok(HandlerResult::PopLabelStack {
         next_ip: ctx.ip + 1,
+        source_slots,
+        target_result_slots,
     })
 }
 
 fn handle_br(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerResult, RuntimeError> {
     if let Operand::LabelIdx {
         target_ip,
-        arity,
         original_wasm_depth,
-        is_loop: _,
+        source_slots,
+        target_result_slots,
+        ..
     } = operand
     {
         if *target_ip == usize::MAX {
@@ -2134,12 +2336,11 @@ fn handle_br(ctx: &mut ExecutionContext, operand: &Operand) -> Result<HandlerRes
             ));
         }
 
-        let values_to_push = ctx.pop_n_values(*arity)?;
-
         Ok(HandlerResult::Branch {
             target_ip: *target_ip,
-            values_to_push,
             branch_depth: *original_wasm_depth,
+            source_slots: source_slots.clone(),
+            target_result_slots: target_result_slots.clone(),
         })
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -2150,38 +2351,52 @@ fn handle_br_if(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    let cond_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let cond = cond_val.to_i32()?;
+    if let Operand::LabelIdx {
+        target_ip,
+        original_wasm_depth,
+        source_slots,
+        target_result_slots,
+        condition_slot,
+        ..
+    } = operand
+    {
+        if *target_ip == usize::MAX {
+            return Err(RuntimeError::ExecutionFailed(
+                "Branch fixup not done for BrIf",
+            ));
+        }
 
-    if cond != 0 {
-        if let Operand::LabelIdx {
-            target_ip,
-            arity,
-            original_wasm_depth,
-            is_loop: _,
-        } = operand
-        {
-            if *target_ip == usize::MAX {
-                return Err(RuntimeError::ExecutionFailed(
-                    "Branch fixup not done for BrIf",
-                ));
-            }
-
-            let values_to_push = ctx.pop_n_values(*arity)?;
-
-            Ok(HandlerResult::Branch {
+        if let Some(cond_slot) = condition_slot {
+            // Slot-based: return BranchConditional, condition will be read in run_dtc_loop
+            Ok(HandlerResult::BranchConditional {
                 target_ip: *target_ip,
-                values_to_push,
                 branch_depth: *original_wasm_depth,
+                source_slots: source_slots.clone(),
+                target_result_slots: target_result_slots.clone(),
+                condition_slot: *cond_slot,
+                next_ip: ctx.ip + 1,
             })
         } else {
-            Err(RuntimeError::InvalidOperand)
+            // Legacy fallback: read from value_stack
+            let cond_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let cond = cond_val.to_i32()?;
+
+            if cond != 0 {
+                Ok(HandlerResult::Branch {
+                    target_ip: *target_ip,
+                    branch_depth: *original_wasm_depth,
+                    source_slots: source_slots.clone(),
+                    target_result_slots: target_result_slots.clone(),
+                })
+            } else {
+                Ok(HandlerResult::Continue(ctx.ip + 1))
+            }
         }
     } else {
-        Ok(HandlerResult::Continue(ctx.ip + 1))
+        Err(RuntimeError::InvalidOperand)
     }
 }
 
@@ -3910,47 +4125,93 @@ fn handle_br_table(
     ctx: &mut ExecutionContext,
     operand: &Operand,
 ) -> Result<HandlerResult, RuntimeError> {
-    // First pop the index
-    let i_val = ctx
-        .value_stack
-        .pop()
-        .ok_or(RuntimeError::ValueStackUnderflow)?;
-    let i = i_val.to_i32()?;
-
-    if let Operand::BrTable { targets, default } = operand {
-        let chosen_operand = if let Some(target_operand) = targets.get(i as usize) {
-            target_operand
-        } else {
-            default
-        };
-
-        if let Operand::LabelIdx {
-            target_ip,
-            arity,
-            original_wasm_depth,
-            is_loop: _,
-        } = chosen_operand
-        {
-            if *target_ip == usize::MAX {
-                return Err(RuntimeError::ExecutionFailed(
-                    "Branch fixup not done for BrTable target",
-                ));
+    if let Operand::BrTable {
+        targets,
+        default,
+        index_slot,
+    } = operand
+    {
+        if let Some(idx_slot) = index_slot {
+            // Slot-based: return BranchTable, index will be read in run_dtc_loop
+            let mut target_vec = Vec::with_capacity(targets.len());
+            for target in targets {
+                if let Operand::LabelIdx {
+                    target_ip,
+                    original_wasm_depth,
+                    source_slots,
+                    target_result_slots,
+                    ..
+                } = target
+                {
+                    target_vec.push((
+                        *target_ip,
+                        *original_wasm_depth,
+                        source_slots.clone(),
+                        target_result_slots.clone(),
+                    ));
+                }
             }
 
-            // Then pop the values needed for the branch target
-            let values_to_push = if *arity > 0 {
-                ctx.pop_n_values(*arity)?
+            let default_tuple = if let Operand::LabelIdx {
+                target_ip,
+                original_wasm_depth,
+                source_slots,
+                target_result_slots,
+                ..
+            } = default.as_ref()
+            {
+                (
+                    *target_ip,
+                    *original_wasm_depth,
+                    source_slots.clone(),
+                    target_result_slots.clone(),
+                )
             } else {
-                Vec::new()
+                return Err(RuntimeError::InvalidOperand);
             };
 
-            Ok(HandlerResult::Branch {
-                target_ip: *target_ip,
-                values_to_push,
-                branch_depth: *original_wasm_depth,
+            Ok(HandlerResult::BranchTable {
+                targets: target_vec,
+                default: default_tuple,
+                index_slot: *idx_slot,
             })
         } else {
-            Err(RuntimeError::InvalidOperand)
+            // Legacy fallback: read from value_stack
+            let i_val = ctx
+                .value_stack
+                .pop()
+                .ok_or(RuntimeError::ValueStackUnderflow)?;
+            let i = i_val.to_i32()?;
+
+            let chosen_operand = if let Some(target_operand) = targets.get(i as usize) {
+                target_operand
+            } else {
+                default
+            };
+
+            if let Operand::LabelIdx {
+                target_ip,
+                original_wasm_depth,
+                source_slots,
+                target_result_slots,
+                ..
+            } = chosen_operand
+            {
+                if *target_ip == usize::MAX {
+                    return Err(RuntimeError::ExecutionFailed(
+                        "Branch fixup not done for BrTable target",
+                    ));
+                }
+
+                Ok(HandlerResult::Branch {
+                    target_ip: *target_ip,
+                    branch_depth: *original_wasm_depth,
+                    source_slots: source_slots.clone(),
+                    target_result_slots: target_result_slots.clone(),
+                })
+            } else {
+                Err(RuntimeError::InvalidOperand)
+            }
         }
     } else {
         Err(RuntimeError::InvalidOperand)
@@ -3964,8 +4225,19 @@ fn handle_call_indirect(
     if let Operand::CallIndirect {
         type_idx: expected_type_idx,
         table_idx,
+        index_slot,
     } = operand
     {
+        // If index_slot is available, use CallIndirect to read from slot_file in run_dtc_loop
+        if let Some(slot) = index_slot {
+            return Ok(HandlerResult::CallIndirect {
+                type_idx: expected_type_idx.clone(),
+                table_idx: table_idx.clone(),
+                index_slot: *slot,
+            });
+        }
+
+        // Legacy path: read index from value_stack
         let i_val = ctx
             .value_stack
             .pop()

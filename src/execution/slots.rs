@@ -250,6 +250,44 @@ impl SlotFile {
         self.v128_slots[offset + slot as usize] = val;
     }
 
+    #[inline(always)]
+    pub fn copy_slot(&mut self, src: &Slot, dst: &Slot) {
+        match (src, dst) {
+            (Slot::I32(src_idx), Slot::I32(dst_idx)) => {
+                let val = self.get_i32(*src_idx);
+                self.set_i32(*dst_idx, val);
+            }
+            (Slot::I64(src_idx), Slot::I64(dst_idx)) => {
+                let val = self.get_i64(*src_idx);
+                self.set_i64(*dst_idx, val);
+            }
+            (Slot::F32(src_idx), Slot::F32(dst_idx)) => {
+                let val = self.get_f32(*src_idx);
+                self.set_f32(*dst_idx, val);
+            }
+            (Slot::F64(src_idx), Slot::F64(dst_idx)) => {
+                let val = self.get_f64(*src_idx);
+                self.set_f64(*dst_idx, val);
+            }
+            (Slot::Ref(src_idx), Slot::Ref(dst_idx)) => {
+                let val = self.get_ref(*src_idx);
+                self.set_ref(*dst_idx, val);
+            }
+            (Slot::V128(src_idx), Slot::V128(dst_idx)) => {
+                let val = self.get_v128(*src_idx);
+                self.set_v128(*dst_idx, val);
+            }
+            _ => {}
+        }
+    }
+
+    #[inline]
+    pub fn copy_slots(&mut self, src_slots: &[Slot], dst_slots: &[Slot]) {
+        for (src, dst) in src_slots.iter().zip(dst_slots.iter()) {
+            self.copy_slot(src, dst);
+        }
+    }
+
     /// Get i32 slots slice for current frame
     #[inline(always)]
     pub fn get_i32_slots(&mut self) -> &mut [i32] {
@@ -461,6 +499,71 @@ impl SlotAllocator {
         slot
     }
 
+    /// Reserve a slot without adding to stack_order
+    pub fn reserve(&mut self, vtype: ValueType) -> Slot {
+        match vtype {
+            ValueType::NumType(NumType::I32) => {
+                let slot = Slot::I32(self.i32_depth as u16);
+                self.i32_depth += 1;
+                self.max_i32_depth = self.max_i32_depth.max(self.i32_depth);
+                slot
+            }
+            ValueType::NumType(NumType::I64) => {
+                let slot = Slot::I64(self.i64_depth as u16);
+                self.i64_depth += 1;
+                self.max_i64_depth = self.max_i64_depth.max(self.i64_depth);
+                slot
+            }
+            ValueType::NumType(NumType::F32) => {
+                let slot = Slot::F32(self.f32_depth as u16);
+                self.f32_depth += 1;
+                self.max_f32_depth = self.max_f32_depth.max(self.f32_depth);
+                slot
+            }
+            ValueType::NumType(NumType::F64) => {
+                let slot = Slot::F64(self.f64_depth as u16);
+                self.f64_depth += 1;
+                self.max_f64_depth = self.max_f64_depth.max(self.f64_depth);
+                slot
+            }
+            ValueType::RefType(_) => {
+                let slot = Slot::Ref(self.ref_depth as u16);
+                self.ref_depth += 1;
+                self.max_ref_depth = self.max_ref_depth.max(self.ref_depth);
+                slot
+            }
+            ValueType::VecType(_) => {
+                let slot = Slot::V128(self.v128_depth as u16);
+                self.v128_depth += 1;
+                self.max_v128_depth = self.max_v128_depth.max(self.v128_depth);
+                slot
+            }
+        }
+    }
+
+    pub fn free(&mut self, vtype: &ValueType) {
+        match vtype {
+            ValueType::NumType(NumType::I32) => {
+                self.i32_depth = self.i32_depth.saturating_sub(1);
+            }
+            ValueType::NumType(NumType::I64) => {
+                self.i64_depth = self.i64_depth.saturating_sub(1);
+            }
+            ValueType::NumType(NumType::F32) => {
+                self.f32_depth = self.f32_depth.saturating_sub(1);
+            }
+            ValueType::NumType(NumType::F64) => {
+                self.f64_depth = self.f64_depth.saturating_sub(1);
+            }
+            ValueType::RefType(_) => {
+                self.ref_depth = self.ref_depth.saturating_sub(1);
+            }
+            ValueType::VecType(_) => {
+                self.v128_depth = self.v128_depth.saturating_sub(1);
+            }
+        }
+    }
+
     /// Pop a value from the stack (decrease depth and return the slot)
     pub fn pop(&mut self, vtype: &ValueType) -> Slot {
         // Remove from stack order tracking
@@ -612,4 +715,55 @@ pub struct SlotAllocatorState {
     pub ref_depth: usize,
     pub v128_depth: usize,
     pub stack_order_len: usize,
+}
+
+impl SlotAllocatorState {
+    /// Get slot at entry_depth for given type
+    /// Used to determine result_slots at block entry
+    pub fn slot_for_type(&self, vtype: &ValueType) -> Slot {
+        match vtype {
+            ValueType::NumType(NumType::I32) => Slot::I32(self.i32_depth as u16),
+            ValueType::NumType(NumType::I64) => Slot::I64(self.i64_depth as u16),
+            ValueType::NumType(NumType::F32) => Slot::F32(self.f32_depth as u16),
+            ValueType::NumType(NumType::F64) => Slot::F64(self.f64_depth as u16),
+            ValueType::RefType(_) => Slot::Ref(self.ref_depth as u16),
+            ValueType::VecType(_) => Slot::V128(self.v128_depth as u16),
+        }
+    }
+
+    /// Increment depth for a type and return the slot at that position
+    pub fn next_slot_for_type(&mut self, vtype: &ValueType) -> Slot {
+        match vtype {
+            ValueType::NumType(NumType::I32) => {
+                let slot = Slot::I32(self.i32_depth as u16);
+                self.i32_depth += 1;
+                slot
+            }
+            ValueType::NumType(NumType::I64) => {
+                let slot = Slot::I64(self.i64_depth as u16);
+                self.i64_depth += 1;
+                slot
+            }
+            ValueType::NumType(NumType::F32) => {
+                let slot = Slot::F32(self.f32_depth as u16);
+                self.f32_depth += 1;
+                slot
+            }
+            ValueType::NumType(NumType::F64) => {
+                let slot = Slot::F64(self.f64_depth as u16);
+                self.f64_depth += 1;
+                slot
+            }
+            ValueType::RefType(_) => {
+                let slot = Slot::Ref(self.ref_depth as u16);
+                self.ref_depth += 1;
+                slot
+            }
+            ValueType::VecType(_) => {
+                let slot = Slot::V128(self.v128_depth as u16);
+                self.v128_depth += 1;
+                slot
+            }
+        }
+    }
 }
