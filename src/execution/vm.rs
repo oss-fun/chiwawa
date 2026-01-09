@@ -340,6 +340,49 @@ pub enum ProcessedInstr {
     ReturnSlot {
         result_slots: Vec<Slot>, // Result slots to return
     },
+    /// Unconditional jump (for Else)
+    JumpSlot { target_ip: usize },
+    /// Block/Loop control structure
+    BlockSlot {
+        arity: usize,
+        param_count: usize,
+        is_loop: bool,
+    },
+    /// If control structure
+    IfSlot {
+        arity: usize,
+        condition_slot: Slot,
+        else_target_ip: usize, // Jump target if condition is false (else or end)
+        has_else: bool,        // True if this if has an else branch
+    },
+    /// End of block/loop/if
+    EndSlot {
+        source_slots: Vec<Slot>,
+        target_result_slots: Vec<Slot>,
+    },
+    /// Unconditional branch
+    BrSlot {
+        relative_depth: u32,
+        target_ip: usize, // Target instruction pointer (set by fixup)
+        source_slots: Vec<Slot>,
+        target_result_slots: Vec<Slot>,
+    },
+    /// Conditional branch
+    BrIfSlot {
+        relative_depth: u32,
+        target_ip: usize, // Target instruction pointer (set by fixup)
+        condition_slot: Slot,
+        source_slots: Vec<Slot>,
+        target_result_slots: Vec<Slot>,
+    },
+    /// Branch table
+    BrTableSlot {
+        targets: Vec<(u32, usize)>,     // (relative_depth, target_ip) pairs
+        default_target: (u32, usize),   // (relative_depth, target_ip) for default
+        index_slot: Slot,               // Index slot
+        source_slots: Vec<Slot>,        // Source slots (same for all targets for now)
+        target_result_slots: Vec<Slot>, // Target slots (for default target)
+    },
 }
 
 impl ProcessedInstr {
@@ -365,6 +408,14 @@ impl ProcessedInstr {
             ProcessedInstr::CallIndirectSlot { .. } => HANDLER_IDX_CALL_INDIRECT,
             ProcessedInstr::CallSlot { .. } => HANDLER_IDX_CALL,
             ProcessedInstr::ReturnSlot { .. } => HANDLER_IDX_RETURN,
+            ProcessedInstr::JumpSlot { .. } => HANDLER_IDX_ELSE,
+            ProcessedInstr::BlockSlot { is_loop: false, .. } => HANDLER_IDX_BLOCK,
+            ProcessedInstr::BlockSlot { is_loop: true, .. } => HANDLER_IDX_LOOP,
+            ProcessedInstr::IfSlot { .. } => HANDLER_IDX_IF,
+            ProcessedInstr::EndSlot { .. } => HANDLER_IDX_END,
+            ProcessedInstr::BrSlot { .. } => HANDLER_IDX_BR,
+            ProcessedInstr::BrIfSlot { .. } => HANDLER_IDX_BR_IF,
+            ProcessedInstr::BrTableSlot { .. } => HANDLER_IDX_BR_TABLE,
         }
     }
 
@@ -1456,6 +1507,244 @@ impl FrameStack {
 
                     return Ok(Ok(Some(ModuleLevelInstr::Return)));
                 }
+                ProcessedInstr::JumpSlot { target_ip } => {
+                    let target_ip = *target_ip;
+                    if self.label_stack.len() > 1 {
+                        self.label_stack.pop();
+                        current_label_stack_idx = self.label_stack.len() - 1;
+                    }
+                    self.label_stack[current_label_stack_idx].ip = target_ip;
+                    continue;
+                }
+                ProcessedInstr::BlockSlot {
+                    arity,
+                    param_count,
+                    is_loop,
+                } => {
+                    // Push a new label for Block/Loop
+                    let label = Label {
+                        locals_num: *param_count,
+                        arity: *arity,
+                        is_loop: *is_loop,
+                        stack_height: 0, // Not used in slot mode
+                        return_ip: ip + 1,
+                    };
+                    let current_instrs = self.label_stack[current_label_stack_idx]
+                        .processed_instrs
+                        .clone();
+                    self.label_stack.push(LabelStack {
+                        label,
+                        processed_instrs: current_instrs,
+                        ip: ip + 1,
+                        value_stack: Vec::new(),
+                    });
+                    current_label_stack_idx = self.label_stack.len() - 1;
+                    continue;
+                }
+                ProcessedInstr::IfSlot {
+                    arity,
+                    condition_slot,
+                    else_target_ip,
+                    has_else,
+                } => {
+                    let arity = *arity;
+                    let condition_slot = *condition_slot;
+                    let else_target_ip = *else_target_ip;
+                    let has_else = *has_else;
+
+                    // Read condition from slot
+                    let cond = slot_file.get_i32(condition_slot.index());
+
+                    let current_instrs = self.label_stack[current_label_stack_idx]
+                        .processed_instrs
+                        .clone();
+
+                    if cond != 0 {
+                        // Condition true: execute then branch
+                        // Push a new label for If
+                        let label = Label {
+                            locals_num: 0,
+                            arity,
+                            is_loop: false,
+                            stack_height: 0, // Not used in slot mode
+                            return_ip: else_target_ip,
+                        };
+
+                        self.label_stack.push(LabelStack {
+                            label,
+                            processed_instrs: current_instrs,
+                            ip: ip + 1,
+                            value_stack: Vec::new(),
+                        });
+                        current_label_stack_idx = self.label_stack.len() - 1;
+                    } else if has_else {
+                        // Condition false with else: push label stack and execute else branch
+                        let label = Label {
+                            locals_num: 0,
+                            arity,
+                            is_loop: false,
+                            stack_height: 0,
+                            return_ip: else_target_ip,
+                        };
+
+                        self.label_stack.push(LabelStack {
+                            label,
+                            processed_instrs: current_instrs,
+                            ip: else_target_ip,
+                            value_stack: Vec::new(),
+                        });
+                        current_label_stack_idx = self.label_stack.len() - 1;
+                    } else {
+                        // Condition false without else: skip the entire if, no label stack push
+                        self.label_stack[current_label_stack_idx].ip = else_target_ip;
+                    }
+                    continue;
+                }
+                ProcessedInstr::EndSlot {
+                    source_slots,
+                    target_result_slots,
+                } => {
+                    let source_slots = source_slots.clone();
+                    let target_result_slots = target_result_slots.clone();
+
+                    // Pop label stack
+                    if self.label_stack.len() > 1 {
+                        // Block/Loop/If level end: copy results to target slots
+                        slot_file.copy_slots(&source_slots, &target_result_slots);
+                        self.label_stack.pop();
+                        current_label_stack_idx = self.label_stack.len() - 1;
+                        // Set parent's ip to continue after the End instruction
+                        self.label_stack[current_label_stack_idx].ip = ip + 1;
+                    } else {
+                        // Function level end: copy results to global_value_stack for return
+                        self.global_value_stack.clear();
+                        for slot in source_slots.iter() {
+                            let val = slot_file.get_val(slot);
+                            self.global_value_stack.push(val);
+                        }
+                        break;
+                    }
+                    continue;
+                }
+                ProcessedInstr::BrSlot {
+                    relative_depth,
+                    target_ip,
+                    source_slots,
+                    target_result_slots,
+                } => {
+                    let relative_depth = *relative_depth as usize;
+                    let target_ip = *target_ip;
+                    let source_slots = source_slots.clone();
+                    let target_result_slots = target_result_slots.clone();
+
+                    if !source_slots.is_empty() && !target_result_slots.is_empty() {
+                        slot_file.copy_slots(&source_slots, &target_result_slots);
+                    }
+
+                    // Branch: exit (relative_depth + 1) blocks
+                    if relative_depth <= current_label_stack_idx {
+                        let target_level = current_label_stack_idx - relative_depth;
+                        self.label_stack.truncate(target_level);
+                        current_label_stack_idx = if self.label_stack.is_empty() {
+                            break;
+                        } else {
+                            self.label_stack.len() - 1
+                        };
+
+                        // Set IP to target (already computed by fixup)
+                        self.label_stack[current_label_stack_idx].ip = target_ip;
+                    } else {
+                        // Branch to function level - return
+                        break;
+                    }
+                    continue;
+                }
+                ProcessedInstr::BrIfSlot {
+                    relative_depth,
+                    target_ip,
+                    condition_slot,
+                    source_slots,
+                    target_result_slots,
+                } => {
+                    let relative_depth = *relative_depth as usize;
+                    let target_ip = *target_ip;
+                    let condition_slot = *condition_slot;
+                    let source_slots = source_slots.clone();
+                    let target_result_slots = target_result_slots.clone();
+
+                    // Read condition from slot
+                    let cond = slot_file.get_i32(condition_slot.index());
+
+                    if cond != 0 {
+                        // Take the branch
+                        if !source_slots.is_empty() && !target_result_slots.is_empty() {
+                            slot_file.copy_slots(&source_slots, &target_result_slots);
+                        }
+
+                        if relative_depth <= current_label_stack_idx {
+                            let target_level = current_label_stack_idx - relative_depth;
+                            self.label_stack.truncate(target_level);
+                            current_label_stack_idx = if self.label_stack.is_empty() {
+                                break;
+                            } else {
+                                self.label_stack.len() - 1
+                            };
+
+                            // Set IP to target (already computed by fixup)
+                            self.label_stack[current_label_stack_idx].ip = target_ip;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        self.label_stack[current_label_stack_idx].ip = ip + 1;
+                    }
+                    continue;
+                }
+                ProcessedInstr::BrTableSlot {
+                    targets,
+                    default_target,
+                    index_slot,
+                    source_slots,
+                    target_result_slots,
+                } => {
+                    let targets = targets.clone();
+                    let default_target = *default_target;
+                    let index_slot = *index_slot;
+                    let source_slots = source_slots.clone();
+                    let target_result_slots = target_result_slots.clone();
+
+                    // Read index from slot
+                    let idx = slot_file.get_i32(index_slot.index()) as usize;
+
+                    // Select target (relative_depth, target_ip) pair
+                    let (relative_depth, target_ip) = if idx < targets.len() {
+                        targets[idx]
+                    } else {
+                        default_target
+                    };
+                    let relative_depth = relative_depth as usize;
+
+                    if !source_slots.is_empty() && !target_result_slots.is_empty() {
+                        slot_file.copy_slots(&source_slots, &target_result_slots);
+                    }
+
+                    // Branch
+                    if relative_depth <= current_label_stack_idx {
+                        let target_level = current_label_stack_idx - relative_depth;
+                        self.label_stack.truncate(target_level);
+                        current_label_stack_idx = if self.label_stack.is_empty() {
+                            break;
+                        } else {
+                            self.label_stack.len() - 1
+                        };
+
+                        // Set IP to target (already computed by fixup)
+                        self.label_stack[current_label_stack_idx].ip = target_ip;
+                    } else {
+                        break;
+                    }
+                    continue;
+                }
                 ProcessedInstr::Legacy {
                     handler_index,
                     operand,
@@ -1606,33 +1895,20 @@ impl FrameStack {
 
                                     // Calculate target label stack index from current position and branch depth
                                     // Branch depth 0 = current block, 1 = parent block, etc.
+                                    // br N exits N+1 blocks (current block + N ancestors)
                                     if branch_depth <= current_label_stack_idx {
-                                        let target_depth = current_label_stack_idx - branch_depth;
-                                        let target_level = target_depth + 1;
+                                        // target_level is the number of label stacks to KEEP
+                                        // We need to exit (branch_depth + 1) blocks
+                                        let target_level = current_label_stack_idx - branch_depth;
 
-                                        // For branch depth 0, we need to exit the current block
-                                        if branch_depth == 0 {
-                                            self.label_stack.pop();
-                                            if self.label_stack.len() > 0 {
-                                                current_label_stack_idx =
-                                                    self.label_stack.len() - 1;
-                                            } else {
-                                                return Err(RuntimeError::StackError(
-                                                    "Label stack underflow during branch",
-                                                ));
-                                            }
-                                        } else {
-                                            // For deeper branches, truncate to the target level
-                                            self.label_stack.truncate(target_level);
-                                            if self.label_stack.len() > 0 {
-                                                current_label_stack_idx =
-                                                    self.label_stack.len() - 1;
-                                            } else {
-                                                return Err(RuntimeError::StackError(
-                                                    "Label stack underflow during branch",
-                                                ));
-                                            }
+                                        // Truncate to target level (removes branch_depth + 1 blocks)
+                                        self.label_stack.truncate(target_level);
+                                        if self.label_stack.is_empty() {
+                                            return Err(RuntimeError::StackError(
+                                                "Label stack underflow during branch",
+                                            ));
                                         }
+                                        current_label_stack_idx = self.label_stack.len() - 1;
 
                                         let target_label_stack =
                                             &mut self.label_stack[current_label_stack_idx];
@@ -1662,30 +1938,17 @@ impl FrameStack {
                                         }
 
                                         if branch_depth <= current_label_stack_idx {
+                                            // target_level is the number of label stacks to KEEP
                                             let target_level =
-                                                current_label_stack_idx - branch_depth + 1;
+                                                current_label_stack_idx - branch_depth;
 
-                                            if branch_depth == 0 {
-                                                self.label_stack.pop();
-                                                if self.label_stack.len() > 0 {
-                                                    current_label_stack_idx =
-                                                        self.label_stack.len() - 1;
-                                                } else {
-                                                    return Err(RuntimeError::StackError(
-                                                        "Label stack underflow during branch",
-                                                    ));
-                                                }
-                                            } else {
-                                                self.label_stack.truncate(target_level);
-                                                if self.label_stack.len() > 0 {
-                                                    current_label_stack_idx =
-                                                        self.label_stack.len() - 1;
-                                                } else {
-                                                    return Err(RuntimeError::StackError(
-                                                        "Label stack underflow during branch",
-                                                    ));
-                                                }
+                                            self.label_stack.truncate(target_level);
+                                            if self.label_stack.is_empty() {
+                                                return Err(RuntimeError::StackError(
+                                                    "Label stack underflow during branch",
+                                                ));
                                             }
+                                            current_label_stack_idx = self.label_stack.len() - 1;
 
                                             self.label_stack[current_label_stack_idx].ip =
                                                 target_ip;
@@ -1722,30 +1985,16 @@ impl FrameStack {
                                     }
 
                                     if branch_depth <= current_label_stack_idx {
-                                        let target_level =
-                                            current_label_stack_idx - branch_depth + 1;
+                                        // target_level is the number of label stacks to KEEP
+                                        let target_level = current_label_stack_idx - branch_depth;
 
-                                        if branch_depth == 0 {
-                                            self.label_stack.pop();
-                                            if self.label_stack.len() > 0 {
-                                                current_label_stack_idx =
-                                                    self.label_stack.len() - 1;
-                                            } else {
-                                                return Err(RuntimeError::StackError(
-                                                    "Label stack underflow during branch",
-                                                ));
-                                            }
-                                        } else {
-                                            self.label_stack.truncate(target_level);
-                                            if self.label_stack.len() > 0 {
-                                                current_label_stack_idx =
-                                                    self.label_stack.len() - 1;
-                                            } else {
-                                                return Err(RuntimeError::StackError(
-                                                    "Label stack underflow during branch",
-                                                ));
-                                            }
+                                        self.label_stack.truncate(target_level);
+                                        if self.label_stack.is_empty() {
+                                            return Err(RuntimeError::StackError(
+                                                "Label stack underflow during branch",
+                                            ));
                                         }
+                                        current_label_stack_idx = self.label_stack.len() - 1;
 
                                         self.label_stack[current_label_stack_idx].ip = target_ip;
                                     } else {
