@@ -10,7 +10,6 @@ use crate::execution::vm::*;
 use crate::structure::{instructions::*, module::*, types::*};
 use itertools::Itertools;
 use rustc_hash::FxHashMap;
-use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::LazyLock;
 
@@ -18,391 +17,9 @@ use std::sync::LazyLock;
 #[derive(Debug, Clone)]
 struct ControlBlockInfo {
     block_type: wasmparser::BlockType,
-    start_pc: usize,
     is_loop: bool,
     result_slots: Vec<Slot>,
     param_slots: Vec<Slot>,
-}
-
-// Operation type classification
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum OperationType {
-    Producer,    // 0 args, produces value (const, local.get, global.get)
-    Unary,       // 1 arg, produces value (clz, ctz, popcnt, etc.)
-    Binary,      // 2 args, produces value (add, sub, mul, etc.)
-    MemoryLoad,  // 1 arg (address), produces value
-    MemoryStore, // 2 args (address, value), no value produced
-    ControlFlow, // Variable args, special handling
-    Other,       // Non-optimizable
-}
-
-fn get_operation_type(op: &wasmparser::Operator) -> OperationType {
-    use wasmparser::Operator;
-    match op {
-        // Producers
-        Operator::I32Const { .. }
-        | Operator::I64Const { .. }
-        | Operator::F32Const { .. }
-        | Operator::F64Const { .. }
-        | Operator::LocalGet { .. }
-        | Operator::GlobalGet { .. } => OperationType::Producer,
-        // Unary operations
-        Operator::I32Clz | Operator::I32Ctz | Operator::I32Popcnt |
-        Operator::I64Clz | Operator::I64Ctz | Operator::I64Popcnt |
-        Operator::F32Abs | Operator::F32Neg | Operator::F32Ceil |
-        Operator::F32Floor | Operator::F32Trunc | Operator::F32Nearest |
-        Operator::F32Sqrt | Operator::F64Abs | Operator::F64Neg |
-        Operator::F64Ceil | Operator::F64Floor | Operator::F64Trunc |
-        Operator::F64Nearest | Operator::F64Sqrt |
-        Operator::I32Eqz | Operator::I64Eqz |
-        // Type conversions (all are unary operations)
-        Operator::I32WrapI64 |
-        Operator::I64ExtendI32S | Operator::I64ExtendI32U |
-        Operator::I32TruncF32S | Operator::I32TruncF32U |
-        Operator::I32TruncF64S | Operator::I32TruncF64U |
-        Operator::I64TruncF32S | Operator::I64TruncF32U |
-        Operator::I64TruncF64S | Operator::I64TruncF64U |
-        Operator::I32TruncSatF32S | Operator::I32TruncSatF32U |
-        Operator::I32TruncSatF64S | Operator::I32TruncSatF64U |
-        Operator::I64TruncSatF32S | Operator::I64TruncSatF32U |
-        Operator::I64TruncSatF64S | Operator::I64TruncSatF64U |
-        Operator::F32DemoteF64 | Operator::F64PromoteF32 |
-        Operator::F32ConvertI32S | Operator::F32ConvertI32U |
-        Operator::F32ConvertI64S | Operator::F32ConvertI64U |
-        Operator::F64ConvertI32S | Operator::F64ConvertI32U |
-        Operator::F64ConvertI64S | Operator::F64ConvertI64U |
-        Operator::I32ReinterpretF32 | Operator::I64ReinterpretF64 |
-        Operator::F32ReinterpretI32 | Operator::F64ReinterpretI64 |
-        // Extend operations
-        Operator::I32Extend8S | Operator::I32Extend16S |
-        Operator::I64Extend8S | Operator::I64Extend16S | Operator::I64Extend32S => OperationType::Unary,
-
-        // Memory loads
-        Operator::I32Load { .. }
-        | Operator::I64Load { .. }
-        | Operator::F32Load { .. }
-        | Operator::F64Load { .. }
-        | Operator::I32Load8S { .. }
-        | Operator::I32Load8U { .. }
-        | Operator::I32Load16S { .. }
-        | Operator::I32Load16U { .. }
-        | Operator::I64Load8S { .. }
-        | Operator::I64Load8U { .. }
-        | Operator::I64Load16S { .. }
-        | Operator::I64Load16U { .. }
-        | Operator::I64Load32S { .. }
-        | Operator::I64Load32U { .. } => OperationType::MemoryLoad,
-
-        // Memory stores
-        Operator::I32Store { .. }
-        | Operator::I64Store { .. }
-        | Operator::F32Store { .. }
-        | Operator::F64Store { .. }
-        | Operator::I32Store8 { .. }
-        | Operator::I32Store16 { .. }
-        | Operator::I64Store8 { .. }
-        | Operator::I64Store16 { .. }
-        | Operator::I64Store32 { .. } => OperationType::MemoryStore,
-
-        // Binary operations
-        Operator::I32Add
-        | Operator::I32Sub
-        | Operator::I32Mul
-        | Operator::I32DivS
-        | Operator::I32DivU
-        | Operator::I32RemS
-        | Operator::I32RemU
-        | Operator::I32And
-        | Operator::I32Or
-        | Operator::I32Xor
-        | Operator::I32Shl
-        | Operator::I32ShrS
-        | Operator::I32ShrU
-        | Operator::I32Rotl
-        | Operator::I32Rotr
-        | Operator::I64Add
-        | Operator::I64Sub
-        | Operator::I64Mul
-        | Operator::I64DivS
-        | Operator::I64DivU
-        | Operator::I64RemS
-        | Operator::I64RemU
-        | Operator::I64And
-        | Operator::I64Or
-        | Operator::I64Xor
-        | Operator::I64Shl
-        | Operator::I64ShrS
-        | Operator::I64ShrU
-        | Operator::I64Rotl
-        | Operator::I64Rotr
-        | Operator::F32Add
-        | Operator::F32Sub
-        | Operator::F32Mul
-        | Operator::F32Div
-        | Operator::F32Min
-        | Operator::F32Max
-        | Operator::F32Copysign
-        | Operator::F64Add
-        | Operator::F64Sub
-        | Operator::F64Mul
-        | Operator::F64Div
-        | Operator::F64Min
-        | Operator::F64Max
-        | Operator::F64Copysign
-        | Operator::I32Eq
-        | Operator::I32Ne
-        | Operator::I32LtS
-        | Operator::I32LtU
-        | Operator::I32GtS
-        | Operator::I32GtU
-        | Operator::I32LeS
-        | Operator::I32LeU
-        | Operator::I32GeS
-        | Operator::I32GeU
-        | Operator::I64Eq
-        | Operator::I64Ne
-        | Operator::I64LtS
-        | Operator::I64LtU
-        | Operator::I64GtS
-        | Operator::I64GtU
-        | Operator::I64LeS
-        | Operator::I64LeU
-        | Operator::I64GeS
-        | Operator::I64GeU
-        | Operator::F32Eq
-        | Operator::F32Ne
-        | Operator::F32Lt
-        | Operator::F32Gt
-        | Operator::F32Le
-        | Operator::F32Ge
-        | Operator::F64Eq
-        | Operator::F64Ne
-        | Operator::F64Lt
-        | Operator::F64Gt
-        | Operator::F64Le
-        | Operator::F64Ge => OperationType::Binary,
-
-        // Control flow
-        Operator::Block { .. }
-        | Operator::Loop { .. }
-        | Operator::If { .. }
-        | Operator::Else
-        | Operator::End
-        | Operator::Br { .. }
-        | Operator::BrIf { .. }
-        | Operator::BrTable { .. }
-        | Operator::Return
-        | Operator::Call { .. }
-        | Operator::CallIndirect { .. } => OperationType::ControlFlow,
-
-        // Other
-        _ => OperationType::Other,
-    }
-}
-
-// Try to apply optimization for an operator based on recent instructions
-fn try_apply_optimization<'a>(
-    op: &wasmparser::Operator,
-    recent_instrs: &mut VecDeque<(wasmparser::Operator, usize)>,
-    mut processed_instr: &mut ProcessedInstr,
-    initial_processed_instrs: &mut Vec<ProcessedInstr>,
-    current_processed_pc: &mut usize,
-    ops: &mut itertools::structs::MultiPeek<
-        impl Iterator<
-                Item = Result<(wasmparser::Operator<'a>, usize), wasmparser::BinaryReaderError>,
-            > + 'a,
-    >,
-) -> bool {
-    let op_type = get_operation_type(op);
-
-    // Check if we have enough recent instructions
-    match op_type {
-        OperationType::Binary | OperationType::MemoryStore => {
-            if recent_instrs.len() < 2 {
-                return false;
-            }
-        }
-        OperationType::MemoryLoad | OperationType::Unary => {
-            if recent_instrs.is_empty() {
-                return false;
-            }
-        }
-        _ => return false,
-    }
-
-    let mut iter = recent_instrs.iter().rev();
-
-    // Apply optimization based on operation type
-    match op_type {
-        OperationType::Binary => {
-            let second_source = iter
-                .next()
-                .and_then(|(instr, _)| operator_to_value_source(instr));
-            let first_source = iter
-                .next()
-                .and_then(|(instr, _)| operator_to_value_source(instr));
-
-            if let (Some(first), Some(second)) = (first_source, second_source) {
-                // Check if next instruction is local.set or global.set
-                let mut store_target = None;
-                let mut skip_next = false;
-
-                if let Some(Ok((next_op, _))) = ops.peek() {
-                    match next_op {
-                        wasmparser::Operator::LocalSet { local_index } => {
-                            store_target = Some(StoreTarget::Local(*local_index));
-                            skip_next = true;
-                        }
-                        wasmparser::Operator::GlobalSet { global_index } => {
-                            store_target = Some(StoreTarget::Global(*global_index));
-                            skip_next = true;
-                        }
-                        _ => {}
-                    }
-                }
-
-                if let ProcessedInstr::Legacy { operand, .. } = &mut processed_instr {
-                    *operand = Operand::Optimized(OptimizedOperand::Double {
-                        first: Some(first),
-                        second: Some(second),
-                        memarg: None,
-                        store_target,
-                    });
-                }
-
-                // Remove consumed instructions
-                for _ in 0..2 {
-                    initial_processed_instrs.pop();
-                    recent_instrs.pop_back();
-                    *current_processed_pc -= 1;
-                }
-
-                // If we have a store target, skip the next instruction
-                if skip_next {
-                    ops.next(); // Skip the set instruction
-                }
-
-                return true;
-            }
-        }
-        OperationType::MemoryLoad => {
-            if let Some(addr_source) = iter
-                .next()
-                .and_then(|(instr, _)| operator_to_value_source(instr))
-            {
-                if let ProcessedInstr::Legacy { operand, .. } = &mut processed_instr {
-                    if let Operand::MemArg(memarg) = operand {
-                        *operand = Operand::Optimized(OptimizedOperand::Single {
-                            value: Some(addr_source),
-                            memarg: Some(memarg.clone()),
-                            store_target: None,
-                        });
-
-                        // Remove consumed instruction
-                        initial_processed_instrs.pop();
-                        recent_instrs.pop_back();
-                        *current_processed_pc -= 1;
-                        return true;
-                    }
-                }
-            }
-        }
-        OperationType::MemoryStore => {
-            let value_source = iter
-                .next()
-                .and_then(|(instr, _)| operator_to_value_source(instr));
-            let addr_source = iter
-                .next()
-                .and_then(|(instr, _)| operator_to_value_source(instr));
-
-            if let (Some(addr), Some(value)) = (addr_source, value_source) {
-                if let ProcessedInstr::Legacy { operand, .. } = &mut processed_instr {
-                    if let Operand::MemArg(memarg) = operand {
-                        *operand = Operand::Optimized(OptimizedOperand::Double {
-                            first: Some(addr),
-                            second: Some(value),
-                            memarg: Some(memarg.clone()),
-                            store_target: None,
-                        });
-
-                        // Remove consumed instructions
-                        for _ in 0..2 {
-                            initial_processed_instrs.pop();
-                            recent_instrs.pop_back();
-                            *current_processed_pc -= 1;
-                        }
-                        return true;
-                    }
-                }
-            }
-        }
-        OperationType::Unary => {
-            // Get one value directly (same as memory load)
-            if let Some(value_source) = iter
-                .next()
-                .and_then(|(instr, _)| operator_to_value_source(instr))
-            {
-                // Check if next instruction is local.set or global.set
-                let mut store_target = None;
-                let mut skip_next = false;
-
-                if let Some(Ok((next_op, _))) = ops.peek() {
-                    match next_op {
-                        wasmparser::Operator::LocalSet { local_index } => {
-                            store_target = Some(StoreTarget::Local(*local_index));
-                            skip_next = true;
-                        }
-                        wasmparser::Operator::GlobalSet { global_index } => {
-                            store_target = Some(StoreTarget::Global(*global_index));
-                            skip_next = true;
-                        }
-                        _ => {}
-                    }
-                }
-
-                if let ProcessedInstr::Legacy { operand, .. } = &mut processed_instr {
-                    *operand = Operand::Optimized(OptimizedOperand::Single {
-                        value: Some(value_source),
-                        memarg: None,
-                        store_target,
-                    });
-                }
-
-                // Remove consumed instruction
-                initial_processed_instrs.pop();
-                recent_instrs.pop_back();
-                *current_processed_pc -= 1;
-
-                if skip_next {
-                    ops.next(); // Skip the set instruction
-                }
-
-                return true;
-            }
-        }
-        _ => {}
-    }
-
-    false
-}
-
-// Helper function to create ValueSource from an operator
-fn operator_to_value_source(op: &wasmparser::Operator) -> Option<ValueSource> {
-    match op {
-        wasmparser::Operator::LocalGet { local_index } => Some(ValueSource::Local(*local_index)),
-        wasmparser::Operator::I32Const { value } => Some(ValueSource::Const(Value::I32(*value))),
-        wasmparser::Operator::I64Const { value } => Some(ValueSource::Const(Value::I64(*value))),
-        wasmparser::Operator::F32Const { value } => {
-            Some(ValueSource::Const(Value::F32(f32::from_bits(value.bits()))))
-        }
-        wasmparser::Operator::F64Const { value } => {
-            Some(ValueSource::Const(Value::F64(f64::from_bits(value.bits()))))
-        }
-        wasmparser::Operator::GlobalGet { global_index } => {
-            Some(ValueSource::Global(*global_index))
-        }
-        _ => None,
-    }
 }
 
 // Cache key for block type arity calculations
@@ -429,7 +46,6 @@ impl From<&wasmparser::BlockType> for BlockTypeKey {
 struct BlockArityCache {
     block_arity_cache: FxHashMap<BlockTypeKey, usize>,
     loop_parameter_arity_cache: FxHashMap<BlockTypeKey, usize>,
-    block_parameter_count_cache: FxHashMap<BlockTypeKey, usize>,
 }
 
 impl BlockArityCache {
@@ -437,7 +53,6 @@ impl BlockArityCache {
         Self {
             block_arity_cache: FxHashMap::default(),
             loop_parameter_arity_cache: FxHashMap::default(),
-            block_parameter_count_cache: FxHashMap::default(),
         }
     }
 }
@@ -571,33 +186,6 @@ fn calculate_loop_parameter_arity(
 
     cache.loop_parameter_arity_cache.insert(key, arity);
     arity
-}
-
-fn calculate_block_parameter_count(
-    block_type: &wasmparser::BlockType,
-    module: &Module,
-    cache: &mut BlockArityCache,
-) -> usize {
-    let key = BlockTypeKey::from(block_type);
-
-    if let Some(&count) = cache.block_parameter_count_cache.get(&key) {
-        return count;
-    }
-
-    let count = match block_type {
-        wasmparser::BlockType::Empty => 0,
-        wasmparser::BlockType::Type(_) => 0, // Single type means no parameters for block
-        wasmparser::BlockType::FuncType(type_idx) => {
-            if let Some(func_type) = module.types.get(*type_idx as usize) {
-                func_type.params.len()
-            } else {
-                0 // Fallback to 0 if invalid type index
-            }
-        }
-    };
-
-    cache.block_parameter_count_cache.insert(key, count);
-    count
 }
 
 /// Get result types for a block type
@@ -957,7 +545,6 @@ fn decode_code_section(
     module: &mut Module,
     func_index: usize,
     enable_superinstructions: bool,
-    execution_mode: &str,
     cache: &mut BlockArityCache,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut locals: Vec<(u32, ValueType)> = Vec::new();
@@ -997,7 +584,6 @@ fn decode_code_section(
         ops_iter,
         module,
         enable_superinstructions,
-        execution_mode,
         &locals,
         &param_types,
         &result_types,
@@ -1048,8 +634,6 @@ struct FixupInfo {
     is_if_false_jump: bool,
     is_else_jump: bool,
     source_slots: Vec<Slot>,
-    condition_slot: Option<Slot>,
-    index_slot: Option<Slot>,
 }
 
 // Phase 2: Resolve Br, BrIf, If, Else jumps using maps and control stack simulation
@@ -1111,39 +695,41 @@ fn preprocess_instructions(
         }
 
         if current_control_stack_pass2.len() <= current_fixup_depth {
+            // Depth exceeds control stack - this is a branch to function level (return)
+            // Set target_ip to end of function (processed.len())
+            let function_end_ip = processed.len();
             if let Some(instr_to_patch) = processed.get_mut(current_fixup_pc) {
-                // Skip fixup for slot-based instructions (except those that need fixup)
-                if !matches!(
+                if let ProcessedInstr::BrSlot {
+                    target_ip: ref mut tip,
+                    ..
+                } = instr_to_patch
+                {
+                    *tip = function_end_ip;
+                } else if let ProcessedInstr::BrIfSlot {
+                    target_ip: ref mut tip,
+                    ..
+                } = instr_to_patch
+                {
+                    *tip = function_end_ip;
+                } else if is_if_false_jump {
+                    if !matches!(instr_to_patch, ProcessedInstr::IfSlot { .. }) {
+                        fixups[fixup_index].original_wasm_depth = usize::MAX;
+                        continue;
+                    }
+                } else if is_else_jump {
+                    if !matches!(instr_to_patch, ProcessedInstr::JumpSlot { .. }) {
+                        fixups[fixup_index].original_wasm_depth = usize::MAX;
+                        continue;
+                    }
+                } else if !matches!(
                     instr_to_patch,
-                    ProcessedInstr::Legacy { .. }
-                        | ProcessedInstr::JumpSlot { .. }
+                    ProcessedInstr::JumpSlot { .. }
                         | ProcessedInstr::IfSlot { .. }
                         | ProcessedInstr::BrSlot { .. }
                         | ProcessedInstr::BrIfSlot { .. }
                 ) {
                     fixups[fixup_index].original_wasm_depth = usize::MAX;
                     continue;
-                }
-                if is_if_false_jump {
-                    // IfSlot needs fixup even in this case - don't skip
-                    if matches!(instr_to_patch, ProcessedInstr::IfSlot { .. }) {
-                    } else {
-                        fixups[fixup_index].original_wasm_depth = usize::MAX;
-                        continue;
-                    }
-                } else if is_else_jump {
-                    if matches!(instr_to_patch, ProcessedInstr::JumpSlot { .. }) {
-                    } else {
-                        fixups[fixup_index].original_wasm_depth = usize::MAX;
-                        continue;
-                    }
-                } else {
-                    // Skip fixup for slot-based instructions
-                    if !matches!(instr_to_patch, ProcessedInstr::Legacy { .. }) {
-                        continue;
-                    }
-                    instr_to_patch.set_handler_index(HANDLER_IDX_RETURN);
-                    *instr_to_patch.operand_mut() = Operand::None;
                 }
             }
             fixups[fixup_index].original_wasm_depth = usize::MAX;
@@ -1156,10 +742,11 @@ fn preprocess_instructions(
             continue;
         }
 
-        let (target_start_pc, is_loop, target_block_type) =
+        let (target_start_pc, is_loop, _target_block_type) =
             current_control_stack_pass2[target_stack_level];
 
         // Calculate target IP
+        // Note: block_end_map already stores End + 1 position (the instruction after EndSlot)
         let target_ip = if is_loop {
             target_start_pc
         } else {
@@ -1168,19 +755,12 @@ fn preprocess_instructions(
                 .ok_or_else(|| RuntimeError::InvalidWasm("Missing EndMarker for branch target"))?
         };
 
-        let target_arity = if is_loop {
-            calculate_loop_parameter_arity(&target_block_type, module, cache)
-        } else {
-            calculate_block_arity(&target_block_type, module, cache)
-        };
-
         // Patch the instruction operand
         if let Some(instr_to_patch) = processed.get_mut(current_fixup_pc) {
             // Skip fixup for slot-based instructions (except those that need fixup)
             if !matches!(
                 instr_to_patch,
-                ProcessedInstr::Legacy { .. }
-                    | ProcessedInstr::JumpSlot { .. }
+                ProcessedInstr::JumpSlot { .. }
                     | ProcessedInstr::IfSlot { .. }
                     | ProcessedInstr::BrSlot { .. }
                     | ProcessedInstr::BrIfSlot { .. }
@@ -1188,14 +768,6 @@ fn preprocess_instructions(
                 fixups[fixup_index].original_wasm_depth = usize::MAX;
                 continue;
             }
-            // Get source_slots from fixup (computed at instruction creation time)
-            let source_slots = fixups[fixup_index].source_slots.clone();
-            let condition_slot = fixups[fixup_index].condition_slot;
-            // Get target_result_slots from block_result_slots_map
-            let target_result_slots = block_result_slots_map
-                .get(&target_start_pc)
-                .map(|(slots, _)| slots.clone())
-                .unwrap_or_default();
 
             if is_if_false_jump {
                 // If instruction's jump-on-false
@@ -1211,22 +783,6 @@ fn preprocess_instructions(
                 {
                     *tip = else_target;
                     *he = has_else;
-                } else if let ProcessedInstr::Legacy { operand, .. } = instr_to_patch {
-                    // Legacy fallback
-                    let if_block_type = block_type_map
-                        .get(&current_fixup_pc)
-                        .cloned()
-                        .unwrap_or(wasmparser::BlockType::Empty);
-                    let if_arity = calculate_block_arity(&if_block_type, module, cache);
-                    *operand = Operand::LabelIdx {
-                        target_ip: else_target,
-                        arity: if_arity,
-                        original_wasm_depth: current_fixup_depth,
-                        is_loop: false,
-                        source_slots: source_slots.clone(),
-                        target_result_slots: target_result_slots.clone(),
-                        condition_slot: None,
-                    };
                 }
             } else if is_else_jump {
                 if let ProcessedInstr::JumpSlot {
@@ -1234,22 +790,6 @@ fn preprocess_instructions(
                 } = instr_to_patch
                 {
                     *tip = target_ip;
-                } else if let ProcessedInstr::Legacy { operand, .. } = instr_to_patch {
-                    // Legacy fallback
-                    let else_block_type = block_type_map
-                        .get(&current_fixup_pc)
-                        .cloned()
-                        .unwrap_or(wasmparser::BlockType::Empty);
-                    let else_arity = calculate_block_arity(&else_block_type, module, cache);
-                    *operand = Operand::LabelIdx {
-                        target_ip,
-                        arity: else_arity,
-                        original_wasm_depth: current_fixup_depth,
-                        is_loop: false,
-                        source_slots: source_slots.clone(),
-                        target_result_slots: target_result_slots.clone(),
-                        condition_slot: None,
-                    };
                 }
             } else {
                 // Br or BrIf instruction
@@ -1265,17 +805,6 @@ fn preprocess_instructions(
                 } = instr_to_patch
                 {
                     *tip = target_ip;
-                } else if let ProcessedInstr::Legacy { operand, .. } = instr_to_patch {
-                    // Legacy fallback
-                    *operand = Operand::LabelIdx {
-                        target_ip,
-                        arity: target_arity,
-                        original_wasm_depth: current_fixup_depth,
-                        is_loop: is_loop,
-                        source_slots,
-                        target_result_slots,
-                        condition_slot, // BrIf uses condition_slot
-                    };
                 }
             }
         } else {
@@ -1316,46 +845,47 @@ fn preprocess_instructions(
             }
 
             // Check if it's a BrTable needing resolution *after* simulating stack for current pc
-            let needs_br_table_resolution = (matches!(instr, ProcessedInstr::Legacy { .. })
-                && instr.handler_index() == HANDLER_IDX_BR_TABLE
-                && *instr.operand() == Operand::None)
-                || matches!(instr, ProcessedInstr::BrTableSlot { .. });
+            let needs_br_table_resolution = matches!(instr, ProcessedInstr::BrTableSlot { .. });
 
             if needs_br_table_resolution {
                 // Handle BrTableSlot directly without using fixups
                 if matches!(instr, ProcessedInstr::BrTableSlot { .. }) {
-                    // Clone targets to get relative depths
-                    let (targets_clone, default_depth) = if let ProcessedInstr::BrTableSlot {
+                    // Clone targets to get relative depths and existing result_slots
+                    let (targets_clone, default_info) = if let ProcessedInstr::BrTableSlot {
                         targets,
                         default_target,
                         ..
                     } = instr
                     {
-                        (targets.clone(), default_target.0 as usize)
+                        (targets.clone(), default_target.clone())
                     } else {
                         continue;
                     };
+                    let default_depth = default_info.0 as usize;
+                    let default_result_slots = default_info.2;
 
-                    // Compute target_ip for each target
-                    let mut resolved_slot_targets: Vec<(u32, usize)> = Vec::new();
-                    for (rel_depth, _) in targets_clone.iter() {
+                    // Compute target_ip for each target (keeping existing result_slots)
+                    let mut resolved_slot_targets: Vec<(u32, usize, Vec<Slot>)> = Vec::new();
+                    for (rel_depth, _, result_slots) in targets_clone.iter() {
                         let depth = *rel_depth as usize;
                         if current_control_stack_pass3.len() <= depth {
-                            resolved_slot_targets.push((*rel_depth, 0)); // Invalid
+                            resolved_slot_targets.push((*rel_depth, 0, result_slots.clone())); // Invalid
                             continue;
                         }
                         let target_stack_level = current_control_stack_pass3.len() - 1 - depth;
                         let (target_start_pc, is_loop, _) =
                             current_control_stack_pass3[target_stack_level];
+                        // Note: block_end_map already stores End + 1 position
                         let target_ip = if is_loop {
                             target_start_pc
                         } else {
                             *block_end_map.get(&target_start_pc).unwrap_or(&0)
                         };
-                        resolved_slot_targets.push((*rel_depth, target_ip));
+                        resolved_slot_targets.push((*rel_depth, target_ip, result_slots.clone()));
                     }
 
                     // Compute target_ip for default target
+                    // Note: block_end_map already stores End + 1 position
                     let default_target_ip = if current_control_stack_pass3.len() <= default_depth {
                         0 // Invalid
                     } else {
@@ -1379,7 +909,11 @@ fn preprocess_instructions(
                         } = instr_to_patch
                         {
                             *slot_targets = resolved_slot_targets;
-                            *slot_default = (default_depth as u32, default_target_ip);
+                            *slot_default = (
+                                default_depth as u32,
+                                default_target_ip,
+                                default_result_slots,
+                            );
                         }
                     }
                     // Mark the fixup as processed
@@ -1400,16 +934,6 @@ fn preprocess_instructions(
                     .collect::<Vec<_>>();
 
                 if fixup_indices_for_this_br_table.is_empty() {
-                    if let Some(instr_to_patch) = processed.get_mut(pc) {
-                        // Skip fixup for slot-based instructions
-                        if matches!(instr_to_patch, ProcessedInstr::Legacy { .. }) {
-                            *instr_to_patch.operand_mut() = Operand::BrTable {
-                                targets: vec![],
-                                default: Box::new(Operand::None),
-                                index_slot: None,
-                            };
-                        }
-                    }
                     continue;
                 }
 
@@ -1432,6 +956,7 @@ fn preprocess_instructions(
                     let (target_start_pc, is_loop, target_block_type) =
                         current_control_stack_pass3[target_stack_level];
 
+                    // Note: block_end_map already stores End + 1 position
                     let target_ip = if is_loop {
                         target_start_pc
                     } else {
@@ -1470,9 +995,6 @@ fn preprocess_instructions(
                     }
                 };
 
-                // Get index_slot from default fixup
-                let index_slot = fixups[default_fixup_idx].index_slot;
-
                 // --- Remaining Targets Resolution ---
                 let mut resolved_targets: Vec<Operand> =
                     Vec::with_capacity(fixup_indices_for_this_br_table.len());
@@ -1495,13 +1017,13 @@ fn preprocess_instructions(
 
                         let (target_start_pc, is_loop, target_block_type) =
                             current_control_stack_pass3[target_stack_level];
+                        // Note: block_end_map already stores End + 1 position
                         let target_ip = if is_loop {
                             target_start_pc
                         } else {
-                            let end_ip = *block_end_map.get(&target_start_pc).ok_or_else(|| {
+                            *block_end_map.get(&target_start_pc).ok_or_else(|| {
                                 RuntimeError::InvalidWasm("Missing EndMarker for BrTable target")
-                            })?;
-                            end_ip
+                            })?
                         };
                         let target_arity = if is_loop {
                             calculate_loop_parameter_arity(&target_block_type, module, cache)
@@ -1540,16 +1062,21 @@ fn preprocess_instructions(
                         ..
                     } = instr_to_patch
                     {
-                        // Extract target_ip from resolved_targets (Operand::LabelIdx)
+                        // Extract target_ip and target_result_slots from resolved_targets (Operand::LabelIdx)
                         for (i, operand) in resolved_targets.iter().enumerate() {
                             if let Operand::LabelIdx {
                                 target_ip,
                                 original_wasm_depth,
+                                target_result_slots,
                                 ..
                             } = operand
                             {
                                 if i < slot_targets.len() {
-                                    slot_targets[i] = (*original_wasm_depth as u32, *target_ip);
+                                    slot_targets[i] = (
+                                        *original_wasm_depth as u32,
+                                        *target_ip,
+                                        target_result_slots.clone(),
+                                    );
                                 }
                             }
                         }
@@ -1557,17 +1084,16 @@ fn preprocess_instructions(
                         if let Operand::LabelIdx {
                             target_ip,
                             original_wasm_depth,
+                            target_result_slots,
                             ..
                         } = &default_target_operand
                         {
-                            *slot_default = (*original_wasm_depth as u32, *target_ip);
+                            *slot_default = (
+                                *original_wasm_depth as u32,
+                                *target_ip,
+                                target_result_slots.clone(),
+                            );
                         }
-                    } else if matches!(instr_to_patch, ProcessedInstr::Legacy { .. }) {
-                        *instr_to_patch.operand_mut() = Operand::BrTable {
-                            targets: resolved_targets,
-                            default: Box::new(default_target_operand),
-                            index_slot,
-                        };
                     }
                 } else {
                     return Err(RuntimeError::InvalidWasm(
@@ -1668,8 +1194,7 @@ fn get_table_element_type(module: &Module, table_index: u32) -> ValueType {
 fn decode_processed_instrs_and_fixups<'a>(
     ops_iter: wasmparser::OperatorsIteratorWithOffsets<'a>,
     module: &Module,
-    enable_superinstructions: bool,
-    execution_mode: &str,
+    _enable_superinstructions: bool,
     locals: &[(u32, ValueType)],
     param_types: &[ValueType],
     result_types: &[ValueType],
@@ -1699,20 +1224,16 @@ fn decode_processed_instrs_and_fixups<'a>(
     let mut control_stack_for_map_building: Vec<(usize, bool, Option<usize>)> = Vec::new();
     // Map from block_start_pc to (result_slots, is_loop) for BrTable resolution in Pass 3
     let mut block_result_slots_map: FxHashMap<usize, (Vec<Slot>, bool)> = FxHashMap::default();
-    // Track recent instructions for value source optimization
-    let mut recent_instrs: VecDeque<(wasmparser::Operator, usize)> = VecDeque::new();
-    const RECENT_INSTRS_WINDOW: usize = 3; // Track last 3 instructions
 
-    // Initialize slot allocator for slot-based execution mode
-    let mut slot_allocator = if execution_mode == "slot" {
-        use crate::execution::slots::SlotAllocator;
-        Some(SlotAllocator::new(locals))
-    } else {
-        None
-    };
+    // Initialize slot allocator (always used since Legacy mode is removed)
+    use crate::execution::slots::SlotAllocator;
+    let mut slot_allocator = Some(SlotAllocator::new(locals));
 
     // Track allocator state at block entry for proper restoration on block exit
     let mut allocator_state_stack: Vec<crate::execution::slots::SlotAllocatorState> = Vec::new();
+
+    // Track unreachable code depth (after br, return, unreachable, br_table)
+    let mut unreachable_depth: usize = 0;
 
     loop {
         if ops.peek().is_none() {
@@ -1725,9 +1246,34 @@ fn decode_processed_instrs_and_fixups<'a>(
             None => break,
         };
 
+        // Handle unreachable code
+        if unreachable_depth > 0 {
+            match &op {
+                wasmparser::Operator::Block { .. }
+                | wasmparser::Operator::Loop { .. }
+                | wasmparser::Operator::If { .. } => {
+                    unreachable_depth += 1;
+                }
+                wasmparser::Operator::End => {
+                    unreachable_depth -= 1;
+                }
+                wasmparser::Operator::Else => {
+                    if unreachable_depth == 1 {
+                        // Else at depth 1 means the then-branch was unreachable but else might be reachable
+                        unreachable_depth = 0;
+                    }
+                }
+                _ => {}
+            }
+            if unreachable_depth > 0 {
+                initial_processed_instrs.push(ProcessedInstr::NopSlot);
+                current_processed_pc += 1;
+                continue;
+            }
+        }
+
         // Get the processed instruction based on execution mode
-        let (mut processed_instr, fixup_info_opt) = if let Some(ref mut allocator) = slot_allocator
-        {
+        let (processed_instr, fixup_info_opt) = if let Some(ref mut allocator) = slot_allocator {
             // Slot-based mode: convert i32 instructions to slot format
             match &op {
                 wasmparser::Operator::LocalGet { local_index } => {
@@ -1795,29 +1341,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                             )
                         }
                         _ => {
-                            // Unknown type, fall back to Legacy
-                            let slots_to_stack = allocator.get_active_slots();
-                            allocator.clear_stack();
-                            let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
-                                &op,
-                                current_processed_pc,
-                                &control_info_stack,
-                                module,
-                                &mut BlockArityCache::new(),
-                                Some(allocator as &SlotAllocator),
-                            )?;
-                            if let ProcessedInstr::Legacy {
-                                slots_to_stack: ref mut ss,
-                                stack_to_slots: ref mut sts,
-                                ..
-                            } = instr
-                            {
-                                *ss = slots_to_stack;
-                                // Result goes to a ref slot
-                                let dst = allocator.push(local_type);
-                                *sts = vec![dst];
-                            }
-                            (instr, fixup)
+                            panic!("Unsupported type for LocalGet: {:?}", local_type);
                         }
                     }
                 }
@@ -1870,28 +1394,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                             )
                         }
                         _ => {
-                            // Unknown type, fall back to Legacy mode
-                            // Get slots_to_stack BEFORE popping (includes the ref operand)
-                            allocator.push(local_type.clone());
-                            let slots_to_stack = allocator.get_active_slots();
-                            let _src = allocator.pop(&local_type);
-                            allocator.clear_stack();
-                            let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
-                                &op,
-                                current_processed_pc,
-                                &control_info_stack,
-                                module,
-                                &mut BlockArityCache::new(),
-                                slot_allocator.as_ref(),
-                            )?;
-                            if let ProcessedInstr::Legacy {
-                                slots_to_stack: ref mut ss,
-                                ..
-                            } = instr
-                            {
-                                *ss = slots_to_stack;
-                            }
-                            (instr, fixup)
+                            panic!("Unsupported type for LocalSet: {:?}", local_type);
                         }
                     }
                 }
@@ -1945,23 +1448,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                             )
                         }
                         _ => {
-                            let slots_to_stack = allocator.get_active_slots();
-                            let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
-                                &op,
-                                current_processed_pc,
-                                &control_info_stack,
-                                module,
-                                &mut BlockArityCache::new(),
-                                slot_allocator.as_ref(),
-                            )?;
-                            if let ProcessedInstr::Legacy {
-                                slots_to_stack: ref mut ss,
-                                ..
-                            } = instr
-                            {
-                                *ss = slots_to_stack;
-                            }
-                            (instr, fixup)
+                            panic!("Unsupported type for LocalTee: {:?}", local_type);
                         }
                     }
                 }
@@ -2013,24 +1500,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                             )
                         }
                         _ => {
-                            let slots_to_stack = allocator.get_active_slots();
-                            allocator.clear_stack();
-                            let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
-                                &op,
-                                current_processed_pc,
-                                &control_info_stack,
-                                module,
-                                &mut BlockArityCache::new(),
-                                slot_allocator.as_ref(),
-                            )?;
-                            if let ProcessedInstr::Legacy {
-                                slots_to_stack: ref mut ss,
-                                ..
-                            } = instr
-                            {
-                                *ss = slots_to_stack;
-                            }
-                            (instr, fixup)
+                            panic!("Unsupported type for GlobalGet: {:?}", global_type);
                         }
                     }
                 }
@@ -2082,24 +1552,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                             )
                         }
                         _ => {
-                            let slots_to_stack = allocator.get_active_slots();
-                            allocator.clear_stack();
-                            let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
-                                &op,
-                                current_processed_pc,
-                                &control_info_stack,
-                                module,
-                                &mut BlockArityCache::new(),
-                                slot_allocator.as_ref(),
-                            )?;
-                            if let ProcessedInstr::Legacy {
-                                slots_to_stack: ref mut ss,
-                                ..
-                            } = instr
-                            {
-                                *ss = slots_to_stack;
-                            }
-                            (instr, fixup)
+                            panic!("Unsupported type for GlobalSet: {:?}", global_type);
                         }
                     }
                 }
@@ -3585,19 +3038,14 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::End => {
-                    let result_arity = if let Some(block_info) = control_info_stack.last() {
-                        get_block_result_types(&block_info.block_type, module).len()
+                    let result_type_vec = if let Some(block_info) = control_info_stack.last() {
+                        get_block_result_types(&block_info.block_type, module)
                     } else {
-                        result_types.len()
+                        result_types.to_vec()
                     };
 
-                    // Only sync the TOP N slots (where N is result arity), not all active slots
-                    let all_slots = allocator.get_active_slots();
-                    let source_slots = if all_slots.len() >= result_arity {
-                        all_slots[all_slots.len() - result_arity..].to_vec()
-                    } else {
-                        all_slots
-                    };
+                    // Get the top N slots based on result types
+                    let source_slots = allocator.peek_slots_for_types(&result_type_vec);
 
                     // Get target_result_slots from ControlBlockInfo BEFORE restoring state
                     let target_result_slots = if let Some(block_info) = control_info_stack.last() {
@@ -3668,7 +3116,6 @@ fn decode_processed_instrs_and_fixups<'a>(
                     // Push to control_info_stack for End to use
                     control_info_stack.push(ControlBlockInfo {
                         block_type: *blockty,
-                        start_pc: current_processed_pc,
                         is_loop,
                         result_slots,
                         param_slots: vec![],
@@ -3712,7 +3159,6 @@ fn decode_processed_instrs_and_fixups<'a>(
                     // Push to control_info_stack for End to use
                     control_info_stack.push(ControlBlockInfo {
                         block_type: *blockty,
-                        start_pc: current_processed_pc,
                         is_loop: false,
                         result_slots,
                         param_slots: vec![],
@@ -3730,8 +3176,6 @@ fn decode_processed_instrs_and_fixups<'a>(
                         is_if_false_jump: true,
                         is_else_jump: false,
                         source_slots: vec![],
-                        condition_slot: Some(condition_slot),
-                        index_slot: None,
                     });
                     (instr, fixup)
                 }
@@ -3758,8 +3202,6 @@ fn decode_processed_instrs_and_fixups<'a>(
                         is_if_false_jump: false,
                         is_else_jump: true,
                         source_slots: vec![],
-                        condition_slot: None,
-                        index_slot: None,
                     });
                     (instr, fixup)
                 }
@@ -3785,13 +3227,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                         let param_types = func_type.params;
                         let result_types = func_type.results;
 
-                        let active_slots = allocator.get_active_slots();
-                        let param_count = param_types.len();
-                        let param_slots = if active_slots.len() >= param_count {
-                            active_slots[active_slots.len() - param_count..].to_vec()
-                        } else {
-                            active_slots
-                        };
+                        // Get the top N slots for params based on types
+                        let param_slots = allocator.peek_slots_for_types(&param_types);
 
                         for param_type in param_types.iter().rev() {
                             allocator.pop(&param_type);
@@ -3845,14 +3282,15 @@ fn decode_processed_instrs_and_fixups<'a>(
                         };
 
                         if param_types.is_empty() && result_types.is_empty() {
-                            map_operator_to_initial_instr_and_fixup(
-                                &op,
-                                current_processed_pc,
-                                &control_info_stack,
-                                module,
-                                &mut BlockArityCache::new(),
-                                slot_allocator.as_ref(),
-                            )?
+                            // No params/results - still use CallSlot with empty slots
+                            (
+                                ProcessedInstr::CallSlot {
+                                    func_idx: FuncIdx(*function_index),
+                                    param_slots: vec![],
+                                    result_slots: vec![],
+                                },
+                                None,
+                            )
                         } else {
                             // Get param slots before popping
                             let mut param_slots = Vec::new();
@@ -3910,7 +3348,6 @@ fn decode_processed_instrs_and_fixups<'a>(
                     // Actually, we need to get the slots that will be consumed
                     // Recalculate: peek each param type from the current state
                     param_slots.clear();
-                    let state = allocator.save_state();
                     for param_type in param_types.iter().rev() {
                         if let Some(slot) = allocator.peek(param_type) {
                             param_slots.insert(0, slot);
@@ -3956,8 +3393,6 @@ fn decode_processed_instrs_and_fixups<'a>(
                         is_if_false_jump: false,
                         is_else_jump: false,
                         source_slots,
-                        condition_slot: None,
-                        index_slot: None,
                     };
                     (instr, Some(fixup))
                 }
@@ -3989,8 +3424,6 @@ fn decode_processed_instrs_and_fixups<'a>(
                         is_if_false_jump: false,
                         is_else_jump: false,
                         source_slots,
-                        condition_slot: Some(condition_slot),
-                        index_slot: None,
                     };
                     (instr, Some(fixup))
                 }
@@ -4002,28 +3435,35 @@ fn decode_processed_instrs_and_fixups<'a>(
                         .unwrap_or(Slot::I32(0)); // Use dummy slot in unreachable code
                     allocator.pop(&ValueType::NumType(NumType::I32));
 
-                    // Collect target depths with placeholder target_ip
-                    let table_targets: Vec<(u32, usize)> = targets
-                        .targets()
-                        .collect::<Result<Vec<_>, _>>()?
-                        .into_iter()
-                        .map(|depth| (depth, usize::MAX)) // Will be set by fixup
-                        .collect();
-                    let default_target = (targets.default(), usize::MAX); // Will be set by fixup
+                    // Collect target depths with placeholder target_ip and compute target_result_slots for each
+                    let target_depths: Vec<u32> =
+                        targets.targets().collect::<Result<Vec<_>, _>>()?;
+
+                    let mut table_targets: Vec<(u32, usize, Vec<Slot>)> =
+                        Vec::with_capacity(target_depths.len());
+                    for depth in target_depths.iter() {
+                        let (_, target_result_slots) = compute_branch_slots(
+                            &control_info_stack,
+                            *depth as usize,
+                            slot_allocator.as_ref(),
+                        );
+                        table_targets.push((*depth, usize::MAX, target_result_slots));
+                        // target_ip will be set by fixup
+                    }
 
                     // Compute source and target slots for default target
-                    let (source_slots, target_result_slots) = compute_branch_slots(
+                    let (source_slots, default_result_slots) = compute_branch_slots(
                         &control_info_stack,
                         targets.default() as usize,
                         slot_allocator.as_ref(),
                     );
+                    let default_target = (targets.default(), usize::MAX, default_result_slots); // target_ip will be set by fixup
 
                     let instr = ProcessedInstr::BrTableSlot {
                         targets: table_targets.clone(),
                         default_target,
                         index_slot,
                         source_slots: source_slots.clone(),
-                        target_result_slots,
                     };
 
                     // Create fixups for each target and default
@@ -4034,35 +3474,25 @@ fn decode_processed_instrs_and_fixups<'a>(
                         is_if_false_jump: false,
                         is_else_jump: false,
                         source_slots,
-                        condition_slot: None,
-                        index_slot: Some(index_slot),
                     };
                     (instr, Some(fixup))
                 }
                 wasmparser::Operator::Return => {
-                    // Pop result slots from allocator (in reverse order, then reverse back)
-                    let mut result_slots: Vec<Slot> = Vec::with_capacity(result_types.len());
-                    for _ in 0..result_types.len() {
-                        if let Some(slot) = allocator.pop_any_type() {
-                            result_slots.push(slot);
-                        }
+                    // Get result slots based on function result types
+                    let result_slots = allocator.peek_slots_for_types(result_types);
+                    for result_type in result_types.iter().rev() {
+                        allocator.pop(result_type);
                     }
-                    result_slots.reverse(); // Restore original order
 
                     let instr = ProcessedInstr::ReturnSlot { result_slots };
                     (instr, None)
                 }
+                wasmparser::Operator::Nop => (ProcessedInstr::NopSlot, None),
+                wasmparser::Operator::Unreachable => (ProcessedInstr::UnreachableSlot, None),
                 wasmparser::Operator::Drop => {
-                    // In slot mode, drop just releases the slot from allocator
-                    // No runtime action needed - just emit NOP
-                    let _ = allocator.pop_any_type();
-                    let instr = ProcessedInstr::Legacy {
-                        handler_index: HANDLER_IDX_NOP,
-                        operand: Operand::None,
-                        slots_to_stack: Vec::new(),
-                        stack_to_slots: Vec::new(),
-                    };
-                    (instr, None)
+                    // Pop from type_stack to keep it in sync, but no runtime operation needed
+                    allocator.pop_any();
+                    (ProcessedInstr::NopSlot, None)
                 }
                 // Conversion instructions - use ConversionSlot
                 wasmparser::Operator::I64ExtendI32S => {
@@ -4831,66 +4261,73 @@ fn decode_processed_instrs_and_fixups<'a>(
                         None,
                     )
                 }
+                wasmparser::Operator::DataDrop { data_index } => (
+                    ProcessedInstr::DataDropSlot {
+                        data_index: *data_index,
+                    },
+                    None,
+                ),
 
                 // Select instructions
-                wasmparser::Operator::Select | wasmparser::Operator::TypedSelect { .. } => {
-                    let active_slots = allocator.get_active_slots();
-                    if let Some((handler_index, val_type)) = active_slots
-                        .get(active_slots.len().wrapping_sub(2))
-                        .and_then(|val2_peek| {
-                            let vt = val2_peek.value_type();
-                            match vt {
-                                ValueType::NumType(NumType::I32) => {
-                                    Some((HANDLER_IDX_SELECT_I32, vt))
-                                }
-                                ValueType::NumType(NumType::I64) => {
-                                    Some((HANDLER_IDX_SELECT_I64, vt))
-                                }
-                                ValueType::NumType(NumType::F32) => {
-                                    Some((HANDLER_IDX_SELECT_F32, vt))
-                                }
-                                ValueType::NumType(NumType::F64) => {
-                                    Some((HANDLER_IDX_SELECT_F64, vt))
-                                }
-                                _ => None,
-                            }
-                        })
-                    {
-                        let cond = allocator.pop(&ValueType::NumType(NumType::I32));
-                        let val2 = allocator.pop(&val_type);
-                        let val1 = allocator.pop(&val_type);
-                        let dst = allocator.push(val_type);
-                        (
-                            ProcessedInstr::SelectSlot {
-                                handler_index,
-                                dst,
-                                val1,
-                                val2,
-                                cond,
-                            },
-                            None,
-                        )
-                    } else {
-                        // Fall back to legacy for reference types or unreachable code
-                        let slots_to_stack = allocator.get_active_slots();
-                        allocator.clear_stack();
-                        let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
-                            &op,
-                            current_processed_pc,
-                            &control_info_stack,
-                            module,
-                            &mut BlockArityCache::new(),
-                            slot_allocator.as_ref(),
-                        )?;
-                        if let ProcessedInstr::Legacy {
-                            slots_to_stack: ref mut ss,
-                            ..
-                        } = instr
-                        {
-                            *ss = slots_to_stack;
-                        }
-                        (instr, fixup)
-                    }
+                wasmparser::Operator::TypedSelect { ty } => {
+                    // TypedSelect has explicit type
+                    let val_type = match_value_type(*ty);
+                    let cond = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let val2 = allocator.pop(&val_type);
+                    let val1 = allocator.pop(&val_type);
+                    let dst = allocator.push(val_type.clone());
+
+                    let handler_index = match &val_type {
+                        ValueType::NumType(NumType::I32) => HANDLER_IDX_SELECT_I32,
+                        ValueType::NumType(NumType::I64) => HANDLER_IDX_SELECT_I64,
+                        ValueType::NumType(NumType::F32) => HANDLER_IDX_SELECT_F32,
+                        ValueType::NumType(NumType::F64) => HANDLER_IDX_SELECT_F64,
+                        ValueType::RefType(_) => HANDLER_IDX_SELECT_I64,
+                        ValueType::VecType(_) => panic!("VecType not supported for Select"),
+                    };
+
+                    (
+                        ProcessedInstr::SelectSlot {
+                            handler_index,
+                            dst,
+                            val1,
+                            val2,
+                            cond,
+                        },
+                        None,
+                    )
+                }
+                wasmparser::Operator::Select => {
+                    // Untyped Select: only supports i32/i64/f32/f64 (not reftype)
+                    let cond = allocator.pop(&ValueType::NumType(NumType::I32));
+
+                    // Use peek_type to determine the type of val2 (top of stack after cond)
+                    let val_type = allocator
+                        .peek_type()
+                        .cloned()
+                        .unwrap_or(ValueType::NumType(NumType::I32));
+                    let handler_index = match &val_type {
+                        ValueType::NumType(NumType::I32) => HANDLER_IDX_SELECT_I32,
+                        ValueType::NumType(NumType::I64) => HANDLER_IDX_SELECT_I64,
+                        ValueType::NumType(NumType::F32) => HANDLER_IDX_SELECT_F32,
+                        ValueType::NumType(NumType::F64) => HANDLER_IDX_SELECT_F64,
+                        _ => panic!("Select requires numeric values on stack"),
+                    };
+
+                    let val2 = allocator.pop(&val_type);
+                    let val1 = allocator.pop(&val_type);
+                    let dst = allocator.push(val_type);
+
+                    (
+                        ProcessedInstr::SelectSlot {
+                            handler_index,
+                            dst,
+                            val1,
+                            val2,
+                            cond,
+                        },
+                        None,
+                    )
                 }
                 wasmparser::Operator::RefNull { hty } => {
                     let ref_type = match hty {
@@ -4911,7 +4348,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
 
                 wasmparser::Operator::RefIsNull => {
-                    let src = allocator.pop_any_type().unwrap_or(Slot::Ref(0));
+                    // ref.is_null operates on reference types only
+                    let src = allocator.pop(&ValueType::RefType(RefType::FuncRef));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::TableRefSlot {
@@ -4945,7 +4383,9 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
 
                 wasmparser::Operator::TableSet { table } => {
-                    let val = allocator.pop_any_type().unwrap_or(Slot::Ref(0));
+                    // table.set: [i32, ref] -> []
+                    let ref_type_vt = get_table_element_type(module, *table);
+                    let val = allocator.pop(&ref_type_vt);
                     let idx = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::TableRefSlot {
@@ -4959,8 +4399,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
 
                 wasmparser::Operator::TableFill { table } => {
+                    // table.fill: [i32, ref, i32] -> []
+                    let ref_type_vt = get_table_element_type(module, *table);
                     let n = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let val = allocator.pop_any_type().unwrap_or(Slot::Ref(0));
+                    let val = allocator.pop(&ref_type_vt);
                     let i = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::TableRefSlot {
@@ -4974,55 +4416,14 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
 
                 _ => {
-                    // Fall back to Legacy mode for unsupported instructions
-                    // Sync all active slots to value_stack before executing
-                    let slots_to_stack = allocator.get_active_slots();
-                    allocator.clear_stack();
-                    let (mut instr, fixup) = map_operator_to_initial_instr_and_fixup(
-                        &op,
-                        current_processed_pc,
-                        &control_info_stack,
-                        module,
-                        &mut BlockArityCache::new(),
-                        slot_allocator.as_ref(),
-                    )?;
-                    // Set slots_to_stack on the legacy instruction
-                    if let ProcessedInstr::Legacy {
-                        slots_to_stack: ref mut ss,
-                        ..
-                    } = instr
-                    {
-                        *ss = slots_to_stack;
-                    }
-                    (instr, fixup)
+                    panic!("Unsupported instruction: {:?}", op);
                 }
             }
         } else {
-            // Stack-based mode: use existing logic
-            map_operator_to_initial_instr_and_fixup(
-                &op,
-                current_processed_pc,
-                &control_info_stack,
-                module,
-                &mut BlockArityCache::new(),
-                slot_allocator.as_ref(),
-            )?
+            panic!("Slot allocator is required");
         };
 
-        // Try to apply optimization if enabled (but not for slot instructions)
-        if enable_superinstructions && matches!(processed_instr, ProcessedInstr::Legacy { .. }) {
-            try_apply_optimization(
-                &op,
-                &mut recent_instrs,
-                &mut processed_instr,
-                &mut initial_processed_instrs,
-                &mut current_processed_pc,
-                &mut ops,
-            );
-        }
-
         let processed_instr_template = processed_instr;
-        let is_legacy = matches!(processed_instr_template, ProcessedInstr::Legacy { .. });
 
         // --- Update Maps and Stacks based on operator ---
         match op {
@@ -5065,120 +4466,15 @@ fn decode_processed_instrs_and_fixups<'a>(
             _ => {}
         }
 
-        if is_legacy {
-            if let wasmparser::Operator::BrTable { ref targets } = op {
-                // Legacy BrTable handling
-                let slots_to_stack = if let ProcessedInstr::Legacy { slots_to_stack, .. } =
-                    &processed_instr_template
-                {
-                    slots_to_stack.clone()
-                } else {
-                    Vec::new()
-                };
-                let processed_instr = ProcessedInstr::Legacy {
-                    handler_index: HANDLER_IDX_BR_TABLE,
-                    operand: Operand::None,
-                    slots_to_stack,
-                    stack_to_slots: Vec::new(),
-                };
-                initial_processed_instrs.push(processed_instr);
-
-                // Get index slot for BrTable FIRST (pop from allocator before computing source_slots)
-                // All fixups share the same index_slot
-                let index_slot = if let Some(ref mut allocator) = slot_allocator {
-                    Some(allocator.pop(&ValueType::NumType(NumType::I32)))
-                } else {
-                    None
-                };
-
-                let table_targets = targets.targets().collect::<Result<Vec<_>, _>>()?;
-                for target_depth in table_targets.iter() {
-                    // Compute source_slots for this target (index already popped)
-                    let source_slots = if let Some(ref allocator) = slot_allocator {
-                        let (src_slots, _) = compute_branch_slots(
-                            &control_info_stack,
-                            *target_depth as usize,
-                            Some(allocator),
-                        );
-                        src_slots
-                    } else {
-                        Vec::new()
-                    };
-                    let fixup = FixupInfo {
-                        pc: current_processed_pc,
-                        original_wasm_depth: *target_depth as usize,
-                        is_if_false_jump: false,
-                        is_else_jump: false,
-                        source_slots,
-                        condition_slot: None,
-                        index_slot: index_slot.clone(),
-                    };
-                    initial_fixups.push(fixup);
-                }
-
-                // Compute source_slots for default target (index already popped)
-                let default_source_slots = if let Some(ref allocator) = slot_allocator {
-                    let (src_slots, _) = compute_branch_slots(
-                        &control_info_stack,
-                        targets.default() as usize,
-                        Some(allocator),
-                    );
-                    src_slots
-                } else {
-                    Vec::new()
-                };
-                let default_fixup = FixupInfo {
-                    pc: current_processed_pc,
-                    original_wasm_depth: targets.default() as usize,
-                    is_if_false_jump: false,
-                    is_else_jump: false,
-                    source_slots: default_source_slots,
-                    condition_slot: None,
-                    index_slot,
-                };
-                initial_fixups.push(default_fixup);
-            } else {
-                initial_processed_instrs.push(processed_instr_template);
-                if let Some(fixup_info) = fixup_info_opt {
-                    initial_fixups.push(fixup_info);
-                }
-            }
-        } else {
-            // Slot mode: instruction already generated, just add to list
-            initial_processed_instrs.push(processed_instr_template);
-            if let Some(fixup_info) = fixup_info_opt {
-                initial_fixups.push(fixup_info);
-            }
+        // All instructions are now slot-based
+        initial_processed_instrs.push(processed_instr_template);
+        if let Some(fixup_info) = fixup_info_opt {
+            initial_fixups.push(fixup_info);
         }
 
         // Update control_info_stack and block_result_slots_map
         match op {
-            wasmparser::Operator::Block { blockty } => {
-                // For Legacy, push to control_info_stack
-                // (slot mode already pushed in its match arm above)
-                if is_legacy {
-                    let result_slots = if slot_allocator.is_some() {
-                        let result_types = get_block_result_types(&blockty, module);
-                        if let Some(entry_state) = allocator_state_stack.last() {
-                            let mut state = entry_state.clone();
-                            result_types
-                                .iter()
-                                .map(|vtype| state.next_slot_for_type(vtype))
-                                .collect()
-                        } else {
-                            Vec::new()
-                        }
-                    } else {
-                        Vec::new()
-                    };
-                    control_info_stack.push(ControlBlockInfo {
-                        block_type: blockty,
-                        start_pc: current_processed_pc,
-                        is_loop: false,
-                        result_slots,
-                        param_slots: vec![],
-                    });
-                }
+            wasmparser::Operator::Block { .. } => {
                 // Register for BrTable resolution (always needed)
                 if let Some(block_info) = control_info_stack.last() {
                     block_result_slots_map.insert(
@@ -5187,37 +4483,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     );
                 }
             }
-            wasmparser::Operator::Loop { blockty } => {
-                if is_legacy {
-                    let (result_slots, param_slots) = if slot_allocator.is_some() {
-                        let result_types = get_block_result_types(&blockty, module);
-                        let param_types = get_block_param_types(&blockty, module);
-                        if let Some(entry_state) = allocator_state_stack.last() {
-                            let mut state = entry_state.clone();
-                            let result_slots: Vec<Slot> = result_types
-                                .iter()
-                                .map(|vtype| state.next_slot_for_type(vtype))
-                                .collect();
-                            let mut param_state = entry_state.clone();
-                            let param_slots: Vec<Slot> = param_types
-                                .iter()
-                                .map(|vtype| param_state.next_slot_for_type(vtype))
-                                .collect();
-                            (result_slots, param_slots)
-                        } else {
-                            (Vec::new(), Vec::new())
-                        }
-                    } else {
-                        (Vec::new(), Vec::new())
-                    };
-                    control_info_stack.push(ControlBlockInfo {
-                        block_type: blockty,
-                        start_pc: current_processed_pc,
-                        is_loop: true,
-                        result_slots,
-                        param_slots,
-                    });
-                }
+            wasmparser::Operator::Loop { .. } => {
                 // Register for BrTable resolution (always needed)
                 // For loops, register param_slots (used when branching to loop)
                 if let Some(block_info) = control_info_stack.last() {
@@ -5225,30 +4491,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         .insert(current_processed_pc, (block_info.param_slots.clone(), true));
                 }
             }
-            wasmparser::Operator::If { blockty } => {
-                if is_legacy {
-                    let result_slots = if slot_allocator.is_some() {
-                        let result_types = get_block_result_types(&blockty, module);
-                        if let Some(entry_state) = allocator_state_stack.last() {
-                            let mut state = entry_state.clone();
-                            result_types
-                                .iter()
-                                .map(|vtype| state.next_slot_for_type(vtype))
-                                .collect()
-                        } else {
-                            Vec::new()
-                        }
-                    } else {
-                        Vec::new()
-                    };
-                    control_info_stack.push(ControlBlockInfo {
-                        block_type: blockty,
-                        start_pc: current_processed_pc,
-                        is_loop: false,
-                        result_slots,
-                        param_slots: vec![],
-                    });
-                }
+            wasmparser::Operator::If { .. } => {
                 // Register for BrTable resolution (always needed)
                 if let Some(block_info) = control_info_stack.last() {
                     block_result_slots_map.insert(
@@ -5258,22 +4501,20 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
             }
             wasmparser::Operator::End => {
-                // Pop control_info_stack for Legacy End
-                // (slot mode End already popped in its match arm above)
-                if is_legacy && !control_info_stack.is_empty() {
-                    control_info_stack.pop();
-                }
+                // Slot mode End already popped in its match arm above
             }
             _ => {}
         }
 
-        // Track recent instructions for optimization (only for Legacy instructions)
-        if is_legacy {
-            recent_instrs.push_back((op.clone(), current_processed_pc));
-            // Keep only the last RECENT_INSTRS_WINDOW instructions
-            if recent_instrs.len() > RECENT_INSTRS_WINDOW {
-                recent_instrs.pop_front();
+        // Mark following code as unreachable after unconditional control flow
+        match op {
+            wasmparser::Operator::Br { .. }
+            | wasmparser::Operator::BrTable { .. }
+            | wasmparser::Operator::Return
+            | wasmparser::Operator::Unreachable => {
+                unreachable_depth = 1;
             }
+            _ => {}
         }
 
         current_processed_pc += 1;
@@ -5384,894 +4625,11 @@ fn compute_branch_slots(
 
     (source_slots, target_result_slots)
 }
-fn map_operator_to_initial_instr_and_fixup(
-    op: &wasmparser::Operator,
-    current_processed_pc: usize,
-    control_info_stack: &[ControlBlockInfo],
-    module: &Module,
-    cache: &mut BlockArityCache,
-    slot_allocator: Option<&SlotAllocator>,
-) -> Result<(ProcessedInstr, Option<FixupInfo>), Box<dyn std::error::Error>> {
-    let handler_index;
-    let mut operand = Operand::None;
-    let mut fixup_info = None;
-
-    match *op {
-        wasmparser::Operator::Unreachable => {
-            handler_index = HANDLER_IDX_UNREACHABLE;
-        }
-        wasmparser::Operator::Nop => {
-            handler_index = HANDLER_IDX_NOP;
-        }
-        wasmparser::Operator::Block { blockty } => {
-            handler_index = HANDLER_IDX_BLOCK;
-            let arity = calculate_block_arity(&blockty, module, cache);
-            let param_count = calculate_block_parameter_count(&blockty, module, cache);
-            operand = Operand::Block {
-                arity,
-                param_count,
-                is_loop: false,
-            };
-        }
-        wasmparser::Operator::Loop { blockty } => {
-            handler_index = HANDLER_IDX_LOOP;
-            let arity = calculate_block_arity(&blockty, module, cache); // Use block arity for loop results
-            let param_count = calculate_block_parameter_count(&blockty, module, cache);
-            operand = Operand::Block {
-                arity,
-                param_count,
-                is_loop: true,
-            };
-        }
-        wasmparser::Operator::If { blockty } => {
-            handler_index = HANDLER_IDX_IF;
-            let arity = calculate_block_arity(&blockty, module, cache);
-
-            fixup_info = Some(FixupInfo {
-                pc: current_processed_pc,
-                original_wasm_depth: 0,
-                is_if_false_jump: true,
-                is_else_jump: false,
-                source_slots: vec![],
-                condition_slot: None,
-                index_slot: None,
-            });
-            operand = Operand::LabelIdx {
-                target_ip: usize::MAX,
-                arity,
-                original_wasm_depth: 0,
-                is_loop: false,
-                source_slots: vec![],
-                target_result_slots: vec![],
-                condition_slot: None,
-            };
-        }
-        wasmparser::Operator::Else => {
-            handler_index = HANDLER_IDX_ELSE;
-            fixup_info = Some(FixupInfo {
-                pc: current_processed_pc,
-                original_wasm_depth: 0,
-                is_if_false_jump: false,
-                is_else_jump: true,
-                source_slots: vec![],
-                condition_slot: None,
-                index_slot: None,
-            });
-            operand = Operand::LabelIdx {
-                target_ip: usize::MAX,
-                arity: 0,
-                original_wasm_depth: 0,
-                is_loop: false,
-                source_slots: vec![],
-                target_result_slots: vec![],
-                condition_slot: None,
-            };
-        }
-        wasmparser::Operator::End => {
-            handler_index = HANDLER_IDX_END;
-            // Compute source_slots and target_result_slots for End (depth=0)
-            let (source_slots, target_result_slots) =
-                compute_branch_slots(control_info_stack, 0, slot_allocator);
-            operand = Operand::LabelIdx {
-                target_ip: usize::MAX, // Not used for End
-                arity: target_result_slots.len(),
-                original_wasm_depth: 0,
-                is_loop: false,
-                source_slots,
-                target_result_slots,
-                condition_slot: None,
-            };
-        }
-        wasmparser::Operator::Br { relative_depth } => {
-            handler_index = HANDLER_IDX_BR;
-            // Get target block's result_slots and compute source_slots
-            let (source_slots, target_result_slots) =
-                compute_branch_slots(control_info_stack, relative_depth as usize, slot_allocator);
-            fixup_info = Some(FixupInfo {
-                pc: current_processed_pc,
-                original_wasm_depth: relative_depth as usize,
-                is_if_false_jump: false,
-                is_else_jump: false,
-                source_slots: source_slots.clone(),
-                condition_slot: None,
-                index_slot: None,
-            });
-            operand = Operand::LabelIdx {
-                target_ip: usize::MAX,
-                arity: target_result_slots.len(),
-                original_wasm_depth: relative_depth as usize,
-                is_loop: false,
-                source_slots,
-                target_result_slots,
-                condition_slot: None,
-            };
-        }
-        wasmparser::Operator::BrIf { relative_depth } => {
-            handler_index = HANDLER_IDX_BR_IF;
-            // Get target block's result_slots and compute source_slots
-            let (source_slots, target_result_slots) =
-                compute_branch_slots(control_info_stack, relative_depth as usize, slot_allocator);
-            // Note: condition_slot is set by the caller (slot mode handling)
-            fixup_info = Some(FixupInfo {
-                pc: current_processed_pc,
-                original_wasm_depth: relative_depth as usize,
-                is_if_false_jump: false,
-                is_else_jump: false,
-                source_slots: source_slots.clone(),
-                condition_slot: None, // Set by caller
-                index_slot: None,
-            });
-            operand = Operand::LabelIdx {
-                target_ip: usize::MAX,
-                arity: target_result_slots.len(),
-                original_wasm_depth: relative_depth as usize,
-                is_loop: false,
-                source_slots,
-                target_result_slots,
-                condition_slot: None, // Set by caller
-            };
-        }
-        wasmparser::Operator::BrTable { targets: _ } => {
-            handler_index = HANDLER_IDX_BR_TABLE;
-            operand = Operand::None;
-            fixup_info = None;
-        }
-        wasmparser::Operator::Return => {
-            handler_index = HANDLER_IDX_RETURN;
-        }
-        wasmparser::Operator::Call { function_index } => {
-            handler_index = HANDLER_IDX_CALL;
-            operand = Operand::FuncIdx(FuncIdx(function_index));
-        }
-        wasmparser::Operator::CallIndirect {
-            type_index,
-            table_index,
-            ..
-        } => {
-            handler_index = HANDLER_IDX_CALL_INDIRECT;
-            operand = Operand::CallIndirect {
-                type_idx: TypeIdx(type_index),
-                table_idx: TableIdx(table_index),
-                index_slot: None, // Set by caller in slot mode
-            };
-        }
-
-        /* Parametric Instructions */
-        wasmparser::Operator::Drop => {
-            handler_index = HANDLER_IDX_DROP;
-        }
-        wasmparser::Operator::Select => {
-            handler_index = HANDLER_IDX_SELECT;
-        }
-        wasmparser::Operator::TypedSelect { .. } => {
-            handler_index = HANDLER_IDX_SELECT;
-        }
-
-        /* Variable Instructions */
-        wasmparser::Operator::LocalGet { local_index } => {
-            handler_index = HANDLER_IDX_LOCAL_GET;
-            operand = Operand::LocalIdx(LocalIdx(local_index));
-        }
-        wasmparser::Operator::LocalSet { local_index } => {
-            handler_index = HANDLER_IDX_LOCAL_SET;
-            operand = Operand::LocalIdx(LocalIdx(local_index));
-        }
-        wasmparser::Operator::LocalTee { local_index } => {
-            handler_index = HANDLER_IDX_LOCAL_TEE;
-            operand = Operand::LocalIdx(LocalIdx(local_index));
-        }
-        wasmparser::Operator::GlobalGet { global_index } => {
-            handler_index = HANDLER_IDX_GLOBAL_GET;
-            operand = Operand::GlobalIdx(GlobalIdx(global_index));
-        }
-        wasmparser::Operator::GlobalSet { global_index } => {
-            handler_index = HANDLER_IDX_GLOBAL_SET;
-            operand = Operand::GlobalIdx(GlobalIdx(global_index));
-        }
-
-        /* Memory Instructions */
-        wasmparser::Operator::I32Load { memarg } => {
-            handler_index = HANDLER_IDX_I32_LOAD;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::I64Load { memarg } => {
-            handler_index = HANDLER_IDX_I64_LOAD;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::F32Load { memarg } => {
-            handler_index = HANDLER_IDX_F32_LOAD;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::F64Load { memarg } => {
-            handler_index = HANDLER_IDX_F64_LOAD;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::I32Load8S { memarg } => {
-            handler_index = HANDLER_IDX_I32_LOAD8_S;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::I32Load8U { memarg } => {
-            handler_index = HANDLER_IDX_I32_LOAD8_U;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::I32Load16S { memarg } => {
-            handler_index = HANDLER_IDX_I32_LOAD16_S;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::I32Load16U { memarg } => {
-            handler_index = HANDLER_IDX_I32_LOAD16_U;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::I64Load8S { memarg } => {
-            handler_index = HANDLER_IDX_I64_LOAD8_S;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::I64Load8U { memarg } => {
-            handler_index = HANDLER_IDX_I64_LOAD8_U;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::I64Load16S { memarg } => {
-            handler_index = HANDLER_IDX_I64_LOAD16_S;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::I64Load16U { memarg } => {
-            handler_index = HANDLER_IDX_I64_LOAD16_U;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::I64Load32S { memarg } => {
-            handler_index = HANDLER_IDX_I64_LOAD32_S;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::I64Load32U { memarg } => {
-            handler_index = HANDLER_IDX_I64_LOAD32_U;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::I32Store { memarg } => {
-            handler_index = HANDLER_IDX_I32_STORE;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::I64Store { memarg } => {
-            handler_index = HANDLER_IDX_I64_STORE;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::F32Store { memarg } => {
-            handler_index = HANDLER_IDX_F32_STORE;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::F64Store { memarg } => {
-            handler_index = HANDLER_IDX_F64_STORE;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::I32Store8 { memarg } => {
-            handler_index = HANDLER_IDX_I32_STORE8;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::I32Store16 { memarg } => {
-            handler_index = HANDLER_IDX_I32_STORE16;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::I64Store8 { memarg } => {
-            handler_index = HANDLER_IDX_I64_STORE8;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::I64Store16 { memarg } => {
-            handler_index = HANDLER_IDX_I64_STORE16;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::I64Store32 { memarg } => {
-            handler_index = HANDLER_IDX_I64_STORE32;
-            operand = Operand::MemArg(Memarg {
-                offset: memarg.offset as u32,
-                align: memarg.align as u32,
-            });
-        }
-        wasmparser::Operator::MemorySize { .. } => {
-            handler_index = HANDLER_IDX_MEMORY_SIZE;
-        }
-        wasmparser::Operator::MemoryGrow { .. } => {
-            handler_index = HANDLER_IDX_MEMORY_GROW;
-        }
-        wasmparser::Operator::MemoryCopy { .. } => {
-            handler_index = HANDLER_IDX_MEMORY_COPY;
-        }
-        wasmparser::Operator::MemoryInit { data_index, .. } => {
-            handler_index = HANDLER_IDX_MEMORY_INIT;
-            operand = Operand::I32(data_index as i32);
-        }
-        wasmparser::Operator::MemoryFill { .. } => {
-            handler_index = HANDLER_IDX_MEMORY_FILL;
-        }
-        // TODO: DataDrop
-
-        /* Numeric Instructions */
-        wasmparser::Operator::I32Const { value } => {
-            handler_index = HANDLER_IDX_I32_CONST;
-            operand = Operand::I32(value);
-        }
-        wasmparser::Operator::I64Const { value } => {
-            handler_index = HANDLER_IDX_I64_CONST;
-            operand = Operand::I64(value);
-        }
-        wasmparser::Operator::F32Const { value } => {
-            handler_index = HANDLER_IDX_F32_CONST;
-            operand = Operand::F32(f32::from_bits(value.bits()));
-        }
-        wasmparser::Operator::F64Const { value } => {
-            handler_index = HANDLER_IDX_F64_CONST;
-            operand = Operand::F64(f64::from_bits(value.bits()));
-        }
-        wasmparser::Operator::I32Clz => {
-            handler_index = HANDLER_IDX_I32_CLZ;
-        }
-        wasmparser::Operator::I32Ctz => {
-            handler_index = HANDLER_IDX_I32_CTZ;
-        }
-        wasmparser::Operator::I32Popcnt => {
-            handler_index = HANDLER_IDX_I32_POPCNT;
-        }
-        wasmparser::Operator::I64Clz => {
-            handler_index = HANDLER_IDX_I64_CLZ;
-        }
-        wasmparser::Operator::I64Ctz => {
-            handler_index = HANDLER_IDX_I64_CTZ;
-        }
-        wasmparser::Operator::I64Popcnt => {
-            handler_index = HANDLER_IDX_I64_POPCNT;
-        }
-        wasmparser::Operator::F32Abs => {
-            handler_index = HANDLER_IDX_F32_ABS;
-        }
-        wasmparser::Operator::F32Neg => {
-            handler_index = HANDLER_IDX_F32_NEG;
-        }
-        wasmparser::Operator::F32Sqrt => {
-            handler_index = HANDLER_IDX_F32_SQRT;
-        }
-        wasmparser::Operator::F32Ceil => {
-            handler_index = HANDLER_IDX_F32_CEIL;
-        }
-        wasmparser::Operator::F32Floor => {
-            handler_index = HANDLER_IDX_F32_FLOOR;
-        }
-        wasmparser::Operator::F32Trunc => {
-            handler_index = HANDLER_IDX_F32_TRUNC;
-        }
-        wasmparser::Operator::F32Nearest => {
-            handler_index = HANDLER_IDX_F32_NEAREST;
-        }
-        wasmparser::Operator::F64Abs => {
-            handler_index = HANDLER_IDX_F64_ABS;
-        }
-        wasmparser::Operator::F64Neg => {
-            handler_index = HANDLER_IDX_F64_NEG;
-        }
-        wasmparser::Operator::F64Sqrt => {
-            handler_index = HANDLER_IDX_F64_SQRT;
-        }
-        wasmparser::Operator::F64Ceil => {
-            handler_index = HANDLER_IDX_F64_CEIL;
-        }
-        wasmparser::Operator::F64Floor => {
-            handler_index = HANDLER_IDX_F64_FLOOR;
-        }
-        wasmparser::Operator::F64Trunc => {
-            handler_index = HANDLER_IDX_F64_TRUNC;
-        }
-        wasmparser::Operator::F64Nearest => {
-            handler_index = HANDLER_IDX_F64_NEAREST;
-        }
-        wasmparser::Operator::I32Add => {
-            handler_index = HANDLER_IDX_I32_ADD;
-        }
-        wasmparser::Operator::I32Sub => {
-            handler_index = HANDLER_IDX_I32_SUB;
-        }
-        wasmparser::Operator::I32Mul => {
-            handler_index = HANDLER_IDX_I32_MUL;
-        }
-        wasmparser::Operator::I32DivS => {
-            handler_index = HANDLER_IDX_I32_DIV_S;
-        }
-        wasmparser::Operator::I32DivU => {
-            handler_index = HANDLER_IDX_I32_DIV_U;
-        }
-        wasmparser::Operator::I32RemS => {
-            handler_index = HANDLER_IDX_I32_REM_S;
-        }
-        wasmparser::Operator::I32RemU => {
-            handler_index = HANDLER_IDX_I32_REM_U;
-        }
-        wasmparser::Operator::I32And => {
-            handler_index = HANDLER_IDX_I32_AND;
-        }
-        wasmparser::Operator::I32Or => {
-            handler_index = HANDLER_IDX_I32_OR;
-        }
-        wasmparser::Operator::I32Xor => {
-            handler_index = HANDLER_IDX_I32_XOR;
-        }
-        wasmparser::Operator::I32Shl => {
-            handler_index = HANDLER_IDX_I32_SHL;
-        }
-        wasmparser::Operator::I32ShrS => {
-            handler_index = HANDLER_IDX_I32_SHR_S;
-        }
-        wasmparser::Operator::I32ShrU => {
-            handler_index = HANDLER_IDX_I32_SHR_U;
-        }
-        wasmparser::Operator::I32Rotl => {
-            handler_index = HANDLER_IDX_I32_ROTL;
-        }
-        wasmparser::Operator::I32Rotr => {
-            handler_index = HANDLER_IDX_I32_ROTR;
-        }
-        wasmparser::Operator::I64Add => {
-            handler_index = HANDLER_IDX_I64_ADD;
-        }
-        wasmparser::Operator::I64Sub => {
-            handler_index = HANDLER_IDX_I64_SUB;
-        }
-        wasmparser::Operator::I64Mul => {
-            handler_index = HANDLER_IDX_I64_MUL;
-        }
-        wasmparser::Operator::I64DivS => {
-            handler_index = HANDLER_IDX_I64_DIV_S;
-        }
-        wasmparser::Operator::I64DivU => {
-            handler_index = HANDLER_IDX_I64_DIV_U;
-        }
-        wasmparser::Operator::I64RemS => {
-            handler_index = HANDLER_IDX_I64_REM_S;
-        }
-        wasmparser::Operator::I64RemU => {
-            handler_index = HANDLER_IDX_I64_REM_U;
-        }
-        wasmparser::Operator::I64And => {
-            handler_index = HANDLER_IDX_I64_AND;
-        }
-        wasmparser::Operator::I64Or => {
-            handler_index = HANDLER_IDX_I64_OR;
-        }
-        wasmparser::Operator::I64Xor => {
-            handler_index = HANDLER_IDX_I64_XOR;
-        }
-        wasmparser::Operator::I64Shl => {
-            handler_index = HANDLER_IDX_I64_SHL;
-        }
-        wasmparser::Operator::I64ShrS => {
-            handler_index = HANDLER_IDX_I64_SHR_S;
-        }
-        wasmparser::Operator::I64ShrU => {
-            handler_index = HANDLER_IDX_I64_SHR_U;
-        }
-        wasmparser::Operator::I64Rotl => {
-            handler_index = HANDLER_IDX_I64_ROTL;
-        }
-        wasmparser::Operator::I64Rotr => {
-            handler_index = HANDLER_IDX_I64_ROTR;
-        }
-        wasmparser::Operator::F32Add => {
-            handler_index = HANDLER_IDX_F32_ADD;
-        }
-        wasmparser::Operator::F32Sub => {
-            handler_index = HANDLER_IDX_F32_SUB;
-        }
-        wasmparser::Operator::F32Mul => {
-            handler_index = HANDLER_IDX_F32_MUL;
-        }
-        wasmparser::Operator::F32Div => {
-            handler_index = HANDLER_IDX_F32_DIV;
-        }
-        wasmparser::Operator::F32Min => {
-            handler_index = HANDLER_IDX_F32_MIN;
-        }
-        wasmparser::Operator::F32Max => {
-            handler_index = HANDLER_IDX_F32_MAX;
-        }
-        wasmparser::Operator::F32Copysign => {
-            handler_index = HANDLER_IDX_F32_COPYSIGN;
-        }
-        wasmparser::Operator::F64Add => {
-            handler_index = HANDLER_IDX_F64_ADD;
-        }
-        wasmparser::Operator::F64Sub => {
-            handler_index = HANDLER_IDX_F64_SUB;
-        }
-        wasmparser::Operator::F64Mul => {
-            handler_index = HANDLER_IDX_F64_MUL;
-        }
-        wasmparser::Operator::F64Div => {
-            handler_index = HANDLER_IDX_F64_DIV;
-        }
-        wasmparser::Operator::F64Min => {
-            handler_index = HANDLER_IDX_F64_MIN;
-        }
-        wasmparser::Operator::F64Max => {
-            handler_index = HANDLER_IDX_F64_MAX;
-        }
-        wasmparser::Operator::F64Copysign => {
-            handler_index = HANDLER_IDX_F64_COPYSIGN;
-        }
-        wasmparser::Operator::I32Eqz => {
-            handler_index = HANDLER_IDX_I32_EQZ;
-        }
-        wasmparser::Operator::I64Eqz => {
-            handler_index = HANDLER_IDX_I64_EQZ;
-        }
-        wasmparser::Operator::I32Eq => {
-            handler_index = HANDLER_IDX_I32_EQ;
-        }
-        wasmparser::Operator::I32Ne => {
-            handler_index = HANDLER_IDX_I32_NE;
-        }
-        wasmparser::Operator::I32LtS => {
-            handler_index = HANDLER_IDX_I32_LT_S;
-        }
-        wasmparser::Operator::I32LtU => {
-            handler_index = HANDLER_IDX_I32_LT_U;
-        }
-        wasmparser::Operator::I32GtS => {
-            handler_index = HANDLER_IDX_I32_GT_S;
-        }
-        wasmparser::Operator::I32GtU => {
-            handler_index = HANDLER_IDX_I32_GT_U;
-        }
-        wasmparser::Operator::I32LeS => {
-            handler_index = HANDLER_IDX_I32_LE_S;
-        }
-        wasmparser::Operator::I32LeU => {
-            handler_index = HANDLER_IDX_I32_LE_U;
-        }
-        wasmparser::Operator::I32GeS => {
-            handler_index = HANDLER_IDX_I32_GE_S;
-        }
-        wasmparser::Operator::I32GeU => {
-            handler_index = HANDLER_IDX_I32_GE_U;
-        }
-        wasmparser::Operator::I64Eq => {
-            handler_index = HANDLER_IDX_I64_EQ;
-        }
-        wasmparser::Operator::I64Ne => {
-            handler_index = HANDLER_IDX_I64_NE;
-        }
-        wasmparser::Operator::I64LtS => {
-            handler_index = HANDLER_IDX_I64_LT_S;
-        }
-        wasmparser::Operator::I64LtU => {
-            handler_index = HANDLER_IDX_I64_LT_U;
-        }
-        wasmparser::Operator::I64GtS => {
-            handler_index = HANDLER_IDX_I64_GT_S;
-        }
-        wasmparser::Operator::I64GtU => {
-            handler_index = HANDLER_IDX_I64_GT_U;
-        }
-        wasmparser::Operator::I64LeS => {
-            handler_index = HANDLER_IDX_I64_LE_S;
-        }
-        wasmparser::Operator::I64LeU => {
-            handler_index = HANDLER_IDX_I64_LE_U;
-        }
-        wasmparser::Operator::I64GeS => {
-            handler_index = HANDLER_IDX_I64_GE_S;
-        }
-        wasmparser::Operator::I64GeU => {
-            handler_index = HANDLER_IDX_I64_GE_U;
-        }
-        wasmparser::Operator::F32Eq => {
-            handler_index = HANDLER_IDX_F32_EQ;
-        }
-        wasmparser::Operator::F32Ne => {
-            handler_index = HANDLER_IDX_F32_NE;
-        }
-        wasmparser::Operator::F32Lt => {
-            handler_index = HANDLER_IDX_F32_LT;
-        }
-        wasmparser::Operator::F32Gt => {
-            handler_index = HANDLER_IDX_F32_GT;
-        }
-        wasmparser::Operator::F32Le => {
-            handler_index = HANDLER_IDX_F32_LE;
-        }
-        wasmparser::Operator::F32Ge => {
-            handler_index = HANDLER_IDX_F32_GE;
-        }
-        wasmparser::Operator::F64Eq => {
-            handler_index = HANDLER_IDX_F64_EQ;
-        }
-        wasmparser::Operator::F64Ne => {
-            handler_index = HANDLER_IDX_F64_NE;
-        }
-        wasmparser::Operator::F64Lt => {
-            handler_index = HANDLER_IDX_F64_LT;
-        }
-        wasmparser::Operator::F64Gt => {
-            handler_index = HANDLER_IDX_F64_GT;
-        }
-        wasmparser::Operator::F64Le => {
-            handler_index = HANDLER_IDX_F64_LE;
-        }
-        wasmparser::Operator::F64Ge => {
-            handler_index = HANDLER_IDX_F64_GE;
-        }
-        wasmparser::Operator::I32WrapI64 => {
-            handler_index = HANDLER_IDX_I32_WRAP_I64;
-        }
-        wasmparser::Operator::I64ExtendI32U => {
-            handler_index = HANDLER_IDX_I64_EXTEND_I32_U;
-        }
-        wasmparser::Operator::I64ExtendI32S => {
-            handler_index = HANDLER_IDX_I64_EXTEND_I32_S;
-        }
-        wasmparser::Operator::I32TruncF32S => {
-            handler_index = HANDLER_IDX_I32_TRUNC_F32_S;
-        }
-        wasmparser::Operator::I32TruncF32U => {
-            handler_index = HANDLER_IDX_I32_TRUNC_F32_U;
-        }
-        wasmparser::Operator::I32TruncF64S => {
-            handler_index = HANDLER_IDX_I32_TRUNC_F64_S;
-        }
-        wasmparser::Operator::I32TruncF64U => {
-            handler_index = HANDLER_IDX_I32_TRUNC_F64_U;
-        }
-        wasmparser::Operator::I64TruncF32S => {
-            handler_index = HANDLER_IDX_I64_TRUNC_F32_S;
-        }
-        wasmparser::Operator::I64TruncF32U => {
-            handler_index = HANDLER_IDX_I64_TRUNC_F32_U;
-        }
-        wasmparser::Operator::I64TruncF64S => {
-            handler_index = HANDLER_IDX_I64_TRUNC_F64_S;
-        }
-        wasmparser::Operator::I64TruncF64U => {
-            handler_index = HANDLER_IDX_I64_TRUNC_F64_U;
-        }
-        wasmparser::Operator::I32TruncSatF32S => {
-            handler_index = HANDLER_IDX_I32_TRUNC_SAT_F32_S;
-        }
-        wasmparser::Operator::I32TruncSatF32U => {
-            handler_index = HANDLER_IDX_I32_TRUNC_SAT_F32_U;
-        }
-        wasmparser::Operator::I32TruncSatF64S => {
-            handler_index = HANDLER_IDX_I32_TRUNC_SAT_F64_S;
-        }
-        wasmparser::Operator::I32TruncSatF64U => {
-            handler_index = HANDLER_IDX_I32_TRUNC_SAT_F64_U;
-        }
-        wasmparser::Operator::I64TruncSatF32S => {
-            handler_index = HANDLER_IDX_I64_TRUNC_SAT_F32_S;
-        }
-        wasmparser::Operator::I64TruncSatF32U => {
-            handler_index = HANDLER_IDX_I64_TRUNC_SAT_F32_U;
-        }
-        wasmparser::Operator::I64TruncSatF64S => {
-            handler_index = HANDLER_IDX_I64_TRUNC_SAT_F64_S;
-        }
-        wasmparser::Operator::I64TruncSatF64U => {
-            handler_index = HANDLER_IDX_I64_TRUNC_SAT_F64_U;
-        }
-        wasmparser::Operator::F32DemoteF64 => {
-            handler_index = HANDLER_IDX_F32_DEMOTE_F64;
-        }
-        wasmparser::Operator::F64PromoteF32 => {
-            handler_index = HANDLER_IDX_F64_PROMOTE_F32;
-        }
-        wasmparser::Operator::F32ConvertI32S => {
-            handler_index = HANDLER_IDX_F32_CONVERT_I32_S;
-        }
-        wasmparser::Operator::F32ConvertI32U => {
-            handler_index = HANDLER_IDX_F32_CONVERT_I32_U;
-        }
-        wasmparser::Operator::F32ConvertI64S => {
-            handler_index = HANDLER_IDX_F32_CONVERT_I64_S;
-        }
-        wasmparser::Operator::F32ConvertI64U => {
-            handler_index = HANDLER_IDX_F32_CONVERT_I64_U;
-        }
-        wasmparser::Operator::F64ConvertI32S => {
-            handler_index = HANDLER_IDX_F64_CONVERT_I32_S;
-        }
-        wasmparser::Operator::F64ConvertI32U => {
-            handler_index = HANDLER_IDX_F64_CONVERT_I32_U;
-        }
-        wasmparser::Operator::F64ConvertI64S => {
-            handler_index = HANDLER_IDX_F64_CONVERT_I64_S;
-        }
-        wasmparser::Operator::F64ConvertI64U => {
-            handler_index = HANDLER_IDX_F64_CONVERT_I64_U;
-        }
-        wasmparser::Operator::I32ReinterpretF32 => {
-            handler_index = HANDLER_IDX_I32_REINTERPRET_F32;
-        }
-        wasmparser::Operator::I64ReinterpretF64 => {
-            handler_index = HANDLER_IDX_I64_REINTERPRET_F64;
-        }
-        wasmparser::Operator::F32ReinterpretI32 => {
-            handler_index = HANDLER_IDX_F32_REINTERPRET_I32;
-        }
-        wasmparser::Operator::F64ReinterpretI64 => {
-            handler_index = HANDLER_IDX_F64_REINTERPRET_I64;
-        }
-        wasmparser::Operator::I32Extend8S => {
-            handler_index = HANDLER_IDX_I32_EXTEND8_S;
-        }
-        wasmparser::Operator::I32Extend16S => {
-            handler_index = HANDLER_IDX_I32_EXTEND16_S;
-        }
-        wasmparser::Operator::I64Extend8S => {
-            handler_index = HANDLER_IDX_I64_EXTEND8_S;
-        }
-        wasmparser::Operator::I64Extend16S => {
-            handler_index = HANDLER_IDX_I64_EXTEND16_S;
-        }
-        wasmparser::Operator::I64Extend32S => {
-            handler_index = HANDLER_IDX_I64_EXTEND32_S;
-        }
-
-        /* Reference Instructions */
-        wasmparser::Operator::RefNull { hty } => {
-            handler_index = HANDLER_IDX_REF_NULL;
-            operand = Operand::RefType(match hty {
-                wasmparser::HeapType::Func => RefType::FuncRef,
-                wasmparser::HeapType::Extern => RefType::ExternalRef,
-                _ => RefType::ExternalRef, // Default fallback
-            });
-        }
-        wasmparser::Operator::RefIsNull => {
-            handler_index = HANDLER_IDX_REF_IS_NULL;
-        }
-        wasmparser::Operator::RefFunc { function_index } => {
-            handler_index = HANDLER_IDX_NOP;
-            operand = Operand::FuncIdx(FuncIdx(function_index));
-        }
-        wasmparser::Operator::RefEq => {
-            handler_index = HANDLER_IDX_NOP;
-            println!("Warning: Unhandled RefEq");
-        }
-
-        /* Table Instructions */
-        wasmparser::Operator::TableGet { table } => {
-            handler_index = HANDLER_IDX_TABLE_GET;
-            operand = Operand::TableIdx(TableIdx(table));
-        }
-        wasmparser::Operator::TableSet { table } => {
-            handler_index = HANDLER_IDX_TABLE_SET;
-            operand = Operand::TableIdx(TableIdx(table));
-        }
-        wasmparser::Operator::TableSize { table } => {
-            handler_index = HANDLER_IDX_NOP;
-            operand = Operand::TableIdx(TableIdx(table));
-        }
-        wasmparser::Operator::TableGrow { table } => {
-            handler_index = HANDLER_IDX_NOP;
-            operand = Operand::TableIdx(TableIdx(table));
-        }
-        wasmparser::Operator::TableFill { table } => {
-            handler_index = HANDLER_IDX_TABLE_FILL;
-            operand = Operand::TableIdx(TableIdx(table));
-        }
-        wasmparser::Operator::TableCopy {
-            dst_table: _,
-            src_table: _,
-        } => {
-            handler_index = HANDLER_IDX_NOP;
-        }
-        wasmparser::Operator::TableInit {
-            elem_index: _,
-            table: _,
-        } => {
-            handler_index = HANDLER_IDX_NOP;
-        }
-        wasmparser::Operator::ElemDrop { elem_index: _ } => {
-            handler_index = HANDLER_IDX_NOP;
-        }
-
-        _ => {
-            handler_index = HANDLER_IDX_NOP;
-        }
-    };
-
-    let processed_instr = ProcessedInstr::Legacy {
-        handler_index,
-        operand,
-        slots_to_stack: Vec::new(),
-        stack_to_slots: Vec::new(),
-    };
-    Ok((processed_instr, fixup_info))
-}
 
 pub fn parse_bytecode(
     mut module: &mut Module,
     path: &str,
     enable_superinstructions: bool,
-    execution_mode: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut current_func_index = module.num_imported_funcs;
     let mut arity_cache = BlockArityCache::new();
@@ -6342,14 +4700,14 @@ pub fn parse_bytecode(
 
             CodeSectionStart { .. } => { /* ... */ }
             CodeSectionEntry(body) => {
-                decode_code_section(
+                let result = decode_code_section(
                     body,
                     &mut module,
                     current_func_index,
                     enable_superinstructions,
-                    execution_mode,
                     &mut arity_cache,
-                )?;
+                );
+                result?;
                 current_func_index += 1;
             }
 

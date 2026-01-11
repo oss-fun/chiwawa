@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct ElemAddr(Rc<RefCell<ElemInst>>);
 #[derive(Debug)]
 pub struct ElemInst {

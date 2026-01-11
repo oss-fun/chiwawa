@@ -405,8 +405,10 @@ pub struct SlotAllocator {
     max_ref_depth: usize,
     max_v128_depth: usize,
 
-    // Stack order tracking for legacy sync
-    stack_order: Vec<Slot>,
+    // Type stack to track push order.
+    // Since depths are tracked per-type, we cannot determine which type is on top
+    // without this. Required for drop and untyped select instructions.
+    type_stack: Vec<ValueType>,
 }
 
 impl SlotAllocator {
@@ -426,7 +428,7 @@ impl SlotAllocator {
             max_f64_depth: 0,
             max_ref_depth: 0,
             max_v128_depth: 0,
-            stack_order: Vec::new(),
+            type_stack: Vec::new(),
         };
 
         // Reserve slots for local variables
@@ -456,7 +458,8 @@ impl SlotAllocator {
 
     /// Push a value onto the stack (allocate a new slot)
     pub fn push(&mut self, vtype: ValueType) -> Slot {
-        let slot = match vtype {
+        self.type_stack.push(vtype.clone());
+        match vtype {
             ValueType::NumType(NumType::I32) => {
                 let slot = Slot::I32(self.i32_depth as u16);
                 self.i32_depth += 1;
@@ -493,13 +496,10 @@ impl SlotAllocator {
                 self.max_v128_depth = self.max_v128_depth.max(self.v128_depth);
                 slot
             }
-        };
-        // Track stack order for legacy sync
-        self.stack_order.push(slot.clone());
-        slot
+        }
     }
 
-    /// Reserve a slot without adding to stack_order
+    /// Reserve a slot without tracking on type stack
     pub fn reserve(&mut self, vtype: ValueType) -> Slot {
         match vtype {
             ValueType::NumType(NumType::I32) => {
@@ -566,8 +566,7 @@ impl SlotAllocator {
 
     /// Pop a value from the stack (decrease depth and return the slot)
     pub fn pop(&mut self, vtype: &ValueType) -> Slot {
-        // Remove from stack order tracking
-        self.stack_order.pop();
+        self.type_stack.pop();
         match vtype {
             ValueType::NumType(NumType::I32) => {
                 self.i32_depth = self.i32_depth.saturating_sub(1);
@@ -596,34 +595,15 @@ impl SlotAllocator {
         }
     }
 
-    /// Pop a value of any type from the stack (uses stack_order to determine type)
-    /// Returns the popped slot, or None if stack is empty
-    pub fn pop_any_type(&mut self) -> Option<Slot> {
-        if let Some(slot) = self.stack_order.pop() {
-            match &slot {
-                Slot::I32(_) => {
-                    self.i32_depth = self.i32_depth.saturating_sub(1);
-                }
-                Slot::I64(_) => {
-                    self.i64_depth = self.i64_depth.saturating_sub(1);
-                }
-                Slot::F32(_) => {
-                    self.f32_depth = self.f32_depth.saturating_sub(1);
-                }
-                Slot::F64(_) => {
-                    self.f64_depth = self.f64_depth.saturating_sub(1);
-                }
-                Slot::Ref(_) => {
-                    self.ref_depth = self.ref_depth.saturating_sub(1);
-                }
-                Slot::V128(_) => {
-                    self.v128_depth = self.v128_depth.saturating_sub(1);
-                }
-            }
-            Some(slot)
-        } else {
-            None
-        }
+    /// Pop the top value from the stack (using type_stack to determine the type)
+    pub fn pop_any(&mut self) -> Option<Slot> {
+        let vtype = self.type_stack.last()?.clone();
+        Some(self.pop(&vtype))
+    }
+
+    /// Peek the type at the top of the stack
+    pub fn peek_type(&self) -> Option<&ValueType> {
+        self.type_stack.last()
     }
 
     /// Peek at the current stack top (without popping)
@@ -651,13 +631,80 @@ impl SlotAllocator {
         }
     }
 
-    /// Get all active slots on the stack (for syncing to legacy value_stack)
-    /// Returns slots in correct stack order (bottom to top)
-    pub fn get_active_slots(&self) -> Vec<Slot> {
-        self.stack_order.clone()
+    /// Peek slots for given types from the top of the stack
+    /// Returns slots in the same order as the input types
+    pub fn peek_slots_for_types(&self, types: &[ValueType]) -> Vec<Slot> {
+        if types.is_empty() {
+            return Vec::new();
+        }
+
+        let mut result = Vec::with_capacity(types.len());
+
+        // Count how many of each type in the input, then calculate starting indices
+        let (mut i32_idx, mut i64_idx, mut f32_idx, mut f64_idx, mut ref_idx, mut v128_idx) = {
+            let (mut i32_c, mut i64_c, mut f32_c, mut f64_c, mut ref_c, mut v128_c) =
+                (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+            for vtype in types.iter() {
+                match vtype {
+                    ValueType::NumType(NumType::I32) => i32_c += 1,
+                    ValueType::NumType(NumType::I64) => i64_c += 1,
+                    ValueType::NumType(NumType::F32) => f32_c += 1,
+                    ValueType::NumType(NumType::F64) => f64_c += 1,
+                    ValueType::RefType(_) => ref_c += 1,
+                    ValueType::VecType(_) => v128_c += 1,
+                }
+            }
+            (
+                self.i32_depth.saturating_sub(i32_c),
+                self.i64_depth.saturating_sub(i64_c),
+                self.f32_depth.saturating_sub(f32_c),
+                self.f64_depth.saturating_sub(f64_c),
+                self.ref_depth.saturating_sub(ref_c),
+                self.v128_depth.saturating_sub(v128_c),
+            )
+        };
+
+        // Iterate and assign slots
+        for vtype in types.iter() {
+            let slot = match vtype {
+                ValueType::NumType(NumType::I32) => {
+                    let s = Slot::I32(i32_idx as u16);
+                    i32_idx += 1;
+                    s
+                }
+                ValueType::NumType(NumType::I64) => {
+                    let s = Slot::I64(i64_idx as u16);
+                    i64_idx += 1;
+                    s
+                }
+                ValueType::NumType(NumType::F32) => {
+                    let s = Slot::F32(f32_idx as u16);
+                    f32_idx += 1;
+                    s
+                }
+                ValueType::NumType(NumType::F64) => {
+                    let s = Slot::F64(f64_idx as u16);
+                    f64_idx += 1;
+                    s
+                }
+                ValueType::RefType(_) => {
+                    let s = Slot::Ref(ref_idx as u16);
+                    ref_idx += 1;
+                    s
+                }
+                ValueType::VecType(_) => {
+                    let s = Slot::V128(v128_idx as u16);
+                    v128_idx += 1;
+                    s
+                }
+            };
+            result.push(slot);
+        }
+
+        result
     }
 
-    /// Clear the current stack depths (slots are consumed by legacy instruction)
+    /// Clear the current stack depths
     pub fn clear_stack(&mut self) {
         self.i32_depth = 0;
         self.i64_depth = 0;
@@ -665,7 +712,6 @@ impl SlotAllocator {
         self.f64_depth = 0;
         self.ref_depth = 0;
         self.v128_depth = 0;
-        self.stack_order.clear();
     }
 
     /// Save current stack state for block entry
@@ -677,7 +723,7 @@ impl SlotAllocator {
             f64_depth: self.f64_depth,
             ref_depth: self.ref_depth,
             v128_depth: self.v128_depth,
-            stack_order_len: self.stack_order.len(),
+            type_stack_len: self.type_stack.len(),
         }
     }
 
@@ -689,7 +735,7 @@ impl SlotAllocator {
         self.f64_depth = state.f64_depth;
         self.ref_depth = state.ref_depth;
         self.v128_depth = state.v128_depth;
-        self.stack_order.truncate(state.stack_order_len);
+        self.type_stack.truncate(state.type_stack_len);
     }
 
     /// Finalize and return allocation information
@@ -714,7 +760,7 @@ pub struct SlotAllocatorState {
     pub f64_depth: usize,
     pub ref_depth: usize,
     pub v128_depth: usize,
-    pub stack_order_len: usize,
+    pub type_stack_len: usize,
 }
 
 impl SlotAllocatorState {
