@@ -21,7 +21,7 @@ mod tests {
         let temp_file = "temp_decode_type_section.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "stack");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();
@@ -55,7 +55,7 @@ mod tests {
         let temp_file = "temp_decode_func_section.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "stack");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();
@@ -85,7 +85,7 @@ mod tests {
         let temp_file = "temp_decode_import_section.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "stack");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();
@@ -124,7 +124,7 @@ mod tests {
         let temp_file = "temp_decode_export_section.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "stack");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();
@@ -153,7 +153,7 @@ mod tests {
         let temp_file = "temp_decode_mem_section.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "stack");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();
@@ -189,7 +189,7 @@ mod tests {
         let temp_file = "temp_decode_table_section.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "stack");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();
@@ -228,7 +228,7 @@ mod tests {
         let temp_file = "temp_decode_global_section.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "stack");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();
@@ -274,7 +274,7 @@ mod tests {
         let temp_file = "temp_decode_elem_section.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "stack");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();
@@ -309,7 +309,7 @@ mod tests {
         let temp_file = "temp_decode_data_section.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "stack");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();
@@ -366,7 +366,7 @@ mod tests {
         let temp_file = "temp_decode_code_section_if_else.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "stack");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();
@@ -397,7 +397,7 @@ mod tests {
         let temp_file = "temp_decode_code_section_loop.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "stack");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();
