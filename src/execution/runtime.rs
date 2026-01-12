@@ -2,11 +2,10 @@ use crate::error::RuntimeError;
 use crate::execution::func::{FuncAddr, FuncInst};
 use crate::execution::migration;
 use crate::execution::module::ModuleInst;
-use crate::execution::slots::SlotFile;
-use crate::execution::stack::{Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, Stacks};
 use crate::execution::stats::ExecutionStats;
 use crate::execution::trace::{TraceConfig, Tracer};
 use crate::execution::value::{Num, Val, Vec_};
+use crate::execution::vm::{Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, Stacks};
 use crate::structure::module::WasiFuncType;
 use crate::structure::types::{NumType, ValueType, VecType};
 use crate::wasi::{WasiError, WasiResult};
@@ -106,11 +105,12 @@ impl Runtime {
         &mut self,
         frame_stack_idx: usize,
         called_func_addr: &mut Option<FuncAddr>,
-    ) -> Result<Result<Option<super::stack::ModuleLevelInstr>, RuntimeError>, RuntimeError> {
+    ) -> Result<Result<Option<super::vm::ModuleLevelInstr>, RuntimeError>, RuntimeError> {
+        let slot_file = &mut self.stacks.slot_file;
         let frame_stack = &mut self.stacks.activation_frame_stack[frame_stack_idx];
         let stats_ref = self.execution_stats.as_mut();
         let tracer_ref = self.tracer.as_mut();
-        frame_stack.run_dtc_loop(called_func_addr, stats_ref, tracer_ref)
+        frame_stack.run_dtc_loop(slot_file, called_func_addr, stats_ref, tracer_ref)
     }
 
     pub fn run(&mut self) -> Result<Vec<Val>, RuntimeError> {
@@ -182,141 +182,6 @@ impl Runtime {
                     }
 
                     match instr_option {
-                        Some(ModuleLevelInstr::Invoke(func_addr)) => {
-                            let func_inst_guard = func_addr.read_lock();
-                            match &*func_inst_guard {
-                                FuncInst::RuntimeFunc {
-                                    type_,
-                                    module: func_module_weak,
-                                    code,
-                                } => {
-                                    let params_len = type_.params.len();
-                                    if current_frame_stack_mut.global_value_stack.len() < params_len
-                                    {
-                                        return Err(RuntimeError::ValueStackUnderflow);
-                                    }
-                                    let params =
-                                        current_frame_stack_mut.global_value_stack.split_off(
-                                            current_frame_stack_mut.global_value_stack.len()
-                                                - params_len,
-                                        );
-
-                                    let mut locals = params;
-                                    for v in code.locals.iter() {
-                                        for _ in 0..(v.0) {
-                                            locals.push(Val::default_value(&v.1)?);
-                                        }
-                                    }
-
-                                    // Initialize SlotFile from slot_allocation if available
-                                    let slot_file = code
-                                        .slot_allocation
-                                        .as_ref()
-                                        .map(|alloc| SlotFile::from_allocation(alloc));
-
-                                    let new_frame = FrameStack {
-                                        frame: Frame {
-                                            locals,
-                                            module: func_module_weak.clone(),
-                                            n: type_.results.len(),
-                                            slot_file,
-                                            result_slot: code.result_slot.clone(),
-                                        },
-                                        label_stack: vec![LabelStack {
-                                            label: Label {
-                                                locals_num: type_.results.len(),
-                                                arity: type_.results.len(),
-                                                is_loop: false,
-                                                stack_height: 0, // Function level starts with empty stack
-                                                return_ip: 0, // No return needed for function level
-                                            },
-                                            processed_instrs: code.body.clone(),
-                                            value_stack: vec![],
-                                            ip: 0,
-                                        }],
-                                        void: type_.results.is_empty(),
-                                        instruction_count: 0,
-                                        global_value_stack: vec![], // Will be set up after frame creation
-                                        enable_checkpoint: self.enable_checkpoint,
-                                    };
-                                    self.stacks.activation_frame_stack.push(new_frame);
-                                }
-                                FuncInst::HostFunc { type_, host_code } => {
-                                    let params_len = type_.params.len();
-                                    if current_frame_stack_mut.global_value_stack.len() < params_len
-                                    {
-                                        panic!(
-                                            "ValueStackUnderflow at HostFunc Invoke: stack_len={}, params_len={}",
-                                            current_frame_stack_mut.global_value_stack.len(),
-                                            params_len
-                                        );
-                                    }
-                                    let params =
-                                        current_frame_stack_mut.global_value_stack.split_off(
-                                            current_frame_stack_mut.global_value_stack.len()
-                                                - params_len,
-                                        );
-                                    match host_code(params) {
-                                        Ok(results) => {
-                                            current_frame_stack_mut
-                                                .global_value_stack
-                                                .extend(results);
-                                            current_frame_stack_mut.apply_call_stack_to_slots();
-                                        }
-                                        Err(e) => return Err(e),
-                                    }
-                                }
-                                FuncInst::WasiFunc {
-                                    type_,
-                                    wasi_func_addr,
-                                } => {
-                                    let params_len = type_.params.len();
-                                    if current_frame_stack_mut.global_value_stack.len() < params_len
-                                    {
-                                        return Err(RuntimeError::ValueStackUnderflow);
-                                    }
-                                    let params =
-                                        current_frame_stack_mut.global_value_stack.split_off(
-                                            current_frame_stack_mut.global_value_stack.len()
-                                                - params_len,
-                                        );
-
-                                    let wasi_func_type = wasi_func_addr.func_type.clone();
-                                    drop(func_inst_guard); // Release the lock before calling WASI function
-
-                                    // Call WASI function
-                                    match self.call_wasi_function(&wasi_func_type, params) {
-                                        Ok(result) => {
-                                            let current_frame_stack_mut = self
-                                                .stacks
-                                                .activation_frame_stack
-                                                .last_mut()
-                                                .unwrap();
-                                            if let Some(val) = result {
-                                                current_frame_stack_mut
-                                                    .global_value_stack
-                                                    .push(val);
-                                            }
-                                            current_frame_stack_mut.apply_call_stack_to_slots();
-                                        }
-                                        Err(WasiError::ProcessExit(_code)) => {
-                                            return Err(RuntimeError::ExecutionFailed(
-                                                "Process exit",
-                                            ));
-                                        }
-                                        Err(e) => {
-                                            eprintln!(
-                                                "WASI function failed: {:?}, error: {:?}",
-                                                wasi_func_type, e
-                                            );
-                                            return Err(RuntimeError::ExecutionFailed(
-                                                "WASI function failed",
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                        }
                         Some(ModuleLevelInstr::InvokeWasiSlot {
                             wasi_func_type,
                             params,
@@ -326,14 +191,8 @@ impl Runtime {
                             match self.call_wasi_function(&wasi_func_type, params) {
                                 Ok(result) => {
                                     if let Some(slot) = result_slot {
-                                        let current_frame =
-                                            self.stacks.activation_frame_stack.last_mut().unwrap();
-                                        if let Some(ref mut slot_file) =
-                                            current_frame.frame.slot_file
-                                        {
-                                            if let Some(val) = result {
-                                                slot_file.set_val(&slot, &val);
-                                            }
+                                        if let Some(val) = result {
+                                            self.stacks.slot_file.set_val(&slot, &val);
                                         }
                                     }
                                 }
@@ -348,58 +207,120 @@ impl Runtime {
                                 }
                             }
                         }
-                        Some(ModuleLevelInstr::Return) => {
-                            let finished_frame = self.stacks.activation_frame_stack.pop().unwrap();
-                            let expected_n = finished_frame.frame.n;
+                        Some(ModuleLevelInstr::InvokeSlot {
+                            func_addr,
+                            params,
+                            result_slots,
+                        }) => {
+                            // Slot-based function invocation - params already extracted
+                            let func_inst_guard = func_addr.read_lock();
+                            match &*func_inst_guard {
+                                FuncInst::RuntimeFunc {
+                                    type_,
+                                    module: func_module_weak,
+                                    code,
+                                } => {
+                                    let mut locals = params;
+                                    for v in code.locals.iter() {
+                                        for _ in 0..(v.0) {
+                                            locals.push(Val::default_value(&v.1)?);
+                                        }
+                                    }
 
-                            if finished_frame.global_value_stack.len() < expected_n {
-                                return Err(RuntimeError::Trap);
-                            }
-                            let values_to_pass = finished_frame
-                                .global_value_stack
-                                .iter()
-                                .rev()
-                                .take(expected_n)
-                                .cloned()
-                                .collect::<Vec<_>>()
-                                .into_iter()
-                                .rev()
-                                .collect();
+                                    if let Some(ref alloc) = code.slot_allocation {
+                                        self.stacks.slot_file.save_offsets(alloc);
+                                    }
 
-                            if self.stacks.activation_frame_stack.is_empty() {
-                                return Ok(values_to_pass);
-                            } else {
-                                let caller_frame =
-                                    self.stacks.activation_frame_stack.last_mut().unwrap();
-                                caller_frame.global_value_stack.extend(values_to_pass);
-                                caller_frame.apply_call_stack_to_slots();
+                                    // Store result_slots in caller frame
+                                    if let Some(caller) =
+                                        self.stacks.activation_frame_stack.last_mut()
+                                    {
+                                        caller.result_slots = result_slots;
+                                    }
+                                    let new_frame = FrameStack {
+                                        frame: Frame {
+                                            locals,
+                                            module: func_module_weak.clone(),
+                                            n: type_.results.len(),
+                                            result_slot: code.result_slot.clone(),
+                                        },
+                                        label_stack: vec![LabelStack {
+                                            label: Label {
+                                                locals_num: type_.results.len(),
+                                                arity: type_.results.len(),
+                                                is_loop: false,
+                                                stack_height: 0,
+                                                return_ip: 0,
+                                            },
+                                            processed_instrs: code.body.clone(),
+                                            ip: 0,
+                                        }],
+                                        void: type_.results.is_empty(),
+                                        instruction_count: 0,
+                                        enable_checkpoint: self.enable_checkpoint,
+                                        result_slots: vec![],
+                                        return_result_slots: vec![],
+                                    };
+                                    self.stacks.activation_frame_stack.push(new_frame);
+                                }
+                                FuncInst::HostFunc { host_code, .. } => {
+                                    // Host function with slot-based params
+                                    match host_code(params) {
+                                        Ok(results) => {
+                                            // Write results directly to slots
+                                            for (slot, val) in
+                                                result_slots.iter().zip(results.iter())
+                                            {
+                                                self.stacks.slot_file.set_val(slot, val);
+                                            }
+                                        }
+                                        Err(e) => return Err(e),
+                                    }
+                                }
+                                FuncInst::WasiFunc { .. } => {
+                                    return Err(RuntimeError::ExecutionFailed(
+                                        "WASI function called via InvokeSlot - use CallWasiSlot",
+                                    ));
+                                }
                             }
                         }
-                        None => {
+                        Some(ModuleLevelInstr::Return) | None => {
+                            // Pop slot file frame but keep reference for reading return values
                             let finished_frame = self.stacks.activation_frame_stack.pop().unwrap();
                             let expected_n = finished_frame.frame.n;
-
-                            if finished_frame.global_value_stack.len() < expected_n {
-                                return Err(RuntimeError::Trap);
-                            }
-                            let values_to_pass = finished_frame
-                                .global_value_stack
-                                .iter()
-                                .rev()
-                                .take(expected_n)
-                                .cloned()
-                                .collect::<Vec<_>>()
-                                .into_iter()
-                                .rev()
-                                .collect();
+                            let return_result_slots = finished_frame.return_result_slots.clone();
 
                             if self.stacks.activation_frame_stack.is_empty() {
+                                // Read values from slots before restoring
+                                let values_to_pass: Vec<Val> = return_result_slots
+                                    .iter()
+                                    .take(expected_n)
+                                    .map(|slot| self.stacks.slot_file.get_val(slot))
+                                    .collect();
+                                self.stacks.slot_file.restore_offsets();
                                 return Ok(values_to_pass);
                             } else {
-                                let caller_frame =
-                                    self.stacks.activation_frame_stack.last_mut().unwrap();
-                                caller_frame.global_value_stack.extend(values_to_pass);
-                                caller_frame.apply_call_stack_to_slots();
+                                // First read values from finished frame's slots (before restore)
+                                let values_to_pass: Vec<Val> = return_result_slots
+                                    .iter()
+                                    .map(|slot| self.stacks.slot_file.get_val(slot))
+                                    .collect();
+
+                                // Restore offsets to caller's frame
+                                self.stacks.slot_file.restore_offsets();
+
+                                // Write to caller's slots (after restore, in caller's coordinate system)
+                                let (slot_file, frames) = self.stacks.get_slot_file_and_frames();
+                                let caller_frame = frames.last_mut().unwrap();
+
+                                if !caller_frame.result_slots.is_empty() {
+                                    for (caller_slot, val) in
+                                        caller_frame.result_slots.iter().zip(values_to_pass.iter())
+                                    {
+                                        slot_file.set_val(caller_slot, val);
+                                    }
+                                    caller_frame.result_slots.clear();
+                                }
                             }
                         }
                     }

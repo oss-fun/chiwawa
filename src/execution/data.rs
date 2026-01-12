@@ -18,4 +18,8 @@ impl DataAddr {
     pub fn get_data(&self) -> Vec<u8> {
         self.0.borrow()._data.clone()
     }
+
+    pub fn drop_data(&self) {
+        self.0.borrow_mut()._data.clear();
+    }
 }

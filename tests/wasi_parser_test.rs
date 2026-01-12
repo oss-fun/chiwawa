@@ -97,7 +97,7 @@ mod tests {
         let temp_file = "temp_wasi_proc_exit.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "slot");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();
@@ -136,7 +136,7 @@ mod tests {
         let temp_file = "temp_wasi_fd_write.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "slot");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();
@@ -177,7 +177,7 @@ mod tests {
         let temp_file = "temp_wasi_fd_read.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "slot");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();
@@ -216,7 +216,7 @@ mod tests {
         let temp_file = "temp_wasi_random_get.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "slot");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();
@@ -259,7 +259,7 @@ mod tests {
         let temp_file = "temp_wasi_multiple_imports.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "slot");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();
@@ -307,7 +307,7 @@ mod tests {
         let temp_file = "temp_wasi_mixed_imports.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "slot");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();
@@ -362,7 +362,7 @@ mod tests {
         let temp_file = "temp_wasi_unknown.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "slot");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();
@@ -391,7 +391,7 @@ mod tests {
         let temp_file = "temp_wasi_type_validation_correct.wasm";
         std::fs::write(temp_file, &binary).unwrap();
 
-        let result = parser::parse_bytecode(&mut module, temp_file, true, "slot");
+        let result = parser::parse_bytecode(&mut module, temp_file, true);
         assert!(result.is_ok());
 
         std::fs::remove_file(temp_file).unwrap();

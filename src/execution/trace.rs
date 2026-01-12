@@ -2,8 +2,8 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::path::Path;
 
-use super::stack::*;
 use super::value::Val;
+use super::vm::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TraceEvent {

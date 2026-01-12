@@ -10,8 +10,6 @@ use rustc_hash::FxHashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-pub struct Results(Option<Vec<Val>>);
-
 pub struct ModuleInst {
     pub types: Rc<Vec<FuncType>>,
     pub func_addrs: Vec<FuncAddr>,

@@ -1,7 +1,7 @@
 use rustc_hash::FxHashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::stack::*;
+use super::vm::*;
 
 #[derive(Debug)]
 pub struct ExecutionStats {
