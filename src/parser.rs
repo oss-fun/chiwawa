@@ -5,7 +5,7 @@ use wasmparser::{
 };
 
 use crate::error::{ParserError, RuntimeError};
-use crate::execution::slots::{Slot, SlotAllocator};
+use crate::execution::regs::{Reg, RegAllocator};
 use crate::execution::vm::*;
 use crate::structure::{instructions::*, module::*, types::*};
 use itertools::Itertools;
@@ -13,13 +13,13 @@ use rustc_hash::FxHashMap;
 use std::rc::Rc;
 use std::sync::LazyLock;
 
-/// Control block information for tracking result slots
+/// Control block information for tracking result registers
 #[derive(Debug, Clone)]
 struct ControlBlockInfo {
     block_type: wasmparser::BlockType,
     is_loop: bool,
-    result_slots: Vec<Slot>,
-    param_slots: Vec<Slot>,
+    result_regs: Vec<Reg>,
+    param_regs: Vec<Reg>,
 }
 
 // Cache key for block type arity calculations
@@ -250,8 +250,8 @@ fn decode_func_section(
             type_: typeidx,
             locals: Vec::new(),
             body: Rc::new(Vec::new()),
-            slot_allocation: None,
-            result_slot: None,
+            reg_allocation: None,
+            result_reg: None,
         });
     }
 
@@ -557,7 +557,7 @@ fn decode_code_section(
     let ops_reader = body.get_operators_reader()?;
     let ops_iter = ops_reader.into_iter_with_offsets();
 
-    // Get the function's parameter and result types for slot allocation
+    // Get the function's parameter and result types for register allocation
     let relative_func_index_pre = func_index - module.num_imported_funcs;
     let (param_types, result_types): (Vec<ValueType>, Vec<ValueType>) =
         if let Some(func) = module.funcs.get(relative_func_index_pre) {
@@ -577,9 +577,9 @@ fn decode_code_section(
         block_end_map,
         if_else_map,
         block_type_map,
-        slot_allocation,
-        result_slot,
-        block_result_slots_map,
+        reg_allocation,
+        result_reg,
+        block_result_regs_map,
     ) = decode_processed_instrs_and_fixups(
         ops_iter,
         module,
@@ -604,7 +604,7 @@ fn decode_code_section(
         &block_end_map,
         &if_else_map,
         &block_type_map,
-        &block_result_slots_map,
+        &block_result_regs_map,
         module,
         cache,
     )
@@ -615,9 +615,9 @@ fn decode_code_section(
     // Store function body and metadata in module
     if let Some(func) = module.funcs.get_mut(relative_func_index) {
         func.body = body_rc;
-        // Store slot mode metadata (None for stack mode)
-        func.slot_allocation = slot_allocation.clone();
-        func.result_slot = result_slot;
+        // Store register mode metadata (None for stack mode)
+        func.reg_allocation = reg_allocation.clone();
+        func.result_reg = result_reg;
     } else {
         return Err(Box::new(RuntimeError::InvalidWasm(
             "Invalid function index when storing body",
@@ -633,7 +633,7 @@ struct FixupInfo {
     original_wasm_depth: usize,
     is_if_false_jump: bool,
     is_else_jump: bool,
-    source_slots: Vec<Slot>,
+    source_regs: Vec<Reg>,
 }
 
 // Phase 2: Resolve Br, BrIf, If, Else jumps using maps and control stack simulation
@@ -644,7 +644,7 @@ fn preprocess_instructions(
     block_end_map: &FxHashMap<usize, usize>,
     if_else_map: &FxHashMap<usize, usize>,
     block_type_map: &FxHashMap<usize, wasmparser::BlockType>,
-    block_result_slots_map: &FxHashMap<usize, (Vec<Slot>, bool)>,
+    block_result_regs_map: &FxHashMap<usize, (Vec<Reg>, bool)>,
     module: &Module,
     cache: &mut BlockArityCache,
 ) -> Result<(), RuntimeError> {
@@ -699,34 +699,34 @@ fn preprocess_instructions(
             // Set target_ip to end of function (processed.len())
             let function_end_ip = processed.len();
             if let Some(instr_to_patch) = processed.get_mut(current_fixup_pc) {
-                if let ProcessedInstr::BrSlot {
+                if let ProcessedInstr::BrReg {
                     target_ip: ref mut tip,
                     ..
                 } = instr_to_patch
                 {
                     *tip = function_end_ip;
-                } else if let ProcessedInstr::BrIfSlot {
+                } else if let ProcessedInstr::BrIfReg {
                     target_ip: ref mut tip,
                     ..
                 } = instr_to_patch
                 {
                     *tip = function_end_ip;
                 } else if is_if_false_jump {
-                    if !matches!(instr_to_patch, ProcessedInstr::IfSlot { .. }) {
+                    if !matches!(instr_to_patch, ProcessedInstr::IfReg { .. }) {
                         fixups[fixup_index].original_wasm_depth = usize::MAX;
                         continue;
                     }
                 } else if is_else_jump {
-                    if !matches!(instr_to_patch, ProcessedInstr::JumpSlot { .. }) {
+                    if !matches!(instr_to_patch, ProcessedInstr::JumpReg { .. }) {
                         fixups[fixup_index].original_wasm_depth = usize::MAX;
                         continue;
                     }
                 } else if !matches!(
                     instr_to_patch,
-                    ProcessedInstr::JumpSlot { .. }
-                        | ProcessedInstr::IfSlot { .. }
-                        | ProcessedInstr::BrSlot { .. }
-                        | ProcessedInstr::BrIfSlot { .. }
+                    ProcessedInstr::JumpReg { .. }
+                        | ProcessedInstr::IfReg { .. }
+                        | ProcessedInstr::BrReg { .. }
+                        | ProcessedInstr::BrIfReg { .. }
                 ) {
                     fixups[fixup_index].original_wasm_depth = usize::MAX;
                     continue;
@@ -746,7 +746,7 @@ fn preprocess_instructions(
             current_control_stack_pass2[target_stack_level];
 
         // Calculate target IP
-        // Note: block_end_map already stores End + 1 position (the instruction after EndSlot)
+        // Note: block_end_map already stores End + 1 position (the instruction after EndReg)
         let target_ip = if is_loop {
             target_start_pc
         } else {
@@ -757,13 +757,13 @@ fn preprocess_instructions(
 
         // Patch the instruction operand
         if let Some(instr_to_patch) = processed.get_mut(current_fixup_pc) {
-            // Skip fixup for slot-based instructions (except those that need fixup)
+            // Skip fixup for register-based instructions (except those that need fixup)
             if !matches!(
                 instr_to_patch,
-                ProcessedInstr::JumpSlot { .. }
-                    | ProcessedInstr::IfSlot { .. }
-                    | ProcessedInstr::BrSlot { .. }
-                    | ProcessedInstr::BrIfSlot { .. }
+                ProcessedInstr::JumpReg { .. }
+                    | ProcessedInstr::IfReg { .. }
+                    | ProcessedInstr::BrReg { .. }
+                    | ProcessedInstr::BrIfReg { .. }
             ) {
                 fixups[fixup_index].original_wasm_depth = usize::MAX;
                 continue;
@@ -775,7 +775,7 @@ fn preprocess_instructions(
                 let else_target = *if_else_map.get(&target_start_pc).unwrap_or(&target_ip);
                 let has_else = else_target != target_ip;
 
-                if let ProcessedInstr::IfSlot {
+                if let ProcessedInstr::IfReg {
                     else_target_ip: ref mut tip,
                     has_else: ref mut he,
                     ..
@@ -785,7 +785,7 @@ fn preprocess_instructions(
                     *he = has_else;
                 }
             } else if is_else_jump {
-                if let ProcessedInstr::JumpSlot {
+                if let ProcessedInstr::JumpReg {
                     target_ip: ref mut tip,
                 } = instr_to_patch
                 {
@@ -793,13 +793,13 @@ fn preprocess_instructions(
                 }
             } else {
                 // Br or BrIf instruction
-                if let ProcessedInstr::BrSlot {
+                if let ProcessedInstr::BrReg {
                     target_ip: ref mut tip,
                     ..
                 } = instr_to_patch
                 {
                     *tip = target_ip;
-                } else if let ProcessedInstr::BrIfSlot {
+                } else if let ProcessedInstr::BrIfReg {
                     target_ip: ref mut tip,
                     ..
                 } = instr_to_patch
@@ -845,13 +845,13 @@ fn preprocess_instructions(
             }
 
             // Check if it's a BrTable needing resolution *after* simulating stack for current pc
-            let needs_br_table_resolution = matches!(instr, ProcessedInstr::BrTableSlot { .. });
+            let needs_br_table_resolution = matches!(instr, ProcessedInstr::BrTableReg { .. });
 
             if needs_br_table_resolution {
-                // Handle BrTableSlot directly without using fixups
-                if matches!(instr, ProcessedInstr::BrTableSlot { .. }) {
-                    // Clone targets to get relative depths and existing result_slots
-                    let (targets_clone, default_info) = if let ProcessedInstr::BrTableSlot {
+                // Handle BrTableReg directly without using fixups
+                if matches!(instr, ProcessedInstr::BrTableReg { .. }) {
+                    // Clone targets to get relative depths and existing result_regs
+                    let (targets_clone, default_info) = if let ProcessedInstr::BrTableReg {
                         targets,
                         default_target,
                         ..
@@ -862,14 +862,14 @@ fn preprocess_instructions(
                         continue;
                     };
                     let default_depth = default_info.0 as usize;
-                    let default_result_slots = default_info.2;
+                    let default_result_regs = default_info.2;
 
-                    // Compute target_ip for each target (keeping existing result_slots)
-                    let mut resolved_slot_targets: Vec<(u32, usize, Vec<Slot>)> = Vec::new();
-                    for (rel_depth, _, result_slots) in targets_clone.iter() {
+                    // Compute target_ip for each target (keeping existing result_regs)
+                    let mut resolved_reg_targets: Vec<(u32, usize, Vec<Reg>)> = Vec::new();
+                    for (rel_depth, _, result_regs) in targets_clone.iter() {
                         let depth = *rel_depth as usize;
                         if current_control_stack_pass3.len() <= depth {
-                            resolved_slot_targets.push((*rel_depth, 0, result_slots.clone())); // Invalid
+                            resolved_reg_targets.push((*rel_depth, 0, result_regs.clone())); // Invalid
                             continue;
                         }
                         let target_stack_level = current_control_stack_pass3.len() - 1 - depth;
@@ -881,7 +881,7 @@ fn preprocess_instructions(
                         } else {
                             *block_end_map.get(&target_start_pc).unwrap_or(&0)
                         };
-                        resolved_slot_targets.push((*rel_depth, target_ip, result_slots.clone()));
+                        resolved_reg_targets.push((*rel_depth, target_ip, result_regs.clone()));
                     }
 
                     // Compute target_ip for default target
@@ -900,20 +900,17 @@ fn preprocess_instructions(
                         }
                     };
 
-                    // Update BrTableSlot
+                    // Update BrTableReg
                     if let Some(instr_to_patch) = processed.get_mut(pc) {
-                        if let ProcessedInstr::BrTableSlot {
-                            targets: ref mut slot_targets,
-                            default_target: ref mut slot_default,
+                        if let ProcessedInstr::BrTableReg {
+                            targets: ref mut reg_targets,
+                            default_target: ref mut reg_default,
                             ..
                         } = instr_to_patch
                         {
-                            *slot_targets = resolved_slot_targets;
-                            *slot_default = (
-                                default_depth as u32,
-                                default_target_ip,
-                                default_result_slots,
-                            );
+                            *reg_targets = resolved_reg_targets;
+                            *reg_default =
+                                (default_depth as u32, default_target_ip, default_result_regs);
                         }
                     }
                     // Mark the fixup as processed
@@ -974,12 +971,12 @@ fn preprocess_instructions(
                         calculate_block_arity(&target_block_type, module, cache)
                     };
 
-                    // Get source_slots from fixup (computed at BrTable creation time)
-                    let source_slots = fixups[default_fixup_idx].source_slots.clone();
-                    // Get target_result_slots from block_result_slots_map
-                    let target_result_slots = block_result_slots_map
+                    // Get source_regs from fixup (computed at BrTable creation time)
+                    let source_regs = fixups[default_fixup_idx].source_regs.clone();
+                    // Get target_result_regs from block_result_regs_map
+                    let target_result_regs = block_result_regs_map
                         .get(&target_start_pc)
-                        .map(|(slots, _)| slots.clone())
+                        .map(|(regs, _)| regs.clone())
                         .unwrap_or_default();
 
                     fixups[default_fixup_idx].original_wasm_depth = usize::MAX;
@@ -989,9 +986,9 @@ fn preprocess_instructions(
                         arity: target_arity,
                         original_wasm_depth: fixup_depth,
                         is_loop: is_loop, // Use default target's loop/block information
-                        source_slots,
-                        target_result_slots,
-                        condition_slot: None,
+                        source_regs,
+                        target_result_regs,
+                        cond_reg: None,
                     }
                 };
 
@@ -1031,12 +1028,12 @@ fn preprocess_instructions(
                             calculate_block_arity(&target_block_type, module, cache)
                         };
 
-                        // Get source_slots from fixup (computed at BrTable creation time)
-                        let source_slots = fixups[fixup_idx].source_slots.clone();
-                        // Get target_result_slots from block_result_slots_map
-                        let target_result_slots = block_result_slots_map
+                        // Get source_regs from fixup (computed at BrTable creation time)
+                        let source_regs = fixups[fixup_idx].source_regs.clone();
+                        // Get target_result_regs from block_result_regs_map
+                        let target_result_regs = block_result_regs_map
                             .get(&target_start_pc)
-                            .map(|(slots, _)| slots.clone())
+                            .map(|(regs, _)| regs.clone())
                             .unwrap_or_default();
 
                         fixups[fixup_idx].original_wasm_depth = usize::MAX;
@@ -1046,9 +1043,9 @@ fn preprocess_instructions(
                             arity: target_arity,
                             original_wasm_depth: fixup_depth,
                             is_loop: is_loop,
-                            source_slots,
-                            target_result_slots,
-                            condition_slot: None,
+                            source_regs,
+                            target_result_regs,
+                            cond_reg: None,
                         }
                     };
                     resolved_targets.push(target_operand);
@@ -1056,26 +1053,26 @@ fn preprocess_instructions(
 
                 // --- Patch BrTable Instruction ---
                 if let Some(instr_to_patch) = processed.get_mut(pc) {
-                    if let ProcessedInstr::BrTableSlot {
-                        targets: ref mut slot_targets,
-                        default_target: ref mut slot_default,
+                    if let ProcessedInstr::BrTableReg {
+                        targets: ref mut reg_targets,
+                        default_target: ref mut reg_default,
                         ..
                     } = instr_to_patch
                     {
-                        // Extract target_ip and target_result_slots from resolved_targets (Operand::LabelIdx)
+                        // Extract target_ip and target_result_regs from resolved_targets (Operand::LabelIdx)
                         for (i, operand) in resolved_targets.iter().enumerate() {
                             if let Operand::LabelIdx {
                                 target_ip,
                                 original_wasm_depth,
-                                target_result_slots,
+                                target_result_regs,
                                 ..
                             } = operand
                             {
-                                if i < slot_targets.len() {
-                                    slot_targets[i] = (
+                                if i < reg_targets.len() {
+                                    reg_targets[i] = (
                                         *original_wasm_depth as u32,
                                         *target_ip,
-                                        target_result_slots.clone(),
+                                        target_result_regs.clone(),
                                     );
                                 }
                             }
@@ -1084,14 +1081,14 @@ fn preprocess_instructions(
                         if let Operand::LabelIdx {
                             target_ip,
                             original_wasm_depth,
-                            target_result_slots,
+                            target_result_regs,
                             ..
                         } = &default_target_operand
                         {
-                            *slot_default = (
+                            *reg_default = (
                                 *original_wasm_depth as u32,
                                 *target_ip,
-                                target_result_slots.clone(),
+                                target_result_regs.clone(),
                             );
                         }
                     }
@@ -1205,9 +1202,9 @@ fn decode_processed_instrs_and_fixups<'a>(
         FxHashMap<usize, usize>,
         FxHashMap<usize, usize>,
         FxHashMap<usize, wasmparser::BlockType>,
-        Option<crate::execution::slots::SlotAllocation>,
-        Option<crate::execution::slots::Slot>, // result_slot
-        FxHashMap<usize, (Vec<Slot>, bool)>, // block_result_slots_map: block_start_pc -> (result_slots, is_loop)
+        Option<crate::execution::regs::RegAllocation>,
+        Option<crate::execution::regs::Reg>, // result_reg
+        FxHashMap<usize, (Vec<Reg>, bool)>, // block_result_regs_map: block_start_pc -> (result_regs, is_loop)
     ),
     Box<dyn std::error::Error>,
 > {
@@ -1215,22 +1212,22 @@ fn decode_processed_instrs_and_fixups<'a>(
     let mut initial_processed_instrs = Vec::new();
     let mut initial_fixups = Vec::new();
     let mut current_processed_pc = 0;
-    // Control block stack with result slots
+    // Control block stack with result registers
     let mut control_info_stack: Vec<ControlBlockInfo> = Vec::new();
 
     let mut block_end_map: FxHashMap<usize, usize> = FxHashMap::default();
     let mut if_else_map: FxHashMap<usize, usize> = FxHashMap::default();
     let mut block_type_map: FxHashMap<usize, wasmparser::BlockType> = FxHashMap::default();
     let mut control_stack_for_map_building: Vec<(usize, bool, Option<usize>)> = Vec::new();
-    // Map from block_start_pc to (result_slots, is_loop) for BrTable resolution in Pass 3
-    let mut block_result_slots_map: FxHashMap<usize, (Vec<Slot>, bool)> = FxHashMap::default();
+    // Map from block_start_pc to (result_regs, is_loop) for BrTable resolution in Pass 3
+    let mut block_result_regs_map: FxHashMap<usize, (Vec<Reg>, bool)> = FxHashMap::default();
 
-    // Initialize slot allocator (always used since Legacy mode is removed)
-    use crate::execution::slots::SlotAllocator;
-    let mut slot_allocator = Some(SlotAllocator::new(locals));
+    // Initialize register allocator (always used since Legacy mode is removed)
+    use crate::execution::regs::RegAllocator;
+    let mut reg_allocator = Some(RegAllocator::new(locals));
 
     // Track allocator state at block entry for proper restoration on block exit
-    let mut allocator_state_stack: Vec<crate::execution::slots::SlotAllocatorState> = Vec::new();
+    let mut allocator_state_stack: Vec<crate::execution::regs::RegAllocatorState> = Vec::new();
 
     // Track unreachable code depth (after br, return, unreachable, br_table)
     let mut unreachable_depth: usize = 0;
@@ -1266,15 +1263,15 @@ fn decode_processed_instrs_and_fixups<'a>(
                 _ => {}
             }
             if unreachable_depth > 0 {
-                initial_processed_instrs.push(ProcessedInstr::NopSlot);
+                initial_processed_instrs.push(ProcessedInstr::NopReg);
                 current_processed_pc += 1;
                 continue;
             }
         }
 
         // Get the processed instruction based on execution mode
-        let (processed_instr, fixup_info_opt) = if let Some(ref mut allocator) = slot_allocator {
-            // Slot-based mode: convert i32 instructions to slot format
+        let (processed_instr, fixup_info_opt) = if let Some(ref mut allocator) = reg_allocator {
+            // Register-based mode: convert i32 instructions to register format
             match &op {
                 wasmparser::Operator::LocalGet { local_index } => {
                     let local_type = get_local_type(param_types, locals, *local_index);
@@ -1282,10 +1279,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::NumType(NumType::I32) => {
                             let dst = allocator.push(local_type);
                             (
-                                ProcessedInstr::I32Slot {
+                                ProcessedInstr::I32Reg {
                                     handler_index: HANDLER_IDX_LOCAL_GET,
                                     dst: dst.index(),
-                                    src1: I32SlotOperand::Param(*local_index as u16),
+                                    src1: I32RegOperand::Param(*local_index as u16),
                                     src2: None,
                                 },
                                 None,
@@ -1294,10 +1291,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::NumType(NumType::I64) => {
                             let dst = allocator.push(local_type);
                             (
-                                ProcessedInstr::I64Slot {
+                                ProcessedInstr::I64Reg {
                                     handler_index: HANDLER_IDX_LOCAL_GET,
                                     dst,
-                                    src1: I64SlotOperand::Param(*local_index as u16),
+                                    src1: I64RegOperand::Param(*local_index as u16),
                                     src2: None,
                                 },
                                 None,
@@ -1306,10 +1303,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::NumType(NumType::F32) => {
                             let dst = allocator.push(local_type);
                             (
-                                ProcessedInstr::F32Slot {
+                                ProcessedInstr::F32Reg {
                                     handler_index: HANDLER_IDX_LOCAL_GET,
                                     dst,
-                                    src1: F32SlotOperand::Param(*local_index as u16),
+                                    src1: F32RegOperand::Param(*local_index as u16),
                                     src2: None,
                                 },
                                 None,
@@ -1318,21 +1315,21 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::NumType(NumType::F64) => {
                             let dst = allocator.push(local_type);
                             (
-                                ProcessedInstr::F64Slot {
+                                ProcessedInstr::F64Reg {
                                     handler_index: HANDLER_IDX_LOCAL_GET,
                                     dst,
-                                    src1: F64SlotOperand::Param(*local_index as u16),
+                                    src1: F64RegOperand::Param(*local_index as u16),
                                     src2: None,
                                 },
                                 None,
                             )
                         }
                         ValueType::RefType(_) => {
-                            // For RefType, use RefLocalSlot
+                            // For RefType, use RefLocalReg
                             let dst = allocator.push(local_type);
                             (
-                                ProcessedInstr::RefLocalSlot {
-                                    handler_index: HANDLER_IDX_REF_LOCAL_GET_SLOT,
+                                ProcessedInstr::RefLocalReg {
+                                    handler_index: HANDLER_IDX_REF_LOCAL_GET_REG,
                                     dst: dst.index(),
                                     src: 0, // unused for get
                                     local_idx: *local_index as u16,
@@ -1351,12 +1348,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&local_type);
                     let src_idx = src.index();
                     macro_rules! make_local_set {
-                        ($instr:ident, $slot:ident, $operand:ident) => {
+                        ($instr:ident, $reg:ident, $operand:ident) => {
                             (
                                 ProcessedInstr::$instr {
                                     handler_index: HANDLER_IDX_LOCAL_SET,
-                                    dst: Slot::$slot(local_idx),
-                                    src1: $operand::Slot(src_idx),
+                                    dst: Reg::$reg(local_idx),
+                                    src1: $operand::Reg(src_idx),
                                     src2: None,
                                 },
                                 None,
@@ -1365,27 +1362,27 @@ fn decode_processed_instrs_and_fixups<'a>(
                     }
                     match local_type {
                         ValueType::NumType(NumType::I32) => (
-                            ProcessedInstr::I32Slot {
+                            ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_LOCAL_SET,
                                 dst: local_idx,
-                                src1: I32SlotOperand::Slot(src_idx),
+                                src1: I32RegOperand::Reg(src_idx),
                                 src2: None,
                             },
                             None,
                         ),
                         ValueType::NumType(NumType::I64) => {
-                            make_local_set!(I64Slot, I64, I64SlotOperand)
+                            make_local_set!(I64Reg, I64, I64RegOperand)
                         }
                         ValueType::NumType(NumType::F32) => {
-                            make_local_set!(F32Slot, F32, F32SlotOperand)
+                            make_local_set!(F32Reg, F32, F32RegOperand)
                         }
                         ValueType::NumType(NumType::F64) => {
-                            make_local_set!(F64Slot, F64, F64SlotOperand)
+                            make_local_set!(F64Reg, F64, F64RegOperand)
                         }
                         ValueType::RefType(_) => {
                             (
-                                ProcessedInstr::RefLocalSlot {
-                                    handler_index: HANDLER_IDX_REF_LOCAL_SET_SLOT,
+                                ProcessedInstr::RefLocalReg {
+                                    handler_index: HANDLER_IDX_REF_LOCAL_SET_REG,
                                     dst: 0, // unused for set
                                     src: src_idx,
                                     local_idx,
@@ -1402,15 +1399,15 @@ fn decode_processed_instrs_and_fixups<'a>(
                     // LocalTee: copy value to local, value stays on stack
                     let local_type = get_local_type(param_types, locals, *local_index);
                     let local_idx = *local_index as u16;
-                    // Peek the top slot (don't pop - value stays on stack)
+                    // Peek the top register (don't pop - value stays on stack)
                     let src_idx = allocator.peek(&local_type).unwrap().index();
                     macro_rules! make_local_tee {
-                        ($instr:ident, $slot:ident, $operand:ident) => {
+                        ($instr:ident, $reg:ident, $operand:ident) => {
                             (
                                 ProcessedInstr::$instr {
                                     handler_index: HANDLER_IDX_LOCAL_SET, // Reuse local.set handler
-                                    dst: Slot::$slot(local_idx),
-                                    src1: $operand::Slot(src_idx),
+                                    dst: Reg::$reg(local_idx),
+                                    src1: $operand::Reg(src_idx),
                                     src2: None,
                                 },
                                 None,
@@ -1419,27 +1416,27 @@ fn decode_processed_instrs_and_fixups<'a>(
                     }
                     match local_type {
                         ValueType::NumType(NumType::I32) => (
-                            ProcessedInstr::I32Slot {
+                            ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_LOCAL_SET,
                                 dst: local_idx,
-                                src1: I32SlotOperand::Slot(src_idx),
+                                src1: I32RegOperand::Reg(src_idx),
                                 src2: None,
                             },
                             None,
                         ),
                         ValueType::NumType(NumType::I64) => {
-                            make_local_tee!(I64Slot, I64, I64SlotOperand)
+                            make_local_tee!(I64Reg, I64, I64RegOperand)
                         }
                         ValueType::NumType(NumType::F32) => {
-                            make_local_tee!(F32Slot, F32, F32SlotOperand)
+                            make_local_tee!(F32Reg, F32, F32RegOperand)
                         }
                         ValueType::NumType(NumType::F64) => {
-                            make_local_tee!(F64Slot, F64, F64SlotOperand)
+                            make_local_tee!(F64Reg, F64, F64RegOperand)
                         }
                         ValueType::RefType(_) => {
                             (
-                                ProcessedInstr::RefLocalSlot {
-                                    handler_index: HANDLER_IDX_REF_LOCAL_SET_SLOT,
+                                ProcessedInstr::RefLocalReg {
+                                    handler_index: HANDLER_IDX_REF_LOCAL_SET_REG,
                                     dst: 0, // unused for set
                                     src: src_idx,
                                     local_idx,
@@ -1458,7 +1455,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::NumType(NumType::I32) => {
                             let dst = allocator.push(global_type);
                             (
-                                ProcessedInstr::GlobalGetSlot {
+                                ProcessedInstr::GlobalGetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_GET_I32,
                                     dst,
                                     global_index: *global_index,
@@ -1469,7 +1466,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::NumType(NumType::I64) => {
                             let dst = allocator.push(global_type);
                             (
-                                ProcessedInstr::GlobalGetSlot {
+                                ProcessedInstr::GlobalGetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_GET_I64,
                                     dst,
                                     global_index: *global_index,
@@ -1480,7 +1477,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::NumType(NumType::F32) => {
                             let dst = allocator.push(global_type);
                             (
-                                ProcessedInstr::GlobalGetSlot {
+                                ProcessedInstr::GlobalGetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_GET_F32,
                                     dst,
                                     global_index: *global_index,
@@ -1491,7 +1488,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::NumType(NumType::F64) => {
                             let dst = allocator.push(global_type);
                             (
-                                ProcessedInstr::GlobalGetSlot {
+                                ProcessedInstr::GlobalGetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_GET_F64,
                                     dst,
                                     global_index: *global_index,
@@ -1510,7 +1507,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::NumType(NumType::I32) => {
                             let src = allocator.pop(&global_type);
                             (
-                                ProcessedInstr::GlobalSetSlot {
+                                ProcessedInstr::GlobalSetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_SET_I32,
                                     src,
                                     global_index: *global_index,
@@ -1521,7 +1518,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::NumType(NumType::I64) => {
                             let src = allocator.pop(&global_type);
                             (
-                                ProcessedInstr::GlobalSetSlot {
+                                ProcessedInstr::GlobalSetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_SET_I64,
                                     src,
                                     global_index: *global_index,
@@ -1532,7 +1529,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::NumType(NumType::F32) => {
                             let src = allocator.pop(&global_type);
                             (
-                                ProcessedInstr::GlobalSetSlot {
+                                ProcessedInstr::GlobalSetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_SET_F32,
                                     src,
                                     global_index: *global_index,
@@ -1543,7 +1540,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::NumType(NumType::F64) => {
                             let src = allocator.pop(&global_type);
                             (
-                                ProcessedInstr::GlobalSetSlot {
+                                ProcessedInstr::GlobalSetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_SET_F64,
                                     src,
                                     global_index: *global_index,
@@ -1559,10 +1556,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                 wasmparser::Operator::I32Const { value } => {
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_CONST,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Const(*value),
+                            src1: I32RegOperand::Const(*value),
                             src2: None,
                         },
                         None,
@@ -1574,11 +1571,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_ADD,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1588,11 +1585,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_SUB,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1602,11 +1599,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_MUL,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1616,11 +1613,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_DIV_S,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1630,11 +1627,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_DIV_U,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1644,11 +1641,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_REM_S,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1658,11 +1655,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_REM_U,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1672,11 +1669,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_AND,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1686,11 +1683,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_OR,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1700,11 +1697,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_XOR,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1714,11 +1711,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_SHL,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1728,11 +1725,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_SHR_S,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1742,11 +1739,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_SHR_U,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1756,11 +1753,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_ROTL,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1770,11 +1767,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_ROTR,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1785,11 +1782,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_EQ,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1799,11 +1796,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_NE,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1813,11 +1810,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_LT_S,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1827,11 +1824,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_LT_U,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1841,11 +1838,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_LE_S,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1855,11 +1852,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_LE_U,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1869,11 +1866,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_GT_S,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1883,11 +1880,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_GT_U,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1897,11 +1894,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_GE_S,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1911,11 +1908,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_GE_U,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
-                            src2: Some(I32SlotOperand::Slot(src2.index())),
+                            src1: I32RegOperand::Reg(src1.index()),
+                            src2: Some(I32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -1925,10 +1922,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_CLZ,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
+                            src1: I32RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -1938,10 +1935,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_CTZ,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
+                            src1: I32RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -1951,10 +1948,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_POPCNT,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
+                            src1: I32RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -1964,10 +1961,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_EQZ,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
+                            src1: I32RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -1977,10 +1974,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_EXTEND8_S,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
+                            src1: I32RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -1990,25 +1987,25 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I32Slot {
+                        ProcessedInstr::I32Reg {
                             handler_index: HANDLER_IDX_I32_EXTEND16_S,
                             dst: dst.index(),
-                            src1: I32SlotOperand::Slot(src1.index()),
+                            src1: I32RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
                     )
                 }
                 // ============================================================================
-                // I64 Slot-based instructions
+                // I64 Register-based instructions
                 // ============================================================================
                 wasmparser::Operator::I64Const { value } => {
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_CONST,
                             dst,
-                            src1: I64SlotOperand::Const(*value),
+                            src1: I64RegOperand::Const(*value),
                             src2: None,
                         },
                         None,
@@ -2020,11 +2017,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_ADD,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2034,11 +2031,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_SUB,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2048,11 +2045,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_MUL,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2062,11 +2059,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_DIV_S,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2076,11 +2073,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_DIV_U,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2090,11 +2087,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_REM_S,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2104,11 +2101,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_REM_U,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2119,11 +2116,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_AND,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2133,11 +2130,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_OR,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2147,11 +2144,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_XOR,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2161,11 +2158,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_SHL,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2175,11 +2172,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_SHR_S,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2189,11 +2186,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_SHR_U,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2203,11 +2200,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_ROTL,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2217,11 +2214,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_ROTR,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2231,10 +2228,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_CLZ,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
+                            src1: I64RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2244,10 +2241,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_CTZ,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
+                            src1: I64RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2257,10 +2254,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_POPCNT,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
+                            src1: I64RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2270,10 +2267,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_EXTEND8_S,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
+                            src1: I64RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2283,10 +2280,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_EXTEND16_S,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
+                            src1: I64RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2296,10 +2293,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_EXTEND32_S,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
+                            src1: I64RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2310,10 +2307,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_EQZ,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
+                            src1: I64RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2324,11 +2321,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_EQ,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2338,11 +2335,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_NE,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2352,11 +2349,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_LT_S,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2366,11 +2363,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_LT_U,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2380,11 +2377,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_GT_S,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2394,11 +2391,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_GT_U,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2408,11 +2405,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_LE_S,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2422,11 +2419,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_LE_U,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2436,11 +2433,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_GE_S,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2450,11 +2447,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Slot {
+                        ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_GE_U,
                             dst,
-                            src1: I64SlotOperand::Slot(src1.index()),
-                            src2: Some(I64SlotOperand::Slot(src2.index())),
+                            src1: I64RegOperand::Reg(src1.index()),
+                            src2: Some(I64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2463,10 +2460,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                 wasmparser::Operator::F32Const { value } => {
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_CONST,
                             dst,
-                            src1: F32SlotOperand::Const(f32::from_bits(value.bits())),
+                            src1: F32RegOperand::Const(f32::from_bits(value.bits())),
                             src2: None,
                         },
                         None,
@@ -2478,11 +2475,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_ADD,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
-                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                            src1: F32RegOperand::Reg(src1.index()),
+                            src2: Some(F32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2492,11 +2489,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_SUB,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
-                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                            src1: F32RegOperand::Reg(src1.index()),
+                            src2: Some(F32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2506,11 +2503,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_MUL,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
-                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                            src1: F32RegOperand::Reg(src1.index()),
+                            src2: Some(F32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2520,11 +2517,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_DIV,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
-                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                            src1: F32RegOperand::Reg(src1.index()),
+                            src2: Some(F32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2534,11 +2531,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_MIN,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
-                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                            src1: F32RegOperand::Reg(src1.index()),
+                            src2: Some(F32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2548,11 +2545,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_MAX,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
-                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                            src1: F32RegOperand::Reg(src1.index()),
+                            src2: Some(F32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2562,11 +2559,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_COPYSIGN,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
-                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                            src1: F32RegOperand::Reg(src1.index()),
+                            src2: Some(F32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2576,10 +2573,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_ABS,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
+                            src1: F32RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2589,10 +2586,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_NEG,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
+                            src1: F32RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2602,10 +2599,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_CEIL,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
+                            src1: F32RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2615,10 +2612,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_FLOOR,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
+                            src1: F32RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2628,10 +2625,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_TRUNC,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
+                            src1: F32RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2641,10 +2638,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_NEAREST,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
+                            src1: F32RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2654,10 +2651,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_SQRT,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
+                            src1: F32RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2669,11 +2666,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_EQ,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
-                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                            src1: F32RegOperand::Reg(src1.index()),
+                            src2: Some(F32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2683,11 +2680,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_NE,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
-                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                            src1: F32RegOperand::Reg(src1.index()),
+                            src2: Some(F32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2697,11 +2694,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_LT,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
-                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                            src1: F32RegOperand::Reg(src1.index()),
+                            src2: Some(F32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2711,11 +2708,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_GT,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
-                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                            src1: F32RegOperand::Reg(src1.index()),
+                            src2: Some(F32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2725,11 +2722,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_LE,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
-                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                            src1: F32RegOperand::Reg(src1.index()),
+                            src2: Some(F32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2739,11 +2736,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F32Slot {
+                        ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_GE,
                             dst,
-                            src1: F32SlotOperand::Slot(src1.index()),
-                            src2: Some(F32SlotOperand::Slot(src2.index())),
+                            src1: F32RegOperand::Reg(src1.index()),
+                            src2: Some(F32RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2752,10 +2749,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                 wasmparser::Operator::F64Const { value } => {
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_CONST,
                             dst,
-                            src1: F64SlotOperand::Const(f64::from_bits(value.bits())),
+                            src1: F64RegOperand::Const(f64::from_bits(value.bits())),
                             src2: None,
                         },
                         None,
@@ -2767,11 +2764,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_ADD,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
-                            src2: Some(F64SlotOperand::Slot(src2.index())),
+                            src1: F64RegOperand::Reg(src1.index()),
+                            src2: Some(F64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2781,11 +2778,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_SUB,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
-                            src2: Some(F64SlotOperand::Slot(src2.index())),
+                            src1: F64RegOperand::Reg(src1.index()),
+                            src2: Some(F64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2795,11 +2792,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_MUL,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
-                            src2: Some(F64SlotOperand::Slot(src2.index())),
+                            src1: F64RegOperand::Reg(src1.index()),
+                            src2: Some(F64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2809,11 +2806,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_DIV,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
-                            src2: Some(F64SlotOperand::Slot(src2.index())),
+                            src1: F64RegOperand::Reg(src1.index()),
+                            src2: Some(F64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2823,11 +2820,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_MIN,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
-                            src2: Some(F64SlotOperand::Slot(src2.index())),
+                            src1: F64RegOperand::Reg(src1.index()),
+                            src2: Some(F64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2837,11 +2834,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_MAX,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
-                            src2: Some(F64SlotOperand::Slot(src2.index())),
+                            src1: F64RegOperand::Reg(src1.index()),
+                            src2: Some(F64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2851,11 +2848,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_COPYSIGN,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
-                            src2: Some(F64SlotOperand::Slot(src2.index())),
+                            src1: F64RegOperand::Reg(src1.index()),
+                            src2: Some(F64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2865,10 +2862,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_ABS,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
+                            src1: F64RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2878,10 +2875,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_NEG,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
+                            src1: F64RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2891,10 +2888,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_CEIL,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
+                            src1: F64RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2904,10 +2901,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_FLOOR,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
+                            src1: F64RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2917,10 +2914,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_TRUNC,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
+                            src1: F64RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2930,10 +2927,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_NEAREST,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
+                            src1: F64RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2943,10 +2940,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_SQRT,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
+                            src1: F64RegOperand::Reg(src1.index()),
                             src2: None,
                         },
                         None,
@@ -2958,11 +2955,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_EQ,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
-                            src2: Some(F64SlotOperand::Slot(src2.index())),
+                            src1: F64RegOperand::Reg(src1.index()),
+                            src2: Some(F64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2972,11 +2969,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_NE,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
-                            src2: Some(F64SlotOperand::Slot(src2.index())),
+                            src1: F64RegOperand::Reg(src1.index()),
+                            src2: Some(F64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -2986,11 +2983,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_LT,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
-                            src2: Some(F64SlotOperand::Slot(src2.index())),
+                            src1: F64RegOperand::Reg(src1.index()),
+                            src2: Some(F64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -3000,11 +2997,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_GT,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
-                            src2: Some(F64SlotOperand::Slot(src2.index())),
+                            src1: F64RegOperand::Reg(src1.index()),
+                            src2: Some(F64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -3014,11 +3011,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_LE,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
-                            src2: Some(F64SlotOperand::Slot(src2.index())),
+                            src1: F64RegOperand::Reg(src1.index()),
+                            src2: Some(F64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -3028,11 +3025,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F64Slot {
+                        ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_GE,
                             dst,
-                            src1: F64SlotOperand::Slot(src1.index()),
-                            src2: Some(F64SlotOperand::Slot(src2.index())),
+                            src1: F64RegOperand::Reg(src1.index()),
+                            src2: Some(F64RegOperand::Reg(src2.index())),
                         },
                         None,
                     )
@@ -3044,12 +3041,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                         result_types.to_vec()
                     };
 
-                    // Get the top N slots based on result types
-                    let source_slots = allocator.peek_slots_for_types(&result_type_vec);
+                    // Get the top N registers based on result types
+                    let source_regs = allocator.peek_regs_for_types(&result_type_vec);
 
-                    // Get target_result_slots from ControlBlockInfo BEFORE restoring state
-                    let target_result_slots = if let Some(block_info) = control_info_stack.last() {
-                        block_info.result_slots.clone()
+                    // Get target_result_regs from ControlBlockInfo BEFORE restoring state
+                    let target_result_regs = if let Some(block_info) = control_info_stack.last() {
+                        block_info.result_regs.clone()
                     } else {
                         Vec::new()
                     };
@@ -3064,20 +3061,20 @@ fn decode_processed_instrs_and_fixups<'a>(
                     control_info_stack.pop();
 
                     // Restore allocator state to block entry, then push results
-                    let mut stack_to_slots = Vec::new();
+                    let mut stack_to_regs = Vec::new();
                     if let Some(saved_state) = allocator_state_stack.pop() {
                         allocator.restore_state(&saved_state);
                         // Push result types to allocator (at the restored depth)
                         for vtype in block_result_types_to_push {
-                            let slot = allocator.push(vtype);
-                            stack_to_slots.push(slot);
+                            let reg = allocator.push(vtype);
+                            stack_to_regs.push(reg);
                         }
                     }
 
-                    // Use EndSlot for slot-based execution
-                    let instr = ProcessedInstr::EndSlot {
-                        source_slots,
-                        target_result_slots,
+                    // Use EndReg for register-based execution
+                    let instr = ProcessedInstr::EndReg {
+                        source_regs,
+                        target_result_regs,
                     };
                     (instr, None)
                 }
@@ -3095,13 +3092,13 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let saved_state = allocator.save_state();
                     allocator_state_stack.push(saved_state.clone());
 
-                    // Calculate result_slots at block entry depth
+                    // Calculate result_regs at block entry depth
                     let result_types = get_block_result_types(&blockty, module);
-                    let result_slots: Vec<Slot> = {
+                    let result_regs: Vec<Reg> = {
                         let mut state = saved_state;
                         result_types
                             .iter()
-                            .map(|vtype| state.next_slot_for_type(vtype))
+                            .map(|vtype| state.next_reg_for_type(vtype))
                             .collect()
                     };
 
@@ -3117,11 +3114,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     control_info_stack.push(ControlBlockInfo {
                         block_type: *blockty,
                         is_loop,
-                        result_slots,
-                        param_slots: vec![],
+                        result_regs,
+                        param_regs: vec![],
                     });
 
-                    let instr = ProcessedInstr::BlockSlot {
+                    let instr = ProcessedInstr::BlockReg {
                         arity,
                         param_count,
                         is_loop,
@@ -3129,7 +3126,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     (instr, None)
                 }
                 wasmparser::Operator::If { blockty } => {
-                    let condition_slot = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let cond_reg = allocator.pop(&ValueType::NumType(NumType::I32));
 
                     let param_types = get_block_param_types(&blockty, module);
 
@@ -3140,13 +3137,13 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let saved_state = allocator.save_state();
                     allocator_state_stack.push(saved_state.clone());
 
-                    // Calculate result_slots at block entry depth
+                    // Calculate result_regs at block entry depth
                     let result_types = get_block_result_types(&blockty, module);
-                    let result_slots: Vec<Slot> = {
+                    let result_regs: Vec<Reg> = {
                         let mut state = saved_state;
                         result_types
                             .iter()
-                            .map(|vtype| state.next_slot_for_type(vtype))
+                            .map(|vtype| state.next_reg_for_type(vtype))
                             .collect()
                     };
 
@@ -3160,13 +3157,13 @@ fn decode_processed_instrs_and_fixups<'a>(
                     control_info_stack.push(ControlBlockInfo {
                         block_type: *blockty,
                         is_loop: false,
-                        result_slots,
-                        param_slots: vec![],
+                        result_regs,
+                        param_regs: vec![],
                     });
 
-                    let instr = ProcessedInstr::IfSlot {
+                    let instr = ProcessedInstr::IfReg {
                         arity,
-                        condition_slot,
+                        cond_reg,
                         else_target_ip: usize::MAX, // Will be fixed up
                         has_else: false,            // Will be updated during fixup
                     };
@@ -3175,7 +3172,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         original_wasm_depth: 0,
                         is_if_false_jump: true,
                         is_else_jump: false,
-                        source_slots: vec![],
+                        source_regs: vec![],
                     });
                     (instr, fixup)
                 }
@@ -3192,8 +3189,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                         }
                     }
 
-                    // Generate JumpSlot (target_ip will be fixed up later)
-                    let instr = ProcessedInstr::JumpSlot {
+                    // Generate JumpReg (target_ip will be fixed up later)
+                    let instr = ProcessedInstr::JumpReg {
                         target_ip: usize::MAX, // Will be fixed up
                     };
                     let fixup = Some(FixupInfo {
@@ -3201,7 +3198,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         original_wasm_depth: 0,
                         is_if_false_jump: false,
                         is_else_jump: true,
-                        source_slots: vec![],
+                        source_regs: vec![],
                     });
                     (instr, fixup)
                 }
@@ -3227,24 +3224,24 @@ fn decode_processed_instrs_and_fixups<'a>(
                         let param_types = func_type.params;
                         let result_types = func_type.results;
 
-                        // Get the top N slots for params based on types
-                        let param_slots = allocator.peek_slots_for_types(&param_types);
+                        // Get the top N registers for params based on types
+                        let param_regs = allocator.peek_regs_for_types(&param_types);
 
                         for param_type in param_types.iter().rev() {
                             allocator.pop(&param_type);
                         }
 
-                        let result_slot = if let Some(result_type) = result_types.first() {
+                        let result_reg = if let Some(result_type) = result_types.first() {
                             Some(allocator.push(result_type.clone()))
                         } else {
                             None
                         };
 
                         (
-                            ProcessedInstr::CallWasiSlot {
+                            ProcessedInstr::CallWasiReg {
                                 wasi_func_type: wasi_type,
-                                param_slots,
-                                result_slot,
+                                param_regs,
+                                result_reg,
                             },
                             None,
                         )
@@ -3282,37 +3279,37 @@ fn decode_processed_instrs_and_fixups<'a>(
                         };
 
                         if param_types.is_empty() && result_types.is_empty() {
-                            // No params/results - still use CallSlot with empty slots
+                            // No params/results - still use CallReg with empty registers
                             (
-                                ProcessedInstr::CallSlot {
+                                ProcessedInstr::CallReg {
                                     func_idx: FuncIdx(*function_index),
-                                    param_slots: vec![],
-                                    result_slots: vec![],
+                                    param_regs: vec![],
+                                    result_regs: vec![],
                                 },
                                 None,
                             )
                         } else {
-                            // Get param slots before popping
-                            let mut param_slots = Vec::new();
+                            // Get param registers before popping
+                            let mut param_regs = Vec::new();
                             for param_type in param_types.iter().rev() {
-                                if let Some(slot) = allocator.peek(param_type) {
-                                    param_slots.insert(0, slot);
+                                if let Some(reg) = allocator.peek(param_type) {
+                                    param_regs.insert(0, reg);
                                 }
                                 allocator.pop(param_type);
                             }
 
-                            // Push result types to allocator and collect result_slots
-                            let mut result_slots = Vec::new();
+                            // Push result types to allocator and collect result_regs
+                            let mut result_regs = Vec::new();
                             for result_type in &result_types {
-                                let slot = allocator.push(result_type.clone());
-                                result_slots.push(slot);
+                                let reg = allocator.push(result_type.clone());
+                                result_regs.push(reg);
                             }
 
-                            // Use CallSlot for slot-based execution
-                            let instr = ProcessedInstr::CallSlot {
+                            // Use CallReg for register-based execution
+                            let instr = ProcessedInstr::CallReg {
                                 func_idx: FuncIdx(*function_index),
-                                param_slots,
-                                result_slots,
+                                param_regs,
+                                result_regs,
                             };
                             (instr, None)
                         }
@@ -3332,174 +3329,174 @@ fn decode_processed_instrs_and_fixups<'a>(
                             (Vec::new(), Vec::new())
                         };
 
-                    // Pop index_slot first (i32) - this is the table index
-                    let index_slot = allocator.peek(&ValueType::NumType(NumType::I32)).unwrap();
+                    // Pop index_reg first (i32) - this is the table index
+                    let index_reg = allocator.peek(&ValueType::NumType(NumType::I32)).unwrap();
                     allocator.pop(&ValueType::NumType(NumType::I32));
 
-                    // Get param slots (in order, from bottom to top)
-                    // We need to collect the param slots before popping them
+                    // Get param registers (in order, from bottom to top)
+                    // We need to collect the param registers before popping them
                     let param_count = param_types.len();
-                    let mut param_slots = Vec::with_capacity(param_count);
+                    let mut param_regs = Vec::with_capacity(param_count);
                     for param_type in param_types.iter() {
-                        if let Some(slot) = allocator.peek(param_type) {
-                            param_slots.push(slot);
+                        if let Some(reg) = allocator.peek(param_type) {
+                            param_regs.push(reg);
                         }
                     }
-                    // Actually, we need to get the slots that will be consumed
+                    // Actually, we need to get the registers that will be consumed
                     // Recalculate: peek each param type from the current state
-                    param_slots.clear();
+                    param_regs.clear();
                     for param_type in param_types.iter().rev() {
-                        if let Some(slot) = allocator.peek(param_type) {
-                            param_slots.insert(0, slot);
+                        if let Some(reg) = allocator.peek(param_type) {
+                            param_regs.insert(0, reg);
                         }
                         allocator.pop(param_type);
                     }
 
-                    // Push result types to allocator and collect result_slots
-                    let mut result_slots = Vec::new();
+                    // Push result types to allocator and collect result_regs
+                    let mut result_regs = Vec::new();
                     for result_type in &result_types_vec {
-                        let slot = allocator.push(result_type.clone());
-                        result_slots.push(slot);
+                        let reg = allocator.push(result_type.clone());
+                        result_regs.push(reg);
                     }
 
-                    // Use CallIndirectSlot for slot-based execution
-                    let instr = ProcessedInstr::CallIndirectSlot {
+                    // Use CallIndirectReg for register-based execution
+                    let instr = ProcessedInstr::CallIndirectReg {
                         type_idx: TypeIdx(*type_index),
                         table_idx: TableIdx(*table_index),
-                        index_slot,
-                        param_slots,
-                        result_slots,
+                        index_reg,
+                        param_regs,
+                        result_regs,
                     };
                     (instr, None)
                 }
 
                 wasmparser::Operator::Br { relative_depth } => {
-                    // Compute source and target slots for branch
-                    let (source_slots, target_result_slots) = compute_branch_slots(
+                    // Compute source and target registers for branch
+                    let (source_regs, target_result_regs) = compute_branch_regs(
                         &control_info_stack,
                         *relative_depth as usize,
-                        slot_allocator.as_ref(),
+                        reg_allocator.as_ref(),
                     );
 
-                    let instr = ProcessedInstr::BrSlot {
+                    let instr = ProcessedInstr::BrReg {
                         relative_depth: *relative_depth,
                         target_ip: usize::MAX, // Will be set by fixup
-                        source_slots: source_slots.clone(),
-                        target_result_slots,
+                        source_regs: source_regs.clone(),
+                        target_result_regs,
                     };
                     let fixup = FixupInfo {
                         pc: current_processed_pc,
                         original_wasm_depth: *relative_depth as usize,
                         is_if_false_jump: false,
                         is_else_jump: false,
-                        source_slots,
+                        source_regs,
                     };
                     (instr, Some(fixup))
                 }
                 wasmparser::Operator::BrIf { relative_depth } => {
-                    // Pop condition slot
+                    // Pop condition register
                     // In unreachable code after br/return, allocator may be empty
-                    let condition_slot = allocator
+                    let cond_reg = allocator
                         .peek(&ValueType::NumType(NumType::I32))
-                        .unwrap_or(Slot::I32(0)); // Use dummy slot in unreachable code
+                        .unwrap_or(Reg::I32(0)); // Use dummy register in unreachable code
                     allocator.pop(&ValueType::NumType(NumType::I32));
 
-                    // Compute source and target slots for branch
-                    let (source_slots, target_result_slots) = compute_branch_slots(
+                    // Compute source and target registers for branch
+                    let (source_regs, target_result_regs) = compute_branch_regs(
                         &control_info_stack,
                         *relative_depth as usize,
-                        slot_allocator.as_ref(),
+                        reg_allocator.as_ref(),
                     );
 
-                    let instr = ProcessedInstr::BrIfSlot {
+                    let instr = ProcessedInstr::BrIfReg {
                         relative_depth: *relative_depth,
                         target_ip: usize::MAX, // Will be set by fixup
-                        condition_slot,
-                        source_slots: source_slots.clone(),
-                        target_result_slots,
+                        cond_reg,
+                        source_regs: source_regs.clone(),
+                        target_result_regs,
                     };
                     let fixup = FixupInfo {
                         pc: current_processed_pc,
                         original_wasm_depth: *relative_depth as usize,
                         is_if_false_jump: false,
                         is_else_jump: false,
-                        source_slots,
+                        source_regs,
                     };
                     (instr, Some(fixup))
                 }
                 wasmparser::Operator::BrTable { ref targets } => {
-                    // Pop index slot
+                    // Pop index register
                     // In unreachable code after br/return, allocator may be empty
-                    let index_slot = allocator
+                    let index_reg = allocator
                         .peek(&ValueType::NumType(NumType::I32))
-                        .unwrap_or(Slot::I32(0)); // Use dummy slot in unreachable code
+                        .unwrap_or(Reg::I32(0)); // Use dummy register in unreachable code
                     allocator.pop(&ValueType::NumType(NumType::I32));
 
-                    // Collect target depths with placeholder target_ip and compute target_result_slots for each
+                    // Collect target depths with placeholder target_ip and compute target_result_regs for each
                     let target_depths: Vec<u32> =
                         targets.targets().collect::<Result<Vec<_>, _>>()?;
 
-                    let mut table_targets: Vec<(u32, usize, Vec<Slot>)> =
+                    let mut table_targets: Vec<(u32, usize, Vec<Reg>)> =
                         Vec::with_capacity(target_depths.len());
                     for depth in target_depths.iter() {
-                        let (_, target_result_slots) = compute_branch_slots(
+                        let (_, target_result_regs) = compute_branch_regs(
                             &control_info_stack,
                             *depth as usize,
-                            slot_allocator.as_ref(),
+                            reg_allocator.as_ref(),
                         );
-                        table_targets.push((*depth, usize::MAX, target_result_slots));
+                        table_targets.push((*depth, usize::MAX, target_result_regs));
                         // target_ip will be set by fixup
                     }
 
-                    // Compute source and target slots for default target
-                    let (source_slots, default_result_slots) = compute_branch_slots(
+                    // Compute source and target registers for default target
+                    let (source_regs, default_result_regs) = compute_branch_regs(
                         &control_info_stack,
                         targets.default() as usize,
-                        slot_allocator.as_ref(),
+                        reg_allocator.as_ref(),
                     );
-                    let default_target = (targets.default(), usize::MAX, default_result_slots); // target_ip will be set by fixup
+                    let default_target = (targets.default(), usize::MAX, default_result_regs); // target_ip will be set by fixup
 
-                    let instr = ProcessedInstr::BrTableSlot {
+                    let instr = ProcessedInstr::BrTableReg {
                         targets: table_targets.clone(),
                         default_target,
-                        index_slot,
-                        source_slots: source_slots.clone(),
+                        index_reg,
+                        source_regs: source_regs.clone(),
                     };
 
                     // Create fixups for each target and default
-                    // The fixup system will handle BrTableSlot specially
+                    // The fixup system will handle BrTableReg specially
                     let fixup = FixupInfo {
                         pc: current_processed_pc,
                         original_wasm_depth: targets.default() as usize,
                         is_if_false_jump: false,
                         is_else_jump: false,
-                        source_slots,
+                        source_regs,
                     };
                     (instr, Some(fixup))
                 }
                 wasmparser::Operator::Return => {
-                    // Get result slots based on function result types
-                    let result_slots = allocator.peek_slots_for_types(result_types);
+                    // Get result registers based on function result types
+                    let result_regs = allocator.peek_regs_for_types(result_types);
                     for result_type in result_types.iter().rev() {
                         allocator.pop(result_type);
                     }
 
-                    let instr = ProcessedInstr::ReturnSlot { result_slots };
+                    let instr = ProcessedInstr::ReturnReg { result_regs };
                     (instr, None)
                 }
-                wasmparser::Operator::Nop => (ProcessedInstr::NopSlot, None),
-                wasmparser::Operator::Unreachable => (ProcessedInstr::UnreachableSlot, None),
+                wasmparser::Operator::Nop => (ProcessedInstr::NopReg, None),
+                wasmparser::Operator::Unreachable => (ProcessedInstr::UnreachableReg, None),
                 wasmparser::Operator::Drop => {
                     // Pop from type_stack to keep it in sync, but no runtime operation needed
                     allocator.pop_any();
-                    (ProcessedInstr::NopSlot, None)
+                    (ProcessedInstr::NopReg, None)
                 }
-                // Conversion instructions - use ConversionSlot
+                // Conversion instructions - use ConversionReg
                 wasmparser::Operator::I64ExtendI32S => {
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_EXTEND_I32_S,
                             dst,
                             src,
@@ -3511,7 +3508,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_EXTEND_I32_U,
                             dst,
                             src,
@@ -3523,7 +3520,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_WRAP_I64,
                             dst,
                             src,
@@ -3535,7 +3532,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_F32_S,
                             dst,
                             src,
@@ -3547,7 +3544,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_F32_U,
                             dst,
                             src,
@@ -3559,7 +3556,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_F64_S,
                             dst,
                             src,
@@ -3571,7 +3568,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_F64_U,
                             dst,
                             src,
@@ -3583,7 +3580,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_F32_S,
                             dst,
                             src,
@@ -3595,7 +3592,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_F32_U,
                             dst,
                             src,
@@ -3607,7 +3604,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_F64_S,
                             dst,
                             src,
@@ -3619,7 +3616,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_F64_U,
                             dst,
                             src,
@@ -3631,7 +3628,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_SAT_F32_S,
                             dst,
                             src,
@@ -3643,7 +3640,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_SAT_F32_U,
                             dst,
                             src,
@@ -3655,7 +3652,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_SAT_F64_S,
                             dst,
                             src,
@@ -3667,7 +3664,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_SAT_F64_U,
                             dst,
                             src,
@@ -3679,7 +3676,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_SAT_F32_S,
                             dst,
                             src,
@@ -3691,7 +3688,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_SAT_F32_U,
                             dst,
                             src,
@@ -3703,7 +3700,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_SAT_F64_S,
                             dst,
                             src,
@@ -3715,7 +3712,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_SAT_F64_U,
                             dst,
                             src,
@@ -3727,7 +3724,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F32_CONVERT_I32_S,
                             dst,
                             src,
@@ -3739,7 +3736,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F32_CONVERT_I32_U,
                             dst,
                             src,
@@ -3751,7 +3748,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F32_CONVERT_I64_S,
                             dst,
                             src,
@@ -3763,7 +3760,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F32_CONVERT_I64_U,
                             dst,
                             src,
@@ -3775,7 +3772,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F64_CONVERT_I32_S,
                             dst,
                             src,
@@ -3787,7 +3784,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F64_CONVERT_I32_U,
                             dst,
                             src,
@@ -3799,7 +3796,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F64_CONVERT_I64_S,
                             dst,
                             src,
@@ -3811,7 +3808,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F64_CONVERT_I64_U,
                             dst,
                             src,
@@ -3823,7 +3820,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F32_DEMOTE_F64,
                             dst,
                             src,
@@ -3835,7 +3832,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F64_PROMOTE_F32,
                             dst,
                             src,
@@ -3847,7 +3844,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_REINTERPRET_F32,
                             dst,
                             src,
@@ -3859,7 +3856,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_REINTERPRET_F64,
                             dst,
                             src,
@@ -3871,7 +3868,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F32_REINTERPRET_I32,
                             dst,
                             src,
@@ -3883,7 +3880,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::ConversionSlot {
+                        ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F64_REINTERPRET_I64,
                             dst,
                             src,
@@ -3896,7 +3893,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryLoadSlot {
+                        ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I32_LOAD,
                             dst,
                             addr,
@@ -3909,7 +3906,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::MemoryLoadSlot {
+                        ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I64_LOAD,
                             dst,
                             addr,
@@ -3922,7 +3919,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::MemoryLoadSlot {
+                        ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_F32_LOAD,
                             dst,
                             addr,
@@ -3935,7 +3932,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::MemoryLoadSlot {
+                        ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_F64_LOAD,
                             dst,
                             addr,
@@ -3948,7 +3945,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryLoadSlot {
+                        ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I32_LOAD8_S,
                             dst,
                             addr,
@@ -3961,7 +3958,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryLoadSlot {
+                        ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I32_LOAD8_U,
                             dst,
                             addr,
@@ -3974,7 +3971,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryLoadSlot {
+                        ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I32_LOAD16_S,
                             dst,
                             addr,
@@ -3987,7 +3984,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryLoadSlot {
+                        ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I32_LOAD16_U,
                             dst,
                             addr,
@@ -4000,7 +3997,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::MemoryLoadSlot {
+                        ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I64_LOAD8_S,
                             dst,
                             addr,
@@ -4013,7 +4010,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::MemoryLoadSlot {
+                        ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I64_LOAD8_U,
                             dst,
                             addr,
@@ -4026,7 +4023,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::MemoryLoadSlot {
+                        ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I64_LOAD16_S,
                             dst,
                             addr,
@@ -4039,7 +4036,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::MemoryLoadSlot {
+                        ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I64_LOAD16_U,
                             dst,
                             addr,
@@ -4052,7 +4049,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::MemoryLoadSlot {
+                        ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I64_LOAD32_S,
                             dst,
                             addr,
@@ -4065,7 +4062,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::MemoryLoadSlot {
+                        ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I64_LOAD32_U,
                             dst,
                             addr,
@@ -4079,7 +4076,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let value = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryStoreSlot {
+                        ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I32_STORE,
                             addr,
                             value,
@@ -4092,7 +4089,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let value = allocator.pop(&ValueType::NumType(NumType::I64));
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryStoreSlot {
+                        ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_STORE,
                             addr,
                             value,
@@ -4105,7 +4102,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let value = allocator.pop(&ValueType::NumType(NumType::F32));
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryStoreSlot {
+                        ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_F32_STORE,
                             addr,
                             value,
@@ -4118,7 +4115,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let value = allocator.pop(&ValueType::NumType(NumType::F64));
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryStoreSlot {
+                        ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_F64_STORE,
                             addr,
                             value,
@@ -4131,7 +4128,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let value = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryStoreSlot {
+                        ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I32_STORE8,
                             addr,
                             value,
@@ -4144,7 +4141,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let value = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryStoreSlot {
+                        ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I32_STORE16,
                             addr,
                             value,
@@ -4157,7 +4154,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let value = allocator.pop(&ValueType::NumType(NumType::I64));
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryStoreSlot {
+                        ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_STORE8,
                             addr,
                             value,
@@ -4170,7 +4167,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let value = allocator.pop(&ValueType::NumType(NumType::I64));
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryStoreSlot {
+                        ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_STORE16,
                             addr,
                             value,
@@ -4183,7 +4180,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let value = allocator.pop(&ValueType::NumType(NumType::I64));
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryStoreSlot {
+                        ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_STORE32,
                             addr,
                             value,
@@ -4197,7 +4194,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                 wasmparser::Operator::MemorySize { .. } => {
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryOpsSlot {
+                        ProcessedInstr::MemoryOpsReg {
                             handler_index: HANDLER_IDX_MEMORY_SIZE,
                             dst: Some(dst),
                             args: vec![],
@@ -4210,7 +4207,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let delta = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryOpsSlot {
+                        ProcessedInstr::MemoryOpsReg {
                             handler_index: HANDLER_IDX_MEMORY_GROW,
                             dst: Some(dst),
                             args: vec![delta],
@@ -4224,7 +4221,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dest = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryOpsSlot {
+                        ProcessedInstr::MemoryOpsReg {
                             handler_index: HANDLER_IDX_MEMORY_COPY,
                             dst: None,
                             args: vec![dest, src, len],
@@ -4238,7 +4235,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let offset = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dest = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryOpsSlot {
+                        ProcessedInstr::MemoryOpsReg {
                             handler_index: HANDLER_IDX_MEMORY_INIT,
                             dst: None,
                             args: vec![dest, offset, len],
@@ -4252,7 +4249,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let val = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dest = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryOpsSlot {
+                        ProcessedInstr::MemoryOpsReg {
                             handler_index: HANDLER_IDX_MEMORY_FILL,
                             dst: None,
                             args: vec![dest, val, size],
@@ -4262,7 +4259,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::DataDrop { data_index } => (
-                    ProcessedInstr::DataDropSlot {
+                    ProcessedInstr::DataDropReg {
                         data_index: *data_index,
                     },
                     None,
@@ -4287,7 +4284,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     };
 
                     (
-                        ProcessedInstr::SelectSlot {
+                        ProcessedInstr::SelectReg {
                             handler_index,
                             dst,
                             val1,
@@ -4319,7 +4316,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(val_type);
 
                     (
-                        ProcessedInstr::SelectSlot {
+                        ProcessedInstr::SelectReg {
                             handler_index,
                             dst,
                             val1,
@@ -4337,10 +4334,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     };
                     let dst = allocator.push(ValueType::RefType(ref_type.clone()));
                     (
-                        ProcessedInstr::TableRefSlot {
-                            handler_index: HANDLER_IDX_REF_NULL_SLOT,
+                        ProcessedInstr::TableRefReg {
+                            handler_index: HANDLER_IDX_REF_NULL_REG,
                             table_idx: 0,
-                            slots: [dst.index(), 0, 0],
+                            regs: [dst.index(), 0, 0],
                             ref_type,
                         },
                         None,
@@ -4352,10 +4349,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::RefType(RefType::FuncRef));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::TableRefSlot {
-                            handler_index: HANDLER_IDX_REF_IS_NULL_SLOT,
+                        ProcessedInstr::TableRefReg {
+                            handler_index: HANDLER_IDX_REF_IS_NULL_REG,
                             table_idx: 0,
-                            slots: [dst.index(), src.index(), 0],
+                            regs: [dst.index(), src.index(), 0],
                             ref_type: RefType::FuncRef, // Not used for RefIsNull
                         },
                         None,
@@ -4372,10 +4369,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                         _ => RefType::FuncRef,
                     };
                     (
-                        ProcessedInstr::TableRefSlot {
-                            handler_index: HANDLER_IDX_TABLE_GET_SLOT,
+                        ProcessedInstr::TableRefReg {
+                            handler_index: HANDLER_IDX_TABLE_GET_REG,
                             table_idx: *table,
-                            slots: [dst.index(), idx.index(), 0],
+                            regs: [dst.index(), idx.index(), 0],
                             ref_type,
                         },
                         None,
@@ -4388,10 +4385,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let val = allocator.pop(&ref_type_vt);
                     let idx = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::TableRefSlot {
-                            handler_index: HANDLER_IDX_TABLE_SET_SLOT,
+                        ProcessedInstr::TableRefReg {
+                            handler_index: HANDLER_IDX_TABLE_SET_REG,
                             table_idx: *table,
-                            slots: [idx.index(), val.index(), 0],
+                            regs: [idx.index(), val.index(), 0],
                             ref_type: RefType::FuncRef, // Not used for TableSet
                         },
                         None,
@@ -4405,10 +4402,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let val = allocator.pop(&ref_type_vt);
                     let i = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::TableRefSlot {
-                            handler_index: HANDLER_IDX_TABLE_FILL_SLOT,
+                        ProcessedInstr::TableRefReg {
+                            handler_index: HANDLER_IDX_TABLE_FILL_REG,
                             table_idx: *table,
-                            slots: [i.index(), val.index(), n.index()],
+                            regs: [i.index(), val.index(), n.index()],
                             ref_type: RefType::FuncRef, // Not used for TableFill
                         },
                         None,
@@ -4420,7 +4417,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
             }
         } else {
-            panic!("Slot allocator is required");
+            panic!("Register allocator is required");
         };
 
         let processed_instr_template = processed_instr;
@@ -4466,42 +4463,42 @@ fn decode_processed_instrs_and_fixups<'a>(
             _ => {}
         }
 
-        // All instructions are now slot-based
+        // All instructions are now register-based
         initial_processed_instrs.push(processed_instr_template);
         if let Some(fixup_info) = fixup_info_opt {
             initial_fixups.push(fixup_info);
         }
 
-        // Update control_info_stack and block_result_slots_map
+        // Update control_info_stack and block_result_regs_map
         match op {
             wasmparser::Operator::Block { .. } => {
                 // Register for BrTable resolution (always needed)
                 if let Some(block_info) = control_info_stack.last() {
-                    block_result_slots_map.insert(
+                    block_result_regs_map.insert(
                         current_processed_pc,
-                        (block_info.result_slots.clone(), false),
+                        (block_info.result_regs.clone(), false),
                     );
                 }
             }
             wasmparser::Operator::Loop { .. } => {
                 // Register for BrTable resolution (always needed)
-                // For loops, register param_slots (used when branching to loop)
+                // For loops, register param_regs (used when branching to loop)
                 if let Some(block_info) = control_info_stack.last() {
-                    block_result_slots_map
-                        .insert(current_processed_pc, (block_info.param_slots.clone(), true));
+                    block_result_regs_map
+                        .insert(current_processed_pc, (block_info.param_regs.clone(), true));
                 }
             }
             wasmparser::Operator::If { .. } => {
                 // Register for BrTable resolution (always needed)
                 if let Some(block_info) = control_info_stack.last() {
-                    block_result_slots_map.insert(
+                    block_result_regs_map.insert(
                         current_processed_pc,
-                        (block_info.result_slots.clone(), false),
+                        (block_info.result_regs.clone(), false),
                     );
                 }
             }
             wasmparser::Operator::End => {
-                // Slot mode End already popped in its match arm above
+                // Register mode End already popped in its match arm above
             }
             _ => {}
         }
@@ -4526,9 +4523,9 @@ fn decode_processed_instrs_and_fixups<'a>(
         )) as Box<dyn std::error::Error>);
     }
 
-    // Get result slot before finalizing (the top of stack after all instructions)
-    // Use the function's result type to peek at the correct slot type
-    let result_slot = slot_allocator.as_ref().and_then(|alloc| {
+    // Get result register before finalizing (the top of stack after all instructions)
+    // Use the function's result type to peek at the correct register type
+    let result_reg = reg_allocator.as_ref().and_then(|alloc| {
         if let Some(result_type) = result_types.first() {
             // Peek at the current stack top for the result type
             alloc.peek(result_type)
@@ -4537,8 +4534,8 @@ fn decode_processed_instrs_and_fixups<'a>(
         }
     });
 
-    // Finalize slot allocation if in slot mode
-    let slot_allocation = slot_allocator.map(|alloc| alloc.finalize());
+    // Finalize register allocation if in register mode
+    let reg_allocation = reg_allocator.map(|alloc| alloc.finalize());
 
     Ok((
         initial_processed_instrs,
@@ -4546,20 +4543,20 @@ fn decode_processed_instrs_and_fixups<'a>(
         block_end_map,
         if_else_map,
         block_type_map,
-        slot_allocation,
-        result_slot,
-        block_result_slots_map,
+        reg_allocation,
+        result_reg,
+        block_result_regs_map,
     ))
 }
 
-/// Compute source_slots and target_result_slots for branch instructions
-/// source_slots: current stack top slots that will be copied
-/// target_result_slots: where to copy them (the target block's result slots, or param_slots for loops)
-fn compute_branch_slots(
+/// Compute source_regs and target_result_regs for branch instructions
+/// source_regs: current stack top registers that will be copied
+/// target_result_regs: where to copy them (the target block's result registers, or param_regs for loops)
+fn compute_branch_regs(
     control_info_stack: &[ControlBlockInfo],
     relative_depth: usize,
-    slot_allocator: Option<&SlotAllocator>,
-) -> (Vec<Slot>, Vec<Slot>) {
+    reg_allocator: Option<&RegAllocator>,
+) -> (Vec<Reg>, Vec<Reg>) {
     // Get target block from control_info_stack
     let stack_len = control_info_stack.len();
     if stack_len == 0 || relative_depth >= stack_len {
@@ -4568,52 +4565,52 @@ fn compute_branch_slots(
 
     let target_idx = stack_len - 1 - relative_depth;
     let target_block = &control_info_stack[target_idx];
-    // For loops, use param_slots (branch provides parameters)
-    // For blocks/if, use result_slots (branch provides results)
-    let target_result_slots = if target_block.is_loop {
-        target_block.param_slots.clone()
+    // For loops, use param_regs (branch provides parameters)
+    // For blocks/if, use result_regs (branch provides results)
+    let target_result_regs = if target_block.is_loop {
+        target_block.param_regs.clone()
     } else {
-        target_block.result_slots.clone()
+        target_block.result_regs.clone()
     };
 
-    // Compute source_slots from current allocator state
-    let source_slots = if let Some(allocator) = slot_allocator {
-        // Get the slots at stack top matching result types
-        let result_count = target_result_slots.len();
+    // Compute source_regs from current allocator state
+    let source_regs = if let Some(allocator) = reg_allocator {
+        // Get the registers at stack top matching result types
+        let result_count = target_result_regs.len();
         if result_count == 0 {
             vec![]
         } else {
-            // Get current state and compute source slots
+            // Get current state and compute source registers
             let state = allocator.save_state();
-            target_result_slots
+            target_result_regs
                 .iter()
                 .enumerate()
-                .map(|(i, target_slot)| {
-                    // Source slot is at current_depth - result_count + i
-                    match target_slot {
-                        Slot::I32(_) => {
+                .map(|(i, target_reg)| {
+                    // Source register is at current_depth - result_count + i
+                    match target_reg {
+                        Reg::I32(_) => {
                             let src_idx = state.i32_depth.saturating_sub(result_count - i);
-                            Slot::I32(src_idx as u16)
+                            Reg::I32(src_idx as u16)
                         }
-                        Slot::I64(_) => {
+                        Reg::I64(_) => {
                             let src_idx = state.i64_depth.saturating_sub(result_count - i);
-                            Slot::I64(src_idx as u16)
+                            Reg::I64(src_idx as u16)
                         }
-                        Slot::F32(_) => {
+                        Reg::F32(_) => {
                             let src_idx = state.f32_depth.saturating_sub(result_count - i);
-                            Slot::F32(src_idx as u16)
+                            Reg::F32(src_idx as u16)
                         }
-                        Slot::F64(_) => {
+                        Reg::F64(_) => {
                             let src_idx = state.f64_depth.saturating_sub(result_count - i);
-                            Slot::F64(src_idx as u16)
+                            Reg::F64(src_idx as u16)
                         }
-                        Slot::Ref(_) => {
+                        Reg::Ref(_) => {
                             let src_idx = state.ref_depth.saturating_sub(result_count - i);
-                            Slot::Ref(src_idx as u16)
+                            Reg::Ref(src_idx as u16)
                         }
-                        Slot::V128(_) => {
+                        Reg::V128(_) => {
                             let src_idx = state.v128_depth.saturating_sub(result_count - i);
-                            Slot::V128(src_idx as u16)
+                            Reg::V128(src_idx as u16)
                         }
                     }
                 })
@@ -4623,7 +4620,7 @@ fn compute_branch_slots(
         vec![]
     };
 
-    (source_slots, target_result_slots)
+    (source_regs, target_result_regs)
 }
 
 pub fn parse_bytecode(

@@ -106,11 +106,11 @@ impl Runtime {
         frame_stack_idx: usize,
         called_func_addr: &mut Option<FuncAddr>,
     ) -> Result<Result<Option<super::vm::ModuleLevelInstr>, RuntimeError>, RuntimeError> {
-        let slot_file = &mut self.stacks.slot_file;
+        let reg_file = &mut self.stacks.reg_file;
         let frame_stack = &mut self.stacks.activation_frame_stack[frame_stack_idx];
         let stats_ref = self.execution_stats.as_mut();
         let tracer_ref = self.tracer.as_mut();
-        frame_stack.run_dtc_loop(slot_file, called_func_addr, stats_ref, tracer_ref)
+        frame_stack.run_dtc_loop(reg_file, called_func_addr, stats_ref, tracer_ref)
     }
 
     pub fn run(&mut self) -> Result<Vec<Val>, RuntimeError> {
@@ -182,37 +182,37 @@ impl Runtime {
                     }
 
                     match instr_option {
-                        Some(ModuleLevelInstr::InvokeWasiSlot {
+                        Some(ModuleLevelInstr::InvokeWasiReg {
                             wasi_func_type,
                             params,
-                            result_slot,
+                            result_reg,
                         }) => {
-                            // Call WASI function directly with params from slots
+                            // Call WASI function directly with params from registers
                             match self.call_wasi_function(&wasi_func_type, params) {
                                 Ok(result) => {
-                                    if let Some(slot) = result_slot {
+                                    if let Some(reg) = result_reg {
                                         if let Some(val) = result {
-                                            self.stacks.slot_file.set_val(&slot, &val);
+                                            self.stacks.reg_file.set_val(&reg, &val);
                                         }
                                     }
                                 }
                                 Err(e) => {
                                     eprintln!(
-                                        "WASI slot function failed: {:?}, error: {:?}",
+                                        "WASI register function failed: {:?}, error: {:?}",
                                         wasi_func_type, e
                                     );
                                     return Err(RuntimeError::ExecutionFailed(
-                                        "WASI slot function failed",
+                                        "WASI register function failed",
                                     ));
                                 }
                             }
                         }
-                        Some(ModuleLevelInstr::InvokeSlot {
+                        Some(ModuleLevelInstr::InvokeReg {
                             func_addr,
                             params,
-                            result_slots,
+                            result_regs,
                         }) => {
-                            // Slot-based function invocation - params already extracted
+                            // Register-based function invocation - params already extracted
                             let func_inst_guard = func_addr.read_lock();
                             match &*func_inst_guard {
                                 FuncInst::RuntimeFunc {
@@ -227,22 +227,22 @@ impl Runtime {
                                         }
                                     }
 
-                                    if let Some(ref alloc) = code.slot_allocation {
-                                        self.stacks.slot_file.save_offsets(alloc);
+                                    if let Some(ref alloc) = code.reg_allocation {
+                                        self.stacks.reg_file.save_offsets(alloc);
                                     }
 
-                                    // Store result_slots in caller frame
+                                    // Store result_regs in caller frame
                                     if let Some(caller) =
                                         self.stacks.activation_frame_stack.last_mut()
                                     {
-                                        caller.result_slots = result_slots;
+                                        caller.result_regs = result_regs;
                                     }
                                     let new_frame = FrameStack {
                                         frame: Frame {
                                             locals,
                                             module: func_module_weak.clone(),
                                             n: type_.results.len(),
-                                            result_slot: code.result_slot.clone(),
+                                            result_reg: code.result_reg.clone(),
                                         },
                                         label_stack: vec![LabelStack {
                                             label: Label {
@@ -258,20 +258,19 @@ impl Runtime {
                                         void: type_.results.is_empty(),
                                         instruction_count: 0,
                                         enable_checkpoint: self.enable_checkpoint,
-                                        result_slots: vec![],
-                                        return_result_slots: vec![],
+                                        result_regs: vec![],
+                                        return_result_regs: vec![],
                                     };
                                     self.stacks.activation_frame_stack.push(new_frame);
                                 }
                                 FuncInst::HostFunc { host_code, .. } => {
-                                    // Host function with slot-based params
+                                    // Host function with register-based params
                                     match host_code(params) {
                                         Ok(results) => {
-                                            // Write results directly to slots
-                                            for (slot, val) in
-                                                result_slots.iter().zip(results.iter())
+                                            // Write results directly to registers
+                                            for (reg, val) in result_regs.iter().zip(results.iter())
                                             {
-                                                self.stacks.slot_file.set_val(slot, val);
+                                                self.stacks.reg_file.set_val(reg, val);
                                             }
                                         }
                                         Err(e) => return Err(e),
@@ -279,47 +278,47 @@ impl Runtime {
                                 }
                                 FuncInst::WasiFunc { .. } => {
                                     return Err(RuntimeError::ExecutionFailed(
-                                        "WASI function called via InvokeSlot - use CallWasiSlot",
+                                        "WASI function called via InvokeReg - use CallWasiReg",
                                     ));
                                 }
                             }
                         }
                         Some(ModuleLevelInstr::Return) | None => {
-                            // Pop slot file frame but keep reference for reading return values
+                            // Pop register file frame but keep reference for reading return values
                             let finished_frame = self.stacks.activation_frame_stack.pop().unwrap();
                             let expected_n = finished_frame.frame.n;
-                            let return_result_slots = finished_frame.return_result_slots.clone();
+                            let return_result_regs = finished_frame.return_result_regs.clone();
 
                             if self.stacks.activation_frame_stack.is_empty() {
-                                // Read values from slots before restoring
-                                let values_to_pass: Vec<Val> = return_result_slots
+                                // Read values from registers before restoring
+                                let values_to_pass: Vec<Val> = return_result_regs
                                     .iter()
                                     .take(expected_n)
-                                    .map(|slot| self.stacks.slot_file.get_val(slot))
+                                    .map(|reg| self.stacks.reg_file.get_val(reg))
                                     .collect();
-                                self.stacks.slot_file.restore_offsets();
+                                self.stacks.reg_file.restore_offsets();
                                 return Ok(values_to_pass);
                             } else {
-                                // First read values from finished frame's slots (before restore)
-                                let values_to_pass: Vec<Val> = return_result_slots
+                                // First read values from finished frame's registers (before restore)
+                                let values_to_pass: Vec<Val> = return_result_regs
                                     .iter()
-                                    .map(|slot| self.stacks.slot_file.get_val(slot))
+                                    .map(|reg| self.stacks.reg_file.get_val(reg))
                                     .collect();
 
                                 // Restore offsets to caller's frame
-                                self.stacks.slot_file.restore_offsets();
+                                self.stacks.reg_file.restore_offsets();
 
-                                // Write to caller's slots (after restore, in caller's coordinate system)
-                                let (slot_file, frames) = self.stacks.get_slot_file_and_frames();
+                                // Write to caller's registers (after restore, in caller's coordinate system)
+                                let (reg_file, frames) = self.stacks.get_reg_file_and_frames();
                                 let caller_frame = frames.last_mut().unwrap();
 
-                                if !caller_frame.result_slots.is_empty() {
-                                    for (caller_slot, val) in
-                                        caller_frame.result_slots.iter().zip(values_to_pass.iter())
+                                if !caller_frame.result_regs.is_empty() {
+                                    for (caller_reg, val) in
+                                        caller_frame.result_regs.iter().zip(values_to_pass.iter())
                                     {
-                                        slot_file.set_val(caller_slot, val);
+                                        reg_file.set_val(caller_reg, val);
                                     }
-                                    caller_frame.result_slots.clear();
+                                    caller_frame.result_regs.clear();
                                 }
                             }
                         }

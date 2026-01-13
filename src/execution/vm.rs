@@ -5,7 +5,7 @@ use crate::execution::{
     mem::MemAddr,
     migration,
     module::*,
-    slots::{Slot, SlotFile},
+    regs::{Reg, RegFile},
 };
 use crate::structure::module::WasiFuncType;
 use crate::structure::types::LabelIdx as StructureLabelIdx;
@@ -92,20 +92,20 @@ pub enum Operand {
         arity: usize,
         original_wasm_depth: usize,
         is_loop: bool,
-        source_slots: Vec<Slot>,
-        target_result_slots: Vec<Slot>,
-        condition_slot: Option<Slot>, // For br_if: slot containing condition value
+        source_regs: Vec<Reg>,
+        target_result_regs: Vec<Reg>,
+        cond_reg: Option<Reg>, // For br_if: register containing condition value
     },
     MemArg(Memarg),
     BrTable {
         targets: Vec<Operand>,
         default: Box<Operand>,
-        index_slot: Option<Slot>, // Slot containing table index
+        index_reg: Option<Reg>, // Reg containing table index
     },
     CallIndirect {
         type_idx: TypeIdx,
         table_idx: TableIdx,
-        index_slot: Option<Slot>, // Slot containing table element index
+        index_reg: Option<Reg>, // Reg containing table element index
     },
     Block {
         arity: usize,
@@ -117,36 +117,36 @@ pub enum Operand {
     Optimized(OptimizedOperand),
 }
 
-/// Slot-based operand for I32 operations
+/// Register-based operand for I32 operations
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub enum I32SlotOperand {
-    Slot(u16),  // Read from slot
+pub enum I32RegOperand {
+    Reg(u16),   // Read from register
     Const(i32), // Constant value
     Param(u16), // Read from parameter/local
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub enum I64SlotOperand {
-    Slot(u16),
+pub enum I64RegOperand {
+    Reg(u16),
     Const(i64),
     Param(u16),
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub enum F32SlotOperand {
-    Slot(u16),
+pub enum F32RegOperand {
+    Reg(u16),
     Const(f32),
     Param(u16),
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub enum F64SlotOperand {
-    Slot(u16),
+pub enum F64RegOperand {
+    Reg(u16),
     Const(f64),
     Param(u16),
 }
 
-/// I32 operations for slot-based execution
+/// I32 operations for register-based execution
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum I32Op {
     // Constants and locals
@@ -192,163 +192,163 @@ pub enum I32Op {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProcessedInstr {
-    /// Slot-based I32 instruction
-    I32Slot {
+    /// Register-based I32 instruction
+    I32Reg {
         handler_index: usize,
-        dst: u16,                     // Destination slot index
-        src1: I32SlotOperand,         // First operand
-        src2: Option<I32SlotOperand>, // Second operand (None for unary ops)
+        dst: u16,                    // Destination register index
+        src1: I32RegOperand,         // First operand
+        src2: Option<I32RegOperand>, // Second operand (None for unary ops)
     },
-    /// Slot-based I64 instruction
-    I64Slot {
+    /// Register-based I64 instruction
+    I64Reg {
         handler_index: usize,
-        dst: Slot, // Destination slot (I64 for arithmetic, I32 for comparisons)
-        src1: I64SlotOperand,
-        src2: Option<I64SlotOperand>,
-    },
-
-    F32Slot {
-        handler_index: usize,
-        dst: Slot,
-        src1: F32SlotOperand,
-        src2: Option<F32SlotOperand>,
+        dst: Reg, // Destination register (I64 for arithmetic, I32 for comparisons)
+        src1: I64RegOperand,
+        src2: Option<I64RegOperand>,
     },
 
-    F64Slot {
+    F32Reg {
         handler_index: usize,
-        dst: Slot,
-        src1: F64SlotOperand,
-        src2: Option<F64SlotOperand>,
+        dst: Reg,
+        src1: F32RegOperand,
+        src2: Option<F32RegOperand>,
     },
-    ConversionSlot {
+
+    F64Reg {
         handler_index: usize,
-        dst: Slot, // Destination slot (type determined by output type)
-        src: Slot, // Source slot (type determined by input type)
+        dst: Reg,
+        src1: F64RegOperand,
+        src2: Option<F64RegOperand>,
     },
-    MemoryLoadSlot {
+    ConversionReg {
         handler_index: usize,
-        dst: Slot,   // Destination slot for loaded value
-        addr: Slot,  // Address slot (always I32)
+        dst: Reg, // Destination register (type determined by output type)
+        src: Reg, // Source register (type determined by input type)
+    },
+    MemoryLoadReg {
+        handler_index: usize,
+        dst: Reg,    // Destination register for loaded value
+        addr: Reg,   // Address register (always I32)
         offset: u64, // Memory offset
     },
-    MemoryStoreSlot {
+    MemoryStoreReg {
         handler_index: usize,
-        addr: Slot,  // Address slot (always I32)
-        value: Slot, // Value slot to store
+        addr: Reg,   // Address register (always I32)
+        value: Reg,  // Value register to store
         offset: u64, // Memory offset
     },
 
-    MemoryOpsSlot {
+    MemoryOpsReg {
         handler_index: usize,
-        dst: Option<Slot>, // Destination slot (for size/grow results)
-        args: Vec<Slot>,   // Argument slots (varies by operation)
-        data_index: u32,   // Data segment index (for memory.init)
+        dst: Option<Reg>, // Destination register (for size/grow results)
+        args: Vec<Reg>,   // Argument registers (varies by operation)
+        data_index: u32,  // Data segment index (for memory.init)
     },
 
-    SelectSlot {
+    SelectReg {
         handler_index: usize,
-        dst: Slot,  // Destination slot
-        val1: Slot, // First value (selected when cond != 0)
-        val2: Slot, // Second value (selected when cond == 0)
-        cond: Slot, // Condition slot (always I32)
+        dst: Reg,  // Destination register
+        val1: Reg, // First value (selected when cond != 0)
+        val2: Reg, // Second value (selected when cond == 0)
+        cond: Reg, // Condition register (always I32)
     },
 
-    GlobalGetSlot {
+    GlobalGetReg {
         handler_index: usize,
-        dst: Slot,         // Destination slot
+        dst: Reg,          // Destination register
         global_index: u32, // Global variable index
     },
 
-    GlobalSetSlot {
+    GlobalSetReg {
         handler_index: usize,
-        src: Slot,         // Source slot
+        src: Reg,          // Source register
         global_index: u32, // Global variable index
     },
 
-    DataDropSlot {
+    DataDropReg {
         data_index: u32, // Data segment index to drop
     },
 
-    /// Slot-based ref local operations
-    RefLocalSlot {
+    /// Register-based ref local operations
+    RefLocalReg {
         handler_index: usize,
-        dst: u16,       // Destination slot index (for get) or unused (for set)
-        src: u16,       // Source slot index (for set) or unused (for get)
+        dst: u16,       // Destination register index (for get) or unused (for set)
+        src: u16,       // Source register index (for set) or unused (for get)
         local_idx: u16, // Local variable index
     },
 
-    TableRefSlot {
+    TableRefReg {
         handler_index: usize,
         table_idx: u32,
-        slots: [u16; 3],   // Operand slots (usage depends on handler)
+        regs: [u16; 3],    // Operand registers (usage depends on handler)
         ref_type: RefType, // Used for RefNull
     },
-    CallWasiSlot {
+    CallWasiReg {
         wasi_func_type: WasiFuncType,
-        param_slots: Vec<Slot>,    // Parameter slots
-        result_slot: Option<Slot>, // Result slot (most WASI functions return i32)
+        param_regs: Vec<Reg>,    // Parameter registers
+        result_reg: Option<Reg>, // Result register (most WASI functions return i32)
     },
-    CallIndirectSlot {
+    CallIndirectReg {
         type_idx: TypeIdx,
         table_idx: TableIdx,
-        index_slot: Slot,        // Table index slot
-        param_slots: Vec<Slot>,  // Parameter slots
-        result_slots: Vec<Slot>, // Result slots
+        index_reg: Reg,        // Table index register
+        param_regs: Vec<Reg>,  // Parameter registers
+        result_regs: Vec<Reg>, // Result registers
     },
-    CallSlot {
+    CallReg {
         func_idx: FuncIdx,
-        param_slots: Vec<Slot>,  // Parameter slots
-        result_slots: Vec<Slot>, // Result slots
+        param_regs: Vec<Reg>,  // Parameter registers
+        result_regs: Vec<Reg>, // Result registers
     },
-    ReturnSlot {
-        result_slots: Vec<Slot>, // Result slots to return
+    ReturnReg {
+        result_regs: Vec<Reg>, // Result registers to return
     },
     /// Unconditional jump (for Else)
-    JumpSlot { target_ip: usize },
+    JumpReg { target_ip: usize },
     /// Block/Loop control structure
-    BlockSlot {
+    BlockReg {
         arity: usize,
         param_count: usize,
         is_loop: bool,
     },
     /// If control structure
-    IfSlot {
+    IfReg {
         arity: usize,
-        condition_slot: Slot,
+        cond_reg: Reg,
         else_target_ip: usize, // Jump target if condition is false (else or end)
         has_else: bool,        // True if this if has an else branch
     },
     /// End of block/loop/if
-    EndSlot {
-        source_slots: Vec<Slot>,
-        target_result_slots: Vec<Slot>,
+    EndReg {
+        source_regs: Vec<Reg>,
+        target_result_regs: Vec<Reg>,
     },
     /// Unconditional branch
-    BrSlot {
+    BrReg {
         relative_depth: u32,
         target_ip: usize, // Target instruction pointer (set by fixup)
-        source_slots: Vec<Slot>,
-        target_result_slots: Vec<Slot>,
+        source_regs: Vec<Reg>,
+        target_result_regs: Vec<Reg>,
     },
     /// Conditional branch
-    BrIfSlot {
+    BrIfReg {
         relative_depth: u32,
         target_ip: usize, // Target instruction pointer (set by fixup)
-        condition_slot: Slot,
-        source_slots: Vec<Slot>,
-        target_result_slots: Vec<Slot>,
+        cond_reg: Reg,
+        source_regs: Vec<Reg>,
+        target_result_regs: Vec<Reg>,
     },
     /// Branch table
-    BrTableSlot {
-        targets: Vec<(u32, usize, Vec<Slot>)>, // (relative_depth, target_ip, target_result_slots) for each target
-        default_target: (u32, usize, Vec<Slot>), // (relative_depth, target_ip, target_result_slots) for default
-        index_slot: Slot,                        // Index slot
-        source_slots: Vec<Slot>,                 // Source slots (same for all targets)
+    BrTableReg {
+        targets: Vec<(u32, usize, Vec<Reg>)>, // (relative_depth, target_ip, target_result_regs) for each target
+        default_target: (u32, usize, Vec<Reg>), // (relative_depth, target_ip, target_result_regs) for default
+        index_reg: Reg,                         // Index register
+        source_regs: Vec<Reg>,                  // Source registers (same for all targets)
     },
     /// No operation
-    NopSlot,
+    NopReg,
     /// Unreachable instruction
-    UnreachableSlot,
+    UnreachableReg,
 }
 
 impl ProcessedInstr {
@@ -356,34 +356,34 @@ impl ProcessedInstr {
     #[inline(always)]
     pub fn handler_index(&self) -> usize {
         match self {
-            ProcessedInstr::I32Slot { handler_index, .. } => *handler_index,
-            ProcessedInstr::I64Slot { handler_index, .. } => *handler_index,
-            ProcessedInstr::F32Slot { handler_index, .. } => *handler_index,
-            ProcessedInstr::F64Slot { handler_index, .. } => *handler_index,
-            ProcessedInstr::ConversionSlot { handler_index, .. } => *handler_index,
-            ProcessedInstr::MemoryLoadSlot { handler_index, .. } => *handler_index,
-            ProcessedInstr::MemoryStoreSlot { handler_index, .. } => *handler_index,
-            ProcessedInstr::MemoryOpsSlot { handler_index, .. } => *handler_index,
-            ProcessedInstr::SelectSlot { handler_index, .. } => *handler_index,
-            ProcessedInstr::GlobalGetSlot { handler_index, .. } => *handler_index,
-            ProcessedInstr::GlobalSetSlot { handler_index, .. } => *handler_index,
-            ProcessedInstr::DataDropSlot { .. } => HANDLER_IDX_DATA_DROP,
-            ProcessedInstr::RefLocalSlot { handler_index, .. } => *handler_index,
-            ProcessedInstr::TableRefSlot { handler_index, .. } => *handler_index,
-            ProcessedInstr::CallWasiSlot { .. } => HANDLER_IDX_CALL_WASI_SLOT,
-            ProcessedInstr::CallIndirectSlot { .. } => HANDLER_IDX_CALL_INDIRECT,
-            ProcessedInstr::CallSlot { .. } => HANDLER_IDX_CALL,
-            ProcessedInstr::ReturnSlot { .. } => HANDLER_IDX_RETURN,
-            ProcessedInstr::JumpSlot { .. } => HANDLER_IDX_ELSE,
-            ProcessedInstr::BlockSlot { is_loop: false, .. } => HANDLER_IDX_BLOCK,
-            ProcessedInstr::BlockSlot { is_loop: true, .. } => HANDLER_IDX_LOOP,
-            ProcessedInstr::IfSlot { .. } => HANDLER_IDX_IF,
-            ProcessedInstr::EndSlot { .. } => HANDLER_IDX_END,
-            ProcessedInstr::BrSlot { .. } => HANDLER_IDX_BR,
-            ProcessedInstr::BrIfSlot { .. } => HANDLER_IDX_BR_IF,
-            ProcessedInstr::BrTableSlot { .. } => HANDLER_IDX_BR_TABLE,
-            ProcessedInstr::NopSlot => HANDLER_IDX_NOP,
-            ProcessedInstr::UnreachableSlot => HANDLER_IDX_UNREACHABLE,
+            ProcessedInstr::I32Reg { handler_index, .. } => *handler_index,
+            ProcessedInstr::I64Reg { handler_index, .. } => *handler_index,
+            ProcessedInstr::F32Reg { handler_index, .. } => *handler_index,
+            ProcessedInstr::F64Reg { handler_index, .. } => *handler_index,
+            ProcessedInstr::ConversionReg { handler_index, .. } => *handler_index,
+            ProcessedInstr::MemoryLoadReg { handler_index, .. } => *handler_index,
+            ProcessedInstr::MemoryStoreReg { handler_index, .. } => *handler_index,
+            ProcessedInstr::MemoryOpsReg { handler_index, .. } => *handler_index,
+            ProcessedInstr::SelectReg { handler_index, .. } => *handler_index,
+            ProcessedInstr::GlobalGetReg { handler_index, .. } => *handler_index,
+            ProcessedInstr::GlobalSetReg { handler_index, .. } => *handler_index,
+            ProcessedInstr::DataDropReg { .. } => HANDLER_IDX_DATA_DROP,
+            ProcessedInstr::RefLocalReg { handler_index, .. } => *handler_index,
+            ProcessedInstr::TableRefReg { handler_index, .. } => *handler_index,
+            ProcessedInstr::CallWasiReg { .. } => HANDLER_IDX_CALL_WASI_REG,
+            ProcessedInstr::CallIndirectReg { .. } => HANDLER_IDX_CALL_INDIRECT,
+            ProcessedInstr::CallReg { .. } => HANDLER_IDX_CALL,
+            ProcessedInstr::ReturnReg { .. } => HANDLER_IDX_RETURN,
+            ProcessedInstr::JumpReg { .. } => HANDLER_IDX_ELSE,
+            ProcessedInstr::BlockReg { is_loop: false, .. } => HANDLER_IDX_BLOCK,
+            ProcessedInstr::BlockReg { is_loop: true, .. } => HANDLER_IDX_LOOP,
+            ProcessedInstr::IfReg { .. } => HANDLER_IDX_IF,
+            ProcessedInstr::EndReg { .. } => HANDLER_IDX_END,
+            ProcessedInstr::BrReg { .. } => HANDLER_IDX_BR,
+            ProcessedInstr::BrIfReg { .. } => HANDLER_IDX_BR_IF,
+            ProcessedInstr::BrTableReg { .. } => HANDLER_IDX_BR_TABLE,
+            ProcessedInstr::NopReg => HANDLER_IDX_NOP,
+            ProcessedInstr::UnreachableReg => HANDLER_IDX_UNREACHABLE,
         }
     }
 }
@@ -391,15 +391,15 @@ impl ProcessedInstr {
 #[derive(Clone)]
 pub enum ModuleLevelInstr {
     Return,
-    InvokeWasiSlot {
+    InvokeWasiReg {
         wasi_func_type: WasiFuncType,
-        params: Vec<Val>,          // Parameters read from slots
-        result_slot: Option<Slot>, // Slot to write result to
+        params: Vec<Val>,        // Parameters read from registers
+        result_reg: Option<Reg>, // Register to write result to
     },
-    InvokeSlot {
+    InvokeReg {
         func_addr: FuncAddr,
-        params: Vec<Val>,        // Parameters read from slots
-        result_slots: Vec<Slot>, // Slots to write results to
+        params: Vec<Val>,      // Parameters read from registers
+        result_regs: Vec<Reg>, // Registers to write results to
     },
 }
 
@@ -673,8 +673,8 @@ pub const MAX_HANDLER_INDEX: usize = 0x168;
 /// VM execution state - holds all runtime state for WebAssembly execution
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VMState {
-    /// Global slot file for all frames
-    pub slot_file: SlotFile,
+    /// Global register file for all frames
+    pub reg_file: RegFile,
     /// Activation frame stack
     pub activation_frame_stack: Vec<FrameStack>,
 }
@@ -709,12 +709,12 @@ impl VMState {
                     }
                 }
 
-                // Initialize global SlotFile
-                let mut slot_file = SlotFile::new_global();
+                // Initialize global RegFile
+                let mut reg_file = RegFile::new_global();
 
                 // Push initial frame allocation if present
-                if let Some(alloc) = code.slot_allocation.as_ref() {
-                    slot_file.save_offsets(alloc);
+                if let Some(alloc) = code.reg_allocation.as_ref() {
+                    reg_file.save_offsets(alloc);
                 }
 
                 let initial_frame = FrameStack {
@@ -722,7 +722,7 @@ impl VMState {
                         locals,
                         module: module.clone(),
                         n: type_.results.len(),
-                        result_slot: code.result_slot,
+                        result_reg: code.result_reg,
                     },
                     label_stack: vec![LabelStack {
                         label: Label {
@@ -738,12 +738,12 @@ impl VMState {
                     void: type_.results.is_empty(),
                     instruction_count: 0,
                     enable_checkpoint: false,
-                    result_slots: vec![],
-                    return_result_slots: vec![],
+                    result_regs: vec![],
+                    return_result_regs: vec![],
                 };
 
                 Ok(VMState {
-                    slot_file,
+                    reg_file,
                     activation_frame_stack: vec![initial_frame],
                 })
             }
@@ -759,10 +759,10 @@ impl VMState {
         }
     }
 
-    /// Get mutable references to both slot_file and activation_frame_stack
+    /// Get mutable references to both reg_file and activation_frame_stack
     /// This allows split borrowing of VMState fields
-    pub fn get_slot_file_and_frames(&mut self) -> (&mut SlotFile, &mut Vec<FrameStack>) {
-        (&mut self.slot_file, &mut self.activation_frame_stack)
+    pub fn get_reg_file_and_frames(&mut self) -> (&mut RegFile, &mut Vec<FrameStack>) {
+        (&mut self.reg_file, &mut self.activation_frame_stack)
     }
 }
 
@@ -772,7 +772,7 @@ pub struct Frame {
     #[serde(skip)]
     pub module: Weak<ModuleInst>,
     pub n: usize,
-    pub result_slot: Option<crate::execution::slots::Slot>, // Slot for return value (slot mode only)
+    pub result_reg: Option<crate::execution::regs::Reg>, // Register for return value (register mode only)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -783,12 +783,12 @@ pub struct FrameStack {
     pub instruction_count: u64,
     #[serde(skip)]
     pub enable_checkpoint: bool,
-    /// Slots where caller expects results to be written
+    /// Registers where caller expects results to be written
     #[serde(skip)]
-    pub result_slots: Vec<Slot>,
-    /// Slots containing this function's return values (set on return)
+    pub result_regs: Vec<Reg>,
+    /// Registers containing this function's return values (set on return)
     #[serde(skip)]
-    pub return_result_slots: Vec<Slot>,
+    pub return_result_regs: Vec<Reg>,
 }
 
 impl FrameStack {
@@ -814,7 +814,7 @@ impl FrameStack {
     /// DTC execution loop
     pub fn run_dtc_loop(
         &mut self,
-        slot_file: &mut SlotFile,
+        reg_file: &mut RegFile,
         _called_func_addr_out: &mut Option<FuncAddr>,
         _execution_stats: Option<&mut super::stats::ExecutionStats>,
         _tracer: Option<&mut super::trace::Tracer>,
@@ -892,113 +892,113 @@ impl FrameStack {
 
             // Match on instruction type
             match instruction_ref {
-                ProcessedInstr::I32Slot {
+                ProcessedInstr::I32Reg {
                     handler_index,
                     dst,
                     src1,
                     src2,
                 } => {
                     // Create context for handler
-                    let ctx = I32SlotContext {
-                        slot_file: slot_file.get_i32_slots(),
+                    let ctx = I32RegContext {
+                        reg_file: reg_file.get_i32_regs(),
                         locals: &mut self.frame.locals,
                         src1: src1.clone(),
                         src2: src2.clone(),
                     };
 
-                    let handler = I32_SLOT_HANDLER_TABLE[*handler_index];
+                    let handler = I32_REG_HANDLER_TABLE[*handler_index];
                     handler(ctx, *dst)?;
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
                 }
-                ProcessedInstr::I64Slot {
+                ProcessedInstr::I64Reg {
                     handler_index,
                     dst,
                     src1,
                     src2,
                 } => {
-                    // Get both i32 and i64 slots for comparison operations
-                    let (i32_slots, i64_slots) = slot_file.get_i32_and_i64_slots();
-                    let ctx = I64SlotContext {
-                        i64_slots,
-                        i32_slots,
+                    // Get both i32 and i64 registers for comparison operations
+                    let (i32_regs, i64_regs) = reg_file.get_i32_and_i64_regs();
+                    let ctx = I64RegContext {
+                        i64_regs,
+                        i32_regs,
                         locals: &mut self.frame.locals,
                         src1: src1.clone(),
                         src2: src2.clone(),
                         dst: dst.clone(),
                     };
 
-                    let handler = I64_SLOT_HANDLER_TABLE[*handler_index];
+                    let handler = I64_REG_HANDLER_TABLE[*handler_index];
                     handler(ctx)?;
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
                 }
-                ProcessedInstr::F32Slot {
+                ProcessedInstr::F32Reg {
                     handler_index,
                     dst,
                     src1,
                     src2,
                 } => {
-                    // Get both i32 and f32 slots for comparison operations
-                    let (i32_slots, f32_slots) = slot_file.get_i32_and_f32_slots();
-                    let ctx = F32SlotContext {
-                        f32_slots,
-                        i32_slots,
+                    // Get both i32 and f32 registers for comparison operations
+                    let (i32_regs, f32_regs) = reg_file.get_i32_and_f32_regs();
+                    let ctx = F32RegContext {
+                        f32_regs,
+                        i32_regs,
                         locals: &mut self.frame.locals,
                         src1: src1.clone(),
                         src2: src2.clone(),
                         dst: dst.clone(),
                     };
 
-                    let handler = F32_SLOT_HANDLER_TABLE[*handler_index];
+                    let handler = F32_REG_HANDLER_TABLE[*handler_index];
                     handler(ctx)?;
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
                 }
-                ProcessedInstr::F64Slot {
+                ProcessedInstr::F64Reg {
                     handler_index,
                     dst,
                     src1,
                     src2,
                 } => {
-                    // Get both i32 and f64 slots for comparison operations
-                    let (i32_slots, f64_slots) = slot_file.get_i32_and_f64_slots();
-                    let ctx = F64SlotContext {
-                        f64_slots,
-                        i32_slots,
+                    // Get both i32 and f64 registers for comparison operations
+                    let (i32_regs, f64_regs) = reg_file.get_i32_and_f64_regs();
+                    let ctx = F64RegContext {
+                        f64_regs,
+                        i32_regs,
                         locals: &mut self.frame.locals,
                         src1: src1.clone(),
                         src2: src2.clone(),
                         dst: dst.clone(),
                     };
 
-                    let handler = F64_SLOT_HANDLER_TABLE[*handler_index];
+                    let handler = F64_REG_HANDLER_TABLE[*handler_index];
                     handler(ctx)?;
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
                 }
-                ProcessedInstr::ConversionSlot {
+                ProcessedInstr::ConversionReg {
                     handler_index,
                     dst,
                     src,
                 } => {
-                    let ctx = ConversionSlotContext {
-                        slot_file,
+                    let ctx = ConversionRegContext {
+                        reg_file,
                         src: src.clone(),
                         dst: dst.clone(),
                     };
 
-                    let handler = CONVERSION_SLOT_HANDLER_TABLE[*handler_index];
+                    let handler = CONVERSION_REG_HANDLER_TABLE[*handler_index];
                     handler(ctx)?;
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
                 }
-                ProcessedInstr::MemoryLoadSlot {
+                ProcessedInstr::MemoryLoadReg {
                     handler_index,
                     dst,
                     addr,
@@ -1014,21 +1014,21 @@ impl FrameStack {
                         .first()
                         .ok_or(RuntimeError::MemoryNotFound)?;
 
-                    let ctx = MemoryLoadSlotContext {
-                        slot_file,
+                    let ctx = MemoryLoadRegContext {
+                        reg_file,
                         mem_addr,
                         addr: addr.clone(),
                         dst: dst.clone(),
                         offset: *offset,
                     };
 
-                    let handler = MEMORY_LOAD_SLOT_HANDLER_TABLE[*handler_index];
+                    let handler = MEMORY_LOAD_REG_HANDLER_TABLE[*handler_index];
                     handler(ctx)?;
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
                 }
-                ProcessedInstr::MemoryStoreSlot {
+                ProcessedInstr::MemoryStoreReg {
                     handler_index,
                     addr,
                     value,
@@ -1044,21 +1044,21 @@ impl FrameStack {
                         .first()
                         .ok_or(RuntimeError::MemoryNotFound)?;
 
-                    let ctx = MemoryStoreSlotContext {
-                        slot_file,
+                    let ctx = MemoryStoreRegContext {
+                        reg_file,
                         mem_addr,
                         addr: addr.clone(),
                         value: value.clone(),
                         offset: *offset,
                     };
 
-                    let handler = MEMORY_STORE_SLOT_HANDLER_TABLE[*handler_index];
+                    let handler = MEMORY_STORE_REG_HANDLER_TABLE[*handler_index];
                     handler(ctx)?;
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
                 }
-                ProcessedInstr::MemoryOpsSlot {
+                ProcessedInstr::MemoryOpsReg {
                     handler_index,
                     dst,
                     args,
@@ -1074,8 +1074,8 @@ impl FrameStack {
                         .first()
                         .ok_or(RuntimeError::MemoryNotFound)?;
 
-                    let ctx = MemoryOpsSlotContext {
-                        slot_file,
+                    let ctx = MemoryOpsRegContext {
+                        reg_file,
                         mem_addr,
                         module_inst: &module_inst,
                         dst: dst.clone(),
@@ -1083,34 +1083,34 @@ impl FrameStack {
                         data_index: *data_index,
                     };
 
-                    let handler = MEMORY_OPS_SLOT_HANDLER_TABLE[*handler_index];
+                    let handler = MEMORY_OPS_REG_HANDLER_TABLE[*handler_index];
                     handler(ctx)?;
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
                 }
-                ProcessedInstr::SelectSlot {
+                ProcessedInstr::SelectReg {
                     handler_index,
                     dst,
                     val1,
                     val2,
                     cond,
                 } => {
-                    let ctx = SelectSlotContext {
-                        slot_file,
+                    let ctx = SelectRegContext {
+                        reg_file,
                         dst: dst.clone(),
                         val1: val1.clone(),
                         val2: val2.clone(),
                         cond: cond.clone(),
                     };
 
-                    let handler = SELECT_SLOT_HANDLER_TABLE[*handler_index];
+                    let handler = SELECT_REG_HANDLER_TABLE[*handler_index];
                     handler(ctx)?;
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
                 }
-                ProcessedInstr::GlobalGetSlot {
+                ProcessedInstr::GlobalGetReg {
                     handler_index,
                     dst,
                     global_index,
@@ -1128,16 +1128,16 @@ impl FrameStack {
 
                     match *handler_index {
                         HANDLER_IDX_GLOBAL_GET_I32 => {
-                            slot_file.set_i32(dst.index(), val.to_i32().unwrap());
+                            reg_file.set_i32(dst.index(), val.to_i32().unwrap());
                         }
                         HANDLER_IDX_GLOBAL_GET_I64 => {
-                            slot_file.set_i64(dst.index(), val.to_i64().unwrap());
+                            reg_file.set_i64(dst.index(), val.to_i64().unwrap());
                         }
                         HANDLER_IDX_GLOBAL_GET_F32 => {
-                            slot_file.set_f32(dst.index(), val.to_f32().unwrap());
+                            reg_file.set_f32(dst.index(), val.to_f32().unwrap());
                         }
                         HANDLER_IDX_GLOBAL_GET_F64 => {
-                            slot_file.set_f64(dst.index(), val.to_f64().unwrap());
+                            reg_file.set_f64(dst.index(), val.to_f64().unwrap());
                         }
                         _ => return Err(RuntimeError::InvalidHandlerIndex),
                     }
@@ -1145,23 +1145,23 @@ impl FrameStack {
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
                 }
-                ProcessedInstr::GlobalSetSlot {
+                ProcessedInstr::GlobalSetReg {
                     handler_index,
                     src,
                     global_index,
                 } => {
                     let val = match *handler_index {
                         HANDLER_IDX_GLOBAL_SET_I32 => {
-                            Val::Num(Num::I32(slot_file.get_i32(src.index())))
+                            Val::Num(Num::I32(reg_file.get_i32(src.index())))
                         }
                         HANDLER_IDX_GLOBAL_SET_I64 => {
-                            Val::Num(Num::I64(slot_file.get_i64(src.index())))
+                            Val::Num(Num::I64(reg_file.get_i64(src.index())))
                         }
                         HANDLER_IDX_GLOBAL_SET_F32 => {
-                            Val::Num(Num::F32(slot_file.get_f32(src.index())))
+                            Val::Num(Num::F32(reg_file.get_f32(src.index())))
                         }
                         HANDLER_IDX_GLOBAL_SET_F64 => {
-                            Val::Num(Num::F64(slot_file.get_f64(src.index())))
+                            Val::Num(Num::F64(reg_file.get_f64(src.index())))
                         }
                         _ => return Err(RuntimeError::InvalidHandlerIndex),
                     };
@@ -1180,7 +1180,7 @@ impl FrameStack {
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
                 }
-                ProcessedInstr::DataDropSlot { data_index } => {
+                ProcessedInstr::DataDropReg { data_index } => {
                     let module_inst = self
                         .frame
                         .module
@@ -1194,18 +1194,18 @@ impl FrameStack {
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
                 }
-                ProcessedInstr::RefLocalSlot {
+                ProcessedInstr::RefLocalReg {
                     handler_index,
                     dst,
                     src,
                     local_idx,
                 } => {
-                    let handler_fn = REF_LOCAL_SLOT_HANDLER_TABLE
+                    let handler_fn = REF_LOCAL_REG_HANDLER_TABLE
                         .get(*handler_index)
                         .ok_or(RuntimeError::InvalidHandlerIndex)?;
 
-                    handler_fn(RefLocalSlotContext {
-                        slot_file,
+                    handler_fn(RefLocalRegContext {
+                        reg_file,
                         locals: &mut self.frame.locals,
                         dst: *dst,
                         src: *src,
@@ -1215,13 +1215,13 @@ impl FrameStack {
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
                 }
-                ProcessedInstr::TableRefSlot {
+                ProcessedInstr::TableRefReg {
                     handler_index,
                     table_idx,
-                    slots,
+                    regs,
                     ref_type,
                 } => {
-                    let handler_fn = TABLE_REF_SLOT_HANDLER_TABLE
+                    let handler_fn = TABLE_REF_REG_HANDLER_TABLE
                         .get(*handler_index)
                         .ok_or(RuntimeError::InvalidHandlerIndex)?;
 
@@ -1231,54 +1231,54 @@ impl FrameStack {
                         .upgrade()
                         .ok_or(RuntimeError::ModuleInstanceGone)?;
 
-                    handler_fn(TableRefSlotContext {
-                        slot_file,
+                    handler_fn(TableRefRegContext {
+                        reg_file,
                         module_inst: &module_inst,
                         table_idx: *table_idx,
-                        slots: *slots,
+                        regs: *regs,
                         ref_type: *ref_type,
                     })?;
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
                 }
-                ProcessedInstr::CallWasiSlot {
+                ProcessedInstr::CallWasiReg {
                     wasi_func_type,
-                    param_slots,
-                    result_slot,
+                    param_regs,
+                    result_reg,
                 } => {
                     let wasi_func_type_copy = *wasi_func_type;
-                    let param_slots_copy = param_slots.clone();
-                    let result_slot_copy = *result_slot;
+                    let param_regs_copy = param_regs.clone();
+                    let result_reg_copy = *result_reg;
 
-                    // Read parameters from slots
-                    let params: Vec<Val> = param_slots_copy
+                    // Read parameters from registers
+                    let params: Vec<Val> = param_regs_copy
                         .iter()
-                        .map(|slot| slot_file.get_val(slot))
+                        .map(|reg| reg_file.get_val(reg))
                         .collect();
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
-                    return Ok(Ok(Some(ModuleLevelInstr::InvokeWasiSlot {
+                    return Ok(Ok(Some(ModuleLevelInstr::InvokeWasiReg {
                         wasi_func_type: wasi_func_type_copy,
                         params,
-                        result_slot: result_slot_copy,
+                        result_reg: result_reg_copy,
                     })));
                 }
-                ProcessedInstr::CallIndirectSlot {
+                ProcessedInstr::CallIndirectReg {
                     type_idx,
                     table_idx,
-                    index_slot,
-                    param_slots,
-                    result_slots,
+                    index_reg,
+                    param_regs,
+                    result_regs,
                 } => {
                     let type_idx = *type_idx;
                     let table_idx = *table_idx;
-                    let index_slot = *index_slot;
-                    let param_slots = param_slots.clone();
-                    let result_slots = result_slots.clone();
+                    let index_reg = *index_reg;
+                    let param_regs = param_regs.clone();
+                    let result_regs = result_regs.clone();
 
-                    // Read table index from slot
-                    let i = slot_file.get_i32(index_slot.index());
+                    // Read table index from register
+                    let i = reg_file.get_i32(index_reg.index());
 
                     let module_inst = self
                         .frame
@@ -1314,29 +1314,27 @@ impl FrameStack {
                             }
                         }
 
-                        let params: Vec<Val> = param_slots
-                            .iter()
-                            .map(|slot| slot_file.get_val(slot))
-                            .collect();
+                        let params: Vec<Val> =
+                            param_regs.iter().map(|reg| reg_file.get_val(reg)).collect();
 
                         self.label_stack[current_label_stack_idx].ip = ip + 1;
-                        return Ok(Ok(Some(ModuleLevelInstr::InvokeSlot {
+                        return Ok(Ok(Some(ModuleLevelInstr::InvokeReg {
                             func_addr,
                             params,
-                            result_slots,
+                            result_regs,
                         })));
                     } else {
                         return Err(RuntimeError::UninitializedElement);
                     }
                 }
-                ProcessedInstr::CallSlot {
+                ProcessedInstr::CallReg {
                     func_idx,
-                    param_slots,
-                    result_slots,
+                    param_regs,
+                    result_regs,
                 } => {
                     let func_idx = *func_idx;
-                    let param_slots = param_slots.clone();
-                    let result_slots = result_slots.clone();
+                    let param_regs = param_regs.clone();
+                    let result_regs = result_regs.clone();
 
                     let module_inst = self
                         .frame
@@ -1364,26 +1362,24 @@ impl FrameStack {
                         }
                     }
 
-                    // Read parameters from slots
-                    let params: Vec<Val> = param_slots
-                        .iter()
-                        .map(|slot| slot_file.get_val(slot))
-                        .collect();
+                    // Read parameters from registers
+                    let params: Vec<Val> =
+                        param_regs.iter().map(|reg| reg_file.get_val(reg)).collect();
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
-                    return Ok(Ok(Some(ModuleLevelInstr::InvokeSlot {
+                    return Ok(Ok(Some(ModuleLevelInstr::InvokeReg {
                         func_addr,
                         params,
-                        result_slots,
+                        result_regs,
                     })));
                 }
-                ProcessedInstr::ReturnSlot { result_slots } => {
-                    // Store result slots for caller to read
-                    self.return_result_slots = result_slots.clone();
+                ProcessedInstr::ReturnReg { result_regs } => {
+                    // Store result registers for caller to read
+                    self.return_result_regs = result_regs.clone();
 
                     return Ok(Ok(Some(ModuleLevelInstr::Return)));
                 }
-                ProcessedInstr::JumpSlot { target_ip } => {
+                ProcessedInstr::JumpReg { target_ip } => {
                     let target_ip = *target_ip;
                     if self.label_stack.len() > 1 {
                         self.label_stack.pop();
@@ -1392,7 +1388,7 @@ impl FrameStack {
                     self.label_stack[current_label_stack_idx].ip = target_ip;
                     continue;
                 }
-                ProcessedInstr::BlockSlot {
+                ProcessedInstr::BlockReg {
                     arity,
                     param_count,
                     is_loop,
@@ -1402,7 +1398,7 @@ impl FrameStack {
                         locals_num: *param_count,
                         arity: *arity,
                         is_loop: *is_loop,
-                        stack_height: 0, // Not used in slot mode
+                        stack_height: 0, // Not used in register mode
                         return_ip: ip + 1,
                     };
                     let current_instrs = self.label_stack[current_label_stack_idx]
@@ -1416,19 +1412,19 @@ impl FrameStack {
                     current_label_stack_idx = self.label_stack.len() - 1;
                     continue;
                 }
-                ProcessedInstr::IfSlot {
+                ProcessedInstr::IfReg {
                     arity,
-                    condition_slot,
+                    cond_reg,
                     else_target_ip,
                     has_else,
                 } => {
                     let arity = *arity;
-                    let condition_slot = *condition_slot;
+                    let cond_reg = *cond_reg;
                     let else_target_ip = *else_target_ip;
                     let has_else = *has_else;
 
-                    // Read condition from slot
-                    let cond = slot_file.get_i32(condition_slot.index());
+                    // Read condition from register
+                    let cond = reg_file.get_i32(cond_reg.index());
 
                     let current_instrs = self.label_stack[current_label_stack_idx]
                         .processed_instrs
@@ -1441,7 +1437,7 @@ impl FrameStack {
                             locals_num: 0,
                             arity,
                             is_loop: false,
-                            stack_height: 0, // Not used in slot mode
+                            stack_height: 0, // Not used in register mode
                             return_ip: else_target_ip,
                         };
 
@@ -1473,49 +1469,49 @@ impl FrameStack {
                     }
                     continue;
                 }
-                ProcessedInstr::EndSlot {
-                    source_slots,
-                    target_result_slots,
+                ProcessedInstr::EndReg {
+                    source_regs,
+                    target_result_regs,
                 } => {
-                    let source_slots = source_slots.clone();
-                    let target_result_slots = target_result_slots.clone();
+                    let source_regs = source_regs.clone();
+                    let target_result_regs = target_result_regs.clone();
 
                     // Pop label stack
                     if self.label_stack.len() > 1 {
-                        // Block/Loop/If level end: copy results to target slots
-                        slot_file.copy_slots(&source_slots, &target_result_slots);
+                        // Block/Loop/If level end: copy results to target registers
+                        reg_file.copy_regs(&source_regs, &target_result_regs);
                         self.label_stack.pop();
                         current_label_stack_idx = self.label_stack.len() - 1;
                         // Set parent's ip to continue after the End instruction
                         self.label_stack[current_label_stack_idx].ip = ip + 1;
 
-                        // If next ip is beyond code length and we're at function level, store result slots and break
+                        // If next ip is beyond code length and we're at function level, store result registers and break
                         let parent_processed_code =
                             &self.label_stack[current_label_stack_idx].processed_instrs;
                         if ip + 1 >= parent_processed_code.len() && current_label_stack_idx == 0 {
-                            self.return_result_slots = source_slots.clone();
+                            self.return_result_regs = source_regs.clone();
                             break;
                         }
                     } else {
-                        // Function level end: store result slots for return
-                        self.return_result_slots = source_slots.clone();
+                        // Function level end: store result registers for return
+                        self.return_result_regs = source_regs.clone();
                         break;
                     }
                     continue;
                 }
-                ProcessedInstr::BrSlot {
+                ProcessedInstr::BrReg {
                     relative_depth,
                     target_ip,
-                    source_slots,
-                    target_result_slots,
+                    source_regs,
+                    target_result_regs,
                 } => {
                     let relative_depth = *relative_depth as usize;
                     let target_ip = *target_ip;
-                    let source_slots = source_slots.clone();
-                    let target_result_slots = target_result_slots.clone();
+                    let source_regs = source_regs.clone();
+                    let target_result_regs = target_result_regs.clone();
 
-                    if !source_slots.is_empty() && !target_result_slots.is_empty() {
-                        slot_file.copy_slots(&source_slots, &target_result_slots);
+                    if !source_regs.is_empty() && !target_result_regs.is_empty() {
+                        reg_file.copy_regs(&source_regs, &target_result_regs);
                     }
 
                     // Branch: exit (relative_depth + 1) blocks
@@ -1536,26 +1532,26 @@ impl FrameStack {
                     }
                     continue;
                 }
-                ProcessedInstr::BrIfSlot {
+                ProcessedInstr::BrIfReg {
                     relative_depth,
                     target_ip,
-                    condition_slot,
-                    source_slots,
-                    target_result_slots,
+                    cond_reg,
+                    source_regs,
+                    target_result_regs,
                 } => {
                     let relative_depth = *relative_depth as usize;
                     let target_ip = *target_ip;
-                    let condition_slot = *condition_slot;
-                    let source_slots = source_slots.clone();
-                    let target_result_slots = target_result_slots.clone();
+                    let cond_reg = *cond_reg;
+                    let source_regs = source_regs.clone();
+                    let target_result_regs = target_result_regs.clone();
 
-                    // Read condition from slot
-                    let cond = slot_file.get_i32(condition_slot.index());
+                    // Read condition from register
+                    let cond = reg_file.get_i32(cond_reg.index());
 
                     if cond != 0 {
                         // Take the branch
-                        if !source_slots.is_empty() && !target_result_slots.is_empty() {
-                            slot_file.copy_slots(&source_slots, &target_result_slots);
+                        if !source_regs.is_empty() && !target_result_regs.is_empty() {
+                            reg_file.copy_regs(&source_regs, &target_result_regs);
                         }
 
                         if relative_depth <= current_label_stack_idx {
@@ -1575,31 +1571,31 @@ impl FrameStack {
                     }
                     continue;
                 }
-                ProcessedInstr::BrTableSlot {
+                ProcessedInstr::BrTableReg {
                     targets,
                     default_target,
-                    index_slot,
-                    source_slots,
+                    index_reg,
+                    source_regs,
                 } => {
                     let targets = targets.clone();
                     let default_target = default_target.clone();
-                    let index_slot = *index_slot;
-                    let source_slots = source_slots.clone();
+                    let index_reg = *index_reg;
+                    let source_regs = source_regs.clone();
 
-                    // Read index from slot
-                    let idx = slot_file.get_i32(index_slot.index()) as usize;
+                    // Read index from register
+                    let idx = reg_file.get_i32(index_reg.index()) as usize;
 
-                    // Select target (relative_depth, target_ip, target_result_slots) tuple
-                    let (relative_depth, target_ip, target_result_slots) = if idx < targets.len() {
+                    // Select target (relative_depth, target_ip, target_result_regs) tuple
+                    let (relative_depth, target_ip, target_result_regs) = if idx < targets.len() {
                         targets[idx].clone()
                     } else {
                         default_target
                     };
                     let relative_depth = relative_depth as usize;
 
-                    // Copy source to target result slots
-                    if !source_slots.is_empty() && !target_result_slots.is_empty() {
-                        slot_file.copy_slots(&source_slots, &target_result_slots);
+                    // Copy source to target result registers
+                    if !source_regs.is_empty() && !target_result_regs.is_empty() {
+                        reg_file.copy_regs(&source_regs, &target_result_regs);
                     }
 
                     // Branch
@@ -1617,12 +1613,12 @@ impl FrameStack {
                     }
                     continue;
                 }
-                ProcessedInstr::NopSlot => {
+                ProcessedInstr::NopReg => {
                     // No operation - just advance IP
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
                 }
-                ProcessedInstr::UnreachableSlot => {
+                ProcessedInstr::UnreachableReg => {
                     return Err(RuntimeError::Unreachable);
                 }
             } // End of instruction match
@@ -1703,390 +1699,390 @@ pub enum AdminInstr {
     RefExtern(ExternAddr),
 }
 
-struct I32SlotContext<'a> {
-    slot_file: &'a mut [i32],
+struct I32RegContext<'a> {
+    reg_file: &'a mut [i32],
     locals: &'a mut [Val],
-    src1: I32SlotOperand,
-    src2: Option<I32SlotOperand>,
+    src1: I32RegOperand,
+    src2: Option<I32RegOperand>,
 }
 
-impl<'a> I32SlotContext<'a> {
+impl<'a> I32RegContext<'a> {
     #[inline]
-    fn get_operand(&self, operand: &I32SlotOperand) -> Result<i32, RuntimeError> {
+    fn get_operand(&self, operand: &I32RegOperand) -> Result<i32, RuntimeError> {
         match operand {
-            I32SlotOperand::Slot(idx) => Ok(self.slot_file[*idx as usize]),
-            I32SlotOperand::Const(val) => Ok(*val),
-            I32SlotOperand::Param(idx) => self.locals[*idx as usize].to_i32(),
+            I32RegOperand::Reg(idx) => Ok(self.reg_file[*idx as usize]),
+            I32RegOperand::Const(val) => Ok(*val),
+            I32RegOperand::Param(idx) => self.locals[*idx as usize].to_i32(),
         }
     }
 }
 
-fn i32_slot_local_get(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_local_get(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.slot_file[dst as usize] = val;
+    ctx.reg_file[dst as usize] = val;
     Ok(())
 }
 
-fn i32_slot_local_set(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_local_set(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     // dst is the local variable index, src1 is the value source
     let val = ctx.get_operand(&ctx.src1)?;
     ctx.locals[dst as usize] = Val::Num(Num::I32(val));
     Ok(())
 }
 
-fn i32_slot_const(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_const(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.slot_file[dst as usize] = val;
+    ctx.reg_file[dst as usize] = val;
     Ok(())
 }
 
-fn i32_slot_add(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_add(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = lhs.wrapping_add(rhs);
+    ctx.reg_file[dst as usize] = lhs.wrapping_add(rhs);
     Ok(())
 }
 
-fn i32_slot_sub(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_sub(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = lhs.wrapping_sub(rhs);
+    ctx.reg_file[dst as usize] = lhs.wrapping_sub(rhs);
     Ok(())
 }
 
-fn i32_slot_mul(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_mul(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = lhs.wrapping_mul(rhs);
+    ctx.reg_file[dst as usize] = lhs.wrapping_mul(rhs);
     Ok(())
 }
 
-fn i32_slot_div_s(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_div_s(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
     if rhs == 0 {
         return Err(RuntimeError::ZeroDivideError);
     }
-    ctx.slot_file[dst as usize] = lhs.wrapping_div(rhs);
+    ctx.reg_file[dst as usize] = lhs.wrapping_div(rhs);
     Ok(())
 }
 
-fn i32_slot_div_u(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_div_u(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
     let rhs_u = rhs as u32;
     if rhs_u == 0 {
         return Err(RuntimeError::ZeroDivideError);
     }
-    ctx.slot_file[dst as usize] = ((lhs as u32) / rhs_u) as i32;
+    ctx.reg_file[dst as usize] = ((lhs as u32) / rhs_u) as i32;
     Ok(())
 }
 
-fn i32_slot_rem_s(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_rem_s(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
     if rhs == 0 {
         return Err(RuntimeError::ZeroDivideError);
     }
-    ctx.slot_file[dst as usize] = lhs.wrapping_rem(rhs);
+    ctx.reg_file[dst as usize] = lhs.wrapping_rem(rhs);
     Ok(())
 }
 
-fn i32_slot_rem_u(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_rem_u(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
     let rhs_u = rhs as u32;
     if rhs_u == 0 {
         return Err(RuntimeError::ZeroDivideError);
     }
-    ctx.slot_file[dst as usize] = ((lhs as u32) % rhs_u) as i32;
+    ctx.reg_file[dst as usize] = ((lhs as u32) % rhs_u) as i32;
     Ok(())
 }
 
-fn i32_slot_and(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_and(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = lhs & rhs;
+    ctx.reg_file[dst as usize] = lhs & rhs;
     Ok(())
 }
 
-fn i32_slot_or(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_or(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = lhs | rhs;
+    ctx.reg_file[dst as usize] = lhs | rhs;
     Ok(())
 }
 
-fn i32_slot_xor(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_xor(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = lhs ^ rhs;
+    ctx.reg_file[dst as usize] = lhs ^ rhs;
     Ok(())
 }
 
-fn i32_slot_shl(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_shl(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = lhs.wrapping_shl(rhs as u32);
+    ctx.reg_file[dst as usize] = lhs.wrapping_shl(rhs as u32);
     Ok(())
 }
 
-fn i32_slot_shr_s(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_shr_s(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = lhs.wrapping_shr(rhs as u32);
+    ctx.reg_file[dst as usize] = lhs.wrapping_shr(rhs as u32);
     Ok(())
 }
 
-fn i32_slot_shr_u(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_shr_u(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = ((lhs as u32).wrapping_shr(rhs as u32)) as i32;
+    ctx.reg_file[dst as usize] = ((lhs as u32).wrapping_shr(rhs as u32)) as i32;
     Ok(())
 }
 
-fn i32_slot_rotl(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_rotl(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = lhs.rotate_left(rhs as u32);
+    ctx.reg_file[dst as usize] = lhs.rotate_left(rhs as u32);
     Ok(())
 }
 
-fn i32_slot_rotr(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_rotr(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = lhs.rotate_right(rhs as u32);
+    ctx.reg_file[dst as usize] = lhs.rotate_right(rhs as u32);
     Ok(())
 }
 
 // Comparison handlers
-fn i32_slot_eq(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_eq(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = if lhs == rhs { 1 } else { 0 };
+    ctx.reg_file[dst as usize] = if lhs == rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn i32_slot_ne(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_ne(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = if lhs != rhs { 1 } else { 0 };
+    ctx.reg_file[dst as usize] = if lhs != rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn i32_slot_lt_s(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_lt_s(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = if lhs < rhs { 1 } else { 0 };
+    ctx.reg_file[dst as usize] = if lhs < rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn i32_slot_lt_u(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_lt_u(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = if (lhs as u32) < (rhs as u32) { 1 } else { 0 };
+    ctx.reg_file[dst as usize] = if (lhs as u32) < (rhs as u32) { 1 } else { 0 };
     Ok(())
 }
 
-fn i32_slot_le_s(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_le_s(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = if lhs <= rhs { 1 } else { 0 };
+    ctx.reg_file[dst as usize] = if lhs <= rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn i32_slot_le_u(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_le_u(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = if (lhs as u32) <= (rhs as u32) { 1 } else { 0 };
+    ctx.reg_file[dst as usize] = if (lhs as u32) <= (rhs as u32) { 1 } else { 0 };
     Ok(())
 }
 
-fn i32_slot_gt_s(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_gt_s(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = if lhs > rhs { 1 } else { 0 };
+    ctx.reg_file[dst as usize] = if lhs > rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn i32_slot_gt_u(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_gt_u(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = if (lhs as u32) > (rhs as u32) { 1 } else { 0 };
+    ctx.reg_file[dst as usize] = if (lhs as u32) > (rhs as u32) { 1 } else { 0 };
     Ok(())
 }
 
-fn i32_slot_ge_s(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_ge_s(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = if lhs >= rhs { 1 } else { 0 };
+    ctx.reg_file[dst as usize] = if lhs >= rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn i32_slot_ge_u(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_ge_u(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.slot_file[dst as usize] = if (lhs as u32) >= (rhs as u32) { 1 } else { 0 };
+    ctx.reg_file[dst as usize] = if (lhs as u32) >= (rhs as u32) { 1 } else { 0 };
     Ok(())
 }
 
 // Unary operation handlers
-fn i32_slot_clz(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_clz(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.slot_file[dst as usize] = val.leading_zeros() as i32;
+    ctx.reg_file[dst as usize] = val.leading_zeros() as i32;
     Ok(())
 }
 
-fn i32_slot_ctz(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_ctz(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.slot_file[dst as usize] = val.trailing_zeros() as i32;
+    ctx.reg_file[dst as usize] = val.trailing_zeros() as i32;
     Ok(())
 }
 
-fn i32_slot_popcnt(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_popcnt(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.slot_file[dst as usize] = val.count_ones() as i32;
+    ctx.reg_file[dst as usize] = val.count_ones() as i32;
     Ok(())
 }
 
-fn i32_slot_eqz(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_eqz(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.slot_file[dst as usize] = if val == 0 { 1 } else { 0 };
+    ctx.reg_file[dst as usize] = if val == 0 { 1 } else { 0 };
     Ok(())
 }
 
-fn i32_slot_extend8_s(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_extend8_s(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.slot_file[dst as usize] = (val as i8) as i32;
+    ctx.reg_file[dst as usize] = (val as i8) as i32;
     Ok(())
 }
 
-fn i32_slot_extend16_s(ctx: I32SlotContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_extend16_s(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.slot_file[dst as usize] = (val as i16) as i32;
+    ctx.reg_file[dst as usize] = (val as i16) as i32;
     Ok(())
 }
 
 // Handler function type
-type I32SlotHandler = fn(I32SlotContext, u16) -> Result<(), RuntimeError>;
+type I32RegHandler = fn(I32RegContext, u16) -> Result<(), RuntimeError>;
 
 // Default error handler
-fn i32_slot_invalid_handler(_ctx: I32SlotContext, _dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_invalid_handler(_ctx: I32RegContext, _dst: u16) -> Result<(), RuntimeError> {
     Err(RuntimeError::InvalidHandlerIndex)
 }
 
-// I32 Slot Handler Table
+// I32 Reg Handler Table
 lazy_static! {
-    static ref I32_SLOT_HANDLER_TABLE: Vec<I32SlotHandler> = {
-        let mut table: Vec<I32SlotHandler> = vec![i32_slot_invalid_handler; 256];
+    static ref I32_REG_HANDLER_TABLE: Vec<I32RegHandler> = {
+        let mut table: Vec<I32RegHandler> = vec![i32_reg_invalid_handler; 256];
 
         // Special handlers
-        table[HANDLER_IDX_LOCAL_GET] = i32_slot_local_get;
-        table[HANDLER_IDX_LOCAL_SET] = i32_slot_local_set;
-        table[HANDLER_IDX_I32_CONST] = i32_slot_const;
+        table[HANDLER_IDX_LOCAL_GET] = i32_reg_local_get;
+        table[HANDLER_IDX_LOCAL_SET] = i32_reg_local_set;
+        table[HANDLER_IDX_I32_CONST] = i32_reg_const;
 
         // Binary operations
-        table[HANDLER_IDX_I32_ADD] = i32_slot_add;
-        table[HANDLER_IDX_I32_SUB] = i32_slot_sub;
-        table[HANDLER_IDX_I32_MUL] = i32_slot_mul;
-        table[HANDLER_IDX_I32_DIV_S] = i32_slot_div_s;
-        table[HANDLER_IDX_I32_DIV_U] = i32_slot_div_u;
-        table[HANDLER_IDX_I32_REM_S] = i32_slot_rem_s;
-        table[HANDLER_IDX_I32_REM_U] = i32_slot_rem_u;
-        table[HANDLER_IDX_I32_AND] = i32_slot_and;
-        table[HANDLER_IDX_I32_OR] = i32_slot_or;
-        table[HANDLER_IDX_I32_XOR] = i32_slot_xor;
-        table[HANDLER_IDX_I32_SHL] = i32_slot_shl;
-        table[HANDLER_IDX_I32_SHR_S] = i32_slot_shr_s;
-        table[HANDLER_IDX_I32_SHR_U] = i32_slot_shr_u;
-        table[HANDLER_IDX_I32_ROTL] = i32_slot_rotl;
-        table[HANDLER_IDX_I32_ROTR] = i32_slot_rotr;
+        table[HANDLER_IDX_I32_ADD] = i32_reg_add;
+        table[HANDLER_IDX_I32_SUB] = i32_reg_sub;
+        table[HANDLER_IDX_I32_MUL] = i32_reg_mul;
+        table[HANDLER_IDX_I32_DIV_S] = i32_reg_div_s;
+        table[HANDLER_IDX_I32_DIV_U] = i32_reg_div_u;
+        table[HANDLER_IDX_I32_REM_S] = i32_reg_rem_s;
+        table[HANDLER_IDX_I32_REM_U] = i32_reg_rem_u;
+        table[HANDLER_IDX_I32_AND] = i32_reg_and;
+        table[HANDLER_IDX_I32_OR] = i32_reg_or;
+        table[HANDLER_IDX_I32_XOR] = i32_reg_xor;
+        table[HANDLER_IDX_I32_SHL] = i32_reg_shl;
+        table[HANDLER_IDX_I32_SHR_S] = i32_reg_shr_s;
+        table[HANDLER_IDX_I32_SHR_U] = i32_reg_shr_u;
+        table[HANDLER_IDX_I32_ROTL] = i32_reg_rotl;
+        table[HANDLER_IDX_I32_ROTR] = i32_reg_rotr;
 
         // Comparisons
-        table[HANDLER_IDX_I32_EQ] = i32_slot_eq;
-        table[HANDLER_IDX_I32_NE] = i32_slot_ne;
-        table[HANDLER_IDX_I32_LT_S] = i32_slot_lt_s;
-        table[HANDLER_IDX_I32_LT_U] = i32_slot_lt_u;
-        table[HANDLER_IDX_I32_LE_S] = i32_slot_le_s;
-        table[HANDLER_IDX_I32_LE_U] = i32_slot_le_u;
-        table[HANDLER_IDX_I32_GT_S] = i32_slot_gt_s;
-        table[HANDLER_IDX_I32_GT_U] = i32_slot_gt_u;
-        table[HANDLER_IDX_I32_GE_S] = i32_slot_ge_s;
-        table[HANDLER_IDX_I32_GE_U] = i32_slot_ge_u;
+        table[HANDLER_IDX_I32_EQ] = i32_reg_eq;
+        table[HANDLER_IDX_I32_NE] = i32_reg_ne;
+        table[HANDLER_IDX_I32_LT_S] = i32_reg_lt_s;
+        table[HANDLER_IDX_I32_LT_U] = i32_reg_lt_u;
+        table[HANDLER_IDX_I32_LE_S] = i32_reg_le_s;
+        table[HANDLER_IDX_I32_LE_U] = i32_reg_le_u;
+        table[HANDLER_IDX_I32_GT_S] = i32_reg_gt_s;
+        table[HANDLER_IDX_I32_GT_U] = i32_reg_gt_u;
+        table[HANDLER_IDX_I32_GE_S] = i32_reg_ge_s;
+        table[HANDLER_IDX_I32_GE_U] = i32_reg_ge_u;
 
         // Unary operations
-        table[HANDLER_IDX_I32_CLZ] = i32_slot_clz;
-        table[HANDLER_IDX_I32_CTZ] = i32_slot_ctz;
-        table[HANDLER_IDX_I32_POPCNT] = i32_slot_popcnt;
-        table[HANDLER_IDX_I32_EQZ] = i32_slot_eqz;
-        table[HANDLER_IDX_I32_EXTEND8_S] = i32_slot_extend8_s;
-        table[HANDLER_IDX_I32_EXTEND16_S] = i32_slot_extend16_s;
+        table[HANDLER_IDX_I32_CLZ] = i32_reg_clz;
+        table[HANDLER_IDX_I32_CTZ] = i32_reg_ctz;
+        table[HANDLER_IDX_I32_POPCNT] = i32_reg_popcnt;
+        table[HANDLER_IDX_I32_EQZ] = i32_reg_eqz;
+        table[HANDLER_IDX_I32_EXTEND8_S] = i32_reg_extend8_s;
+        table[HANDLER_IDX_I32_EXTEND16_S] = i32_reg_extend16_s;
 
         table
     };
 }
 
-struct I64SlotContext<'a> {
-    i64_slots: &'a mut [i64],
-    i32_slots: &'a mut [i32], // For comparison operations that return i32
+struct I64RegContext<'a> {
+    i64_regs: &'a mut [i64],
+    i32_regs: &'a mut [i32], // For comparison operations that return i32
     locals: &'a mut [Val],
-    src1: I64SlotOperand,
-    src2: Option<I64SlotOperand>,
-    dst: Slot, // Destination slot (type determines which array to write to)
+    src1: I64RegOperand,
+    src2: Option<I64RegOperand>,
+    dst: Reg, // Destination register (type determines which array to write to)
 }
 
-impl<'a> I64SlotContext<'a> {
+impl<'a> I64RegContext<'a> {
     #[inline]
-    fn get_operand(&self, operand: &I64SlotOperand) -> Result<i64, RuntimeError> {
+    fn get_operand(&self, operand: &I64RegOperand) -> Result<i64, RuntimeError> {
         match operand {
-            I64SlotOperand::Slot(idx) => Ok(self.i64_slots[*idx as usize]),
-            I64SlotOperand::Const(val) => Ok(*val),
-            I64SlotOperand::Param(idx) => self.locals[*idx as usize].to_i64(),
+            I64RegOperand::Reg(idx) => Ok(self.i64_regs[*idx as usize]),
+            I64RegOperand::Const(val) => Ok(*val),
+            I64RegOperand::Param(idx) => self.locals[*idx as usize].to_i64(),
         }
     }
 }
 
-fn i64_slot_local_get(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_local_get(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.i64_slots[ctx.dst.index() as usize] = val;
+    ctx.i64_regs[ctx.dst.index() as usize] = val;
     Ok(())
 }
 
-fn i64_slot_local_set(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_local_set(ctx: I64RegContext) -> Result<(), RuntimeError> {
     // dst.index() is the local variable index, src1 is the value source
     let val = ctx.get_operand(&ctx.src1)?;
     ctx.locals[ctx.dst.index() as usize] = Val::Num(Num::I64(val));
     Ok(())
 }
 
-fn i64_slot_const(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_const(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.i64_slots[ctx.dst.index() as usize] = val;
+    ctx.i64_regs[ctx.dst.index() as usize] = val;
     Ok(())
 }
 
-fn i64_slot_add(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_add(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_slots[ctx.dst.index() as usize] = lhs.wrapping_add(rhs);
+    ctx.i64_regs[ctx.dst.index() as usize] = lhs.wrapping_add(rhs);
     Ok(())
 }
 
-fn i64_slot_sub(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_sub(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_slots[ctx.dst.index() as usize] = lhs.wrapping_sub(rhs);
+    ctx.i64_regs[ctx.dst.index() as usize] = lhs.wrapping_sub(rhs);
     Ok(())
 }
 
-fn i64_slot_mul(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_mul(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_slots[ctx.dst.index() as usize] = lhs.wrapping_mul(rhs);
+    ctx.i64_regs[ctx.dst.index() as usize] = lhs.wrapping_mul(rhs);
     Ok(())
 }
 
-fn i64_slot_div_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_div_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
     if rhs == 0 {
@@ -2095,347 +2091,347 @@ fn i64_slot_div_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
     if lhs == i64::MIN && rhs == -1 {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.i64_slots[ctx.dst.index() as usize] = lhs.wrapping_div(rhs);
+    ctx.i64_regs[ctx.dst.index() as usize] = lhs.wrapping_div(rhs);
     Ok(())
 }
 
-fn i64_slot_div_u(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_div_u(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
     let rhs_u = rhs as u64;
     if rhs_u == 0 {
         return Err(RuntimeError::ZeroDivideError);
     }
-    ctx.i64_slots[ctx.dst.index() as usize] = ((lhs as u64) / rhs_u) as i64;
+    ctx.i64_regs[ctx.dst.index() as usize] = ((lhs as u64) / rhs_u) as i64;
     Ok(())
 }
 
-fn i64_slot_rem_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_rem_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
     if rhs == 0 {
         return Err(RuntimeError::ZeroDivideError);
     }
-    ctx.i64_slots[ctx.dst.index() as usize] = lhs.wrapping_rem(rhs);
+    ctx.i64_regs[ctx.dst.index() as usize] = lhs.wrapping_rem(rhs);
     Ok(())
 }
 
-fn i64_slot_rem_u(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_rem_u(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
     let rhs_u = rhs as u64;
     if rhs_u == 0 {
         return Err(RuntimeError::ZeroDivideError);
     }
-    ctx.i64_slots[ctx.dst.index() as usize] = ((lhs as u64) % rhs_u) as i64;
+    ctx.i64_regs[ctx.dst.index() as usize] = ((lhs as u64) % rhs_u) as i64;
     Ok(())
 }
 
-fn i64_slot_and(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_and(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_slots[ctx.dst.index() as usize] = lhs & rhs;
+    ctx.i64_regs[ctx.dst.index() as usize] = lhs & rhs;
     Ok(())
 }
 
-fn i64_slot_or(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_or(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_slots[ctx.dst.index() as usize] = lhs | rhs;
+    ctx.i64_regs[ctx.dst.index() as usize] = lhs | rhs;
     Ok(())
 }
 
-fn i64_slot_xor(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_xor(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_slots[ctx.dst.index() as usize] = lhs ^ rhs;
+    ctx.i64_regs[ctx.dst.index() as usize] = lhs ^ rhs;
     Ok(())
 }
 
-fn i64_slot_shl(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_shl(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_slots[ctx.dst.index() as usize] = lhs.wrapping_shl((rhs & 0x3f) as u32);
+    ctx.i64_regs[ctx.dst.index() as usize] = lhs.wrapping_shl((rhs & 0x3f) as u32);
     Ok(())
 }
 
-fn i64_slot_shr_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_shr_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_slots[ctx.dst.index() as usize] = lhs.wrapping_shr((rhs & 0x3f) as u32);
+    ctx.i64_regs[ctx.dst.index() as usize] = lhs.wrapping_shr((rhs & 0x3f) as u32);
     Ok(())
 }
 
-fn i64_slot_shr_u(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_shr_u(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_slots[ctx.dst.index() as usize] =
+    ctx.i64_regs[ctx.dst.index() as usize] =
         ((lhs as u64).wrapping_shr((rhs & 0x3f) as u32)) as i64;
     Ok(())
 }
 
-fn i64_slot_rotl(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_rotl(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_slots[ctx.dst.index() as usize] = (lhs as u64).rotate_left((rhs & 0x3f) as u32) as i64;
+    ctx.i64_regs[ctx.dst.index() as usize] = (lhs as u64).rotate_left((rhs & 0x3f) as u32) as i64;
     Ok(())
 }
 
-fn i64_slot_rotr(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_rotr(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_slots[ctx.dst.index() as usize] = (lhs as u64).rotate_right((rhs & 0x3f) as u32) as i64;
+    ctx.i64_regs[ctx.dst.index() as usize] = (lhs as u64).rotate_right((rhs & 0x3f) as u32) as i64;
     Ok(())
 }
 
-fn i64_slot_clz(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_clz(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.i64_slots[ctx.dst.index() as usize] = val.leading_zeros() as i64;
+    ctx.i64_regs[ctx.dst.index() as usize] = val.leading_zeros() as i64;
     Ok(())
 }
 
-fn i64_slot_ctz(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_ctz(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.i64_slots[ctx.dst.index() as usize] = val.trailing_zeros() as i64;
+    ctx.i64_regs[ctx.dst.index() as usize] = val.trailing_zeros() as i64;
     Ok(())
 }
 
-fn i64_slot_popcnt(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_popcnt(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.i64_slots[ctx.dst.index() as usize] = val.count_ones() as i64;
+    ctx.i64_regs[ctx.dst.index() as usize] = val.count_ones() as i64;
     Ok(())
 }
 
-fn i64_slot_extend8_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_extend8_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.i64_slots[ctx.dst.index() as usize] = (val as i8) as i64;
+    ctx.i64_regs[ctx.dst.index() as usize] = (val as i8) as i64;
     Ok(())
 }
 
-fn i64_slot_extend16_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_extend16_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.i64_slots[ctx.dst.index() as usize] = (val as i16) as i64;
+    ctx.i64_regs[ctx.dst.index() as usize] = (val as i16) as i64;
     Ok(())
 }
 
-fn i64_slot_extend32_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_extend32_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.i64_slots[ctx.dst.index() as usize] = (val as i32) as i64;
+    ctx.i64_regs[ctx.dst.index() as usize] = (val as i32) as i64;
     Ok(())
 }
 
-// Comparison operations - write to i32_slots (ctx.dst is Slot::I32)
-fn i64_slot_eq(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+// Comparison operations - write to i32_regs (ctx.dst is Reg::I32)
+fn i64_reg_eq(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if lhs == rhs { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if lhs == rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn i64_slot_ne(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_ne(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if lhs != rhs { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if lhs != rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn i64_slot_lt_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_lt_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if lhs < rhs { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if lhs < rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn i64_slot_lt_u(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_lt_u(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if (lhs as u64) < (rhs as u64) { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if (lhs as u64) < (rhs as u64) { 1 } else { 0 };
     Ok(())
 }
 
-fn i64_slot_le_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_le_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if lhs <= rhs { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if lhs <= rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn i64_slot_le_u(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_le_u(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if (lhs as u64) <= (rhs as u64) { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if (lhs as u64) <= (rhs as u64) { 1 } else { 0 };
     Ok(())
 }
 
-fn i64_slot_gt_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_gt_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if lhs > rhs { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if lhs > rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn i64_slot_gt_u(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_gt_u(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if (lhs as u64) > (rhs as u64) { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if (lhs as u64) > (rhs as u64) { 1 } else { 0 };
     Ok(())
 }
 
-fn i64_slot_ge_s(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_ge_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if lhs >= rhs { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if lhs >= rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn i64_slot_ge_u(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_ge_u(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if (lhs as u64) >= (rhs as u64) { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if (lhs as u64) >= (rhs as u64) { 1 } else { 0 };
     Ok(())
 }
 
-fn i64_slot_eqz(ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_eqz(ctx: I64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if val == 0 { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if val == 0 { 1 } else { 0 };
     Ok(())
 }
 
-type I64SlotHandler = fn(I64SlotContext) -> Result<(), RuntimeError>;
+type I64RegHandler = fn(I64RegContext) -> Result<(), RuntimeError>;
 
-fn i64_slot_invalid_handler(_ctx: I64SlotContext) -> Result<(), RuntimeError> {
+fn i64_reg_invalid_handler(_ctx: I64RegContext) -> Result<(), RuntimeError> {
     Err(RuntimeError::InvalidHandlerIndex)
 }
 
 lazy_static! {
-    static ref I64_SLOT_HANDLER_TABLE: Vec<I64SlotHandler> = {
-        let mut table: Vec<I64SlotHandler> = vec![i64_slot_invalid_handler; 256];
+    static ref I64_REG_HANDLER_TABLE: Vec<I64RegHandler> = {
+        let mut table: Vec<I64RegHandler> = vec![i64_reg_invalid_handler; 256];
 
         // Special handlers
-        table[HANDLER_IDX_LOCAL_GET] = i64_slot_local_get;
-        table[HANDLER_IDX_LOCAL_SET] = i64_slot_local_set;
-        table[HANDLER_IDX_I64_CONST] = i64_slot_const;
+        table[HANDLER_IDX_LOCAL_GET] = i64_reg_local_get;
+        table[HANDLER_IDX_LOCAL_SET] = i64_reg_local_set;
+        table[HANDLER_IDX_I64_CONST] = i64_reg_const;
 
         // Binary operations
-        table[HANDLER_IDX_I64_ADD] = i64_slot_add;
-        table[HANDLER_IDX_I64_SUB] = i64_slot_sub;
-        table[HANDLER_IDX_I64_MUL] = i64_slot_mul;
-        table[HANDLER_IDX_I64_DIV_S] = i64_slot_div_s;
-        table[HANDLER_IDX_I64_DIV_U] = i64_slot_div_u;
-        table[HANDLER_IDX_I64_REM_S] = i64_slot_rem_s;
-        table[HANDLER_IDX_I64_REM_U] = i64_slot_rem_u;
-        table[HANDLER_IDX_I64_AND] = i64_slot_and;
-        table[HANDLER_IDX_I64_OR] = i64_slot_or;
-        table[HANDLER_IDX_I64_XOR] = i64_slot_xor;
-        table[HANDLER_IDX_I64_SHL] = i64_slot_shl;
-        table[HANDLER_IDX_I64_SHR_S] = i64_slot_shr_s;
-        table[HANDLER_IDX_I64_SHR_U] = i64_slot_shr_u;
-        table[HANDLER_IDX_I64_ROTL] = i64_slot_rotl;
-        table[HANDLER_IDX_I64_ROTR] = i64_slot_rotr;
+        table[HANDLER_IDX_I64_ADD] = i64_reg_add;
+        table[HANDLER_IDX_I64_SUB] = i64_reg_sub;
+        table[HANDLER_IDX_I64_MUL] = i64_reg_mul;
+        table[HANDLER_IDX_I64_DIV_S] = i64_reg_div_s;
+        table[HANDLER_IDX_I64_DIV_U] = i64_reg_div_u;
+        table[HANDLER_IDX_I64_REM_S] = i64_reg_rem_s;
+        table[HANDLER_IDX_I64_REM_U] = i64_reg_rem_u;
+        table[HANDLER_IDX_I64_AND] = i64_reg_and;
+        table[HANDLER_IDX_I64_OR] = i64_reg_or;
+        table[HANDLER_IDX_I64_XOR] = i64_reg_xor;
+        table[HANDLER_IDX_I64_SHL] = i64_reg_shl;
+        table[HANDLER_IDX_I64_SHR_S] = i64_reg_shr_s;
+        table[HANDLER_IDX_I64_SHR_U] = i64_reg_shr_u;
+        table[HANDLER_IDX_I64_ROTL] = i64_reg_rotl;
+        table[HANDLER_IDX_I64_ROTR] = i64_reg_rotr;
 
         // Unary operations
-        table[HANDLER_IDX_I64_CLZ] = i64_slot_clz;
-        table[HANDLER_IDX_I64_CTZ] = i64_slot_ctz;
-        table[HANDLER_IDX_I64_POPCNT] = i64_slot_popcnt;
-        table[HANDLER_IDX_I64_EXTEND8_S] = i64_slot_extend8_s;
-        table[HANDLER_IDX_I64_EXTEND16_S] = i64_slot_extend16_s;
-        table[HANDLER_IDX_I64_EXTEND32_S] = i64_slot_extend32_s;
+        table[HANDLER_IDX_I64_CLZ] = i64_reg_clz;
+        table[HANDLER_IDX_I64_CTZ] = i64_reg_ctz;
+        table[HANDLER_IDX_I64_POPCNT] = i64_reg_popcnt;
+        table[HANDLER_IDX_I64_EXTEND8_S] = i64_reg_extend8_s;
+        table[HANDLER_IDX_I64_EXTEND16_S] = i64_reg_extend16_s;
+        table[HANDLER_IDX_I64_EXTEND32_S] = i64_reg_extend32_s;
 
         // Comparison operations (return i32)
-        table[HANDLER_IDX_I64_EQZ] = i64_slot_eqz;
-        table[HANDLER_IDX_I64_EQ] = i64_slot_eq;
-        table[HANDLER_IDX_I64_NE] = i64_slot_ne;
-        table[HANDLER_IDX_I64_LT_S] = i64_slot_lt_s;
-        table[HANDLER_IDX_I64_LT_U] = i64_slot_lt_u;
-        table[HANDLER_IDX_I64_GT_S] = i64_slot_gt_s;
-        table[HANDLER_IDX_I64_GT_U] = i64_slot_gt_u;
-        table[HANDLER_IDX_I64_LE_S] = i64_slot_le_s;
-        table[HANDLER_IDX_I64_LE_U] = i64_slot_le_u;
-        table[HANDLER_IDX_I64_GE_S] = i64_slot_ge_s;
-        table[HANDLER_IDX_I64_GE_U] = i64_slot_ge_u;
+        table[HANDLER_IDX_I64_EQZ] = i64_reg_eqz;
+        table[HANDLER_IDX_I64_EQ] = i64_reg_eq;
+        table[HANDLER_IDX_I64_NE] = i64_reg_ne;
+        table[HANDLER_IDX_I64_LT_S] = i64_reg_lt_s;
+        table[HANDLER_IDX_I64_LT_U] = i64_reg_lt_u;
+        table[HANDLER_IDX_I64_GT_S] = i64_reg_gt_s;
+        table[HANDLER_IDX_I64_GT_U] = i64_reg_gt_u;
+        table[HANDLER_IDX_I64_LE_S] = i64_reg_le_s;
+        table[HANDLER_IDX_I64_LE_U] = i64_reg_le_u;
+        table[HANDLER_IDX_I64_GE_S] = i64_reg_ge_s;
+        table[HANDLER_IDX_I64_GE_U] = i64_reg_ge_u;
 
         table
     };
 }
 
-// F32 slot-based execution context and handlers
-type F32SlotHandler = fn(F32SlotContext) -> Result<(), RuntimeError>;
+// F32 register-based execution context and handlers
+type F32RegHandler = fn(F32RegContext) -> Result<(), RuntimeError>;
 
-fn f32_slot_invalid_handler(_ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_invalid_handler(_ctx: F32RegContext) -> Result<(), RuntimeError> {
     Err(RuntimeError::Trap)
 }
 
-struct F32SlotContext<'a> {
-    f32_slots: &'a mut [f32],
-    i32_slots: &'a mut [i32], // For comparison operations that return i32
+struct F32RegContext<'a> {
+    f32_regs: &'a mut [f32],
+    i32_regs: &'a mut [i32], // For comparison operations that return i32
     locals: &'a mut [Val],
-    src1: F32SlotOperand,
-    src2: Option<F32SlotOperand>,
-    dst: Slot, // Destination slot (type determines which array to write to)
+    src1: F32RegOperand,
+    src2: Option<F32RegOperand>,
+    dst: Reg, // Destination register (type determines which array to write to)
 }
 
-impl<'a> F32SlotContext<'a> {
+impl<'a> F32RegContext<'a> {
     #[inline]
-    fn get_operand(&self, operand: &F32SlotOperand) -> Result<f32, RuntimeError> {
+    fn get_operand(&self, operand: &F32RegOperand) -> Result<f32, RuntimeError> {
         match operand {
-            F32SlotOperand::Slot(idx) => Ok(self.f32_slots[*idx as usize]),
-            F32SlotOperand::Const(val) => Ok(*val),
-            F32SlotOperand::Param(idx) => self.locals[*idx as usize].to_f32(),
+            F32RegOperand::Reg(idx) => Ok(self.f32_regs[*idx as usize]),
+            F32RegOperand::Const(val) => Ok(*val),
+            F32RegOperand::Param(idx) => self.locals[*idx as usize].to_f32(),
         }
     }
 }
 
-fn f32_slot_local_get(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_local_get(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f32_slots[ctx.dst.index() as usize] = val;
+    ctx.f32_regs[ctx.dst.index() as usize] = val;
     Ok(())
 }
 
-fn f32_slot_local_set(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_local_set(ctx: F32RegContext) -> Result<(), RuntimeError> {
     // dst.index() is the local variable index, src1 is the value source
     let val = ctx.get_operand(&ctx.src1)?;
     ctx.locals[ctx.dst.index() as usize] = Val::Num(Num::F32(val));
     Ok(())
 }
 
-fn f32_slot_const(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_const(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f32_slots[ctx.dst.index() as usize] = val;
+    ctx.f32_regs[ctx.dst.index() as usize] = val;
     Ok(())
 }
 
-fn f32_slot_add(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_add(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f32_slots[ctx.dst.index() as usize] = lhs + rhs;
+    ctx.f32_regs[ctx.dst.index() as usize] = lhs + rhs;
     Ok(())
 }
 
-fn f32_slot_sub(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_sub(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f32_slots[ctx.dst.index() as usize] = lhs - rhs;
+    ctx.f32_regs[ctx.dst.index() as usize] = lhs - rhs;
     Ok(())
 }
 
-fn f32_slot_mul(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_mul(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f32_slots[ctx.dst.index() as usize] = lhs * rhs;
+    ctx.f32_regs[ctx.dst.index() as usize] = lhs * rhs;
     Ok(())
 }
 
-fn f32_slot_div(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_div(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f32_slots[ctx.dst.index() as usize] = lhs / rhs;
+    ctx.f32_regs[ctx.dst.index() as usize] = lhs / rhs;
     Ok(())
 }
 
-fn f32_slot_min(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_min(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f32_slots[ctx.dst.index() as usize] = if lhs.is_nan() || rhs.is_nan() {
+    ctx.f32_regs[ctx.dst.index() as usize] = if lhs.is_nan() || rhs.is_nan() {
         f32::NAN
     } else if lhs == 0.0 && rhs == 0.0 {
         if lhs.is_sign_negative() || rhs.is_sign_negative() {
@@ -2449,10 +2445,10 @@ fn f32_slot_min(ctx: F32SlotContext) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-fn f32_slot_max(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_max(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f32_slots[ctx.dst.index() as usize] = if lhs.is_nan() || rhs.is_nan() {
+    ctx.f32_regs[ctx.dst.index() as usize] = if lhs.is_nan() || rhs.is_nan() {
         f32::NAN
     } else if lhs == 0.0 && rhs == 0.0 {
         if lhs.is_sign_positive() || rhs.is_sign_positive() {
@@ -2466,216 +2462,216 @@ fn f32_slot_max(ctx: F32SlotContext) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-fn f32_slot_copysign(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_copysign(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f32_slots[ctx.dst.index() as usize] = lhs.copysign(rhs);
+    ctx.f32_regs[ctx.dst.index() as usize] = lhs.copysign(rhs);
     Ok(())
 }
 
 // Unary operations
-fn f32_slot_abs(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_abs(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f32_slots[ctx.dst.index() as usize] = val.abs();
+    ctx.f32_regs[ctx.dst.index() as usize] = val.abs();
     Ok(())
 }
 
-fn f32_slot_neg(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_neg(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f32_slots[ctx.dst.index() as usize] = -val;
+    ctx.f32_regs[ctx.dst.index() as usize] = -val;
     Ok(())
 }
 
-fn f32_slot_ceil(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_ceil(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f32_slots[ctx.dst.index() as usize] = val.ceil();
+    ctx.f32_regs[ctx.dst.index() as usize] = val.ceil();
     Ok(())
 }
 
-fn f32_slot_floor(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_floor(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f32_slots[ctx.dst.index() as usize] = val.floor();
+    ctx.f32_regs[ctx.dst.index() as usize] = val.floor();
     Ok(())
 }
 
-fn f32_slot_trunc(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_trunc(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f32_slots[ctx.dst.index() as usize] = val.trunc();
+    ctx.f32_regs[ctx.dst.index() as usize] = val.trunc();
     Ok(())
 }
 
-fn f32_slot_nearest(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_nearest(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f32_slots[ctx.dst.index() as usize] = val.round_ties_even();
+    ctx.f32_regs[ctx.dst.index() as usize] = val.round_ties_even();
     Ok(())
 }
 
-fn f32_slot_sqrt(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_sqrt(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f32_slots[ctx.dst.index() as usize] = val.sqrt();
+    ctx.f32_regs[ctx.dst.index() as usize] = val.sqrt();
     Ok(())
 }
 
 // Comparison operations (return i32)
-fn f32_slot_eq(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_eq(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if lhs == rhs { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if lhs == rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn f32_slot_ne(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_ne(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if lhs != rhs { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if lhs != rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn f32_slot_lt(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_lt(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if lhs < rhs { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if lhs < rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn f32_slot_gt(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_gt(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if lhs > rhs { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if lhs > rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn f32_slot_le(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_le(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if lhs <= rhs { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if lhs <= rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn f32_slot_ge(ctx: F32SlotContext) -> Result<(), RuntimeError> {
+fn f32_reg_ge(ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if lhs >= rhs { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if lhs >= rhs { 1 } else { 0 };
     Ok(())
 }
 
 lazy_static! {
-    static ref F32_SLOT_HANDLER_TABLE: Vec<F32SlotHandler> = {
-        let mut table: Vec<F32SlotHandler> = vec![f32_slot_invalid_handler; 256];
+    static ref F32_REG_HANDLER_TABLE: Vec<F32RegHandler> = {
+        let mut table: Vec<F32RegHandler> = vec![f32_reg_invalid_handler; 256];
 
         // Special handlers
-        table[HANDLER_IDX_LOCAL_GET] = f32_slot_local_get;
-        table[HANDLER_IDX_LOCAL_SET] = f32_slot_local_set;
-        table[HANDLER_IDX_F32_CONST] = f32_slot_const;
+        table[HANDLER_IDX_LOCAL_GET] = f32_reg_local_get;
+        table[HANDLER_IDX_LOCAL_SET] = f32_reg_local_set;
+        table[HANDLER_IDX_F32_CONST] = f32_reg_const;
 
         // Binary operations
-        table[HANDLER_IDX_F32_ADD] = f32_slot_add;
-        table[HANDLER_IDX_F32_SUB] = f32_slot_sub;
-        table[HANDLER_IDX_F32_MUL] = f32_slot_mul;
-        table[HANDLER_IDX_F32_DIV] = f32_slot_div;
-        table[HANDLER_IDX_F32_MIN] = f32_slot_min;
-        table[HANDLER_IDX_F32_MAX] = f32_slot_max;
-        table[HANDLER_IDX_F32_COPYSIGN] = f32_slot_copysign;
+        table[HANDLER_IDX_F32_ADD] = f32_reg_add;
+        table[HANDLER_IDX_F32_SUB] = f32_reg_sub;
+        table[HANDLER_IDX_F32_MUL] = f32_reg_mul;
+        table[HANDLER_IDX_F32_DIV] = f32_reg_div;
+        table[HANDLER_IDX_F32_MIN] = f32_reg_min;
+        table[HANDLER_IDX_F32_MAX] = f32_reg_max;
+        table[HANDLER_IDX_F32_COPYSIGN] = f32_reg_copysign;
 
         // Unary operations
-        table[HANDLER_IDX_F32_ABS] = f32_slot_abs;
-        table[HANDLER_IDX_F32_NEG] = f32_slot_neg;
-        table[HANDLER_IDX_F32_CEIL] = f32_slot_ceil;
-        table[HANDLER_IDX_F32_FLOOR] = f32_slot_floor;
-        table[HANDLER_IDX_F32_TRUNC] = f32_slot_trunc;
-        table[HANDLER_IDX_F32_NEAREST] = f32_slot_nearest;
-        table[HANDLER_IDX_F32_SQRT] = f32_slot_sqrt;
+        table[HANDLER_IDX_F32_ABS] = f32_reg_abs;
+        table[HANDLER_IDX_F32_NEG] = f32_reg_neg;
+        table[HANDLER_IDX_F32_CEIL] = f32_reg_ceil;
+        table[HANDLER_IDX_F32_FLOOR] = f32_reg_floor;
+        table[HANDLER_IDX_F32_TRUNC] = f32_reg_trunc;
+        table[HANDLER_IDX_F32_NEAREST] = f32_reg_nearest;
+        table[HANDLER_IDX_F32_SQRT] = f32_reg_sqrt;
 
         // Comparison operations (return i32)
-        table[HANDLER_IDX_F32_EQ] = f32_slot_eq;
-        table[HANDLER_IDX_F32_NE] = f32_slot_ne;
-        table[HANDLER_IDX_F32_LT] = f32_slot_lt;
-        table[HANDLER_IDX_F32_GT] = f32_slot_gt;
-        table[HANDLER_IDX_F32_LE] = f32_slot_le;
-        table[HANDLER_IDX_F32_GE] = f32_slot_ge;
+        table[HANDLER_IDX_F32_EQ] = f32_reg_eq;
+        table[HANDLER_IDX_F32_NE] = f32_reg_ne;
+        table[HANDLER_IDX_F32_LT] = f32_reg_lt;
+        table[HANDLER_IDX_F32_GT] = f32_reg_gt;
+        table[HANDLER_IDX_F32_LE] = f32_reg_le;
+        table[HANDLER_IDX_F32_GE] = f32_reg_ge;
 
         table
     };
 }
 
-// F64 slot-based execution context and handlers
-type F64SlotHandler = fn(F64SlotContext) -> Result<(), RuntimeError>;
+// F64 register-based execution context and handlers
+type F64RegHandler = fn(F64RegContext) -> Result<(), RuntimeError>;
 
-fn f64_slot_invalid_handler(_ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_invalid_handler(_ctx: F64RegContext) -> Result<(), RuntimeError> {
     Err(RuntimeError::Trap)
 }
 
-struct F64SlotContext<'a> {
-    f64_slots: &'a mut [f64],
-    i32_slots: &'a mut [i32], // For comparison operations that return i32
+struct F64RegContext<'a> {
+    f64_regs: &'a mut [f64],
+    i32_regs: &'a mut [i32], // For comparison operations that return i32
     locals: &'a mut [Val],
-    src1: F64SlotOperand,
-    src2: Option<F64SlotOperand>,
-    dst: Slot,
+    src1: F64RegOperand,
+    src2: Option<F64RegOperand>,
+    dst: Reg,
 }
 
-impl<'a> F64SlotContext<'a> {
+impl<'a> F64RegContext<'a> {
     #[inline]
-    fn get_operand(&self, operand: &F64SlotOperand) -> Result<f64, RuntimeError> {
+    fn get_operand(&self, operand: &F64RegOperand) -> Result<f64, RuntimeError> {
         match operand {
-            F64SlotOperand::Slot(idx) => Ok(self.f64_slots[*idx as usize]),
-            F64SlotOperand::Const(val) => Ok(*val),
-            F64SlotOperand::Param(idx) => self.locals[*idx as usize].to_f64(),
+            F64RegOperand::Reg(idx) => Ok(self.f64_regs[*idx as usize]),
+            F64RegOperand::Const(val) => Ok(*val),
+            F64RegOperand::Param(idx) => self.locals[*idx as usize].to_f64(),
         }
     }
 }
 
-fn f64_slot_local_get(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_local_get(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f64_slots[ctx.dst.index() as usize] = val;
+    ctx.f64_regs[ctx.dst.index() as usize] = val;
     Ok(())
 }
 
-fn f64_slot_local_set(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_local_set(ctx: F64RegContext) -> Result<(), RuntimeError> {
     // dst.index() is the local variable index, src1 is the value source
     let val = ctx.get_operand(&ctx.src1)?;
     ctx.locals[ctx.dst.index() as usize] = Val::Num(Num::F64(val));
     Ok(())
 }
 
-fn f64_slot_const(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_const(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f64_slots[ctx.dst.index() as usize] = val;
+    ctx.f64_regs[ctx.dst.index() as usize] = val;
     Ok(())
 }
 
-fn f64_slot_add(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_add(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f64_slots[ctx.dst.index() as usize] = lhs + rhs;
+    ctx.f64_regs[ctx.dst.index() as usize] = lhs + rhs;
     Ok(())
 }
 
-fn f64_slot_sub(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_sub(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f64_slots[ctx.dst.index() as usize] = lhs - rhs;
+    ctx.f64_regs[ctx.dst.index() as usize] = lhs - rhs;
     Ok(())
 }
 
-fn f64_slot_mul(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_mul(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f64_slots[ctx.dst.index() as usize] = lhs * rhs;
+    ctx.f64_regs[ctx.dst.index() as usize] = lhs * rhs;
     Ok(())
 }
 
-fn f64_slot_div(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_div(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f64_slots[ctx.dst.index() as usize] = lhs / rhs;
+    ctx.f64_regs[ctx.dst.index() as usize] = lhs / rhs;
     Ok(())
 }
 
-fn f64_slot_min(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_min(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f64_slots[ctx.dst.index() as usize] = if lhs.is_nan() || rhs.is_nan() {
+    ctx.f64_regs[ctx.dst.index() as usize] = if lhs.is_nan() || rhs.is_nan() {
         f64::NAN
     } else if lhs == 0.0 && rhs == 0.0 {
         if lhs.is_sign_negative() || rhs.is_sign_negative() {
@@ -2689,10 +2685,10 @@ fn f64_slot_min(ctx: F64SlotContext) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-fn f64_slot_max(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_max(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f64_slots[ctx.dst.index() as usize] = if lhs.is_nan() || rhs.is_nan() {
+    ctx.f64_regs[ctx.dst.index() as usize] = if lhs.is_nan() || rhs.is_nan() {
         f64::NAN
     } else if lhs == 0.0 && rhs == 0.0 {
         if lhs.is_sign_positive() || rhs.is_sign_positive() {
@@ -2706,174 +2702,174 @@ fn f64_slot_max(ctx: F64SlotContext) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-fn f64_slot_copysign(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_copysign(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f64_slots[ctx.dst.index() as usize] = lhs.copysign(rhs);
+    ctx.f64_regs[ctx.dst.index() as usize] = lhs.copysign(rhs);
     Ok(())
 }
 
 // Unary operations
-fn f64_slot_abs(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_abs(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f64_slots[ctx.dst.index() as usize] = val.abs();
+    ctx.f64_regs[ctx.dst.index() as usize] = val.abs();
     Ok(())
 }
 
-fn f64_slot_neg(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_neg(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f64_slots[ctx.dst.index() as usize] = -val;
+    ctx.f64_regs[ctx.dst.index() as usize] = -val;
     Ok(())
 }
 
-fn f64_slot_ceil(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_ceil(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f64_slots[ctx.dst.index() as usize] = val.ceil();
+    ctx.f64_regs[ctx.dst.index() as usize] = val.ceil();
     Ok(())
 }
 
-fn f64_slot_floor(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_floor(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f64_slots[ctx.dst.index() as usize] = val.floor();
+    ctx.f64_regs[ctx.dst.index() as usize] = val.floor();
     Ok(())
 }
 
-fn f64_slot_trunc(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_trunc(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f64_slots[ctx.dst.index() as usize] = val.trunc();
+    ctx.f64_regs[ctx.dst.index() as usize] = val.trunc();
     Ok(())
 }
 
-fn f64_slot_nearest(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_nearest(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f64_slots[ctx.dst.index() as usize] = val.round_ties_even();
+    ctx.f64_regs[ctx.dst.index() as usize] = val.round_ties_even();
     Ok(())
 }
 
-fn f64_slot_sqrt(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_sqrt(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f64_slots[ctx.dst.index() as usize] = val.sqrt();
+    ctx.f64_regs[ctx.dst.index() as usize] = val.sqrt();
     Ok(())
 }
 
 // Comparison operations (return i32)
-fn f64_slot_eq(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_eq(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if lhs == rhs { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if lhs == rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn f64_slot_ne(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_ne(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if lhs != rhs { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if lhs != rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn f64_slot_lt(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_lt(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if lhs < rhs { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if lhs < rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn f64_slot_gt(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_gt(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if lhs > rhs { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if lhs > rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn f64_slot_le(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_le(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if lhs <= rhs { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if lhs <= rhs { 1 } else { 0 };
     Ok(())
 }
 
-fn f64_slot_ge(ctx: F64SlotContext) -> Result<(), RuntimeError> {
+fn f64_reg_ge(ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_slots[ctx.dst.index() as usize] = if lhs >= rhs { 1 } else { 0 };
+    ctx.i32_regs[ctx.dst.index() as usize] = if lhs >= rhs { 1 } else { 0 };
     Ok(())
 }
 
 lazy_static! {
-    static ref F64_SLOT_HANDLER_TABLE: Vec<F64SlotHandler> = {
-        let mut table: Vec<F64SlotHandler> = vec![f64_slot_invalid_handler; 256];
+    static ref F64_REG_HANDLER_TABLE: Vec<F64RegHandler> = {
+        let mut table: Vec<F64RegHandler> = vec![f64_reg_invalid_handler; 256];
 
         // Special handlers
-        table[HANDLER_IDX_LOCAL_GET] = f64_slot_local_get;
-        table[HANDLER_IDX_LOCAL_SET] = f64_slot_local_set;
-        table[HANDLER_IDX_F64_CONST] = f64_slot_const;
+        table[HANDLER_IDX_LOCAL_GET] = f64_reg_local_get;
+        table[HANDLER_IDX_LOCAL_SET] = f64_reg_local_set;
+        table[HANDLER_IDX_F64_CONST] = f64_reg_const;
 
         // Binary operations
-        table[HANDLER_IDX_F64_ADD] = f64_slot_add;
-        table[HANDLER_IDX_F64_SUB] = f64_slot_sub;
-        table[HANDLER_IDX_F64_MUL] = f64_slot_mul;
-        table[HANDLER_IDX_F64_DIV] = f64_slot_div;
-        table[HANDLER_IDX_F64_MIN] = f64_slot_min;
-        table[HANDLER_IDX_F64_MAX] = f64_slot_max;
-        table[HANDLER_IDX_F64_COPYSIGN] = f64_slot_copysign;
+        table[HANDLER_IDX_F64_ADD] = f64_reg_add;
+        table[HANDLER_IDX_F64_SUB] = f64_reg_sub;
+        table[HANDLER_IDX_F64_MUL] = f64_reg_mul;
+        table[HANDLER_IDX_F64_DIV] = f64_reg_div;
+        table[HANDLER_IDX_F64_MIN] = f64_reg_min;
+        table[HANDLER_IDX_F64_MAX] = f64_reg_max;
+        table[HANDLER_IDX_F64_COPYSIGN] = f64_reg_copysign;
 
         // Unary operations
-        table[HANDLER_IDX_F64_ABS] = f64_slot_abs;
-        table[HANDLER_IDX_F64_NEG] = f64_slot_neg;
-        table[HANDLER_IDX_F64_CEIL] = f64_slot_ceil;
-        table[HANDLER_IDX_F64_FLOOR] = f64_slot_floor;
-        table[HANDLER_IDX_F64_TRUNC] = f64_slot_trunc;
-        table[HANDLER_IDX_F64_NEAREST] = f64_slot_nearest;
-        table[HANDLER_IDX_F64_SQRT] = f64_slot_sqrt;
+        table[HANDLER_IDX_F64_ABS] = f64_reg_abs;
+        table[HANDLER_IDX_F64_NEG] = f64_reg_neg;
+        table[HANDLER_IDX_F64_CEIL] = f64_reg_ceil;
+        table[HANDLER_IDX_F64_FLOOR] = f64_reg_floor;
+        table[HANDLER_IDX_F64_TRUNC] = f64_reg_trunc;
+        table[HANDLER_IDX_F64_NEAREST] = f64_reg_nearest;
+        table[HANDLER_IDX_F64_SQRT] = f64_reg_sqrt;
 
         // Comparison operations (return i32)
-        table[HANDLER_IDX_F64_EQ] = f64_slot_eq;
-        table[HANDLER_IDX_F64_NE] = f64_slot_ne;
-        table[HANDLER_IDX_F64_LT] = f64_slot_lt;
-        table[HANDLER_IDX_F64_GT] = f64_slot_gt;
-        table[HANDLER_IDX_F64_LE] = f64_slot_le;
-        table[HANDLER_IDX_F64_GE] = f64_slot_ge;
+        table[HANDLER_IDX_F64_EQ] = f64_reg_eq;
+        table[HANDLER_IDX_F64_NE] = f64_reg_ne;
+        table[HANDLER_IDX_F64_LT] = f64_reg_lt;
+        table[HANDLER_IDX_F64_GT] = f64_reg_gt;
+        table[HANDLER_IDX_F64_LE] = f64_reg_le;
+        table[HANDLER_IDX_F64_GE] = f64_reg_ge;
 
         table
     };
 }
 
-// Conversion Slot handlers
-struct ConversionSlotContext<'a> {
-    slot_file: &'a mut SlotFile,
-    src: Slot,
-    dst: Slot,
+// Conversion Reg handlers
+struct ConversionRegContext<'a> {
+    reg_file: &'a mut RegFile,
+    src: Reg,
+    dst: Reg,
 }
 
-type ConversionSlotHandler = fn(ConversionSlotContext) -> Result<(), RuntimeError>;
+type ConversionRegHandler = fn(ConversionRegContext) -> Result<(), RuntimeError>;
 
-fn conversion_slot_invalid_handler(_ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
+fn conversion_reg_invalid_handler(_ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     Err(RuntimeError::InvalidHandlerIndex)
 }
 
 // i32 -> i64
-fn conv_i64_extend_i32_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_i32(ctx.src.index());
-    ctx.slot_file.set_i64(ctx.dst.index(), val as i64);
+fn conv_i64_extend_i32_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_i32(ctx.src.index());
+    ctx.reg_file.set_i64(ctx.dst.index(), val as i64);
     Ok(())
 }
 
-fn conv_i64_extend_i32_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_i32(ctx.src.index());
-    ctx.slot_file.set_i64(ctx.dst.index(), (val as u32) as i64);
+fn conv_i64_extend_i32_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_i32(ctx.src.index());
+    ctx.reg_file.set_i64(ctx.dst.index(), (val as u32) as i64);
     Ok(())
 }
 
 // i64 -> i32
-fn conv_i32_wrap_i64(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_i64(ctx.src.index());
-    ctx.slot_file.set_i32(ctx.dst.index(), val as i32);
+fn conv_i32_wrap_i64(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_i64(ctx.src.index());
+    ctx.reg_file.set_i32(ctx.dst.index(), val as i32);
     Ok(())
 }
 
 // f32 -> i32
-fn conv_i32_trunc_f32_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f32(ctx.src.index());
+fn conv_i32_trunc_f32_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f32(ctx.src.index());
     if val.is_nan() {
         return Err(RuntimeError::InvalidConversionToInt);
     }
@@ -2881,12 +2877,12 @@ fn conv_i32_trunc_f32_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> 
     if truncated < (i32::MIN as f32) || truncated > (i32::MAX as f32) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.slot_file.set_i32(ctx.dst.index(), truncated as i32);
+    ctx.reg_file.set_i32(ctx.dst.index(), truncated as i32);
     Ok(())
 }
 
-fn conv_i32_trunc_f32_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f32(ctx.src.index());
+fn conv_i32_trunc_f32_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f32(ctx.src.index());
     if val.is_nan() {
         return Err(RuntimeError::InvalidConversionToInt);
     }
@@ -2894,14 +2890,14 @@ fn conv_i32_trunc_f32_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> 
     if truncated < 0.0 || truncated > (u32::MAX as f32) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.slot_file
+    ctx.reg_file
         .set_i32(ctx.dst.index(), (truncated as u32) as i32);
     Ok(())
 }
 
 // f64 -> i32
-fn conv_i32_trunc_f64_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f64(ctx.src.index());
+fn conv_i32_trunc_f64_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f64(ctx.src.index());
     if val.is_nan() {
         return Err(RuntimeError::InvalidConversionToInt);
     }
@@ -2909,12 +2905,12 @@ fn conv_i32_trunc_f64_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> 
     if truncated < (i32::MIN as f64) || truncated > (i32::MAX as f64) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.slot_file.set_i32(ctx.dst.index(), truncated as i32);
+    ctx.reg_file.set_i32(ctx.dst.index(), truncated as i32);
     Ok(())
 }
 
-fn conv_i32_trunc_f64_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f64(ctx.src.index());
+fn conv_i32_trunc_f64_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f64(ctx.src.index());
     if val.is_nan() {
         return Err(RuntimeError::InvalidConversionToInt);
     }
@@ -2922,14 +2918,14 @@ fn conv_i32_trunc_f64_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> 
     if truncated < 0.0 || truncated > (u32::MAX as f64) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.slot_file
+    ctx.reg_file
         .set_i32(ctx.dst.index(), (truncated as u32) as i32);
     Ok(())
 }
 
 // f32 -> i64
-fn conv_i64_trunc_f32_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f32(ctx.src.index());
+fn conv_i64_trunc_f32_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f32(ctx.src.index());
     if val.is_nan() {
         return Err(RuntimeError::InvalidConversionToInt);
     }
@@ -2937,12 +2933,12 @@ fn conv_i64_trunc_f32_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> 
     if truncated < (i64::MIN as f32) || truncated >= (i64::MAX as f32) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.slot_file.set_i64(ctx.dst.index(), truncated as i64);
+    ctx.reg_file.set_i64(ctx.dst.index(), truncated as i64);
     Ok(())
 }
 
-fn conv_i64_trunc_f32_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f32(ctx.src.index());
+fn conv_i64_trunc_f32_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f32(ctx.src.index());
     if val.is_nan() {
         return Err(RuntimeError::InvalidConversionToInt);
     }
@@ -2950,14 +2946,14 @@ fn conv_i64_trunc_f32_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> 
     if truncated < 0.0 || truncated >= (u64::MAX as f32) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.slot_file
+    ctx.reg_file
         .set_i64(ctx.dst.index(), (truncated as u64) as i64);
     Ok(())
 }
 
 // f64 -> i64
-fn conv_i64_trunc_f64_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f64(ctx.src.index());
+fn conv_i64_trunc_f64_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f64(ctx.src.index());
     if val.is_nan() {
         return Err(RuntimeError::InvalidConversionToInt);
     }
@@ -2965,12 +2961,12 @@ fn conv_i64_trunc_f64_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> 
     if truncated < (i64::MIN as f64) || truncated >= (i64::MAX as f64) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.slot_file.set_i64(ctx.dst.index(), truncated as i64);
+    ctx.reg_file.set_i64(ctx.dst.index(), truncated as i64);
     Ok(())
 }
 
-fn conv_i64_trunc_f64_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f64(ctx.src.index());
+fn conv_i64_trunc_f64_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f64(ctx.src.index());
     if val.is_nan() {
         return Err(RuntimeError::InvalidConversionToInt);
     }
@@ -2978,14 +2974,14 @@ fn conv_i64_trunc_f64_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> 
     if truncated < 0.0 || truncated >= (u64::MAX as f64) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.slot_file
+    ctx.reg_file
         .set_i64(ctx.dst.index(), (truncated as u64) as i64);
     Ok(())
 }
 
 // Saturating truncations (i32)
-fn conv_i32_trunc_sat_f32_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f32(ctx.src.index());
+fn conv_i32_trunc_sat_f32_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f32(ctx.src.index());
     let result = if val.is_nan() {
         0
     } else if val <= (i32::MIN as f32) {
@@ -2995,12 +2991,12 @@ fn conv_i32_trunc_sat_f32_s(ctx: ConversionSlotContext) -> Result<(), RuntimeErr
     } else {
         val.trunc() as i32
     };
-    ctx.slot_file.set_i32(ctx.dst.index(), result);
+    ctx.reg_file.set_i32(ctx.dst.index(), result);
     Ok(())
 }
 
-fn conv_i32_trunc_sat_f32_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f32(ctx.src.index());
+fn conv_i32_trunc_sat_f32_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f32(ctx.src.index());
     let result = if val.is_nan() || val <= 0.0 {
         0
     } else if val >= (u32::MAX as f32) {
@@ -3008,12 +3004,12 @@ fn conv_i32_trunc_sat_f32_u(ctx: ConversionSlotContext) -> Result<(), RuntimeErr
     } else {
         val.trunc() as u32
     };
-    ctx.slot_file.set_i32(ctx.dst.index(), result as i32);
+    ctx.reg_file.set_i32(ctx.dst.index(), result as i32);
     Ok(())
 }
 
-fn conv_i32_trunc_sat_f64_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f64(ctx.src.index());
+fn conv_i32_trunc_sat_f64_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f64(ctx.src.index());
     let result = if val.is_nan() {
         0
     } else if val <= (i32::MIN as f64) {
@@ -3023,12 +3019,12 @@ fn conv_i32_trunc_sat_f64_s(ctx: ConversionSlotContext) -> Result<(), RuntimeErr
     } else {
         val.trunc() as i32
     };
-    ctx.slot_file.set_i32(ctx.dst.index(), result);
+    ctx.reg_file.set_i32(ctx.dst.index(), result);
     Ok(())
 }
 
-fn conv_i32_trunc_sat_f64_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f64(ctx.src.index());
+fn conv_i32_trunc_sat_f64_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f64(ctx.src.index());
     let result = if val.is_nan() || val <= 0.0 {
         0
     } else if val >= (u32::MAX as f64) {
@@ -3036,13 +3032,13 @@ fn conv_i32_trunc_sat_f64_u(ctx: ConversionSlotContext) -> Result<(), RuntimeErr
     } else {
         val.trunc() as u32
     };
-    ctx.slot_file.set_i32(ctx.dst.index(), result as i32);
+    ctx.reg_file.set_i32(ctx.dst.index(), result as i32);
     Ok(())
 }
 
 // Saturating truncations (i64)
-fn conv_i64_trunc_sat_f32_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f32(ctx.src.index());
+fn conv_i64_trunc_sat_f32_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f32(ctx.src.index());
     let result = if val.is_nan() {
         0
     } else if val <= (i64::MIN as f32) {
@@ -3052,12 +3048,12 @@ fn conv_i64_trunc_sat_f32_s(ctx: ConversionSlotContext) -> Result<(), RuntimeErr
     } else {
         val.trunc() as i64
     };
-    ctx.slot_file.set_i64(ctx.dst.index(), result);
+    ctx.reg_file.set_i64(ctx.dst.index(), result);
     Ok(())
 }
 
-fn conv_i64_trunc_sat_f32_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f32(ctx.src.index());
+fn conv_i64_trunc_sat_f32_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f32(ctx.src.index());
     let result = if val.is_nan() || val <= 0.0 {
         0
     } else if val >= (u64::MAX as f32) {
@@ -3065,12 +3061,12 @@ fn conv_i64_trunc_sat_f32_u(ctx: ConversionSlotContext) -> Result<(), RuntimeErr
     } else {
         val.trunc() as u64
     };
-    ctx.slot_file.set_i64(ctx.dst.index(), result as i64);
+    ctx.reg_file.set_i64(ctx.dst.index(), result as i64);
     Ok(())
 }
 
-fn conv_i64_trunc_sat_f64_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f64(ctx.src.index());
+fn conv_i64_trunc_sat_f64_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f64(ctx.src.index());
     let result = if val.is_nan() {
         0
     } else if val <= (i64::MIN as f64) {
@@ -3080,12 +3076,12 @@ fn conv_i64_trunc_sat_f64_s(ctx: ConversionSlotContext) -> Result<(), RuntimeErr
     } else {
         val.trunc() as i64
     };
-    ctx.slot_file.set_i64(ctx.dst.index(), result);
+    ctx.reg_file.set_i64(ctx.dst.index(), result);
     Ok(())
 }
 
-fn conv_i64_trunc_sat_f64_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f64(ctx.src.index());
+fn conv_i64_trunc_sat_f64_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f64(ctx.src.index());
     let result = if val.is_nan() || val <= 0.0 {
         0
     } else if val >= (u64::MAX as f64) {
@@ -3093,106 +3089,106 @@ fn conv_i64_trunc_sat_f64_u(ctx: ConversionSlotContext) -> Result<(), RuntimeErr
     } else {
         val.trunc() as u64
     };
-    ctx.slot_file.set_i64(ctx.dst.index(), result as i64);
+    ctx.reg_file.set_i64(ctx.dst.index(), result as i64);
     Ok(())
 }
 
 // i32 -> f32
-fn conv_f32_convert_i32_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_i32(ctx.src.index());
-    ctx.slot_file.set_f32(ctx.dst.index(), val as f32);
+fn conv_f32_convert_i32_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_i32(ctx.src.index());
+    ctx.reg_file.set_f32(ctx.dst.index(), val as f32);
     Ok(())
 }
 
-fn conv_f32_convert_i32_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_i32(ctx.src.index());
-    ctx.slot_file.set_f32(ctx.dst.index(), (val as u32) as f32);
+fn conv_f32_convert_i32_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_i32(ctx.src.index());
+    ctx.reg_file.set_f32(ctx.dst.index(), (val as u32) as f32);
     Ok(())
 }
 
 // i64 -> f32
-fn conv_f32_convert_i64_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_i64(ctx.src.index());
-    ctx.slot_file.set_f32(ctx.dst.index(), val as f32);
+fn conv_f32_convert_i64_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_i64(ctx.src.index());
+    ctx.reg_file.set_f32(ctx.dst.index(), val as f32);
     Ok(())
 }
 
-fn conv_f32_convert_i64_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_i64(ctx.src.index());
-    ctx.slot_file.set_f32(ctx.dst.index(), (val as u64) as f32);
+fn conv_f32_convert_i64_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_i64(ctx.src.index());
+    ctx.reg_file.set_f32(ctx.dst.index(), (val as u64) as f32);
     Ok(())
 }
 
 // i32 -> f64
-fn conv_f64_convert_i32_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_i32(ctx.src.index());
-    ctx.slot_file.set_f64(ctx.dst.index(), val as f64);
+fn conv_f64_convert_i32_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_i32(ctx.src.index());
+    ctx.reg_file.set_f64(ctx.dst.index(), val as f64);
     Ok(())
 }
 
-fn conv_f64_convert_i32_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_i32(ctx.src.index());
-    ctx.slot_file.set_f64(ctx.dst.index(), (val as u32) as f64);
+fn conv_f64_convert_i32_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_i32(ctx.src.index());
+    ctx.reg_file.set_f64(ctx.dst.index(), (val as u32) as f64);
     Ok(())
 }
 
 // i64 -> f64
-fn conv_f64_convert_i64_s(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_i64(ctx.src.index());
-    ctx.slot_file.set_f64(ctx.dst.index(), val as f64);
+fn conv_f64_convert_i64_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_i64(ctx.src.index());
+    ctx.reg_file.set_f64(ctx.dst.index(), val as f64);
     Ok(())
 }
 
-fn conv_f64_convert_i64_u(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_i64(ctx.src.index());
-    ctx.slot_file.set_f64(ctx.dst.index(), (val as u64) as f64);
+fn conv_f64_convert_i64_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_i64(ctx.src.index());
+    ctx.reg_file.set_f64(ctx.dst.index(), (val as u64) as f64);
     Ok(())
 }
 
 // f64 -> f32
-fn conv_f32_demote_f64(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f64(ctx.src.index());
-    ctx.slot_file.set_f32(ctx.dst.index(), val as f32);
+fn conv_f32_demote_f64(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f64(ctx.src.index());
+    ctx.reg_file.set_f32(ctx.dst.index(), val as f32);
     Ok(())
 }
 
 // f32 -> f64
-fn conv_f64_promote_f32(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f32(ctx.src.index());
-    ctx.slot_file.set_f64(ctx.dst.index(), val as f64);
+fn conv_f64_promote_f32(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f32(ctx.src.index());
+    ctx.reg_file.set_f64(ctx.dst.index(), val as f64);
     Ok(())
 }
 
 // Reinterpret operations
-fn conv_i32_reinterpret_f32(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f32(ctx.src.index());
-    ctx.slot_file.set_i32(ctx.dst.index(), val.to_bits() as i32);
+fn conv_i32_reinterpret_f32(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f32(ctx.src.index());
+    ctx.reg_file.set_i32(ctx.dst.index(), val.to_bits() as i32);
     Ok(())
 }
 
-fn conv_f32_reinterpret_i32(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_i32(ctx.src.index());
-    ctx.slot_file
+fn conv_f32_reinterpret_i32(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_i32(ctx.src.index());
+    ctx.reg_file
         .set_f32(ctx.dst.index(), f32::from_bits(val as u32));
     Ok(())
 }
 
-fn conv_i64_reinterpret_f64(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_f64(ctx.src.index());
-    ctx.slot_file.set_i64(ctx.dst.index(), val.to_bits() as i64);
+fn conv_i64_reinterpret_f64(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_f64(ctx.src.index());
+    ctx.reg_file.set_i64(ctx.dst.index(), val.to_bits() as i64);
     Ok(())
 }
 
-fn conv_f64_reinterpret_i64(ctx: ConversionSlotContext) -> Result<(), RuntimeError> {
-    let val = ctx.slot_file.get_i64(ctx.src.index());
-    ctx.slot_file
+fn conv_f64_reinterpret_i64(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+    let val = ctx.reg_file.get_i64(ctx.src.index());
+    ctx.reg_file
         .set_f64(ctx.dst.index(), f64::from_bits(val as u64));
     Ok(())
 }
 
 lazy_static! {
-    static ref CONVERSION_SLOT_HANDLER_TABLE: Vec<ConversionSlotHandler> = {
-        let mut table: Vec<ConversionSlotHandler> = vec![conversion_slot_invalid_handler; 256];
+    static ref CONVERSION_REG_HANDLER_TABLE: Vec<ConversionRegHandler> = {
+        let mut table: Vec<ConversionRegHandler> = vec![conversion_reg_invalid_handler; 256];
 
         // Integer conversions
         table[HANDLER_IDX_I64_EXTEND_I32_S] = conv_i64_extend_i32_s;
@@ -3243,18 +3239,18 @@ lazy_static! {
     };
 }
 
-// Memory Load Slot handlers
-struct MemoryLoadSlotContext<'a> {
-    slot_file: &'a mut SlotFile,
+// Memory Load Reg handlers
+struct MemoryLoadRegContext<'a> {
+    reg_file: &'a mut RegFile,
     mem_addr: &'a MemAddr,
-    addr: Slot,
-    dst: Slot,
+    addr: Reg,
+    dst: Reg,
     offset: u64,
 }
 
-type MemoryLoadSlotHandler = fn(MemoryLoadSlotContext) -> Result<(), RuntimeError>;
+type MemoryLoadRegHandler = fn(MemoryLoadRegContext) -> Result<(), RuntimeError>;
 
-fn memory_load_slot_invalid_handler(_ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
+fn memory_load_reg_invalid_handler(_ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     Err(RuntimeError::InvalidHandlerIndex)
 }
 
@@ -3266,121 +3262,121 @@ fn make_memarg(offset: u64) -> Memarg {
     }
 }
 
-fn mem_load_i32(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+fn mem_load_i32(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
     let memarg = make_memarg(ctx.offset);
     let val: i32 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.slot_file.set_i32(ctx.dst.index(), val);
+    ctx.reg_file.set_i32(ctx.dst.index(), val);
     Ok(())
 }
 
-fn mem_load_i64(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+fn mem_load_i64(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
     let memarg = make_memarg(ctx.offset);
     let val: i64 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.slot_file.set_i64(ctx.dst.index(), val);
+    ctx.reg_file.set_i64(ctx.dst.index(), val);
     Ok(())
 }
 
-fn mem_load_f32(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+fn mem_load_f32(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
     let memarg = make_memarg(ctx.offset);
     let val: f32 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.slot_file.set_f32(ctx.dst.index(), val);
+    ctx.reg_file.set_f32(ctx.dst.index(), val);
     Ok(())
 }
 
-fn mem_load_f64(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+fn mem_load_f64(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
     let memarg = make_memarg(ctx.offset);
     let val: f64 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.slot_file.set_f64(ctx.dst.index(), val);
+    ctx.reg_file.set_f64(ctx.dst.index(), val);
     Ok(())
 }
 
-fn mem_load_i32_8s(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+fn mem_load_i32_8s(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
     let memarg = make_memarg(ctx.offset);
     let val: i8 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.slot_file.set_i32(ctx.dst.index(), val as i32);
+    ctx.reg_file.set_i32(ctx.dst.index(), val as i32);
     Ok(())
 }
 
-fn mem_load_i32_8u(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+fn mem_load_i32_8u(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
     let memarg = make_memarg(ctx.offset);
     let val: u8 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.slot_file.set_i32(ctx.dst.index(), val as i32);
+    ctx.reg_file.set_i32(ctx.dst.index(), val as i32);
     Ok(())
 }
 
-fn mem_load_i32_16s(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+fn mem_load_i32_16s(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
     let memarg = make_memarg(ctx.offset);
     let val: i16 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.slot_file.set_i32(ctx.dst.index(), val as i32);
+    ctx.reg_file.set_i32(ctx.dst.index(), val as i32);
     Ok(())
 }
 
-fn mem_load_i32_16u(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+fn mem_load_i32_16u(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
     let memarg = make_memarg(ctx.offset);
     let val: u16 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.slot_file.set_i32(ctx.dst.index(), val as i32);
+    ctx.reg_file.set_i32(ctx.dst.index(), val as i32);
     Ok(())
 }
 
-fn mem_load_i64_8s(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+fn mem_load_i64_8s(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
     let memarg = make_memarg(ctx.offset);
     let val: i8 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.slot_file.set_i64(ctx.dst.index(), val as i64);
+    ctx.reg_file.set_i64(ctx.dst.index(), val as i64);
     Ok(())
 }
 
-fn mem_load_i64_8u(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+fn mem_load_i64_8u(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
     let memarg = make_memarg(ctx.offset);
     let val: u8 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.slot_file.set_i64(ctx.dst.index(), val as i64);
+    ctx.reg_file.set_i64(ctx.dst.index(), val as i64);
     Ok(())
 }
 
-fn mem_load_i64_16s(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+fn mem_load_i64_16s(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
     let memarg = make_memarg(ctx.offset);
     let val: i16 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.slot_file.set_i64(ctx.dst.index(), val as i64);
+    ctx.reg_file.set_i64(ctx.dst.index(), val as i64);
     Ok(())
 }
 
-fn mem_load_i64_16u(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+fn mem_load_i64_16u(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
     let memarg = make_memarg(ctx.offset);
     let val: u16 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.slot_file.set_i64(ctx.dst.index(), val as i64);
+    ctx.reg_file.set_i64(ctx.dst.index(), val as i64);
     Ok(())
 }
 
-fn mem_load_i64_32s(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+fn mem_load_i64_32s(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
     let memarg = make_memarg(ctx.offset);
     let val: i32 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.slot_file.set_i64(ctx.dst.index(), val as i64);
+    ctx.reg_file.set_i64(ctx.dst.index(), val as i64);
     Ok(())
 }
 
-fn mem_load_i64_32u(ctx: MemoryLoadSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
+fn mem_load_i64_32u(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
     let memarg = make_memarg(ctx.offset);
     let val: u32 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.slot_file.set_i64(ctx.dst.index(), val as i64);
+    ctx.reg_file.set_i64(ctx.dst.index(), val as i64);
     Ok(())
 }
 
 lazy_static! {
-    static ref MEMORY_LOAD_SLOT_HANDLER_TABLE: Vec<MemoryLoadSlotHandler> = {
-        let mut table: Vec<MemoryLoadSlotHandler> = vec![memory_load_slot_invalid_handler; 256];
+    static ref MEMORY_LOAD_REG_HANDLER_TABLE: Vec<MemoryLoadRegHandler> = {
+        let mut table: Vec<MemoryLoadRegHandler> = vec![memory_load_reg_invalid_handler; 256];
 
         table[HANDLER_IDX_I32_LOAD] = mem_load_i32;
         table[HANDLER_IDX_I64_LOAD] = mem_load_i64;
@@ -3401,96 +3397,96 @@ lazy_static! {
     };
 }
 
-// Memory Store Slot handlers
-struct MemoryStoreSlotContext<'a> {
-    slot_file: &'a SlotFile,
+// Memory Store Reg handlers
+struct MemoryStoreRegContext<'a> {
+    reg_file: &'a RegFile,
     mem_addr: &'a MemAddr,
-    addr: Slot,
-    value: Slot,
+    addr: Reg,
+    value: Reg,
     offset: u64,
 }
 
-type MemoryStoreSlotHandler = fn(MemoryStoreSlotContext) -> Result<(), RuntimeError>;
+type MemoryStoreRegHandler = fn(MemoryStoreRegContext) -> Result<(), RuntimeError>;
 
-fn memory_store_slot_invalid_handler(_ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
+fn memory_store_reg_invalid_handler(_ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     Err(RuntimeError::InvalidHandlerIndex)
 }
 
-fn mem_store_i32(ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
-    let val = ctx.slot_file.get_i32(ctx.value.index());
+fn mem_store_i32(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+    let val = ctx.reg_file.get_i32(ctx.value.index());
     let memarg = make_memarg(ctx.offset);
     ctx.mem_addr.store(&memarg, ptr, val)?;
     Ok(())
 }
 
-fn mem_store_i64(ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
-    let val = ctx.slot_file.get_i64(ctx.value.index());
+fn mem_store_i64(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+    let val = ctx.reg_file.get_i64(ctx.value.index());
     let memarg = make_memarg(ctx.offset);
     ctx.mem_addr.store(&memarg, ptr, val)?;
     Ok(())
 }
 
-fn mem_store_f32(ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
-    let val = ctx.slot_file.get_f32(ctx.value.index());
+fn mem_store_f32(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+    let val = ctx.reg_file.get_f32(ctx.value.index());
     let memarg = make_memarg(ctx.offset);
     ctx.mem_addr.store(&memarg, ptr, val)?;
     Ok(())
 }
 
-fn mem_store_f64(ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
-    let val = ctx.slot_file.get_f64(ctx.value.index());
+fn mem_store_f64(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+    let val = ctx.reg_file.get_f64(ctx.value.index());
     let memarg = make_memarg(ctx.offset);
     ctx.mem_addr.store(&memarg, ptr, val)?;
     Ok(())
 }
 
-fn mem_store_i32_8(ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
-    let val = ctx.slot_file.get_i32(ctx.value.index()) as u8;
+fn mem_store_i32_8(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+    let val = ctx.reg_file.get_i32(ctx.value.index()) as u8;
     let memarg = make_memarg(ctx.offset);
     ctx.mem_addr.store(&memarg, ptr, val)?;
     Ok(())
 }
 
-fn mem_store_i32_16(ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
-    let val = ctx.slot_file.get_i32(ctx.value.index()) as u16;
+fn mem_store_i32_16(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+    let val = ctx.reg_file.get_i32(ctx.value.index()) as u16;
     let memarg = make_memarg(ctx.offset);
     ctx.mem_addr.store(&memarg, ptr, val)?;
     Ok(())
 }
 
-fn mem_store_i64_8(ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
-    let val = ctx.slot_file.get_i64(ctx.value.index()) as u8;
+fn mem_store_i64_8(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+    let val = ctx.reg_file.get_i64(ctx.value.index()) as u8;
     let memarg = make_memarg(ctx.offset);
     ctx.mem_addr.store(&memarg, ptr, val)?;
     Ok(())
 }
 
-fn mem_store_i64_16(ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
-    let val = ctx.slot_file.get_i64(ctx.value.index()) as u16;
+fn mem_store_i64_16(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+    let val = ctx.reg_file.get_i64(ctx.value.index()) as u16;
     let memarg = make_memarg(ctx.offset);
     ctx.mem_addr.store(&memarg, ptr, val)?;
     Ok(())
 }
 
-fn mem_store_i64_32(ctx: MemoryStoreSlotContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.slot_file.get_i32(ctx.addr.index());
-    let val = ctx.slot_file.get_i64(ctx.value.index()) as u32;
+fn mem_store_i64_32(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+    let val = ctx.reg_file.get_i64(ctx.value.index()) as u32;
     let memarg = make_memarg(ctx.offset);
     ctx.mem_addr.store(&memarg, ptr, val)?;
     Ok(())
 }
 
 lazy_static! {
-    static ref MEMORY_STORE_SLOT_HANDLER_TABLE: Vec<MemoryStoreSlotHandler> = {
-        let mut table: Vec<MemoryStoreSlotHandler> = vec![memory_store_slot_invalid_handler; 256];
+    static ref MEMORY_STORE_REG_HANDLER_TABLE: Vec<MemoryStoreRegHandler> = {
+        let mut table: Vec<MemoryStoreRegHandler> = vec![memory_store_reg_invalid_handler; 256];
 
         table[HANDLER_IDX_I32_STORE] = mem_store_i32;
         table[HANDLER_IDX_I64_STORE] = mem_store_i64;
@@ -3506,32 +3502,32 @@ lazy_static! {
     };
 }
 
-// Memory Ops Slot handlers (size, grow, copy, init, fill)
-struct MemoryOpsSlotContext<'a> {
-    slot_file: &'a mut SlotFile,
+// Memory Ops Reg handlers (size, grow, copy, init, fill)
+struct MemoryOpsRegContext<'a> {
+    reg_file: &'a mut RegFile,
     mem_addr: &'a MemAddr,
     module_inst: &'a ModuleInst,
-    dst: Option<Slot>,
-    args: Vec<Slot>,
+    dst: Option<Reg>,
+    args: Vec<Reg>,
     data_index: u32,
 }
 
-type MemoryOpsSlotHandler = fn(MemoryOpsSlotContext) -> Result<(), RuntimeError>;
+type MemoryOpsRegHandler = fn(MemoryOpsRegContext) -> Result<(), RuntimeError>;
 
-fn memory_ops_slot_invalid_handler(_ctx: MemoryOpsSlotContext) -> Result<(), RuntimeError> {
+fn memory_ops_reg_invalid_handler(_ctx: MemoryOpsRegContext) -> Result<(), RuntimeError> {
     Err(RuntimeError::InvalidHandlerIndex)
 }
 
-fn mem_ops_size(ctx: MemoryOpsSlotContext) -> Result<(), RuntimeError> {
+fn mem_ops_size(ctx: MemoryOpsRegContext) -> Result<(), RuntimeError> {
     let size = ctx.mem_addr.mem_size();
     if let Some(dst) = ctx.dst {
-        ctx.slot_file.set_i32(dst.index(), size);
+        ctx.reg_file.set_i32(dst.index(), size);
     }
     Ok(())
 }
 
-fn mem_ops_grow(ctx: MemoryOpsSlotContext) -> Result<(), RuntimeError> {
-    let delta = ctx.slot_file.get_i32(ctx.args[0].index());
+fn mem_ops_grow(ctx: MemoryOpsRegContext) -> Result<(), RuntimeError> {
+    let delta = ctx.reg_file.get_i32(ctx.args[0].index());
     let delta_u32: u32 = delta
         .try_into()
         .map_err(|_| RuntimeError::InvalidParameterCount)?;
@@ -3541,23 +3537,23 @@ fn mem_ops_grow(ctx: MemoryOpsSlotContext) -> Result<(), RuntimeError> {
             .map_err(|_| RuntimeError::InvalidParameterCount)?,
     );
     if let Some(dst) = ctx.dst {
-        ctx.slot_file.set_i32(dst.index(), prev_size);
+        ctx.reg_file.set_i32(dst.index(), prev_size);
     }
     Ok(())
 }
 
-fn mem_ops_copy(ctx: MemoryOpsSlotContext) -> Result<(), RuntimeError> {
-    let dest = ctx.slot_file.get_i32(ctx.args[0].index());
-    let src = ctx.slot_file.get_i32(ctx.args[1].index());
-    let len = ctx.slot_file.get_i32(ctx.args[2].index());
+fn mem_ops_copy(ctx: MemoryOpsRegContext) -> Result<(), RuntimeError> {
+    let dest = ctx.reg_file.get_i32(ctx.args[0].index());
+    let src = ctx.reg_file.get_i32(ctx.args[1].index());
+    let len = ctx.reg_file.get_i32(ctx.args[2].index());
     ctx.mem_addr.memory_copy(dest, src, len)?;
     Ok(())
 }
 
-fn mem_ops_init(ctx: MemoryOpsSlotContext) -> Result<(), RuntimeError> {
-    let dest = ctx.slot_file.get_i32(ctx.args[0].index()) as usize;
-    let offset = ctx.slot_file.get_i32(ctx.args[1].index()) as usize;
-    let len = ctx.slot_file.get_i32(ctx.args[2].index()) as usize;
+fn mem_ops_init(ctx: MemoryOpsRegContext) -> Result<(), RuntimeError> {
+    let dest = ctx.reg_file.get_i32(ctx.args[0].index()) as usize;
+    let offset = ctx.reg_file.get_i32(ctx.args[1].index()) as usize;
+    let len = ctx.reg_file.get_i32(ctx.args[2].index()) as usize;
 
     if ctx.data_index as usize >= ctx.module_inst.data_addrs.len() {
         return Err(RuntimeError::InvalidDataSegmentIndex);
@@ -3573,17 +3569,17 @@ fn mem_ops_init(ctx: MemoryOpsSlotContext) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-fn mem_ops_fill(ctx: MemoryOpsSlotContext) -> Result<(), RuntimeError> {
-    let dest = ctx.slot_file.get_i32(ctx.args[0].index());
-    let val = ctx.slot_file.get_i32(ctx.args[1].index()) as u8;
-    let size = ctx.slot_file.get_i32(ctx.args[2].index());
+fn mem_ops_fill(ctx: MemoryOpsRegContext) -> Result<(), RuntimeError> {
+    let dest = ctx.reg_file.get_i32(ctx.args[0].index());
+    let val = ctx.reg_file.get_i32(ctx.args[1].index()) as u8;
+    let size = ctx.reg_file.get_i32(ctx.args[2].index());
     ctx.mem_addr.memory_fill(dest, val, size)?;
     Ok(())
 }
 
 lazy_static! {
-    static ref MEMORY_OPS_SLOT_HANDLER_TABLE: Vec<MemoryOpsSlotHandler> = {
-        let mut table: Vec<MemoryOpsSlotHandler> = vec![memory_ops_slot_invalid_handler; 256];
+    static ref MEMORY_OPS_REG_HANDLER_TABLE: Vec<MemoryOpsRegHandler> = {
+        let mut table: Vec<MemoryOpsRegHandler> = vec![memory_ops_reg_invalid_handler; 256];
 
         table[HANDLER_IDX_MEMORY_SIZE] = mem_ops_size;
         table[HANDLER_IDX_MEMORY_GROW] = mem_ops_grow;
@@ -3595,62 +3591,62 @@ lazy_static! {
     };
 }
 
-// Select Slot handlers
-struct SelectSlotContext<'a> {
-    slot_file: &'a mut SlotFile,
-    dst: Slot,
-    val1: Slot,
-    val2: Slot,
-    cond: Slot,
+// Select Reg handlers
+struct SelectRegContext<'a> {
+    reg_file: &'a mut RegFile,
+    dst: Reg,
+    val1: Reg,
+    val2: Reg,
+    cond: Reg,
 }
 
-type SelectSlotHandler = fn(SelectSlotContext) -> Result<(), RuntimeError>;
+type SelectRegHandler = fn(SelectRegContext) -> Result<(), RuntimeError>;
 
-fn select_slot_invalid_handler(_ctx: SelectSlotContext) -> Result<(), RuntimeError> {
+fn select_reg_invalid_handler(_ctx: SelectRegContext) -> Result<(), RuntimeError> {
     Err(RuntimeError::InvalidHandlerIndex)
 }
 
-fn select_i32(ctx: SelectSlotContext) -> Result<(), RuntimeError> {
-    let cond = ctx.slot_file.get_i32(ctx.cond.index());
+fn select_i32(ctx: SelectRegContext) -> Result<(), RuntimeError> {
+    let cond = ctx.reg_file.get_i32(ctx.cond.index());
     let result = if cond != 0 {
-        ctx.slot_file.get_i32(ctx.val1.index())
+        ctx.reg_file.get_i32(ctx.val1.index())
     } else {
-        ctx.slot_file.get_i32(ctx.val2.index())
+        ctx.reg_file.get_i32(ctx.val2.index())
     };
-    ctx.slot_file.set_i32(ctx.dst.index(), result);
+    ctx.reg_file.set_i32(ctx.dst.index(), result);
     Ok(())
 }
 
-fn select_i64(ctx: SelectSlotContext) -> Result<(), RuntimeError> {
-    let cond = ctx.slot_file.get_i32(ctx.cond.index());
+fn select_i64(ctx: SelectRegContext) -> Result<(), RuntimeError> {
+    let cond = ctx.reg_file.get_i32(ctx.cond.index());
     let result = if cond != 0 {
-        ctx.slot_file.get_i64(ctx.val1.index())
+        ctx.reg_file.get_i64(ctx.val1.index())
     } else {
-        ctx.slot_file.get_i64(ctx.val2.index())
+        ctx.reg_file.get_i64(ctx.val2.index())
     };
-    ctx.slot_file.set_i64(ctx.dst.index(), result);
+    ctx.reg_file.set_i64(ctx.dst.index(), result);
     Ok(())
 }
 
-fn select_f32(ctx: SelectSlotContext) -> Result<(), RuntimeError> {
-    let cond = ctx.slot_file.get_i32(ctx.cond.index());
+fn select_f32(ctx: SelectRegContext) -> Result<(), RuntimeError> {
+    let cond = ctx.reg_file.get_i32(ctx.cond.index());
     let result = if cond != 0 {
-        ctx.slot_file.get_f32(ctx.val1.index())
+        ctx.reg_file.get_f32(ctx.val1.index())
     } else {
-        ctx.slot_file.get_f32(ctx.val2.index())
+        ctx.reg_file.get_f32(ctx.val2.index())
     };
-    ctx.slot_file.set_f32(ctx.dst.index(), result);
+    ctx.reg_file.set_f32(ctx.dst.index(), result);
     Ok(())
 }
 
-fn select_f64(ctx: SelectSlotContext) -> Result<(), RuntimeError> {
-    let cond = ctx.slot_file.get_i32(ctx.cond.index());
+fn select_f64(ctx: SelectRegContext) -> Result<(), RuntimeError> {
+    let cond = ctx.reg_file.get_i32(ctx.cond.index());
     let result = if cond != 0 {
-        ctx.slot_file.get_f64(ctx.val1.index())
+        ctx.reg_file.get_f64(ctx.val1.index())
     } else {
-        ctx.slot_file.get_f64(ctx.val2.index())
+        ctx.reg_file.get_f64(ctx.val2.index())
     };
-    ctx.slot_file.set_f64(ctx.dst.index(), result);
+    ctx.reg_file.set_f64(ctx.dst.index(), result);
     Ok(())
 }
 
@@ -3660,8 +3656,8 @@ pub const HANDLER_IDX_SELECT_F32: usize = 0xF2;
 pub const HANDLER_IDX_SELECT_F64: usize = 0xF3;
 
 lazy_static! {
-    static ref SELECT_SLOT_HANDLER_TABLE: Vec<SelectSlotHandler> = {
-        let mut table: Vec<SelectSlotHandler> = vec![select_slot_invalid_handler; 256];
+    static ref SELECT_REG_HANDLER_TABLE: Vec<SelectRegHandler> = {
+        let mut table: Vec<SelectRegHandler> = vec![select_reg_invalid_handler; 256];
 
         table[HANDLER_IDX_SELECT_I32] = select_i32;
         table[HANDLER_IDX_SELECT_I64] = select_i64;
@@ -3672,63 +3668,63 @@ lazy_static! {
     };
 }
 
-// GlobalGetSlot handler constants
+// GlobalGetReg handler constants
 pub const HANDLER_IDX_GLOBAL_GET_I32: usize = 0xF4;
 pub const HANDLER_IDX_GLOBAL_GET_I64: usize = 0xF5;
 pub const HANDLER_IDX_GLOBAL_GET_F32: usize = 0xF6;
 pub const HANDLER_IDX_GLOBAL_GET_F64: usize = 0xF7;
 
-// GlobalSetSlot handler constants
+// GlobalSetReg handler constants
 pub const HANDLER_IDX_GLOBAL_SET_I32: usize = 0xF8;
 pub const HANDLER_IDX_GLOBAL_SET_I64: usize = 0xF9;
 pub const HANDLER_IDX_GLOBAL_SET_F32: usize = 0xFA;
 pub const HANDLER_IDX_GLOBAL_SET_F64: usize = 0xFB;
 
-// TableRefSlot handler constants
-pub const HANDLER_IDX_REF_NULL_SLOT: usize = 0xFC;
-pub const HANDLER_IDX_REF_IS_NULL_SLOT: usize = 0xFD;
-pub const HANDLER_IDX_TABLE_GET_SLOT: usize = 0xFE;
-pub const HANDLER_IDX_TABLE_SET_SLOT: usize = 0xFF;
-pub const HANDLER_IDX_TABLE_FILL_SLOT: usize = 0x100;
+// TableRefReg handler constants
+pub const HANDLER_IDX_REF_NULL_REG: usize = 0xFC;
+pub const HANDLER_IDX_REF_IS_NULL_REG: usize = 0xFD;
+pub const HANDLER_IDX_TABLE_GET_REG: usize = 0xFE;
+pub const HANDLER_IDX_TABLE_SET_REG: usize = 0xFF;
+pub const HANDLER_IDX_TABLE_FILL_REG: usize = 0x100;
 
-// RefLocalSlot handler constants
-pub const HANDLER_IDX_REF_LOCAL_GET_SLOT: usize = 0x101;
-pub const HANDLER_IDX_REF_LOCAL_SET_SLOT: usize = 0x102;
+// RefLocalReg handler constants
+pub const HANDLER_IDX_REF_LOCAL_GET_REG: usize = 0x101;
+pub const HANDLER_IDX_REF_LOCAL_SET_REG: usize = 0x102;
 
-// CallWasiSlot handler constant
-pub const HANDLER_IDX_CALL_WASI_SLOT: usize = 0x103;
+// CallWasiReg handler constant
+pub const HANDLER_IDX_CALL_WASI_REG: usize = 0x103;
 
-// RefLocalSlot handler infrastructure
-struct RefLocalSlotContext<'a> {
-    slot_file: &'a mut SlotFile,
+// RefLocalReg handler infrastructure
+struct RefLocalRegContext<'a> {
+    reg_file: &'a mut RegFile,
     locals: &'a mut Vec<Val>,
     dst: u16,
     src: u16,
     local_idx: u16,
 }
 
-type RefLocalSlotHandler = fn(RefLocalSlotContext) -> Result<(), RuntimeError>;
+type RefLocalRegHandler = fn(RefLocalRegContext) -> Result<(), RuntimeError>;
 
-fn ref_local_slot_invalid_handler(_ctx: RefLocalSlotContext) -> Result<(), RuntimeError> {
+fn ref_local_reg_invalid_handler(_ctx: RefLocalRegContext) -> Result<(), RuntimeError> {
     Err(RuntimeError::InvalidHandlerIndex)
 }
 
 // local.get for ref type: [] -> [ref]
-fn ref_local_slot_get(ctx: RefLocalSlotContext) -> Result<(), RuntimeError> {
+fn ref_local_reg_get(ctx: RefLocalRegContext) -> Result<(), RuntimeError> {
     let val = ctx
         .locals
         .get(ctx.local_idx as usize)
         .ok_or(RuntimeError::LocalIndexOutOfBounds)?
         .clone();
     if let Val::Ref(r) = val {
-        ctx.slot_file.set_ref(ctx.dst, r);
+        ctx.reg_file.set_ref(ctx.dst, r);
     }
     Ok(())
 }
 
 // local.set for ref type: [ref] -> []
-fn ref_local_slot_set(ctx: RefLocalSlotContext) -> Result<(), RuntimeError> {
-    let ref_val = ctx.slot_file.get_ref(ctx.src);
+fn ref_local_reg_set(ctx: RefLocalRegContext) -> Result<(), RuntimeError> {
+    let ref_val = ctx.reg_file.get_ref(ctx.src);
     let idx = ctx.local_idx as usize;
     if idx < ctx.locals.len() {
         ctx.locals[idx] = Val::Ref(ref_val);
@@ -3737,64 +3733,64 @@ fn ref_local_slot_set(ctx: RefLocalSlotContext) -> Result<(), RuntimeError> {
 }
 
 lazy_static! {
-    static ref REF_LOCAL_SLOT_HANDLER_TABLE: Vec<RefLocalSlotHandler> = {
-        let mut table: Vec<RefLocalSlotHandler> = vec![ref_local_slot_invalid_handler; 0x103];
+    static ref REF_LOCAL_REG_HANDLER_TABLE: Vec<RefLocalRegHandler> = {
+        let mut table: Vec<RefLocalRegHandler> = vec![ref_local_reg_invalid_handler; 0x103];
 
-        table[HANDLER_IDX_REF_LOCAL_GET_SLOT] = ref_local_slot_get;
-        table[HANDLER_IDX_REF_LOCAL_SET_SLOT] = ref_local_slot_set;
+        table[HANDLER_IDX_REF_LOCAL_GET_REG] = ref_local_reg_get;
+        table[HANDLER_IDX_REF_LOCAL_SET_REG] = ref_local_reg_set;
 
         table
     };
 }
 
-// TableRefSlot handler infrastructure
-struct TableRefSlotContext<'a> {
-    slot_file: &'a mut SlotFile,
+// TableRefReg handler infrastructure
+struct TableRefRegContext<'a> {
+    reg_file: &'a mut RegFile,
     module_inst: &'a Rc<ModuleInst>,
     table_idx: u32,
-    slots: [u16; 3],
+    regs: [u16; 3],
     #[allow(dead_code)]
     ref_type: RefType,
 }
 
-type TableRefSlotHandler = fn(TableRefSlotContext) -> Result<(), RuntimeError>;
+type TableRefRegHandler = fn(TableRefRegContext) -> Result<(), RuntimeError>;
 
-fn table_ref_slot_invalid_handler(_ctx: TableRefSlotContext) -> Result<(), RuntimeError> {
+fn table_ref_reg_invalid_handler(_ctx: TableRefRegContext) -> Result<(), RuntimeError> {
     Err(RuntimeError::InvalidHandlerIndex)
 }
 
 // ref.null: [] -> [ref]
-// dst = slots[0]
-fn table_ref_slot_null(ctx: TableRefSlotContext) -> Result<(), RuntimeError> {
-    ctx.slot_file.set_ref(ctx.slots[0], Ref::RefNull);
+// dst = regs[0]
+fn table_ref_reg_null(ctx: TableRefRegContext) -> Result<(), RuntimeError> {
+    ctx.reg_file.set_ref(ctx.regs[0], Ref::RefNull);
     Ok(())
 }
 
 // ref.is_null: [ref] -> [i32]
-// src = slots[1], dst = slots[0]
-fn table_ref_slot_is_null(ctx: TableRefSlotContext) -> Result<(), RuntimeError> {
-    let ref_val = ctx.slot_file.get_ref(ctx.slots[1]);
+// src = regs[1], dst = regs[0]
+fn table_ref_reg_is_null(ctx: TableRefRegContext) -> Result<(), RuntimeError> {
+    let ref_val = ctx.reg_file.get_ref(ctx.regs[1]);
     let is_null = match ref_val {
         Ref::RefNull => 1,
         _ => 0,
     };
-    ctx.slot_file.set_i32(ctx.slots[0], is_null);
+    ctx.reg_file.set_i32(ctx.regs[0], is_null);
     Ok(())
 }
 
 // table.get: [i32] -> [ref]
-// idx = slots[1], dst = slots[0]
-fn table_ref_slot_get(ctx: TableRefSlotContext) -> Result<(), RuntimeError> {
+// idx = regs[1], dst = regs[0]
+fn table_ref_reg_get(ctx: TableRefRegContext) -> Result<(), RuntimeError> {
     let table_addr = ctx
         .module_inst
         .table_addrs
         .get(ctx.table_idx as usize)
         .ok_or(RuntimeError::TableNotFound)?;
-    let index = ctx.slot_file.get_i32(ctx.slots[1]) as usize;
+    let index = ctx.reg_file.get_i32(ctx.regs[1]) as usize;
     let val = table_addr.get(index);
     match val {
         Val::Ref(r) => {
-            ctx.slot_file.set_ref(ctx.slots[0], r);
+            ctx.reg_file.set_ref(ctx.regs[0], r);
             Ok(())
         }
         _ => Err(RuntimeError::TypeMismatch),
@@ -3802,41 +3798,41 @@ fn table_ref_slot_get(ctx: TableRefSlotContext) -> Result<(), RuntimeError> {
 }
 
 // table.set: [i32, ref] -> []
-// idx = slots[0], val = slots[1]
-fn table_ref_slot_set(ctx: TableRefSlotContext) -> Result<(), RuntimeError> {
+// idx = regs[0], val = regs[1]
+fn table_ref_reg_set(ctx: TableRefRegContext) -> Result<(), RuntimeError> {
     let table_addr = ctx
         .module_inst
         .table_addrs
         .get(ctx.table_idx as usize)
         .ok_or(RuntimeError::TableNotFound)?;
-    let index = ctx.slot_file.get_i32(ctx.slots[0]) as usize;
-    let ref_val = ctx.slot_file.get_ref(ctx.slots[1]);
+    let index = ctx.reg_file.get_i32(ctx.regs[0]) as usize;
+    let ref_val = ctx.reg_file.get_ref(ctx.regs[1]);
     table_addr.set(index, Val::Ref(ref_val))
 }
 
 // table.fill: [i32, ref, i32] -> []
-// i = slots[0], val = slots[1], n = slots[2]
-fn table_ref_slot_fill(ctx: TableRefSlotContext) -> Result<(), RuntimeError> {
+// i = regs[0], val = regs[1], n = regs[2]
+fn table_ref_reg_fill(ctx: TableRefRegContext) -> Result<(), RuntimeError> {
     let table_addr = ctx
         .module_inst
         .table_addrs
         .get(ctx.table_idx as usize)
         .ok_or(RuntimeError::TableNotFound)?;
-    let i = ctx.slot_file.get_i32(ctx.slots[0]) as usize;
-    let ref_val = ctx.slot_file.get_ref(ctx.slots[1]);
-    let n = ctx.slot_file.get_i32(ctx.slots[2]) as usize;
+    let i = ctx.reg_file.get_i32(ctx.regs[0]) as usize;
+    let ref_val = ctx.reg_file.get_ref(ctx.regs[1]);
+    let n = ctx.reg_file.get_i32(ctx.regs[2]) as usize;
     table_addr.fill(i, Val::Ref(ref_val), n)
 }
 
 lazy_static! {
-    static ref TABLE_REF_SLOT_HANDLER_TABLE: Vec<TableRefSlotHandler> = {
-        let mut table: Vec<TableRefSlotHandler> = vec![table_ref_slot_invalid_handler; 0x101];
+    static ref TABLE_REF_REG_HANDLER_TABLE: Vec<TableRefRegHandler> = {
+        let mut table: Vec<TableRefRegHandler> = vec![table_ref_reg_invalid_handler; 0x101];
 
-        table[HANDLER_IDX_REF_NULL_SLOT] = table_ref_slot_null;
-        table[HANDLER_IDX_REF_IS_NULL_SLOT] = table_ref_slot_is_null;
-        table[HANDLER_IDX_TABLE_GET_SLOT] = table_ref_slot_get;
-        table[HANDLER_IDX_TABLE_SET_SLOT] = table_ref_slot_set;
-        table[HANDLER_IDX_TABLE_FILL_SLOT] = table_ref_slot_fill;
+        table[HANDLER_IDX_REF_NULL_REG] = table_ref_reg_null;
+        table[HANDLER_IDX_REF_IS_NULL_REG] = table_ref_reg_is_null;
+        table[HANDLER_IDX_TABLE_GET_REG] = table_ref_reg_get;
+        table[HANDLER_IDX_TABLE_SET_REG] = table_ref_reg_set;
+        table[HANDLER_IDX_TABLE_FILL_REG] = table_ref_reg_fill;
 
         table
     };
