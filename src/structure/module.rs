@@ -1,4 +1,4 @@
-use crate::execution::slots::Slot;
+use crate::execution::regs::Reg;
 use crate::execution::vm::ProcessedInstr;
 use crate::structure::instructions::*;
 use crate::structure::types::*;
@@ -9,8 +9,8 @@ pub struct Func {
     pub type_: TypeIdx,
     pub locals: Vec<(u32, ValueType)>,
     pub body: Rc<Vec<ProcessedInstr>>,
-    pub slot_allocation: Option<crate::execution::slots::SlotAllocation>,
-    pub result_slot: Option<Slot>, // Slot for return value (slot mode only)
+    pub reg_allocation: Option<crate::execution::regs::RegAllocation>,
+    pub result_reg: Option<Reg>, // Register for return value (register mode only)
 }
 
 #[derive(Clone)]
