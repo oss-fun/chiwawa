@@ -1,6 +1,9 @@
 [target.wasm32-wasip1]
 runner = ["wasmtime", "--dir", ".", "--dir", "tests/testdir"]
 
+[target.wasm32-wasip1-threads]
+runner = ["wasmtime", "--wasm", "threads=y", "--wasi", "threads=y", "--dir", ".", "--dir", "tests/testdir"]
+
 [build]
 rustflags = [
   "-C", "target-feature=+bulk-memory,+mutable-globals,+nontrapping-fptoint,+reference-types,+sign-ext",

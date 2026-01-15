@@ -784,10 +784,8 @@ pub struct FrameStack {
     #[serde(skip)]
     pub enable_checkpoint: bool,
     /// Registers where caller expects results to be written
-    #[serde(skip)]
     pub result_regs: Vec<Reg>,
     /// Registers containing this function's return values (set on return)
-    #[serde(skip)]
     pub return_result_regs: Vec<Reg>,
 }
 
