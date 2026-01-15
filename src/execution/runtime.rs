@@ -11,6 +11,8 @@ use crate::structure::types::{NumType, ValueType, VecType};
 use crate::wasi::{WasiError, WasiResult};
 use std::path::Path;
 use std::rc::Rc;
+#[cfg(all(target_os = "wasi", target_env = "p1", target_feature = "atomics"))]
+use std::sync::Once;
 
 pub struct Runtime {
     module_inst: Rc<ModuleInst>,
