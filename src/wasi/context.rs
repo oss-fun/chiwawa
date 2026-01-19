@@ -1,8 +1,17 @@
+//! WASI context and file descriptor management.
+//!
+//! This module provides the [`WasiContext`] for managing file descriptors
+//! and the [`FileDescriptor`] trait for I/O operations.
+
 use super::error::*;
 use rustc_hash::FxHashMap;
 use std::io::{self, Read, Write};
 
-/// WASI context for managing file descriptors and state
+/// WASI context for managing file descriptors and state.
+///
+/// Maintains a mapping of file descriptor numbers to their implementations.
+/// Standard file descriptors (0=stdin, 1=stdout, 2=stderr) are initialized
+/// automatically.
 pub struct WasiContext {
     pub file_descriptors: FxHashMap<i32, Box<dyn FileDescriptor>>,
     pub next_fd: i32,
@@ -31,7 +40,10 @@ impl WasiContext {
     }
 }
 
-/// Trait for file descriptor operations
+/// Trait for file descriptor operations.
+///
+/// Implementations provide read, write, seek, and close operations for
+/// different types of file descriptors (files, stdin, stdout, stderr, etc.).
 pub trait FileDescriptor: Send + Sync {
     fn read(&mut self, buf: &mut [u8]) -> WasiResult<usize>;
     fn write(&mut self, buf: &[u8]) -> WasiResult<usize>;
