@@ -1,3 +1,5 @@
+//! Table instances for indirect function calls.
+
 use super::{
     func::FuncAddr,
     module::*,
@@ -8,8 +10,11 @@ use crate::structure::types::*;
 use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 
+/// Reference-counted handle to a table instance.
 #[derive(Clone, Debug)]
 pub struct TableAddr(Rc<RefCell<TableInst>>);
+
+/// Table instance holding function references.
 #[derive(Debug)]
 pub struct TableInst {
     pub _type_: TableType,
@@ -17,6 +22,7 @@ pub struct TableInst {
 }
 
 impl TableAddr {
+    /// Creates a new table initialized with null references.
     pub fn new(type_: &TableType) -> TableAddr {
         TableAddr(Rc::new(RefCell::new(TableInst {
             _type_: type_.clone(),
@@ -28,6 +34,7 @@ impl TableAddr {
             },
         })))
     }
+    /// Initializes table elements from function indices.
     pub fn init(&self, offset: usize, funcs: &Vec<FuncAddr>, init: &Vec<i32>) {
         let mut addr_self = self.0.borrow_mut();
         for (index, f) in init.iter().enumerate() {
@@ -36,6 +43,7 @@ impl TableAddr {
             ));
         }
     }
+    /// Gets element at index, returns RefNull if out of bounds.
     pub fn get(&self, i: usize) -> Val {
         let inst = self.0.borrow();
         if i < inst.elem.len() as usize {
@@ -45,6 +53,7 @@ impl TableAddr {
         }
     }
 
+    /// Sets element at index.
     pub fn set(&self, i: usize, val: Val) -> Result<(), RuntimeError> {
         let mut inst = self.0.borrow_mut();
         if i < inst.elem.len() as usize {
@@ -55,6 +64,7 @@ impl TableAddr {
         }
     }
 
+    /// Fills n elements starting at index with the given value.
     pub fn fill(&self, i: usize, val: Val, n: usize) -> Result<(), RuntimeError> {
         let mut inst = self.0.borrow_mut();
         let len = inst.elem.len();
@@ -67,6 +77,7 @@ impl TableAddr {
         Ok(())
     }
 
+    /// Gets function address at index for call_indirect.
     pub fn get_func_addr(&self, i: usize) -> Option<FuncAddr> {
         let inst = self.0.borrow();
         if i < inst.elem.len() as usize {
@@ -79,6 +90,7 @@ impl TableAddr {
         }
     }
 
+    /// Replaces all elements (used during restore).
     pub fn set_elements(&self, elems: Vec<Option<FuncAddr>>) -> Result<(), RuntimeError> {
         let mut guard = self.0.borrow_mut();
         guard.elem = elems
@@ -91,6 +103,7 @@ impl TableAddr {
         Ok(())
     }
 
+    /// Returns a borrow of the underlying table instance.
     pub fn read_lock(&self) -> Ref<TableInst> {
         self.0.borrow()
     }

@@ -1,3 +1,5 @@
+//! Linear memory instances and load/store operations.
+
 use crate::error::RuntimeError;
 use crate::structure::{instructions::Memarg, types::*};
 use byteorder::*;
@@ -7,10 +9,13 @@ use std::io::Cursor;
 use std::rc::Rc;
 use typenum::*;
 
+/// Reference-counted handle to a memory instance.
 #[derive(Clone, Debug)]
 pub struct MemAddr {
     mem_inst: Rc<RefCell<MemInst>>,
 }
+
+/// Linear memory instance with bounds tracking.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MemInst {
     pub _type_: MemType,
@@ -18,6 +23,7 @@ pub struct MemInst {
 }
 
 impl MemAddr {
+    /// Creates a new memory instance with initial size from type.
     pub fn new(type_: &MemType) -> MemAddr {
         let min = (type_.0.min * 65536) as usize;
         let max = type_.0.max.map(|max| max);
@@ -36,10 +42,12 @@ impl MemAddr {
         }
     }
 
+    /// Initializes memory region from data segment.
     pub fn init(&self, offset: usize, init: &Vec<u8>) {
         let mut addr_self = self.mem_inst.borrow_mut();
         addr_self.data[offset..offset + init.len()].copy_from_slice(init);
     }
+    /// Loads a typed value from memory at ptr + offset.
     pub fn load<T: ByteMem>(&self, arg: &Memarg, ptr: i32) -> Result<T, RuntimeError> {
         let pos = (ptr as usize) + (arg.offset as usize);
         let len = <T>::len();
@@ -51,6 +59,7 @@ impl MemAddr {
         };
         Ok(<T>::from_byte(data))
     }
+    /// Stores a typed value to memory at ptr + offset.
     pub fn store<T: ByteMem>(&self, arg: &Memarg, ptr: i32, data: T) -> Result<(), RuntimeError> {
         let pos = (ptr as usize) + (arg.offset as usize);
         let buf = <T>::to_byte(data);
@@ -63,10 +72,12 @@ impl MemAddr {
         Ok(())
     }
 
+    /// Returns current memory size in pages (64KB each).
     pub fn mem_size(&self) -> i32 {
         (self.mem_inst.borrow().data.len() / 65536) as i32
     }
 
+    /// Grows memory by the given number of pages. Returns previous size or -1 on failure.
     pub fn mem_grow(&self, size: i32) -> i32 {
         let prev_size = self.mem_size();
         let new = prev_size + size;
@@ -94,6 +105,7 @@ impl MemAddr {
         }
     }
 
+    /// Returns a copy of all memory contents.
     pub fn get_data(&self) -> Result<Vec<u8>, RuntimeError> {
         let guard = self.mem_inst.borrow();
         Ok(guard.data.clone())
@@ -115,12 +127,14 @@ impl MemAddr {
         Ok(())
     }
 
+    /// Replaces all memory contents (used during restore).
     pub fn set_data(&self, data: Vec<u8>) -> Result<(), RuntimeError> {
         let mut guard = self.mem_inst.borrow_mut();
         guard.data = data;
         Ok(())
     }
 
+    /// Copies len bytes from src to dest within memory.
     pub fn memory_copy(&self, dest: i32, src: i32, len: i32) -> Result<(), RuntimeError> {
         let dest_pos = dest as usize;
         let src_pos = src as usize;
@@ -138,6 +152,7 @@ impl MemAddr {
         Ok(())
     }
 
+    /// Fills len bytes starting at dest with val.
     pub fn memory_fill(&self, dest: i32, val: u8, len: i32) -> Result<(), RuntimeError> {
         let dest_pos = dest as usize;
         let len_usize = len as usize;
@@ -152,14 +167,19 @@ impl MemAddr {
         Ok(())
     }
 
+    /// Returns a direct borrow of the memory instance.
     pub fn get_memory_direct_access(&self) -> std::cell::Ref<MemInst> {
         self.mem_inst.borrow()
     }
 }
 
+/// Trait for types that can be loaded/stored from memory.
 pub trait ByteMem: Sized {
+    /// Size in bytes.
     fn len() -> usize;
+    /// Deserialize from little-endian bytes.
     fn from_byte(data: Vec<u8>) -> Self;
+    /// Serialize to little-endian bytes.
     fn to_byte(self) -> Vec<u8>;
 }
 

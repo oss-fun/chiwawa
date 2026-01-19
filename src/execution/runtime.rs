@@ -1,3 +1,5 @@
+//! Runtime core managing execution lifecycle and host function invocation.
+
 use crate::error::RuntimeError;
 use crate::execution::func::{FuncAddr, FuncInst};
 use crate::execution::migration;
@@ -14,6 +16,7 @@ use std::rc::Rc;
 #[cfg(all(target_os = "wasi", target_env = "p1", target_feature = "atomics"))]
 use std::sync::Once;
 
+/// Execution entry point that manages the interpreter loop.
 pub struct Runtime {
     module_inst: Rc<ModuleInst>,
     stacks: Stacks,
@@ -34,6 +37,7 @@ impl Drop for Runtime {
 }
 
 impl Runtime {
+    /// Creates a new runtime for executing a function.
     pub fn new(
         module_inst: Rc<ModuleInst>,
         func_addr: &FuncAddr,
@@ -70,6 +74,9 @@ impl Runtime {
         })
     }
 
+    /// Creates a runtime restored from a checkpoint.
+    ///
+    /// Used to resume execution after restoring state from a checkpoint file.
     pub fn new_restored(
         module_inst: Rc<ModuleInst>,
         stacks: Stacks,
@@ -103,6 +110,7 @@ impl Runtime {
         }
     }
 
+    /// Executes interpreter loop for a specific frame stack.
     fn run_dtc(
         &mut self,
         frame_stack_idx: usize,
@@ -115,6 +123,7 @@ impl Runtime {
         frame_stack.run_dtc_loop(reg_file, called_func_addr, stats_ref, tracer_ref)
     }
 
+    /// Executes the runtime and returns the result values.
     pub fn run(&mut self) -> Result<Vec<Val>, RuntimeError> {
         // Setup checkpoint monitor thread (only for wasm32-wasip1-threads)
         #[cfg(all(
@@ -331,6 +340,7 @@ impl Runtime {
         Ok(vec![])
     }
 
+    /// Calls a WASI function with the given parameters.
     fn call_wasi_function(
         &self,
         func_type: &WasiFuncType,
@@ -941,6 +951,7 @@ impl Runtime {
 }
 
 impl Val {
+    /// Creates a default value for the given WebAssembly type.
     fn default_value(value_type: &ValueType) -> Result<Val, RuntimeError> {
         match value_type {
             ValueType::NumType(NumType::I32) => Ok(Val::Num(Num::I32(0))),

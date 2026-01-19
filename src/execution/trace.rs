@@ -1,3 +1,5 @@
+//! Execution tracing for debugging and instrumentation.
+
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::Path;
@@ -5,6 +7,7 @@ use std::path::Path;
 use super::value::Val;
 use super::vm::*;
 
+/// Event types that can trigger tracing.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TraceEvent {
     All,
@@ -15,6 +18,7 @@ pub enum TraceEvent {
 }
 
 impl TraceEvent {
+    /// Parses trace event from string (case-insensitive).
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "all" => Some(TraceEvent::All),
@@ -27,7 +31,7 @@ impl TraceEvent {
     }
 }
 
-/// Resources to trace
+/// Resources to include in trace output.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TraceResource {
     PC,
@@ -38,6 +42,7 @@ pub enum TraceResource {
 }
 
 impl TraceResource {
+    /// Parses trace resource from string (case-insensitive).
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "pc" => Some(TraceResource::PC),
@@ -50,7 +55,7 @@ impl TraceResource {
     }
 }
 
-/// Trace configuration
+/// Configuration for execution tracing.
 #[derive(Debug, Clone)]
 pub struct TraceConfig {
     pub events: Vec<TraceEvent>,
@@ -59,6 +64,7 @@ pub struct TraceConfig {
 }
 
 impl TraceConfig {
+    /// Creates trace configuration from optional string arguments.
     pub fn new(
         events: Option<Vec<String>>,
         resources: Option<Vec<String>>,
@@ -94,6 +100,7 @@ impl TraceConfig {
         }
     }
 
+    /// Returns true if the given instruction should be traced.
     pub fn should_trace_event(&self, handler_index: usize) -> bool {
         if self.events.contains(&TraceEvent::All) {
             return true;
@@ -135,12 +142,14 @@ impl TraceConfig {
     }
 }
 
+/// Writes execution traces to file or stderr.
 pub struct Tracer {
     config: TraceConfig,
     output: Box<dyn Write>,
 }
 
 impl Tracer {
+    /// Creates a new tracer with the given configuration.
     pub fn new(config: TraceConfig) -> io::Result<Self> {
         let output: Box<dyn Write> = if let Some(ref path) = config.output_path {
             Box::new(File::create(Path::new(path))?)
@@ -151,6 +160,7 @@ impl Tracer {
         Ok(Self { config, output })
     }
 
+    /// Records a single instruction execution to the trace output.
     pub fn trace_instruction(
         &mut self,
         ip: usize,

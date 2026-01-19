@@ -1,3 +1,21 @@
+//! Virtual machine state and execution loop.
+//!
+//! This module contains the core execution machinery including the frame stack,
+//! register file, and instruction dispatch handlers.
+//!
+//! ## Execution State
+//!
+//! The VM maintains execution state through:
+//! - `Stacks`: Runtime execution state
+//! - `Frame`: Individual call frame with program counter and registers
+//! - `RegFile`: Type-specialized register storage
+//!
+//! ## Handler Dispatch
+//!
+//! Instructions are dispatched through a handler table where each instruction
+//! type maps to a specialized handler function. Branch targets are pre-resolved
+//! during parsing to absolute program counter values.
+
 use super::value::*;
 use crate::error::RuntimeError;
 use crate::execution::{
@@ -14,7 +32,7 @@ use lazy_static::lazy_static;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::rc::{Rc, Weak};
 
-// Value source for hybrid approach
+/// Value source for hybrid stack/register approach.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ValueSource {
     Stack,        // Value from stack (default)
@@ -23,7 +41,7 @@ pub enum ValueSource {
     Global(u32),  // Global variable
 }
 
-// Value type for direct operands
+/// Value type for direct operands in optimized instructions.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Value {
     I32(i32),
@@ -33,6 +51,7 @@ pub enum Value {
 }
 
 impl Value {
+    /// Converts to runtime Val type.
     pub fn to_val(&self) -> Val {
         match self {
             Value::I32(v) => Val::Num(Num::I32(*v)),
@@ -43,14 +62,14 @@ impl Value {
     }
 }
 
-// Store target for optimized operations
+/// Store target for optimized memory operations.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum StoreTarget {
     Local(u32),
     Global(u32),
 }
 
-// Unified optimized operand type
+/// Unified optimized operand type for single/double value operations.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum OptimizedOperand {
     // For operations that need 1 value (load, unary operations)
@@ -68,6 +87,7 @@ pub enum OptimizedOperand {
     },
 }
 
+/// Instruction operand variants for DTC execution.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Operand {
     None,
@@ -125,6 +145,7 @@ pub enum I32RegOperand {
     Param(u16), // Read from parameter/local
 }
 
+/// Register-based operand for I64 operations.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum I64RegOperand {
     Reg(u16),
@@ -132,6 +153,7 @@ pub enum I64RegOperand {
     Param(u16),
 }
 
+/// Register-based operand for F32 operations.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum F32RegOperand {
     Reg(u16),
@@ -139,6 +161,7 @@ pub enum F32RegOperand {
     Param(u16),
 }
 
+/// Register-based operand for F64 operations.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum F64RegOperand {
     Reg(u16),
@@ -190,6 +213,7 @@ pub enum I32Op {
     Extend16S,
 }
 
+/// Processed instruction for DTC execution with pre-resolved operands.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProcessedInstr {
     /// Register-based I32 instruction
@@ -388,14 +412,18 @@ impl ProcessedInstr {
     }
 }
 
+/// Module-level instructions that require runtime handling outside the DTC loop.
 #[derive(Clone)]
 pub enum ModuleLevelInstr {
+    /// Return from function.
     Return,
+    /// Invoke WASI function with register-based parameters.
     InvokeWasiReg {
         wasi_func_type: WasiFuncType,
         params: Vec<Val>,        // Parameters read from registers
         result_reg: Option<Reg>, // Register to write result to
     },
+    /// Invoke WebAssembly function with register-based parameters.
     InvokeReg {
         func_addr: FuncAddr,
         params: Vec<Val>,      // Parameters read from registers
@@ -683,6 +711,7 @@ pub struct VMState {
 pub type Stacks = VMState;
 
 impl VMState {
+    /// Creates a new VM state for executing a function with given parameters.
     pub fn new(funcaddr: &FuncAddr, params: Vec<Val>) -> Result<VMState, RuntimeError> {
         let func_inst_guard = funcaddr.read_lock();
         match &*func_inst_guard {
@@ -766,6 +795,7 @@ impl VMState {
     }
 }
 
+/// Call frame containing locals and module reference.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Frame {
     pub locals: Vec<Val>,
@@ -775,6 +805,7 @@ pub struct Frame {
     pub result_reg: Option<crate::execution::regs::Reg>, // Register for return value (register mode only)
 }
 
+/// Activation frame stack with label stacks and execution state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FrameStack {
     pub frame: Frame,
@@ -809,7 +840,7 @@ impl FrameStack {
         }
     }
 
-    /// DTC execution loop
+    /// Main execution loop
     pub fn run_dtc_loop(
         &mut self,
         reg_file: &mut RegFile,
@@ -1625,6 +1656,7 @@ impl FrameStack {
     }
 }
 
+/// Block/loop label with arity and return information.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Label {
     pub locals_num: usize,
@@ -1634,6 +1666,7 @@ pub struct Label {
     pub return_ip: usize,
 }
 
+/// Label stack containing instructions and program counter.
 #[derive(Clone, Debug)]
 pub struct LabelStack {
     pub label: Label,
@@ -1676,6 +1709,7 @@ impl<'de> Deserialize<'de> for LabelStack {
     }
 }
 
+/// Frame-level instructions for block/branch/call handling.
 #[derive(Clone, Debug)]
 pub enum FrameLevelInstr {
     Label(Label, Vec<Instr>),
@@ -1685,6 +1719,7 @@ pub enum FrameLevelInstr {
     Return,
 }
 
+/// Administrative instructions for runtime control flow.
 #[derive(Clone, Debug)]
 pub enum AdminInstr {
     Trap,

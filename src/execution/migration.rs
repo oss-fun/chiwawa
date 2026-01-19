@@ -1,3 +1,21 @@
+//! Checkpoint and restore functionality for live migration.
+//!
+//! This module implements serialization and deserialization of runtime state,
+//! enabling process migration, fault tolerance, and debugging capabilities.
+//!
+//! ## Serializable State
+//!
+//! The checkpoint captures:
+//! - Execution stacks (call frames and register state)
+//! - Linear memory contents
+//! - Global variable values
+//! - Table entries (function references)
+//!
+//! ## Trigger Mechanisms
+//!
+//! - **wasm32-wasip1-threads**: Background thread monitors `checkpoint.trigger` file
+//! - **wasm32-wasip1**: WASI-based file existence check at instruction boundaries
+
 use crate::error::RuntimeError;
 use crate::execution::global::GlobalAddr;
 use crate::execution::mem::MemAddr;
@@ -17,6 +35,9 @@ use std::time::Duration;
 static CHECKPOINT_TRIGGERED: AtomicBool = AtomicBool::new(false);
 const CHECKPOINT_TRIGGER_FILE: &str = "./checkpoint.trigger";
 
+/// Starts background thread to monitor checkpoint trigger file.
+///
+/// Used on `wasm32-wasip1-threads` target for non-blocking checkpoint detection.
 pub fn setup_checkpoint_monitor() {
     thread::spawn(|| loop {
         if std::path::Path::new(CHECKPOINT_TRIGGER_FILE).exists() {
@@ -27,11 +48,15 @@ pub fn setup_checkpoint_monitor() {
     });
 }
 
+/// Checks if checkpoint has been triggered via atomic flag.
 #[inline(always)]
 pub fn check_checkpoint_flag() -> bool {
     CHECKPOINT_TRIGGERED.load(Ordering::Relaxed)
 }
 
+/// Checks for checkpoint trigger via WASI file existence.
+///
+/// Fallback for `wasm32-wasip1` target without thread support.
 pub fn check_checkpoint_trigger(frame: &Frame) -> Result<bool, RuntimeError> {
     if let Some(module) = frame.module.upgrade() {
         if let Some(ref wasi) = module.wasi_impl {
@@ -44,6 +69,13 @@ pub fn check_checkpoint_trigger(frame: &Frame) -> Result<bool, RuntimeError> {
     Ok(false)
 }
 
+/// Complete runtime state for checkpoint serialization.
+///
+/// Contains all information needed to restore execution:
+/// - Call stack and register state
+/// - Linear memory contents
+/// - Global variable values
+/// - Table entries
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SerializableState {
     pub stacks: Stacks,
@@ -52,6 +84,9 @@ pub struct SerializableState {
     pub tables_data: Vec<Vec<Option<u32>>>,
 }
 
+/// Serializes runtime state to a checkpoint file.
+///
+/// Captures memory, globals, tables, and stack state for later restoration.
 pub fn checkpoint<P: AsRef<Path>>(
     module_inst: &ModuleInst,
     stacks: &Stacks,
@@ -120,6 +155,9 @@ pub fn checkpoint<P: AsRef<Path>>(
     Ok(())
 }
 
+/// Restores runtime state from a checkpoint file.
+///
+/// Reads serialized state and restores memory, globals, tables, and stacks.
 pub fn restore<P: AsRef<Path>>(
     module_inst: Rc<ModuleInst>,
     input_path: P,

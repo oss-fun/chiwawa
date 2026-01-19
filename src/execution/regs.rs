@@ -1,8 +1,13 @@
+//! Register file and register allocation for the interpreter.
+//!
+//! Registers are type-specialized (I32, I64, F32, F64, Ref, V128) and managed
+//! per-frame with offset tracking for nested function calls.
+
 use crate::execution::value::{Num, Ref, Val, Vec_};
 use crate::structure::types::*;
 use serde::{Deserialize, Serialize};
 
-/// Type-specialized register identifier
+/// Type-specialized register identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Reg {
     I32(u16),
@@ -247,6 +252,7 @@ impl RegFile {
         self.v128_regs[offset + reg as usize] = val;
     }
 
+    /// Copy value from source register to destination register.
     #[inline(always)]
     pub fn copy_reg(&mut self, src: &Reg, dst: &Reg) {
         match (src, dst) {
@@ -278,6 +284,7 @@ impl RegFile {
         }
     }
 
+    /// Copy values from source registers to destination registers.
     #[inline]
     pub fn copy_regs(&mut self, src_regs: &[Reg], dst_regs: &[Reg]) {
         for (src, dst) in src_regs.iter().zip(dst_regs.iter()) {
@@ -309,6 +316,7 @@ impl RegFile {
         unsafe { (&mut *i32_ptr, &mut *i64_ptr) }
     }
 
+    /// Get both i32 and f32 registers for current frame.
     #[inline(always)]
     pub fn get_i32_and_f32_regs(&mut self) -> (&mut [i32], &mut [f32]) {
         let i32_offset = self.current_offsets().i32_offset as usize;
@@ -318,6 +326,7 @@ impl RegFile {
         unsafe { (&mut *i32_ptr, &mut *f32_ptr) }
     }
 
+    /// Get both i32 and f64 registers for current frame.
     #[inline(always)]
     pub fn get_i32_and_f64_regs(&mut self) -> (&mut [i32], &mut [f64]) {
         let i32_offset = self.current_offsets().i32_offset as usize;
@@ -538,6 +547,7 @@ impl RegAllocator {
         }
     }
 
+    /// Free a register of the given type.
     pub fn free(&mut self, vtype: &ValueType) {
         match vtype {
             ValueType::NumType(NumType::I32) => {

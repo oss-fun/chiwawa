@@ -1,8 +1,11 @@
+//! Instruction execution statistics collection.
+
 use rustc_hash::FxHashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::vm::*;
 
+/// Collects per-instruction execution counts.
 #[derive(Debug)]
 pub struct ExecutionStats {
     total_instructions: AtomicU64,
@@ -10,6 +13,7 @@ pub struct ExecutionStats {
 }
 
 impl ExecutionStats {
+    /// Creates a new statistics collector.
     pub fn new() -> Self {
         Self {
             total_instructions: AtomicU64::new(0),
@@ -17,6 +21,7 @@ impl ExecutionStats {
         }
     }
 
+    /// Records execution of a single instruction by handler index.
     pub fn record_instruction(&mut self, handler_index: usize) {
         self.total_instructions.fetch_add(1, Ordering::Relaxed);
         self.per_instruction
@@ -25,6 +30,7 @@ impl ExecutionStats {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Maps handler index to human-readable instruction name.
     fn get_instruction_name(handler_index: usize) -> &'static str {
         match handler_index {
             // Control Instructions
@@ -262,6 +268,7 @@ impl ExecutionStats {
         }
     }
 
+    /// Prints statistics summary to stderr.
     pub fn report(&self) {
         let total = self.total_instructions.load(Ordering::Relaxed);
 

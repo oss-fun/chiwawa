@@ -1,3 +1,5 @@
+//! Function instances and addresses.
+
 use super::module::*;
 use super::value::{Val, WasiFuncAddr};
 use crate::error::RuntimeError;
@@ -6,9 +8,11 @@ use std::cell::{Ref, RefCell};
 use std::fmt::{self, Debug};
 use std::rc::{Rc, Weak};
 
+/// Reference-counted handle to a function instance.
 #[derive(Clone)]
 pub struct FuncAddr(Rc<RefCell<FuncInst>>);
 
+/// Function instance variants: runtime (Wasm), host, or WASI.
 pub enum FuncInst {
     RuntimeFunc {
         type_: FuncType,
@@ -68,6 +72,7 @@ impl Debug for FuncInst {
 }
 
 impl FuncAddr {
+    /// Allocates a placeholder function (replaced later during instantiation).
     pub fn alloc_empty() -> FuncAddr {
         FuncAddr(Rc::new(RefCell::new(FuncInst::RuntimeFunc {
             type_: FuncType {
@@ -85,6 +90,7 @@ impl FuncAddr {
         })))
     }
 
+    /// Allocates a WASI function instance.
     pub fn alloc_wasi(wasi_func_addr: WasiFuncAddr) -> FuncAddr {
         let func_type = wasi_func_addr.func_type.to_func_type();
         FuncAddr(Rc::new(RefCell::new(FuncInst::WasiFunc {
@@ -93,6 +99,7 @@ impl FuncAddr {
         })))
     }
 
+    /// Replaces placeholder with actual function definition.
     pub fn replace(&self, func: Func, module: Weak<ModuleInst>) {
         let upgraded_module = module.upgrade().expect("Module weak ref expired");
         let func_type = upgraded_module.types.get_by_idx(func.type_.clone()).clone();
@@ -106,6 +113,7 @@ impl FuncAddr {
         *self.0.borrow_mut() = new_inst;
     }
 
+    /// Returns the function's type signature.
     pub fn func_type(&self) -> FuncType {
         match &*self.0.borrow() {
             FuncInst::RuntimeFunc { type_, .. } => type_.clone(),
@@ -114,6 +122,7 @@ impl FuncAddr {
         }
     }
 
+    /// Extracts runtime function details if this is a Wasm function.
     pub fn get_runtime_func_details(&self) -> Option<(FuncType, Weak<ModuleInst>, Func)> {
         match &*self.0.borrow() {
             FuncInst::RuntimeFunc {
@@ -125,6 +134,7 @@ impl FuncAddr {
         }
     }
 
+    /// Extracts host function details if this is a host function.
     pub fn get_host_func_details(
         &self,
     ) -> Option<(
@@ -137,6 +147,7 @@ impl FuncAddr {
         }
     }
 
+    /// Extracts WASI function details if this is a WASI function.
     pub fn get_wasi_func_details(&self) -> Option<(FuncType, WasiFuncAddr)> {
         match &*self.0.borrow() {
             FuncInst::WasiFunc {
@@ -147,10 +158,12 @@ impl FuncAddr {
         }
     }
 
+    /// Returns a borrow of the underlying function instance.
     pub fn read_lock(&self) -> Ref<FuncInst> {
         self.0.borrow()
     }
 
+    /// Returns a reference to the inner Rc.
     pub fn get_rc(&self) -> &Rc<RefCell<FuncInst>> {
         &self.0
     }
