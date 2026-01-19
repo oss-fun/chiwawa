@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Mut","NumType","RefType","ValueType","VecType"],"struct":["BlockType","Byte","DataIdx","ElemIdx","FuncIdx","FuncType","GlobalIdx","GlobalType","LabelIdx","LaneIdx","Limits","LocalIdx","MemIdx","MemType","Name","TableIdx","TableType","TypeIdx"],"trait":["GetIdx"]};

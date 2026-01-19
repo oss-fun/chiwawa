@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Externval","Num","Ref","Val","Vec_"],"struct":["ExternAddr","WasiFuncAddr"]};

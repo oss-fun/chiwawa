@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["IoVec"],"type":["ExitCode","Fd","FileSize","Ptr","Size","Timestamp"]};

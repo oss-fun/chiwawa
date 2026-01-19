@@ -1,0 +1,2 @@
+createSrcSidebar('[["chiwawa",["",[["execution",[],["data.rs","elem.rs","export.rs","func.rs","global.rs","mem.rs","migration.rs","module.rs","regs.rs","runtime.rs","stats.rs","table.rs","trace.rs","value.rs","vm.rs"]],["structure",[],["instructions.rs","module.rs","types.rs"]],["wasi",[],["error.rs","passthrough.rs","types.rs"]]],["error.rs","execution.rs","lib.rs","parser.rs","structure.rs","wasi.rs"]]]]');
+//{"start":19,"fragment_lengths":[389]}

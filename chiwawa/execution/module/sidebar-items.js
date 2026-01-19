@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["ModuleInst"],"trait":["GetInstanceByIdx"],"type":["ImportObjects"]};

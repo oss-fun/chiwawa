@@ -1,0 +1,312 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `src/execution/stats.rs`."><title>stats.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="chiwawa" data-themes="" data-resource-suffix="" data-rustdoc-version="1.95.0-nightly (0a3cd3b6b 2026-01-18)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../../static.files/storage-e2aeef58.js"></script><script defer src="../../../static.files/src-script-813739b1.js"></script><script defer src="../../../src-files.js"></script><script defer src="../../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">chiwawa/execution/</div>stats.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="doccomment">//! Instruction execution statistics collection.
+<a href=#2 id=2 data-nosnippet>2</a>
+<a href=#3 id=3 data-nosnippet>3</a></span><span class="kw">use </span>rustc_hash::FxHashMap;
+<a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>std::sync::atomic::{AtomicU64, Ordering};
+<a href=#5 id=5 data-nosnippet>5</a>
+<a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span><span class="kw">super</span>::vm::<span class="kw-2">*</span>;
+<a href=#7 id=7 data-nosnippet>7</a>
+<a href=#8 id=8 data-nosnippet>8</a><span class="doccomment">/// Collects per-instruction execution counts.
+<a href=#9 id=9 data-nosnippet>9</a></span><span class="attr">#[derive(Debug)]
+<a href=#10 id=10 data-nosnippet>10</a></span><span class="kw">pub struct </span>ExecutionStats {
+<a href=#11 id=11 data-nosnippet>11</a>    total_instructions: AtomicU64,
+<a href=#12 id=12 data-nosnippet>12</a>    per_instruction: FxHashMap&lt;usize, AtomicU64&gt;,
+<a href=#13 id=13 data-nosnippet>13</a>}
+<a href=#14 id=14 data-nosnippet>14</a>
+<a href=#15 id=15 data-nosnippet>15</a><span class="kw">impl </span>ExecutionStats {
+<a href=#16 id=16 data-nosnippet>16</a>    <span class="doccomment">/// Creates a new statistics collector.
+<a href=#17 id=17 data-nosnippet>17</a>    </span><span class="kw">pub fn </span>new() -&gt; <span class="self">Self </span>{
+<a href=#18 id=18 data-nosnippet>18</a>        <span class="self">Self </span>{
+<a href=#19 id=19 data-nosnippet>19</a>            total_instructions: AtomicU64::new(<span class="number">0</span>),
+<a href=#20 id=20 data-nosnippet>20</a>            per_instruction: FxHashMap::default(),
+<a href=#21 id=21 data-nosnippet>21</a>        }
+<a href=#22 id=22 data-nosnippet>22</a>    }
+<a href=#23 id=23 data-nosnippet>23</a>
+<a href=#24 id=24 data-nosnippet>24</a>    <span class="doccomment">/// Records execution of a single instruction by handler index.
+<a href=#25 id=25 data-nosnippet>25</a>    </span><span class="kw">pub fn </span>record_instruction(<span class="kw-2">&amp;mut </span><span class="self">self</span>, handler_index: usize) {
+<a href=#26 id=26 data-nosnippet>26</a>        <span class="self">self</span>.total_instructions.fetch_add(<span class="number">1</span>, Ordering::Relaxed);
+<a href=#27 id=27 data-nosnippet>27</a>        <span class="self">self</span>.per_instruction
+<a href=#28 id=28 data-nosnippet>28</a>            .entry(handler_index)
+<a href=#29 id=29 data-nosnippet>29</a>            .or_insert_with(|| AtomicU64::new(<span class="number">0</span>))
+<a href=#30 id=30 data-nosnippet>30</a>            .fetch_add(<span class="number">1</span>, Ordering::Relaxed);
+<a href=#31 id=31 data-nosnippet>31</a>    }
+<a href=#32 id=32 data-nosnippet>32</a>
+<a href=#33 id=33 data-nosnippet>33</a>    <span class="doccomment">/// Maps handler index to human-readable instruction name.
+<a href=#34 id=34 data-nosnippet>34</a>    </span><span class="kw">fn </span>get_instruction_name(handler_index: usize) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str {
+<a href=#35 id=35 data-nosnippet>35</a>        <span class="kw">match </span>handler_index {
+<a href=#36 id=36 data-nosnippet>36</a>            <span class="comment">// Control Instructions
+<a href=#37 id=37 data-nosnippet>37</a>            </span>HANDLER_IDX_UNREACHABLE =&gt; <span class="string">"unreachable"</span>,
+<a href=#38 id=38 data-nosnippet>38</a>            HANDLER_IDX_NOP =&gt; <span class="string">"nop"</span>,
+<a href=#39 id=39 data-nosnippet>39</a>            HANDLER_IDX_BLOCK =&gt; <span class="string">"block"</span>,
+<a href=#40 id=40 data-nosnippet>40</a>            HANDLER_IDX_LOOP =&gt; <span class="string">"loop"</span>,
+<a href=#41 id=41 data-nosnippet>41</a>            HANDLER_IDX_IF =&gt; <span class="string">"if"</span>,
+<a href=#42 id=42 data-nosnippet>42</a>            HANDLER_IDX_ELSE =&gt; <span class="string">"else"</span>,
+<a href=#43 id=43 data-nosnippet>43</a>            HANDLER_IDX_END =&gt; <span class="string">"end"</span>,
+<a href=#44 id=44 data-nosnippet>44</a>            HANDLER_IDX_BR =&gt; <span class="string">"br"</span>,
+<a href=#45 id=45 data-nosnippet>45</a>            HANDLER_IDX_BR_IF =&gt; <span class="string">"br_if"</span>,
+<a href=#46 id=46 data-nosnippet>46</a>            HANDLER_IDX_BR_TABLE =&gt; <span class="string">"br_table"</span>,
+<a href=#47 id=47 data-nosnippet>47</a>            HANDLER_IDX_RETURN =&gt; <span class="string">"return"</span>,
+<a href=#48 id=48 data-nosnippet>48</a>            HANDLER_IDX_CALL =&gt; <span class="string">"call"</span>,
+<a href=#49 id=49 data-nosnippet>49</a>            HANDLER_IDX_CALL_INDIRECT =&gt; <span class="string">"call_indirect"</span>,
+<a href=#50 id=50 data-nosnippet>50</a>
+<a href=#51 id=51 data-nosnippet>51</a>            <span class="comment">// Parametric Instructions
+<a href=#52 id=52 data-nosnippet>52</a>            </span>HANDLER_IDX_DROP =&gt; <span class="string">"drop"</span>,
+<a href=#53 id=53 data-nosnippet>53</a>            HANDLER_IDX_SELECT =&gt; <span class="string">"select"</span>,
+<a href=#54 id=54 data-nosnippet>54</a>
+<a href=#55 id=55 data-nosnippet>55</a>            <span class="comment">// Variable Instructions
+<a href=#56 id=56 data-nosnippet>56</a>            </span>HANDLER_IDX_LOCAL_GET =&gt; <span class="string">"local.get"</span>,
+<a href=#57 id=57 data-nosnippet>57</a>            HANDLER_IDX_LOCAL_SET =&gt; <span class="string">"local.set"</span>,
+<a href=#58 id=58 data-nosnippet>58</a>            HANDLER_IDX_LOCAL_TEE =&gt; <span class="string">"local.tee"</span>,
+<a href=#59 id=59 data-nosnippet>59</a>            HANDLER_IDX_GLOBAL_GET =&gt; <span class="string">"global.get"</span>,
+<a href=#60 id=60 data-nosnippet>60</a>            HANDLER_IDX_GLOBAL_SET =&gt; <span class="string">"global.set"</span>,
+<a href=#61 id=61 data-nosnippet>61</a>
+<a href=#62 id=62 data-nosnippet>62</a>            <span class="comment">// Memory Instructions
+<a href=#63 id=63 data-nosnippet>63</a>            </span>HANDLER_IDX_I32_LOAD =&gt; <span class="string">"i32.load"</span>,
+<a href=#64 id=64 data-nosnippet>64</a>            HANDLER_IDX_I64_LOAD =&gt; <span class="string">"i64.load"</span>,
+<a href=#65 id=65 data-nosnippet>65</a>            HANDLER_IDX_F32_LOAD =&gt; <span class="string">"f32.load"</span>,
+<a href=#66 id=66 data-nosnippet>66</a>            HANDLER_IDX_F64_LOAD =&gt; <span class="string">"f64.load"</span>,
+<a href=#67 id=67 data-nosnippet>67</a>            HANDLER_IDX_I32_LOAD8_S =&gt; <span class="string">"i32.load8_s"</span>,
+<a href=#68 id=68 data-nosnippet>68</a>            HANDLER_IDX_I32_LOAD8_U =&gt; <span class="string">"i32.load8_u"</span>,
+<a href=#69 id=69 data-nosnippet>69</a>            HANDLER_IDX_I32_LOAD16_S =&gt; <span class="string">"i32.load16_s"</span>,
+<a href=#70 id=70 data-nosnippet>70</a>            HANDLER_IDX_I32_LOAD16_U =&gt; <span class="string">"i32.load16_u"</span>,
+<a href=#71 id=71 data-nosnippet>71</a>            HANDLER_IDX_I64_LOAD8_S =&gt; <span class="string">"i64.load8_s"</span>,
+<a href=#72 id=72 data-nosnippet>72</a>            HANDLER_IDX_I64_LOAD8_U =&gt; <span class="string">"i64.load8_u"</span>,
+<a href=#73 id=73 data-nosnippet>73</a>            HANDLER_IDX_I64_LOAD16_S =&gt; <span class="string">"i64.load16_s"</span>,
+<a href=#74 id=74 data-nosnippet>74</a>            HANDLER_IDX_I64_LOAD16_U =&gt; <span class="string">"i64.load16_u"</span>,
+<a href=#75 id=75 data-nosnippet>75</a>            HANDLER_IDX_I64_LOAD32_S =&gt; <span class="string">"i64.load32_s"</span>,
+<a href=#76 id=76 data-nosnippet>76</a>            HANDLER_IDX_I64_LOAD32_U =&gt; <span class="string">"i64.load32_u"</span>,
+<a href=#77 id=77 data-nosnippet>77</a>            HANDLER_IDX_I32_STORE =&gt; <span class="string">"i32.store"</span>,
+<a href=#78 id=78 data-nosnippet>78</a>            HANDLER_IDX_I64_STORE =&gt; <span class="string">"i64.store"</span>,
+<a href=#79 id=79 data-nosnippet>79</a>            HANDLER_IDX_F32_STORE =&gt; <span class="string">"f32.store"</span>,
+<a href=#80 id=80 data-nosnippet>80</a>            HANDLER_IDX_F64_STORE =&gt; <span class="string">"f64.store"</span>,
+<a href=#81 id=81 data-nosnippet>81</a>            HANDLER_IDX_I32_STORE8 =&gt; <span class="string">"i32.store8"</span>,
+<a href=#82 id=82 data-nosnippet>82</a>            HANDLER_IDX_I32_STORE16 =&gt; <span class="string">"i32.store16"</span>,
+<a href=#83 id=83 data-nosnippet>83</a>            HANDLER_IDX_I64_STORE8 =&gt; <span class="string">"i64.store8"</span>,
+<a href=#84 id=84 data-nosnippet>84</a>            HANDLER_IDX_I64_STORE16 =&gt; <span class="string">"i64.store16"</span>,
+<a href=#85 id=85 data-nosnippet>85</a>            HANDLER_IDX_I64_STORE32 =&gt; <span class="string">"i64.store32"</span>,
+<a href=#86 id=86 data-nosnippet>86</a>            HANDLER_IDX_MEMORY_SIZE =&gt; <span class="string">"memory.size"</span>,
+<a href=#87 id=87 data-nosnippet>87</a>            HANDLER_IDX_MEMORY_GROW =&gt; <span class="string">"memory.grow"</span>,
+<a href=#88 id=88 data-nosnippet>88</a>            HANDLER_IDX_MEMORY_COPY =&gt; <span class="string">"memory.copy"</span>,
+<a href=#89 id=89 data-nosnippet>89</a>            HANDLER_IDX_MEMORY_INIT =&gt; <span class="string">"memory.init"</span>,
+<a href=#90 id=90 data-nosnippet>90</a>            HANDLER_IDX_MEMORY_FILL =&gt; <span class="string">"memory.fill"</span>,
+<a href=#91 id=91 data-nosnippet>91</a>
+<a href=#92 id=92 data-nosnippet>92</a>            <span class="comment">// Const Instructions
+<a href=#93 id=93 data-nosnippet>93</a>            </span>HANDLER_IDX_I32_CONST =&gt; <span class="string">"i32.const"</span>,
+<a href=#94 id=94 data-nosnippet>94</a>            HANDLER_IDX_I64_CONST =&gt; <span class="string">"i64.const"</span>,
+<a href=#95 id=95 data-nosnippet>95</a>            HANDLER_IDX_F32_CONST =&gt; <span class="string">"f32.const"</span>,
+<a href=#96 id=96 data-nosnippet>96</a>            HANDLER_IDX_F64_CONST =&gt; <span class="string">"f64.const"</span>,
+<a href=#97 id=97 data-nosnippet>97</a>
+<a href=#98 id=98 data-nosnippet>98</a>            <span class="comment">// Numeric Instructions - i32
+<a href=#99 id=99 data-nosnippet>99</a>            </span>HANDLER_IDX_I32_EQZ =&gt; <span class="string">"i32.eqz"</span>,
+<a href=#100 id=100 data-nosnippet>100</a>            HANDLER_IDX_I32_EQ =&gt; <span class="string">"i32.eq"</span>,
+<a href=#101 id=101 data-nosnippet>101</a>            HANDLER_IDX_I32_NE =&gt; <span class="string">"i32.ne"</span>,
+<a href=#102 id=102 data-nosnippet>102</a>            HANDLER_IDX_I32_LT_S =&gt; <span class="string">"i32.lt_s"</span>,
+<a href=#103 id=103 data-nosnippet>103</a>            HANDLER_IDX_I32_LT_U =&gt; <span class="string">"i32.lt_u"</span>,
+<a href=#104 id=104 data-nosnippet>104</a>            HANDLER_IDX_I32_GT_S =&gt; <span class="string">"i32.gt_s"</span>,
+<a href=#105 id=105 data-nosnippet>105</a>            HANDLER_IDX_I32_GT_U =&gt; <span class="string">"i32.gt_u"</span>,
+<a href=#106 id=106 data-nosnippet>106</a>            HANDLER_IDX_I32_LE_S =&gt; <span class="string">"i32.le_s"</span>,
+<a href=#107 id=107 data-nosnippet>107</a>            HANDLER_IDX_I32_LE_U =&gt; <span class="string">"i32.le_u"</span>,
+<a href=#108 id=108 data-nosnippet>108</a>            HANDLER_IDX_I32_GE_S =&gt; <span class="string">"i32.ge_s"</span>,
+<a href=#109 id=109 data-nosnippet>109</a>            HANDLER_IDX_I32_GE_U =&gt; <span class="string">"i32.ge_u"</span>,
+<a href=#110 id=110 data-nosnippet>110</a>            HANDLER_IDX_I32_CLZ =&gt; <span class="string">"i32.clz"</span>,
+<a href=#111 id=111 data-nosnippet>111</a>            HANDLER_IDX_I32_CTZ =&gt; <span class="string">"i32.ctz"</span>,
+<a href=#112 id=112 data-nosnippet>112</a>            HANDLER_IDX_I32_POPCNT =&gt; <span class="string">"i32.popcnt"</span>,
+<a href=#113 id=113 data-nosnippet>113</a>            HANDLER_IDX_I32_ADD =&gt; <span class="string">"i32.add"</span>,
+<a href=#114 id=114 data-nosnippet>114</a>            HANDLER_IDX_I32_SUB =&gt; <span class="string">"i32.sub"</span>,
+<a href=#115 id=115 data-nosnippet>115</a>            HANDLER_IDX_I32_MUL =&gt; <span class="string">"i32.mul"</span>,
+<a href=#116 id=116 data-nosnippet>116</a>            HANDLER_IDX_I32_DIV_S =&gt; <span class="string">"i32.div_s"</span>,
+<a href=#117 id=117 data-nosnippet>117</a>            HANDLER_IDX_I32_DIV_U =&gt; <span class="string">"i32.div_u"</span>,
+<a href=#118 id=118 data-nosnippet>118</a>            HANDLER_IDX_I32_REM_S =&gt; <span class="string">"i32.rem_s"</span>,
+<a href=#119 id=119 data-nosnippet>119</a>            HANDLER_IDX_I32_REM_U =&gt; <span class="string">"i32.rem_u"</span>,
+<a href=#120 id=120 data-nosnippet>120</a>            HANDLER_IDX_I32_AND =&gt; <span class="string">"i32.and"</span>,
+<a href=#121 id=121 data-nosnippet>121</a>            HANDLER_IDX_I32_OR =&gt; <span class="string">"i32.or"</span>,
+<a href=#122 id=122 data-nosnippet>122</a>            HANDLER_IDX_I32_XOR =&gt; <span class="string">"i32.xor"</span>,
+<a href=#123 id=123 data-nosnippet>123</a>            HANDLER_IDX_I32_SHL =&gt; <span class="string">"i32.shl"</span>,
+<a href=#124 id=124 data-nosnippet>124</a>            HANDLER_IDX_I32_SHR_S =&gt; <span class="string">"i32.shr_s"</span>,
+<a href=#125 id=125 data-nosnippet>125</a>            HANDLER_IDX_I32_SHR_U =&gt; <span class="string">"i32.shr_u"</span>,
+<a href=#126 id=126 data-nosnippet>126</a>            HANDLER_IDX_I32_ROTL =&gt; <span class="string">"i32.rotl"</span>,
+<a href=#127 id=127 data-nosnippet>127</a>            HANDLER_IDX_I32_ROTR =&gt; <span class="string">"i32.rotr"</span>,
+<a href=#128 id=128 data-nosnippet>128</a>
+<a href=#129 id=129 data-nosnippet>129</a>            <span class="comment">// Numeric Instructions - i64
+<a href=#130 id=130 data-nosnippet>130</a>            </span>HANDLER_IDX_I64_EQZ =&gt; <span class="string">"i64.eqz"</span>,
+<a href=#131 id=131 data-nosnippet>131</a>            HANDLER_IDX_I64_EQ =&gt; <span class="string">"i64.eq"</span>,
+<a href=#132 id=132 data-nosnippet>132</a>            HANDLER_IDX_I64_NE =&gt; <span class="string">"i64.ne"</span>,
+<a href=#133 id=133 data-nosnippet>133</a>            HANDLER_IDX_I64_LT_S =&gt; <span class="string">"i64.lt_s"</span>,
+<a href=#134 id=134 data-nosnippet>134</a>            HANDLER_IDX_I64_LT_U =&gt; <span class="string">"i64.lt_u"</span>,
+<a href=#135 id=135 data-nosnippet>135</a>            HANDLER_IDX_I64_GT_S =&gt; <span class="string">"i64.gt_s"</span>,
+<a href=#136 id=136 data-nosnippet>136</a>            HANDLER_IDX_I64_GT_U =&gt; <span class="string">"i64.gt_u"</span>,
+<a href=#137 id=137 data-nosnippet>137</a>            HANDLER_IDX_I64_LE_S =&gt; <span class="string">"i64.le_s"</span>,
+<a href=#138 id=138 data-nosnippet>138</a>            HANDLER_IDX_I64_LE_U =&gt; <span class="string">"i64.le_u"</span>,
+<a href=#139 id=139 data-nosnippet>139</a>            HANDLER_IDX_I64_GE_S =&gt; <span class="string">"i64.ge_s"</span>,
+<a href=#140 id=140 data-nosnippet>140</a>            HANDLER_IDX_I64_GE_U =&gt; <span class="string">"i64.ge_u"</span>,
+<a href=#141 id=141 data-nosnippet>141</a>            HANDLER_IDX_I64_CLZ =&gt; <span class="string">"i64.clz"</span>,
+<a href=#142 id=142 data-nosnippet>142</a>            HANDLER_IDX_I64_CTZ =&gt; <span class="string">"i64.ctz"</span>,
+<a href=#143 id=143 data-nosnippet>143</a>            HANDLER_IDX_I64_POPCNT =&gt; <span class="string">"i64.popcnt"</span>,
+<a href=#144 id=144 data-nosnippet>144</a>            HANDLER_IDX_I64_ADD =&gt; <span class="string">"i64.add"</span>,
+<a href=#145 id=145 data-nosnippet>145</a>            HANDLER_IDX_I64_SUB =&gt; <span class="string">"i64.sub"</span>,
+<a href=#146 id=146 data-nosnippet>146</a>            HANDLER_IDX_I64_MUL =&gt; <span class="string">"i64.mul"</span>,
+<a href=#147 id=147 data-nosnippet>147</a>            HANDLER_IDX_I64_DIV_S =&gt; <span class="string">"i64.div_s"</span>,
+<a href=#148 id=148 data-nosnippet>148</a>            HANDLER_IDX_I64_DIV_U =&gt; <span class="string">"i64.div_u"</span>,
+<a href=#149 id=149 data-nosnippet>149</a>            HANDLER_IDX_I64_REM_S =&gt; <span class="string">"i64.rem_s"</span>,
+<a href=#150 id=150 data-nosnippet>150</a>            HANDLER_IDX_I64_REM_U =&gt; <span class="string">"i64.rem_u"</span>,
+<a href=#151 id=151 data-nosnippet>151</a>            HANDLER_IDX_I64_AND =&gt; <span class="string">"i64.and"</span>,
+<a href=#152 id=152 data-nosnippet>152</a>            HANDLER_IDX_I64_OR =&gt; <span class="string">"i64.or"</span>,
+<a href=#153 id=153 data-nosnippet>153</a>            HANDLER_IDX_I64_XOR =&gt; <span class="string">"i64.xor"</span>,
+<a href=#154 id=154 data-nosnippet>154</a>            HANDLER_IDX_I64_SHL =&gt; <span class="string">"i64.shl"</span>,
+<a href=#155 id=155 data-nosnippet>155</a>            HANDLER_IDX_I64_SHR_S =&gt; <span class="string">"i64.shr_s"</span>,
+<a href=#156 id=156 data-nosnippet>156</a>            HANDLER_IDX_I64_SHR_U =&gt; <span class="string">"i64.shr_u"</span>,
+<a href=#157 id=157 data-nosnippet>157</a>            HANDLER_IDX_I64_ROTL =&gt; <span class="string">"i64.rotl"</span>,
+<a href=#158 id=158 data-nosnippet>158</a>            HANDLER_IDX_I64_ROTR =&gt; <span class="string">"i64.rotr"</span>,
+<a href=#159 id=159 data-nosnippet>159</a>
+<a href=#160 id=160 data-nosnippet>160</a>            <span class="comment">// Numeric Instructions - f32
+<a href=#161 id=161 data-nosnippet>161</a>            </span>HANDLER_IDX_F32_EQ =&gt; <span class="string">"f32.eq"</span>,
+<a href=#162 id=162 data-nosnippet>162</a>            HANDLER_IDX_F32_NE =&gt; <span class="string">"f32.ne"</span>,
+<a href=#163 id=163 data-nosnippet>163</a>            HANDLER_IDX_F32_LT =&gt; <span class="string">"f32.lt"</span>,
+<a href=#164 id=164 data-nosnippet>164</a>            HANDLER_IDX_F32_GT =&gt; <span class="string">"f32.gt"</span>,
+<a href=#165 id=165 data-nosnippet>165</a>            HANDLER_IDX_F32_LE =&gt; <span class="string">"f32.le"</span>,
+<a href=#166 id=166 data-nosnippet>166</a>            HANDLER_IDX_F32_GE =&gt; <span class="string">"f32.ge"</span>,
+<a href=#167 id=167 data-nosnippet>167</a>            HANDLER_IDX_F32_ABS =&gt; <span class="string">"f32.abs"</span>,
+<a href=#168 id=168 data-nosnippet>168</a>            HANDLER_IDX_F32_NEG =&gt; <span class="string">"f32.neg"</span>,
+<a href=#169 id=169 data-nosnippet>169</a>            HANDLER_IDX_F32_CEIL =&gt; <span class="string">"f32.ceil"</span>,
+<a href=#170 id=170 data-nosnippet>170</a>            HANDLER_IDX_F32_FLOOR =&gt; <span class="string">"f32.floor"</span>,
+<a href=#171 id=171 data-nosnippet>171</a>            HANDLER_IDX_F32_TRUNC =&gt; <span class="string">"f32.trunc"</span>,
+<a href=#172 id=172 data-nosnippet>172</a>            HANDLER_IDX_F32_NEAREST =&gt; <span class="string">"f32.nearest"</span>,
+<a href=#173 id=173 data-nosnippet>173</a>            HANDLER_IDX_F32_SQRT =&gt; <span class="string">"f32.sqrt"</span>,
+<a href=#174 id=174 data-nosnippet>174</a>            HANDLER_IDX_F32_ADD =&gt; <span class="string">"f32.add"</span>,
+<a href=#175 id=175 data-nosnippet>175</a>            HANDLER_IDX_F32_SUB =&gt; <span class="string">"f32.sub"</span>,
+<a href=#176 id=176 data-nosnippet>176</a>            HANDLER_IDX_F32_MUL =&gt; <span class="string">"f32.mul"</span>,
+<a href=#177 id=177 data-nosnippet>177</a>            HANDLER_IDX_F32_DIV =&gt; <span class="string">"f32.div"</span>,
+<a href=#178 id=178 data-nosnippet>178</a>            HANDLER_IDX_F32_MIN =&gt; <span class="string">"f32.min"</span>,
+<a href=#179 id=179 data-nosnippet>179</a>            HANDLER_IDX_F32_MAX =&gt; <span class="string">"f32.max"</span>,
+<a href=#180 id=180 data-nosnippet>180</a>            HANDLER_IDX_F32_COPYSIGN =&gt; <span class="string">"f32.copysign"</span>,
+<a href=#181 id=181 data-nosnippet>181</a>
+<a href=#182 id=182 data-nosnippet>182</a>            <span class="comment">// Numeric Instructions - f64
+<a href=#183 id=183 data-nosnippet>183</a>            </span>HANDLER_IDX_F64_EQ =&gt; <span class="string">"f64.eq"</span>,
+<a href=#184 id=184 data-nosnippet>184</a>            HANDLER_IDX_F64_NE =&gt; <span class="string">"f64.ne"</span>,
+<a href=#185 id=185 data-nosnippet>185</a>            HANDLER_IDX_F64_LT =&gt; <span class="string">"f64.lt"</span>,
+<a href=#186 id=186 data-nosnippet>186</a>            HANDLER_IDX_F64_GT =&gt; <span class="string">"f64.gt"</span>,
+<a href=#187 id=187 data-nosnippet>187</a>            HANDLER_IDX_F64_LE =&gt; <span class="string">"f64.le"</span>,
+<a href=#188 id=188 data-nosnippet>188</a>            HANDLER_IDX_F64_GE =&gt; <span class="string">"f64.ge"</span>,
+<a href=#189 id=189 data-nosnippet>189</a>            HANDLER_IDX_F64_ABS =&gt; <span class="string">"f64.abs"</span>,
+<a href=#190 id=190 data-nosnippet>190</a>            HANDLER_IDX_F64_NEG =&gt; <span class="string">"f64.neg"</span>,
+<a href=#191 id=191 data-nosnippet>191</a>            HANDLER_IDX_F64_CEIL =&gt; <span class="string">"f64.ceil"</span>,
+<a href=#192 id=192 data-nosnippet>192</a>            HANDLER_IDX_F64_FLOOR =&gt; <span class="string">"f64.floor"</span>,
+<a href=#193 id=193 data-nosnippet>193</a>            HANDLER_IDX_F64_TRUNC =&gt; <span class="string">"f64.trunc"</span>,
+<a href=#194 id=194 data-nosnippet>194</a>            HANDLER_IDX_F64_NEAREST =&gt; <span class="string">"f64.nearest"</span>,
+<a href=#195 id=195 data-nosnippet>195</a>            HANDLER_IDX_F64_SQRT =&gt; <span class="string">"f64.sqrt"</span>,
+<a href=#196 id=196 data-nosnippet>196</a>            HANDLER_IDX_F64_ADD =&gt; <span class="string">"f64.add"</span>,
+<a href=#197 id=197 data-nosnippet>197</a>            HANDLER_IDX_F64_SUB =&gt; <span class="string">"f64.sub"</span>,
+<a href=#198 id=198 data-nosnippet>198</a>            HANDLER_IDX_F64_MUL =&gt; <span class="string">"f64.mul"</span>,
+<a href=#199 id=199 data-nosnippet>199</a>            HANDLER_IDX_F64_DIV =&gt; <span class="string">"f64.div"</span>,
+<a href=#200 id=200 data-nosnippet>200</a>            HANDLER_IDX_F64_MIN =&gt; <span class="string">"f64.min"</span>,
+<a href=#201 id=201 data-nosnippet>201</a>            HANDLER_IDX_F64_MAX =&gt; <span class="string">"f64.max"</span>,
+<a href=#202 id=202 data-nosnippet>202</a>            HANDLER_IDX_F64_COPYSIGN =&gt; <span class="string">"f64.copysign"</span>,
+<a href=#203 id=203 data-nosnippet>203</a>
+<a href=#204 id=204 data-nosnippet>204</a>            <span class="comment">// Conversion Instructions
+<a href=#205 id=205 data-nosnippet>205</a>            </span>HANDLER_IDX_I32_WRAP_I64 =&gt; <span class="string">"i32.wrap_i64"</span>,
+<a href=#206 id=206 data-nosnippet>206</a>            HANDLER_IDX_I32_TRUNC_F32_S =&gt; <span class="string">"i32.trunc_f32_s"</span>,
+<a href=#207 id=207 data-nosnippet>207</a>            HANDLER_IDX_I32_TRUNC_F32_U =&gt; <span class="string">"i32.trunc_f32_u"</span>,
+<a href=#208 id=208 data-nosnippet>208</a>            HANDLER_IDX_I32_TRUNC_F64_S =&gt; <span class="string">"i32.trunc_f64_s"</span>,
+<a href=#209 id=209 data-nosnippet>209</a>            HANDLER_IDX_I32_TRUNC_F64_U =&gt; <span class="string">"i32.trunc_f64_u"</span>,
+<a href=#210 id=210 data-nosnippet>210</a>            HANDLER_IDX_I64_EXTEND_I32_S =&gt; <span class="string">"i64.extend_i32_s"</span>,
+<a href=#211 id=211 data-nosnippet>211</a>            HANDLER_IDX_I64_EXTEND_I32_U =&gt; <span class="string">"i64.extend_i32_u"</span>,
+<a href=#212 id=212 data-nosnippet>212</a>            HANDLER_IDX_I64_TRUNC_F32_S =&gt; <span class="string">"i64.trunc_f32_s"</span>,
+<a href=#213 id=213 data-nosnippet>213</a>            HANDLER_IDX_I64_TRUNC_F32_U =&gt; <span class="string">"i64.trunc_f32_u"</span>,
+<a href=#214 id=214 data-nosnippet>214</a>            HANDLER_IDX_I64_TRUNC_F64_S =&gt; <span class="string">"i64.trunc_f64_s"</span>,
+<a href=#215 id=215 data-nosnippet>215</a>            HANDLER_IDX_I64_TRUNC_F64_U =&gt; <span class="string">"i64.trunc_f64_u"</span>,
+<a href=#216 id=216 data-nosnippet>216</a>            HANDLER_IDX_F32_CONVERT_I32_S =&gt; <span class="string">"f32.convert_i32_s"</span>,
+<a href=#217 id=217 data-nosnippet>217</a>            HANDLER_IDX_F32_CONVERT_I32_U =&gt; <span class="string">"f32.convert_i32_u"</span>,
+<a href=#218 id=218 data-nosnippet>218</a>            HANDLER_IDX_F32_CONVERT_I64_S =&gt; <span class="string">"f32.convert_i64_s"</span>,
+<a href=#219 id=219 data-nosnippet>219</a>            HANDLER_IDX_F32_CONVERT_I64_U =&gt; <span class="string">"f32.convert_i64_u"</span>,
+<a href=#220 id=220 data-nosnippet>220</a>            HANDLER_IDX_F32_DEMOTE_F64 =&gt; <span class="string">"f32.demote_f64"</span>,
+<a href=#221 id=221 data-nosnippet>221</a>            HANDLER_IDX_F64_CONVERT_I32_S =&gt; <span class="string">"f64.convert_i32_s"</span>,
+<a href=#222 id=222 data-nosnippet>222</a>            HANDLER_IDX_F64_CONVERT_I32_U =&gt; <span class="string">"f64.convert_i32_u"</span>,
+<a href=#223 id=223 data-nosnippet>223</a>            HANDLER_IDX_F64_CONVERT_I64_S =&gt; <span class="string">"f64.convert_i64_s"</span>,
+<a href=#224 id=224 data-nosnippet>224</a>            HANDLER_IDX_F64_CONVERT_I64_U =&gt; <span class="string">"f64.convert_i64_u"</span>,
+<a href=#225 id=225 data-nosnippet>225</a>            HANDLER_IDX_F64_PROMOTE_F32 =&gt; <span class="string">"f64.promote_f32"</span>,
+<a href=#226 id=226 data-nosnippet>226</a>            HANDLER_IDX_I32_REINTERPRET_F32 =&gt; <span class="string">"i32.reinterpret_f32"</span>,
+<a href=#227 id=227 data-nosnippet>227</a>            HANDLER_IDX_I64_REINTERPRET_F64 =&gt; <span class="string">"i64.reinterpret_f64"</span>,
+<a href=#228 id=228 data-nosnippet>228</a>            HANDLER_IDX_F32_REINTERPRET_I32 =&gt; <span class="string">"f32.reinterpret_i32"</span>,
+<a href=#229 id=229 data-nosnippet>229</a>            HANDLER_IDX_F64_REINTERPRET_I64 =&gt; <span class="string">"f64.reinterpret_i64"</span>,
+<a href=#230 id=230 data-nosnippet>230</a>
+<a href=#231 id=231 data-nosnippet>231</a>            <span class="comment">// Sign Extension Instructions
+<a href=#232 id=232 data-nosnippet>232</a>            </span>HANDLER_IDX_I32_EXTEND8_S =&gt; <span class="string">"i32.extend8_s"</span>,
+<a href=#233 id=233 data-nosnippet>233</a>            HANDLER_IDX_I32_EXTEND16_S =&gt; <span class="string">"i32.extend16_s"</span>,
+<a href=#234 id=234 data-nosnippet>234</a>            HANDLER_IDX_I64_EXTEND8_S =&gt; <span class="string">"i64.extend8_s"</span>,
+<a href=#235 id=235 data-nosnippet>235</a>            HANDLER_IDX_I64_EXTEND16_S =&gt; <span class="string">"i64.extend16_s"</span>,
+<a href=#236 id=236 data-nosnippet>236</a>            HANDLER_IDX_I64_EXTEND32_S =&gt; <span class="string">"i64.extend32_s"</span>,
+<a href=#237 id=237 data-nosnippet>237</a>
+<a href=#238 id=238 data-nosnippet>238</a>            <span class="comment">// Saturating Truncation Instructions
+<a href=#239 id=239 data-nosnippet>239</a>            </span>HANDLER_IDX_I32_TRUNC_SAT_F32_S =&gt; <span class="string">"i32.trunc_sat_f32_s"</span>,
+<a href=#240 id=240 data-nosnippet>240</a>            HANDLER_IDX_I32_TRUNC_SAT_F32_U =&gt; <span class="string">"i32.trunc_sat_f32_u"</span>,
+<a href=#241 id=241 data-nosnippet>241</a>            HANDLER_IDX_I32_TRUNC_SAT_F64_S =&gt; <span class="string">"i32.trunc_sat_f64_s"</span>,
+<a href=#242 id=242 data-nosnippet>242</a>            HANDLER_IDX_I32_TRUNC_SAT_F64_U =&gt; <span class="string">"i32.trunc_sat_f64_u"</span>,
+<a href=#243 id=243 data-nosnippet>243</a>            HANDLER_IDX_I64_TRUNC_SAT_F32_S =&gt; <span class="string">"i64.trunc_sat_f32_s"</span>,
+<a href=#244 id=244 data-nosnippet>244</a>            HANDLER_IDX_I64_TRUNC_SAT_F32_U =&gt; <span class="string">"i64.trunc_sat_f32_u"</span>,
+<a href=#245 id=245 data-nosnippet>245</a>            HANDLER_IDX_I64_TRUNC_SAT_F64_S =&gt; <span class="string">"i64.trunc_sat_f64_s"</span>,
+<a href=#246 id=246 data-nosnippet>246</a>            HANDLER_IDX_I64_TRUNC_SAT_F64_U =&gt; <span class="string">"i64.trunc_sat_f64_u"</span>,
+<a href=#247 id=247 data-nosnippet>247</a>
+<a href=#248 id=248 data-nosnippet>248</a>            <span class="comment">// Reference Instructions
+<a href=#249 id=249 data-nosnippet>249</a>            </span>HANDLER_IDX_REF_NULL =&gt; <span class="string">"ref.null"</span>,
+<a href=#250 id=250 data-nosnippet>250</a>            HANDLER_IDX_REF_IS_NULL =&gt; <span class="string">"ref.is_null"</span>,
+<a href=#251 id=251 data-nosnippet>251</a>
+<a href=#252 id=252 data-nosnippet>252</a>            <span class="comment">// Table Instructions
+<a href=#253 id=253 data-nosnippet>253</a>            </span>HANDLER_IDX_TABLE_GET =&gt; <span class="string">"table.get"</span>,
+<a href=#254 id=254 data-nosnippet>254</a>            HANDLER_IDX_TABLE_SET =&gt; <span class="string">"table.set"</span>,
+<a href=#255 id=255 data-nosnippet>255</a>            HANDLER_IDX_TABLE_FILL =&gt; <span class="string">"table.fill"</span>,
+<a href=#256 id=256 data-nosnippet>256</a>
+<a href=#257 id=257 data-nosnippet>257</a>            <span class="comment">// Reserved/Unsupported ranges
+<a href=#258 id=258 data-nosnippet>258</a>            </span><span class="number">0x06</span>..=<span class="number">0x0A </span>=&gt; <span class="string">"reserved"</span>, <span class="comment">// Exception handling (unsupported)
+<a href=#259 id=259 data-nosnippet>259</a>            </span><span class="number">0x12</span>..=<span class="number">0x19 </span>=&gt; <span class="string">"reserved"</span>, <span class="comment">// Reserved opcodes
+<a href=#260 id=260 data-nosnippet>260</a>            </span><span class="number">0x1D</span>..=<span class="number">0x1F </span>=&gt; <span class="string">"reserved"</span>, <span class="comment">// Reserved opcodes
+<a href=#261 id=261 data-nosnippet>261</a>            </span><span class="number">0x25</span>..=<span class="number">0x27 </span>=&gt; <span class="string">"reserved"</span>, <span class="comment">// Old table ops/reserved
+<a href=#262 id=262 data-nosnippet>262</a>            </span><span class="number">0xD2</span>..=<span class="number">0xDF </span>=&gt; <span class="string">"reserved"</span>, <span class="comment">// Reserved range (includes unsupported ref.func)
+<a href=#263 id=263 data-nosnippet>263</a>            </span><span class="number">0xE3</span>..=<span class="number">0xFB </span>=&gt; <span class="string">"reserved"</span>, <span class="comment">// Reserved range
+<a href=#264 id=264 data-nosnippet>264</a>            </span><span class="number">0xFD </span>=&gt; <span class="string">"simd"</span>,            <span class="comment">// SIMD prefix (unsupported)
+<a href=#265 id=265 data-nosnippet>265</a>            </span><span class="number">0xFE </span>=&gt; <span class="string">"threads"</span>,         <span class="comment">// Thread operations (unsupported)
+<a href=#266 id=266 data-nosnippet>266</a>            </span><span class="number">0xFF </span>=&gt; <span class="string">"reserved"</span>,        <span class="comment">// Reserved prefix
+<a href=#267 id=267 data-nosnippet>267</a>            </span><span class="kw">_ </span>=&gt; <span class="string">"invalid_handler"</span>,
+<a href=#268 id=268 data-nosnippet>268</a>        }
+<a href=#269 id=269 data-nosnippet>269</a>    }
+<a href=#270 id=270 data-nosnippet>270</a>
+<a href=#271 id=271 data-nosnippet>271</a>    <span class="doccomment">/// Prints statistics summary to stderr.
+<a href=#272 id=272 data-nosnippet>272</a>    </span><span class="kw">pub fn </span>report(<span class="kw-2">&amp;</span><span class="self">self</span>) {
+<a href=#273 id=273 data-nosnippet>273</a>        <span class="kw">let </span>total = <span class="self">self</span>.total_instructions.load(Ordering::Relaxed);
+<a href=#274 id=274 data-nosnippet>274</a>
+<a href=#275 id=275 data-nosnippet>275</a>        <span class="macro">eprintln!</span>(<span class="string">"=== Execution Statistics ==="</span>);
+<a href=#276 id=276 data-nosnippet>276</a>        <span class="macro">eprintln!</span>(<span class="string">"Total instructions executed: {}"</span>, total);
+<a href=#277 id=277 data-nosnippet>277</a>
+<a href=#278 id=278 data-nosnippet>278</a>        <span class="kw">if </span>total == <span class="number">0 </span>{
+<a href=#279 id=279 data-nosnippet>279</a>            <span class="macro">eprintln!</span>(<span class="string">"======================="</span>);
+<a href=#280 id=280 data-nosnippet>280</a>            <span class="kw">return</span>;
+<a href=#281 id=281 data-nosnippet>281</a>        }
+<a href=#282 id=282 data-nosnippet>282</a>
+<a href=#283 id=283 data-nosnippet>283</a>        <span class="comment">// Collect and sort instruction counts
+<a href=#284 id=284 data-nosnippet>284</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>counts: Vec&lt;(usize, u64)&gt; = <span class="self">self
+<a href=#285 id=285 data-nosnippet>285</a>            </span>.per_instruction
+<a href=#286 id=286 data-nosnippet>286</a>            .iter()
+<a href=#287 id=287 data-nosnippet>287</a>            .map(|(idx, count)| (<span class="kw-2">*</span>idx, count.load(Ordering::Relaxed)))
+<a href=#288 id=288 data-nosnippet>288</a>            .collect();
+<a href=#289 id=289 data-nosnippet>289</a>
+<a href=#290 id=290 data-nosnippet>290</a>        counts.sort_by(|a, b| b.<span class="number">1</span>.cmp(<span class="kw-2">&amp;</span>a.<span class="number">1</span>));
+<a href=#291 id=291 data-nosnippet>291</a>
+<a href=#292 id=292 data-nosnippet>292</a>        <span class="macro">eprintln!</span>(<span class="string">"\nTop Instructions:"</span>);
+<a href=#293 id=293 data-nosnippet>293</a>        <span class="kw">let </span>top_n = <span class="number">20</span>.min(counts.len());
+<a href=#294 id=294 data-nosnippet>294</a>        <span class="kw">for </span>(idx, count) <span class="kw">in </span>counts.iter().take(top_n) {
+<a href=#295 id=295 data-nosnippet>295</a>            <span class="kw">let </span>name = <span class="self">Self</span>::get_instruction_name(<span class="kw-2">*</span>idx);
+<a href=#296 id=296 data-nosnippet>296</a>            <span class="kw">let </span>percentage = (<span class="kw-2">*</span>count <span class="kw">as </span>f64 / total <span class="kw">as </span>f64) * <span class="number">100.0</span>;
+<a href=#297 id=297 data-nosnippet>297</a>            <span class="macro">eprintln!</span>(
+<a href=#298 id=298 data-nosnippet>298</a>                <span class="string">"  {:25} {:12} ({:5.1}%)"</span>,
+<a href=#299 id=299 data-nosnippet>299</a>                <span class="macro">format!</span>(<span class="string">"{}:"</span>, name),
+<a href=#300 id=300 data-nosnippet>300</a>                count,
+<a href=#301 id=301 data-nosnippet>301</a>                percentage
+<a href=#302 id=302 data-nosnippet>302</a>            );
+<a href=#303 id=303 data-nosnippet>303</a>        }
+<a href=#304 id=304 data-nosnippet>304</a>
+<a href=#305 id=305 data-nosnippet>305</a>        <span class="kw">if </span>counts.len() &gt; top_n {
+<a href=#306 id=306 data-nosnippet>306</a>            <span class="macro">eprintln!</span>(<span class="string">"  ... and {} more"</span>, counts.len() - top_n);
+<a href=#307 id=307 data-nosnippet>307</a>        }
+<a href=#308 id=308 data-nosnippet>308</a>
+<a href=#309 id=309 data-nosnippet>309</a>        <span class="macro">eprintln!</span>(<span class="string">"======================="</span>);
+<a href=#310 id=310 data-nosnippet>310</a>    }
+<a href=#311 id=311 data-nosnippet>311</a>}
+</code></pre></div></section></main></body></html>
