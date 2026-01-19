@@ -1,16 +1,25 @@
+//! Passthrough WASI implementation delegating to host wasi-libc.
+//!
+//! This module implements WASI Preview 1 functions by calling the corresponding
+//! `__wasi_*` functions from the host's wasi-libc. This avoids duplicating
+//! WASI implementation logic and ensures correct behavior on any WASI-compliant host.
+//!
+//! Each public method on [`PassthroughWasiImpl`] corresponds to a WASI function
+//! and translates between guest memory addresses and host pointers.
+
 use super::*;
 use crate::execution::mem::MemAddr;
 use crate::structure::instructions::Memarg;
 use WasiError;
 
-/// WASI iovec structure that matches wasi-libc layout
+/// WASI iovec structure that matches wasi-libc layout.
 #[repr(C)]
 struct WasiIovec {
     buf: *const u8,
     buf_len: u32,
 }
 
-// External links to wasi-libc functions
+// External declarations for wasi-libc functions
 extern "C" {
     fn __wasi_fd_write(fd: u32, iovs: *const WasiIovec, iovs_len: u32, nwritten: *mut u32) -> u16;
     fn __wasi_args_sizes_get(argc: *mut u32, argv_buf_size: *mut u32) -> u16;
@@ -129,7 +138,11 @@ extern "C" {
     fn __wasi_sock_shutdown(fd: u32, how: u32) -> u16;
 }
 
-/// Passthrough WASI implementation that delegates to host runtime via wasi-libc
+/// Passthrough WASI implementation that delegates to host runtime via wasi-libc.
+///
+/// This struct holds state needed for WASI operations (such as command-line arguments)
+/// and provides methods for each WASI Preview 1 function. Each method reads from or
+/// writes to guest linear memory and calls the corresponding `__wasi_*` function.
 pub struct PassthroughWasiImpl {
     argv: Vec<String>,
 }

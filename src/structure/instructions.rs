@@ -1,9 +1,30 @@
+//! WebAssembly instruction definitions.
+//!
+//! This module defines the [`Instr`] enum representing all WebAssembly instructions
+//! supported by Chiwawa.
+//!
+//! ## Instruction Categories
+//!
+//! - **Numeric**: Arithmetic, comparison, and conversion operations
+//! - **Vector (SIMD)**: 128-bit vector operations
+//! - **Reference**: `ref.null`, `ref.is_null`, `ref.func`
+//! - **Parametric**: `drop`, `select`
+//! - **Variable**: Local and global variable access
+//! - **Memory**: Load, store, and memory management
+//! - **Control**: Blocks, branches, calls, and returns
+
 use crate::structure::types::*;
 use serde::{Deserialize, Serialize};
 
+/// A sequence of instructions forming an expression.
+///
+/// Used for initialization expressions in globals, element segments, and data segments.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Expr(pub Vec<Instr>);
 
+/// WebAssembly instruction.
+///
+/// Represents all instructions defined in the WebAssembly specification.
 #[derive(Debug, PartialEq, Clone)]
 pub enum Instr {
     /* Numeric Instructions */
@@ -440,8 +461,13 @@ pub enum Instr {
     EndMarker,
 }
 
+/// Memory access arguments for load/store instructions.
+///
+/// Specifies alignment and offset for memory operations
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Memarg {
+    /// Static offset added to the dynamic address.
     pub offset: u32,
+    /// Alignment hint
     pub align: u32,
 }

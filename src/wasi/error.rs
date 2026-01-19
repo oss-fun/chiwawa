@@ -1,7 +1,17 @@
+//! WASI error codes and handling.
+//!
+//! This module defines WASI Preview 1 error codes as the [`WasiError`] enum,
+//! with conversions to and from errno values.
+
 use thiserror::Error;
 
+/// Result type for WASI operations.
 pub type WasiResult<T> = Result<T, WasiError>;
 
+/// WASI Preview 1 error codes.
+///
+/// Each variant corresponds to a WASI errno value. The `to_errno()` and
+/// `from_errno()` methods convert between the enum and numeric representations.
 #[derive(Error, Debug, Clone)]
 pub enum WasiError {
     #[error("Success")]

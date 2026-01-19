@@ -1,9 +1,29 @@
+//! WebAssembly module structure definitions.
+//!
+//! This module defines the structure of a parsed WebAssembly module, including
+//! functions, tables, memories, globals, and imports/exports.
+//!
+//! ## Module Components
+//!
+//! A WebAssembly module consists of:
+//! - **Types**: Function signatures shared across the module
+//! - **Functions**: Code with local variables and a type reference
+//! - **Tables**: Collections of function references for indirect calls
+//! - **Memories**: Linear memory regions
+//! - **Globals**: Global variables
+//! - **Elements**: Table initialization data
+//! - **Data**: Memory initialization data
+//! - **Imports/Exports**: Module interface
+
 use crate::execution::regs::Reg;
 use crate::execution::vm::ProcessedInstr;
 use crate::structure::instructions::*;
 use crate::structure::types::*;
 use std::rc::Rc;
 
+/// Function definition within a module.
+///
+/// Contains the type signature, local variables, and preprocessed instruction body.
 #[derive(Clone, Debug)]
 pub struct Func {
     pub type_: TypeIdx,
@@ -13,22 +33,26 @@ pub struct Func {
     pub result_reg: Option<Reg>, // Register for return value (register mode only)
 }
 
+/// Table definition.
 #[derive(Clone)]
 pub struct Table {
     pub type_: TableType,
 }
 
+/// Memory definition.
 #[derive(Clone)]
 pub struct Mem {
     pub type_: MemType,
 }
 
+/// Global variable definition.
 #[derive(Clone)]
 pub struct Global {
     pub type_: GlobalType,
     pub init: Expr,
 }
 
+/// Element segment for table initialization.
 pub struct Elem {
     pub type_: RefType,
     pub init: Option<Vec<Expr>>,
@@ -38,6 +62,7 @@ pub struct Elem {
     pub offset: Option<Expr>,
 }
 
+/// Element segment mode.
 #[derive(Debug, PartialEq)]
 pub enum ElemMode {
     Passive,
@@ -45,6 +70,7 @@ pub enum ElemMode {
     Declarative,
 }
 
+/// Data segment for memory initialization.
 pub struct Data {
     pub init: Vec<Byte>,
     pub mode: DataMode,
@@ -52,21 +78,26 @@ pub struct Data {
     pub offset: Option<Expr>,
 }
 
+/// Data segment mode.
 #[derive(Debug, PartialEq)]
 pub enum DataMode {
     Passive,
     Active,
 }
+
+/// Start function specification.
 pub struct Start {
     pub func: FuncIdx,
 }
 
+/// Import declaration.
 pub struct Import {
     pub module: Name,
     pub name: Name,
     pub desc: ImportDesc,
 }
 
+/// Import descriptor specifying what is being imported.
 #[derive(PartialEq, Debug)]
 pub enum ImportDesc {
     Func(TypeIdx),
@@ -76,6 +107,7 @@ pub enum ImportDesc {
     WasiFunc(WasiFuncType),
 }
 
+/// WASI function types for passthrough implementation.
 #[derive(PartialEq, Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum WasiFuncType {
     ProcExit,
@@ -515,11 +547,13 @@ impl WasiFuncType {
     }
 }
 
+/// Export declaration.
 pub struct Export {
     pub name: Name,
     pub desc: ExportDesc,
 }
 
+/// Export descriptor specifying what is being exported.
 #[derive(Clone)]
 pub enum ExportDesc {
     Func(FuncIdx),
@@ -528,19 +562,34 @@ pub enum ExportDesc {
     Global(GlobalIdx),
 }
 
+/// A parsed WebAssembly module.
+///
+/// Contains all sections of a WebAssembly module after parsing and preprocessing.
 pub struct Module {
     _name: String,
+    /// Function type signatures.
     pub types: Rc<Vec<FuncType>>,
+    /// Function definitions (including imported functions).
     pub funcs: Vec<Func>,
+    /// Table definitions.
     pub tables: Vec<Table>,
+    /// Memory definitions.
     pub mems: Vec<Mem>,
+    /// Global variable definitions.
     pub globals: Vec<Global>,
+    /// Element segments.
     pub elems: Vec<Elem>,
+    /// Data segments.
     pub datas: Vec<Data>,
+    /// Optional start function.
     pub start: Option<Start>,
+    /// Import declarations.
     pub imports: Vec<Import>,
+    /// Number of imported functions.
     pub num_imported_funcs: usize,
+    /// Current code section index during parsing.
     pub code_index: usize,
+    /// Export declarations.
     pub exports: Vec<Export>,
 }
 

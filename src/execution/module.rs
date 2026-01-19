@@ -1,3 +1,5 @@
+//! Module instance containing runtime state (memories, tables, globals).
+
 use super::value::*;
 use super::{
     data::DataAddr, elem::ElemAddr, export::ExportInst, func::FuncAddr, global::GlobalAddr,
@@ -10,6 +12,7 @@ use rustc_hash::FxHashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+/// Instantiated module with all runtime components.
 pub struct ModuleInst {
     pub types: Rc<Vec<FuncType>>,
     pub func_addrs: Vec<FuncAddr>,
@@ -23,11 +26,13 @@ pub struct ModuleInst {
     pub wasi_impl: Option<Arc<PassthroughWasiImpl>>,
 }
 
+/// Trait for indexed access to instance vectors.
 pub trait GetInstanceByIdx<Idx>
 where
     Idx: GetIdx,
     Self: std::ops::Index<usize>,
 {
+    /// Gets instance by typed index.
     fn get_by_idx(&self, idx: Idx) -> &Self::Output {
         &self[idx.to_usize()]
     }
@@ -39,9 +44,11 @@ impl GetInstanceByIdx<TableIdx> for Vec<TableAddr> {}
 impl GetInstanceByIdx<MemIdx> for Vec<MemAddr> {}
 impl GetInstanceByIdx<GlobalIdx> for Vec<GlobalAddr> {}
 
+/// Map of module name -> (export name -> external value) for imports.
 pub type ImportObjects = FxHashMap<String, FxHashMap<String, Externval>>;
 
 impl ModuleInst {
+    /// Instantiates a module with the given imports and command-line arguments.
     pub fn new(
         module: &Module,
         imports: ImportObjects,
@@ -223,6 +230,7 @@ impl ModuleInst {
         Ok(arc_module_inst)
     }
 
+    /// Looks up an exported function by name.
     pub fn get_export_func(&self, name: &str) -> Result<FuncAddr, RuntimeError> {
         let externval = self
             .exports
@@ -236,6 +244,7 @@ impl ModuleInst {
         }
     }
 
+    /// Evaluates a constant expression to a value.
     fn expr_to_const(&self, expr: &Expr) -> Option<Val> {
         match &expr.0[..] {
             &[Instr::I32Const(i)] => Some(Val::Num(Num::I32(i))),
