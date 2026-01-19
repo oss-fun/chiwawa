@@ -1,3 +1,43 @@
+//! WebAssembly bytecode parsing and instruction preprocessing.
+//!
+//! This module transforms WebAssembly binary modules into an optimized intermediate
+//! representation suitable for efficient interpretation.
+//!
+//! ## Preprocessing Pipeline
+//!
+//! The parser implements a multi-phase preprocessing pipeline:
+//!
+//! ```text
+//! +----------------+     +----------------+     +----------------+
+//! | Wasm Bytecode  | --> |   wasmparser   | --> |  Decode Phase  |
+//! | (binary .wasm) |     |   (parsing)    |     | (build maps)   |
+//! +----------------+     +----------------+     +----------------+
+//!                                                       |
+//!                                                       v
+//! +----------------+     +----------------+     +----------------+
+//! |  ProcessedInstr| <-- |  Fixup Phase   | <-- | Branch Targets |
+//! | (exec ready)   |     | (resolve PCs)  |     | (Br/BrIf/etc)  |
+//! +----------------+     +----------------+     +----------------+
+//! ```
+//!
+//! ### Phase 1: Decode and Map Building
+//! Parse WebAssembly instructions using `wasmparser` and build a mapping from
+//! original instruction indices to processed instruction positions.
+//!
+//! ### Phase 2: Branch Resolution
+//! Resolve branch targets (Br, BrIf, If, Else) by calculating absolute program
+//! counter values from the instruction map.
+//!
+//! ### Phase 3: BrTable Resolution
+//! Resolve BrTable targets which require special handling due to their variable
+//! number of branch destinations.
+//!
+//! ## Register-Based Execution
+//!
+//! Instructions are converted to use a register-based model where operands are
+//! pre-allocated registers rather than implicit stack positions. This enables
+//! more efficient execution by avoiding redundant stack operations.
+
 use std::fs::File;
 use std::io::Read;
 use wasmparser::{
@@ -13,20 +53,34 @@ use rustc_hash::FxHashMap;
 use std::rc::Rc;
 use std::sync::LazyLock;
 
-/// Control block information for tracking result registers
+/// Control block information tracked during instruction decoding.
+///
+/// Each control structure (block, loop, if) pushes an entry onto the control
+/// stack during parsing. This tracks the block's type signature and the
+/// registers allocated for its parameters and results.
 #[derive(Debug, Clone)]
 struct ControlBlockInfo {
+    /// The block's type signature (empty, single type, or function type index).
     block_type: wasmparser::BlockType,
+    /// Whether this is a loop (affects branch target calculation).
     is_loop: bool,
+    /// Registers allocated for the block's result values.
     result_regs: Vec<Reg>,
+    /// Registers allocated for the block's parameter values.
     param_regs: Vec<Reg>,
 }
 
-// Cache key for block type arity calculations
+/// Cache key for block type arity calculations.
+///
+/// Used to memoize the number of parameters and results for block types,
+/// avoiding repeated lookups in the type section.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum BlockTypeKey {
+    /// Block with no parameters or results.
     Empty,
+    /// Block with a single result type (no parameters).
     SingleType(ValueType),
+    /// Block with a function type signature (may have multiple params/results).
     FuncType(TypeIdx),
 }
 
@@ -42,13 +96,19 @@ impl From<&wasmparser::BlockType> for BlockTypeKey {
     }
 }
 
-// Cache for block arity calculations
+/// Cache for block type arity calculations.
+///
+/// Stores precomputed result counts for blocks and parameter counts for loops,
+/// reducing redundant type section lookups during instruction decoding.
 struct BlockArityCache {
+    /// Maps block types to their result arity (number of return values).
     block_arity_cache: FxHashMap<BlockTypeKey, usize>,
+    /// Maps block types to their parameter arity (for loop continuation).
     loop_parameter_arity_cache: FxHashMap<BlockTypeKey, usize>,
 }
 
 impl BlockArityCache {
+    /// Creates a new empty arity cache.
     fn new() -> Self {
         Self {
             block_arity_cache: FxHashMap::default(),
@@ -57,6 +117,10 @@ impl BlockArityCache {
     }
 }
 
+/// Mapping from WASI function names to their internal type representations.
+///
+/// Used during import section parsing to identify WASI Preview 1 functions
+/// and create the appropriate `WasiFuncType` entries for passthrough handling.
 static WASI_FUNCTION_MAP: LazyLock<FxHashMap<&'static str, WasiFuncType>> = LazyLock::new(|| {
     let mut map = FxHashMap::default();
     map.insert("proc_exit", WasiFuncType::ProcExit);
@@ -111,6 +175,7 @@ static WASI_FUNCTION_MAP: LazyLock<FxHashMap<&'static str, WasiFuncType>> = Lazy
     map
 });
 
+/// Converts a wasmparser value type to the internal representation.
 fn match_value_type(t: ValType) -> ValueType {
     match t {
         ValType::I32 => ValueType::NumType(NumType::I32),
@@ -128,12 +193,17 @@ fn match_value_type(t: ValType) -> ValueType {
     }
 }
 
+/// Converts a slice of wasmparser value types to internal representation.
 fn types_to_vec(types: &[ValType], vec: &mut Vec<ValueType>) {
     for t in types.iter() {
         vec.push(match_value_type(*t));
     }
 }
 
+/// Calculates the result arity (number of return values) for a block type.
+///
+/// Uses the cache to avoid repeated lookups. For blocks and if/else, this
+/// determines how many values are left on the stack when the block completes.
 fn calculate_block_arity(
     block_type: &wasmparser::BlockType,
     module: &Module,
@@ -161,6 +231,10 @@ fn calculate_block_arity(
     arity
 }
 
+/// Calculates the parameter arity for loop continuation.
+///
+/// When branching to a loop, the branch target is the loop header, so we need
+/// the parameter count (not result count) to know how many values to pass.
 fn calculate_loop_parameter_arity(
     block_type: &wasmparser::BlockType,
     module: &Module,
@@ -188,7 +262,7 @@ fn calculate_loop_parameter_arity(
     arity
 }
 
-/// Get result types for a block type
+/// Returns the result types for a block type.
 fn get_block_result_types(block_type: &wasmparser::BlockType, module: &Module) -> Vec<ValueType> {
     match block_type {
         wasmparser::BlockType::Empty => Vec::new(),
@@ -205,7 +279,7 @@ fn get_block_result_types(block_type: &wasmparser::BlockType, module: &Module) -
     }
 }
 
-/// Get param types for a block type (for multi-value blocks)
+/// Returns the parameter types for a block type (for multi-value blocks).
 fn get_block_param_types(block_type: &wasmparser::BlockType, module: &Module) -> Vec<ValueType> {
     match block_type {
         wasmparser::BlockType::Empty => Vec::new(),
@@ -220,6 +294,7 @@ fn get_block_param_types(block_type: &wasmparser::BlockType, module: &Module) ->
     }
 }
 
+/// Decodes the type section, building function type signatures.
 fn decode_type_section(
     body: SectionLimited<'_, wasmparser::RecGroup>,
     module: &mut Module,
@@ -239,6 +314,10 @@ fn decode_type_section(
     Ok(())
 }
 
+/// Decodes the function section, creating stub entries for each function.
+///
+/// The function section only contains type indices; the actual code bodies
+/// are decoded separately from the code section.
 fn decode_func_section(
     body: SectionLimited<'_, u32>,
     module: &mut Module,
@@ -258,6 +337,10 @@ fn decode_func_section(
     Ok(())
 }
 
+/// Decodes the import section, handling functions, tables, memories, and globals.
+///
+/// WASI Preview 1 function imports from `wasi_snapshot_preview1` are identified
+/// and stored with their specific `WasiFuncType` for passthrough handling.
 fn decode_import_section(
     body: SectionLimited<'_, wasmparser::Import<'_>>,
     module: &mut Module,
@@ -323,10 +406,12 @@ fn decode_import_section(
     Ok(())
 }
 
+/// Looks up a WASI function name in the function map.
 fn parse_wasi_function(name: &str) -> Option<WasiFuncType> {
     WASI_FUNCTION_MAP.get(name).copied()
 }
 
+/// Decodes the export section.
 fn decode_export_section(
     body: SectionLimited<'_, wasmparser::Export<'_>>,
     module: &mut Module,
@@ -349,6 +434,7 @@ fn decode_export_section(
     Ok(())
 }
 
+/// Decodes the memory section.
 fn decode_mem_section(
     body: SectionLimited<'_, wasmparser::MemoryType>,
     module: &mut Module,
@@ -370,6 +456,7 @@ fn decode_mem_section(
     Ok(())
 }
 
+/// Decodes the table section.
 fn decode_table_section(
     body: SectionLimited<'_, wasmparser::Table<'_>>,
     module: &mut Module,
@@ -399,6 +486,7 @@ fn decode_table_section(
     Ok(())
 }
 
+/// Decodes the global section.
 fn decode_global_section(
     body: SectionLimited<'_, wasmparser::Global<'_>>,
     module: &mut Module,
@@ -418,6 +506,7 @@ fn decode_global_section(
     Ok(())
 }
 
+/// Parses a constant expression (used for global initializers, data/elem offsets).
 fn parse_initexpr(expr: wasmparser::ConstExpr<'_>) -> Result<Expr, Box<dyn std::error::Error>> {
     let mut instrs = Vec::new();
     let mut ops = expr
@@ -460,6 +549,7 @@ fn parse_initexpr(expr: wasmparser::ConstExpr<'_>) -> Result<Expr, Box<dyn std::
     Ok(Expr(instrs))
 }
 
+/// Decodes the element section (table initialization data).
 fn decode_elem_section(
     body: SectionLimited<'_, wasmparser::Element<'_>>,
     module: &mut Module,
@@ -512,6 +602,8 @@ fn decode_elem_section(
     }
     Ok(())
 }
+
+/// Decodes the data section (memory initialization data).
 fn decode_data_section(
     body: SectionLimited<'_, wasmparser::Data<'_>>,
     module: &mut Module,
@@ -540,6 +632,13 @@ fn decode_data_section(
     Ok(())
 }
 
+/// Decodes a single function's code section entry.
+///
+/// This is the core of instruction preprocessing:
+/// 1. Parses locals and instructions
+/// 2. Allocates registers for operands
+/// 3. Builds branch target maps
+/// 4. Resolves all branch destinations
 fn decode_code_section(
     body: FunctionBody<'_>,
     module: &mut Module,
@@ -627,17 +726,31 @@ fn decode_code_section(
     Ok(())
 }
 
+/// Information needed to fix up a branch instruction's target address.
+///
+/// During initial instruction decoding, branch targets are unknown because
+/// the destination block's end position hasn't been seen yet. FixupInfo
+/// records what needs to be patched once all blocks are parsed.
 #[derive(Debug, Clone)]
 struct FixupInfo {
+    /// Program counter of the instruction needing fixup.
     pc: usize,
+    /// Original WebAssembly branch depth (relative to control stack).
     original_wasm_depth: usize,
+    /// True if this is an If instruction's false-branch jump.
     is_if_false_jump: bool,
+    /// True if this is an Else instruction's end-of-then-branch jump.
     is_else_jump: bool,
+    /// Source registers for multi-value branch results.
     source_regs: Vec<Reg>,
 }
 
-// Phase 2: Resolve Br, BrIf, If, Else jumps using maps and control stack simulation
-// Phase 3: Resolve BrTable jumps similarly
+/// Resolves branch targets after initial instruction decoding (Phase 2 & 3).
+///
+/// Phase 1 is performed by [`decode_processed_instrs_and_fixups`].
+///
+/// - **Phase 2**: Resolves Br, BrIf, If, Else jumps using the block-end map.
+/// - **Phase 3**: Resolves BrTable jumps which have multiple targets.
 fn preprocess_instructions(
     processed: &mut Vec<ProcessedInstr>,
     fixups: &mut Vec<FixupInfo>,
@@ -1117,10 +1230,11 @@ fn preprocess_instructions(
     Ok(())
 }
 
-/// Get the type of a local variable from its index
-/// In WebAssembly, local indices include function parameters first, then declared locals.
-/// params: The function parameter types
-/// locals: Declared local variables in compressed format: [(count, type), ...]
+/// Returns the type of a local variable by index.
+///
+/// WebAssembly local indices include function parameters first (indices 0..n-1),
+/// followed by declared locals. The `locals` parameter uses compressed format
+/// where each entry is (count, type).
 fn get_local_type(
     params: &[ValueType],
     locals: &[(u32, ValueType)],
@@ -1147,6 +1261,9 @@ fn get_local_type(
     ValueType::NumType(NumType::I32)
 }
 
+/// Returns the value type of a global variable by index.
+///
+/// Searches imported globals first, then module-defined globals.
 fn get_global_type(module: &Module, global_index: u32) -> ValueType {
     let mut imported_global_count = 0u32;
     for import in &module.imports {
@@ -1166,6 +1283,9 @@ fn get_global_type(module: &Module, global_index: u32) -> ValueType {
     ValueType::NumType(NumType::I32)
 }
 
+/// Returns the element type of a table by index.
+///
+/// Searches imported tables first, then module-defined tables.
 fn get_table_element_type(module: &Module, table_index: u32) -> ValueType {
     // Count imported tables first
     let mut imported_table_count = 0u32;
@@ -1188,6 +1308,25 @@ fn get_table_element_type(module: &Module, table_index: u32) -> ValueType {
     ValueType::RefType(RefType::FuncRef)
 }
 
+/// Decodes WebAssembly instructions into register-based processed instructions.
+///
+/// This is the first phase of instruction preprocessing (Phase 1). It:
+/// - Converts stack-based WebAssembly instructions to register-based format
+/// - Allocates registers for operands and results
+/// - Builds maps for block boundaries (block_end_map, if_else_map)
+/// - Records fixup information for branch instructions
+///
+/// # Returns
+///
+/// A tuple containing:
+/// - Processed instructions (with placeholder branch targets)
+/// - Fixup information for branch resolution
+/// - Block-end position map
+/// - If-else position map
+/// - Block type map
+/// - Register allocation metadata
+/// - Function result register
+/// - Block result registers map (for BrTable resolution)
 fn decode_processed_instrs_and_fixups<'a>(
     ops_iter: wasmparser::OperatorsIteratorWithOffsets<'a>,
     module: &Module,
@@ -1203,8 +1342,8 @@ fn decode_processed_instrs_and_fixups<'a>(
         FxHashMap<usize, usize>,
         FxHashMap<usize, wasmparser::BlockType>,
         Option<crate::execution::regs::RegAllocation>,
-        Option<crate::execution::regs::Reg>, // result_reg
-        FxHashMap<usize, (Vec<Reg>, bool)>, // block_result_regs_map: block_start_pc -> (result_regs, is_loop)
+        Option<crate::execution::regs::Reg>,
+        FxHashMap<usize, (Vec<Reg>, bool)>,
     ),
     Box<dyn std::error::Error>,
 > {
@@ -4623,6 +4762,17 @@ fn compute_branch_regs(
     (source_regs, target_result_regs)
 }
 
+/// Parses a WebAssembly binary file and populates the module structure.
+///
+/// This is the main entry point for loading a WebAssembly module. It reads
+/// the binary file, parses all sections using wasmparser, and preprocesses
+/// instructions for efficient interpretation.
+///
+/// # Arguments
+///
+/// * `module` - The module structure to populate
+/// * `path` - Path to the WebAssembly binary file
+/// * `enable_superinstructions` - Deprecated, no longer used
 pub fn parse_bytecode(
     mut module: &mut Module,
     path: &str,
