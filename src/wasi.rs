@@ -22,16 +22,13 @@
 //!
 //! ## Module Organization
 //!
-//! - [`context`]: WASI context and file descriptor management
 //! - [`passthrough`]: WASI function implementations delegating to wasi-libc
 //! - [`types`]: WASI type definitions
 //! - [`error`]: WASI error codes and handling
 
-pub mod context;
 pub mod error;
 pub mod passthrough;
 pub mod types;
 
-pub use context::{FileDescriptor, StderrWrapper, StdinWrapper, StdoutWrapper, WasiContext};
 pub use error::*;
 pub use types::*;
