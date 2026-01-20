@@ -39,6 +39,20 @@ somethingWasmRuntime target/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm
 somethingWasmRuntime target/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm --trace  --trace-events [<TRACE_EVENTS>...] --trace-resource [<TRACE_RESOURCE>...]
 ```
 
+## Statistics
+
+Statistics output requires the `stats` feature to be enabled at compile time:
+
+```bash
+# Build with stats feature
+cargo build --target wasm32-wasip1 --release --features stats
+
+# Run with statistics output
+somethingWasmRuntime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --stats
+```
+
+If `--stats` is used without the feature enabled, a warning is displayed and the flag is ignored.
+
 ## Artifacts
 ### Academic
 - Y. Nakata and K. Matsubara, [Self-Hosted WebAssembly Runtime for Runtime-Neutral Checkpoint/Restore in Edge–Cloud Continuum](https://dl.acm.org/doi/abs/10.1145/3774898.3778040)

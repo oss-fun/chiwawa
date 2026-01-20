@@ -22,12 +22,14 @@ pub struct Runtime {
     stacks: Stacks,
     execution_stats: Option<ExecutionStats>,
     tracer: Option<Tracer>,
+    #[cfg_attr(not(feature = "stats"), allow(dead_code))]
     enable_stats: bool,
     enable_checkpoint: bool,
 }
 
 impl Drop for Runtime {
     fn drop(&mut self) {
+        #[cfg(feature = "stats")]
         if self.enable_stats {
             if let Some(ref stats) = self.execution_stats {
                 stats.report();

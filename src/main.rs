@@ -133,6 +133,13 @@ fn parse_params(params: Vec<String>) -> Vec<Val> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Warn if --stats is used but stats feature is not enabled
+    #[cfg(not(feature = "stats"))]
+    if cli.enable_stats {
+        eprintln!("Warning: --stats flag is ignored because the 'stats' feature is not enabled.");
+        eprintln!("         Rebuild with: cargo build --features stats");
+    }
+
     let mut module = Module::new("test");
     let _ = parser::parse_bytecode(&mut module, &cli.wasm_file, cli.enable_superinstructions);
     let imports: ImportObjects = FxHashMap::default();
