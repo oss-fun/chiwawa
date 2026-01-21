@@ -1,8 +1,9 @@
 use anyhow::Result;
+#[cfg(feature = "trace")]
+use chiwawa::execution::trace::TraceConfig;
 use chiwawa::{
     execution::module::*,
     execution::runtime::Runtime,
-    execution::trace::TraceConfig,
     execution::value::*,
     execution::{migration, vm::Stacks},
     parser,
@@ -140,6 +141,13 @@ fn main() -> Result<()> {
         eprintln!("         Rebuild with: cargo build --features stats");
     }
 
+    // Warn if --trace is used but trace feature is not enabled
+    #[cfg(not(feature = "trace"))]
+    if cli.enable_trace {
+        eprintln!("Warning: --trace flag is ignored because the 'trace' feature is not enabled.");
+        eprintln!("         Rebuild with: cargo build --features trace");
+    }
+
     let mut module = Module::new("test");
     let _ = parser::parse_bytecode(&mut module, &cli.wasm_file, cli.enable_superinstructions);
     let imports: ImportObjects = FxHashMap::default();
@@ -153,6 +161,7 @@ fn main() -> Result<()> {
     let inst = ModuleInst::new(&module, imports, wasm_argv).unwrap();
 
     // Create trace configuration if trace is enabled
+    #[cfg(feature = "trace")]
     let trace_config = if cli.enable_trace {
         Some(TraceConfig::new(
             cli.trace_events,
@@ -180,6 +189,7 @@ fn main() -> Result<()> {
             restored_stacks,
             cli.enable_stats,
             cli.enable_checkpoint,
+            #[cfg(feature = "trace")]
             trace_config,
         );
         println!("Runtime reconstructed. Resuming execution...");
@@ -196,6 +206,7 @@ fn main() -> Result<()> {
             params,
             cli.enable_stats,
             cli.enable_checkpoint,
+            #[cfg(feature = "trace")]
             trace_config,
         ) {
             Ok(mut runtime) => {

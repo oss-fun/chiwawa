@@ -5,6 +5,7 @@ use crate::execution::func::{FuncAddr, FuncInst};
 use crate::execution::migration;
 use crate::execution::module::ModuleInst;
 use crate::execution::stats::ExecutionStats;
+#[cfg(feature = "trace")]
 use crate::execution::trace::{TraceConfig, Tracer};
 use crate::execution::value::{Num, Val, Vec_};
 use crate::execution::vm::{Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, Stacks};
@@ -21,6 +22,7 @@ pub struct Runtime {
     module_inst: Rc<ModuleInst>,
     stacks: Stacks,
     execution_stats: Option<ExecutionStats>,
+    #[cfg(feature = "trace")]
     tracer: Option<Tracer>,
     #[cfg_attr(not(feature = "stats"), allow(dead_code))]
     enable_stats: bool,
@@ -46,10 +48,11 @@ impl Runtime {
         params: Vec<Val>,
         enable_stats: bool,
         enable_checkpoint: bool,
-        trace_config: Option<TraceConfig>,
+        #[cfg(feature = "trace")] trace_config: Option<TraceConfig>,
     ) -> Result<Self, RuntimeError> {
         let stacks = Stacks::new(func_addr, params)?;
 
+        #[cfg(feature = "trace")]
         let tracer = if let Some(config) = trace_config {
             match Tracer::new(config) {
                 Ok(tracer) => Some(tracer),
@@ -70,6 +73,7 @@ impl Runtime {
             } else {
                 None
             },
+            #[cfg(feature = "trace")]
             tracer,
             enable_stats,
             enable_checkpoint,
@@ -84,8 +88,9 @@ impl Runtime {
         stacks: Stacks,
         enable_stats: bool,
         enable_checkpoint: bool,
-        trace_config: Option<TraceConfig>,
+        #[cfg(feature = "trace")] trace_config: Option<TraceConfig>,
     ) -> Self {
+        #[cfg(feature = "trace")]
         let tracer = if let Some(config) = trace_config {
             match Tracer::new(config) {
                 Ok(tracer) => Some(tracer),
@@ -106,6 +111,7 @@ impl Runtime {
             } else {
                 None
             },
+            #[cfg(feature = "trace")]
             tracer,
             enable_stats,
             enable_checkpoint,
@@ -121,7 +127,10 @@ impl Runtime {
         let reg_file = &mut self.stacks.reg_file;
         let frame_stack = &mut self.stacks.activation_frame_stack[frame_stack_idx];
         let stats_ref = self.execution_stats.as_mut();
+        #[cfg(feature = "trace")]
         let tracer_ref = self.tracer.as_mut();
+        #[cfg(not(feature = "trace"))]
+        let tracer_ref: Option<()> = None;
         frame_stack.run_dtc_loop(reg_file, called_func_addr, stats_ref, tracer_ref)
     }
 
