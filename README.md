@@ -33,11 +33,18 @@ somethingWasmRuntime target/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm
 ```
 ## Tracing
 
+Tracing requires the `trace` feature to be enabled at compile time:
+
 ```bash
+# Build with trace feature
+cargo build --target wasm32-wasip1 --release --features trace
+
 # TRACE_EVENTS = (all,store,load,call,branch)
-# TRACE_RESOURCE = (stack,memory,locals,globals,pc)
-somethingWasmRuntime target/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm --trace  --trace-events [<TRACE_EVENTS>...] --trace-resource [<TRACE_RESOURCE>...]
+# TRACE_RESOURCE = (regs,memory,locals,globals,pc)
+somethingWasmRuntime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --trace --trace-events [<TRACE_EVENTS>...] --trace-resource [<TRACE_RESOURCE>...]
 ```
+
+If `--trace` is used without the feature enabled, a warning is displayed and the flag is ignored.
 
 ## Statistics
 

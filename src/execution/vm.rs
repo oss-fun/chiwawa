@@ -847,7 +847,8 @@ impl FrameStack {
         _called_func_addr_out: &mut Option<FuncAddr>,
         #[cfg(feature = "stats")] mut execution_stats: Option<&mut super::stats::ExecutionStats>,
         #[cfg(not(feature = "stats"))] _execution_stats: Option<&mut super::stats::ExecutionStats>,
-        _tracer: Option<&mut super::trace::Tracer>,
+        #[cfg(feature = "trace")] mut tracer: Option<&mut super::trace::Tracer>,
+        #[cfg(not(feature = "trace"))] _tracer: Option<()>,
     ) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError> {
         let mut current_label_stack_idx = self
             .label_stack
@@ -924,6 +925,24 @@ impl FrameStack {
             #[cfg(feature = "stats")]
             if let Some(ref mut stats) = execution_stats {
                 stats.record_instruction(instruction_ref.handler_index());
+            }
+
+            // Trace instruction execution (compile-time feature gate)
+            #[cfg(feature = "trace")]
+            if let Some(ref mut t) = tracer {
+                let global_addrs = self
+                    .frame
+                    .module
+                    .upgrade()
+                    .map(|m| m.global_addrs.clone())
+                    .unwrap_or_default();
+                t.trace_instruction(
+                    ip,
+                    instruction_ref.handler_index(),
+                    reg_file,
+                    &self.frame.locals,
+                    &global_addrs,
+                );
             }
 
             // Match on instruction type

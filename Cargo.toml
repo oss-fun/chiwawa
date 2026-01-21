@@ -20,6 +20,7 @@ panic = "abort"
 wasmtime = []
 wasmedge = []
 stats = []
+trace = []
 
 [dependencies]
 anyhow = "1.0.86"

@@ -4,6 +4,8 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::path::Path;
 
+use super::global::GlobalAddr;
+use super::regs::RegFile;
 use super::value::Val;
 use super::vm::*;
 
@@ -35,7 +37,7 @@ impl TraceEvent {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TraceResource {
     PC,
-    Stack,
+    Regs,
     Memory,
     Locals,
     Globals,
@@ -46,7 +48,7 @@ impl TraceResource {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "pc" => Some(TraceResource::PC),
-            "stack" => Some(TraceResource::Stack),
+            "regs" => Some(TraceResource::Regs),
             "memory" => Some(TraceResource::Memory),
             "locals" => Some(TraceResource::Locals),
             "globals" => Some(TraceResource::Globals),
@@ -87,7 +89,7 @@ impl TraceConfig {
         } else {
             vec![
                 TraceResource::PC,
-                TraceResource::Stack,
+                TraceResource::Regs,
                 TraceResource::Locals,
                 TraceResource::Globals,
             ]
@@ -165,9 +167,9 @@ impl Tracer {
         &mut self,
         ip: usize,
         handler_index: usize,
-        value_stack: &[Val],
+        reg_file: &RegFile,
         locals: &[Val],
-        global_addrs: &[super::global::GlobalAddr],
+        global_addrs: &[GlobalAddr],
     ) {
         if !self.config.should_trace_event(handler_index) {
             return;
@@ -184,10 +186,10 @@ impl Tracer {
         let instr_name = Self::get_instruction_name(handler_index);
         parts.push(format!("Instr:{}", instr_name));
 
-        // Stack
-        if self.config.resources.contains(&TraceResource::Stack) {
-            let stack_str = self.format_stack(value_stack);
-            parts.push(format!("Stack:{}", stack_str));
+        // Registers
+        if self.config.resources.contains(&TraceResource::Regs) {
+            let regs_str = self.format_registers(reg_file);
+            parts.push(format!("Regs:{}", regs_str));
         }
 
         // Locals
@@ -208,7 +210,7 @@ impl Tracer {
         let _ = self.output.flush();
     }
 
-    fn format_globals(&self, global_addrs: &[super::global::GlobalAddr]) -> String {
+    fn format_globals(&self, global_addrs: &[GlobalAddr]) -> String {
         if global_addrs.is_empty() {
             return "[]".to_string();
         }
@@ -220,13 +222,58 @@ impl Tracer {
         format!("[{}]", values.join(","))
     }
 
-    fn format_stack(&self, stack: &[Val]) -> String {
-        if stack.is_empty() {
-            return "[]".to_string();
+    fn format_registers(&self, reg_file: &RegFile) -> String {
+        let mut parts = Vec::new();
+
+        // Format I32 registers
+        if !reg_file.i32_regs.is_empty() {
+            let i32_vals: Vec<String> = reg_file
+                .i32_regs
+                .iter()
+                .enumerate()
+                .map(|(i, v)| format!("r{}:{}", i, v))
+                .collect();
+            parts.push(format!("I32[{}]", i32_vals.join(",")));
         }
 
-        let values: Vec<String> = stack.iter().map(|v| Self::format_val(v)).collect();
-        format!("[{}]", values.join(","))
+        // Format I64 registers
+        if !reg_file.i64_regs.is_empty() {
+            let i64_vals: Vec<String> = reg_file
+                .i64_regs
+                .iter()
+                .enumerate()
+                .map(|(i, v)| format!("r{}:{}", i, v))
+                .collect();
+            parts.push(format!("I64[{}]", i64_vals.join(",")));
+        }
+
+        // Format F32 registers
+        if !reg_file.f32_regs.is_empty() {
+            let f32_vals: Vec<String> = reg_file
+                .f32_regs
+                .iter()
+                .enumerate()
+                .map(|(i, v)| format!("r{}:{}", i, v))
+                .collect();
+            parts.push(format!("F32[{}]", f32_vals.join(",")));
+        }
+
+        // Format F64 registers
+        if !reg_file.f64_regs.is_empty() {
+            let f64_vals: Vec<String> = reg_file
+                .f64_regs
+                .iter()
+                .enumerate()
+                .map(|(i, v)| format!("r{}:{}", i, v))
+                .collect();
+            parts.push(format!("F64[{}]", f64_vals.join(",")));
+        }
+
+        if parts.is_empty() {
+            "[]".to_string()
+        } else {
+            format!("{{{}}}", parts.join(", "))
+        }
     }
 
     fn format_locals(&self, locals: &[Val]) -> String {

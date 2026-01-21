@@ -10,6 +10,7 @@ pub mod regs;
 pub mod runtime;
 pub mod stats;
 mod table;
+#[cfg(feature = "trace")]
 pub mod trace;
 pub mod value;
 pub mod vm;
