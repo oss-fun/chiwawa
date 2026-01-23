@@ -2155,48 +2155,104 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let global_type = get_global_type(module, *global_index);
                     match global_type {
                         ValueType::NumType(NumType::I32) => {
-                            let dst = allocator.push(global_type);
-                            (
-                                Some(ProcessedInstr::GlobalGetReg {
+                            if let Some(local_idx) = try_fold_dst_i32(&mut ops, param_types, locals)
+                            {
+                                let _ = ops.next();
+                                let _dst = allocator.push(ValueType::NumType(NumType::I32));
+                                allocator.pop(&ValueType::NumType(NumType::I32));
+                                initial_processed_instrs.push(ProcessedInstr::GlobalGetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_GET_I32,
-                                    dst,
+                                    dst: RegOrLocal::Local(local_idx),
                                     global_index: *global_index,
-                                }),
-                                None,
-                            )
+                                });
+                                current_processed_pc += 1;
+                                (None, None)
+                            } else {
+                                let dst = allocator.push(ValueType::NumType(NumType::I32));
+                                (
+                                    Some(ProcessedInstr::GlobalGetReg {
+                                        handler_index: HANDLER_IDX_GLOBAL_GET_I32,
+                                        dst: RegOrLocal::Reg(dst.index()),
+                                        global_index: *global_index,
+                                    }),
+                                    None,
+                                )
+                            }
                         }
                         ValueType::NumType(NumType::I64) => {
-                            let dst = allocator.push(global_type);
-                            (
-                                Some(ProcessedInstr::GlobalGetReg {
+                            if let Some(local_idx) = try_fold_dst_i64(&mut ops, param_types, locals)
+                            {
+                                let _ = ops.next();
+                                let _dst = allocator.push(ValueType::NumType(NumType::I64));
+                                allocator.pop(&ValueType::NumType(NumType::I64));
+                                initial_processed_instrs.push(ProcessedInstr::GlobalGetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_GET_I64,
-                                    dst,
+                                    dst: RegOrLocal::Local(local_idx),
                                     global_index: *global_index,
-                                }),
-                                None,
-                            )
+                                });
+                                current_processed_pc += 1;
+                                (None, None)
+                            } else {
+                                let dst = allocator.push(ValueType::NumType(NumType::I64));
+                                (
+                                    Some(ProcessedInstr::GlobalGetReg {
+                                        handler_index: HANDLER_IDX_GLOBAL_GET_I64,
+                                        dst: RegOrLocal::Reg(dst.index()),
+                                        global_index: *global_index,
+                                    }),
+                                    None,
+                                )
+                            }
                         }
                         ValueType::NumType(NumType::F32) => {
-                            let dst = allocator.push(global_type);
-                            (
-                                Some(ProcessedInstr::GlobalGetReg {
+                            if let Some(local_idx) = try_fold_dst_f32(&mut ops, param_types, locals)
+                            {
+                                let _ = ops.next();
+                                let _dst = allocator.push(ValueType::NumType(NumType::F32));
+                                allocator.pop(&ValueType::NumType(NumType::F32));
+                                initial_processed_instrs.push(ProcessedInstr::GlobalGetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_GET_F32,
-                                    dst,
+                                    dst: RegOrLocal::Local(local_idx),
                                     global_index: *global_index,
-                                }),
-                                None,
-                            )
+                                });
+                                current_processed_pc += 1;
+                                (None, None)
+                            } else {
+                                let dst = allocator.push(ValueType::NumType(NumType::F32));
+                                (
+                                    Some(ProcessedInstr::GlobalGetReg {
+                                        handler_index: HANDLER_IDX_GLOBAL_GET_F32,
+                                        dst: RegOrLocal::Reg(dst.index()),
+                                        global_index: *global_index,
+                                    }),
+                                    None,
+                                )
+                            }
                         }
                         ValueType::NumType(NumType::F64) => {
-                            let dst = allocator.push(global_type);
-                            (
-                                Some(ProcessedInstr::GlobalGetReg {
+                            if let Some(local_idx) = try_fold_dst_f64(&mut ops, param_types, locals)
+                            {
+                                let _ = ops.next();
+                                let _dst = allocator.push(ValueType::NumType(NumType::F64));
+                                allocator.pop(&ValueType::NumType(NumType::F64));
+                                initial_processed_instrs.push(ProcessedInstr::GlobalGetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_GET_F64,
-                                    dst,
+                                    dst: RegOrLocal::Local(local_idx),
                                     global_index: *global_index,
-                                }),
-                                None,
-                            )
+                                });
+                                current_processed_pc += 1;
+                                (None, None)
+                            } else {
+                                let dst = allocator.push(ValueType::NumType(NumType::F64));
+                                (
+                                    Some(ProcessedInstr::GlobalGetReg {
+                                        handler_index: HANDLER_IDX_GLOBAL_GET_F64,
+                                        dst: RegOrLocal::Reg(dst.index()),
+                                        global_index: *global_index,
+                                    }),
+                                    None,
+                                )
+                            }
                         }
                         _ => {
                             panic!("Unsupported type for GlobalGet: {:?}", global_type);
@@ -2207,7 +2263,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let global_type = get_global_type(module, *global_index);
                     match global_type {
                         ValueType::NumType(NumType::I32) => {
-                            let src = allocator.pop(&global_type);
+                            let src_reg = allocator.pop(&global_type);
+                            let operand = take_i32_operand(&mut pending_operands, src_reg.index());
+                            let src = match operand {
+                                I32RegOperand::Param(idx) => RegOrLocal::Local(idx),
+                                _ => RegOrLocal::Reg(src_reg.index()),
+                            };
                             (
                                 Some(ProcessedInstr::GlobalSetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_SET_I32,
@@ -2218,7 +2279,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                             )
                         }
                         ValueType::NumType(NumType::I64) => {
-                            let src = allocator.pop(&global_type);
+                            let src_reg = allocator.pop(&global_type);
+                            let operand = take_i64_operand(&mut pending_operands, src_reg.index());
+                            let src = match operand {
+                                I64RegOperand::Param(idx) => RegOrLocal::Local(idx),
+                                _ => RegOrLocal::Reg(src_reg.index()),
+                            };
                             (
                                 Some(ProcessedInstr::GlobalSetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_SET_I64,
@@ -2229,7 +2295,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                             )
                         }
                         ValueType::NumType(NumType::F32) => {
-                            let src = allocator.pop(&global_type);
+                            let src_reg = allocator.pop(&global_type);
+                            let operand = take_f32_operand(&mut pending_operands, src_reg.index());
+                            let src = match operand {
+                                F32RegOperand::Param(idx) => RegOrLocal::Local(idx),
+                                _ => RegOrLocal::Reg(src_reg.index()),
+                            };
                             (
                                 Some(ProcessedInstr::GlobalSetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_SET_F32,
@@ -2240,7 +2311,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                             )
                         }
                         ValueType::NumType(NumType::F64) => {
-                            let src = allocator.pop(&global_type);
+                            let src_reg = allocator.pop(&global_type);
+                            let operand = take_f64_operand(&mut pending_operands, src_reg.index());
+                            let src = match operand {
+                                F64RegOperand::Param(idx) => RegOrLocal::Local(idx),
+                                _ => RegOrLocal::Reg(src_reg.index()),
+                            };
                             (
                                 Some(ProcessedInstr::GlobalSetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_SET_F64,

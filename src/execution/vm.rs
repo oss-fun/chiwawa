@@ -287,13 +287,13 @@ pub enum ProcessedInstr {
 
     GlobalGetReg {
         handler_index: usize,
-        dst: Reg,          // Destination register
+        dst: RegOrLocal,   // Destination register or local
         global_index: u32, // Global variable index
     },
 
     GlobalSetReg {
         handler_index: usize,
-        src: Reg,          // Source register
+        src: RegOrLocal,   // Source register or local
         global_index: u32, // Global variable index
     },
 
@@ -1194,16 +1194,40 @@ impl FrameStack {
 
                     match *handler_index {
                         HANDLER_IDX_GLOBAL_GET_I32 => {
-                            reg_file.set_i32(dst.index(), val.to_i32().unwrap());
+                            let v = val.to_i32().unwrap();
+                            match dst {
+                                RegOrLocal::Reg(idx) => reg_file.set_i32(*idx, v),
+                                RegOrLocal::Local(idx) => {
+                                    self.frame.locals[*idx as usize] = Val::Num(Num::I32(v))
+                                }
+                            }
                         }
                         HANDLER_IDX_GLOBAL_GET_I64 => {
-                            reg_file.set_i64(dst.index(), val.to_i64().unwrap());
+                            let v = val.to_i64().unwrap();
+                            match dst {
+                                RegOrLocal::Reg(idx) => reg_file.set_i64(*idx, v),
+                                RegOrLocal::Local(idx) => {
+                                    self.frame.locals[*idx as usize] = Val::Num(Num::I64(v))
+                                }
+                            }
                         }
                         HANDLER_IDX_GLOBAL_GET_F32 => {
-                            reg_file.set_f32(dst.index(), val.to_f32().unwrap());
+                            let v = val.to_f32().unwrap();
+                            match dst {
+                                RegOrLocal::Reg(idx) => reg_file.set_f32(*idx, v),
+                                RegOrLocal::Local(idx) => {
+                                    self.frame.locals[*idx as usize] = Val::Num(Num::F32(v))
+                                }
+                            }
                         }
                         HANDLER_IDX_GLOBAL_GET_F64 => {
-                            reg_file.set_f64(dst.index(), val.to_f64().unwrap());
+                            let v = val.to_f64().unwrap();
+                            match dst {
+                                RegOrLocal::Reg(idx) => reg_file.set_f64(*idx, v),
+                                RegOrLocal::Local(idx) => {
+                                    self.frame.locals[*idx as usize] = Val::Num(Num::F64(v))
+                                }
+                            }
                         }
                         _ => return Err(RuntimeError::InvalidHandlerIndex),
                     }
@@ -1218,16 +1242,40 @@ impl FrameStack {
                 } => {
                     let val = match *handler_index {
                         HANDLER_IDX_GLOBAL_SET_I32 => {
-                            Val::Num(Num::I32(reg_file.get_i32(src.index())))
+                            let v = match src {
+                                RegOrLocal::Reg(idx) => reg_file.get_i32(*idx),
+                                RegOrLocal::Local(idx) => {
+                                    self.frame.locals[*idx as usize].to_i32().unwrap()
+                                }
+                            };
+                            Val::Num(Num::I32(v))
                         }
                         HANDLER_IDX_GLOBAL_SET_I64 => {
-                            Val::Num(Num::I64(reg_file.get_i64(src.index())))
+                            let v = match src {
+                                RegOrLocal::Reg(idx) => reg_file.get_i64(*idx),
+                                RegOrLocal::Local(idx) => {
+                                    self.frame.locals[*idx as usize].to_i64().unwrap()
+                                }
+                            };
+                            Val::Num(Num::I64(v))
                         }
                         HANDLER_IDX_GLOBAL_SET_F32 => {
-                            Val::Num(Num::F32(reg_file.get_f32(src.index())))
+                            let v = match src {
+                                RegOrLocal::Reg(idx) => reg_file.get_f32(*idx),
+                                RegOrLocal::Local(idx) => {
+                                    self.frame.locals[*idx as usize].to_f32().unwrap()
+                                }
+                            };
+                            Val::Num(Num::F32(v))
                         }
                         HANDLER_IDX_GLOBAL_SET_F64 => {
-                            Val::Num(Num::F64(reg_file.get_f64(src.index())))
+                            let v = match src {
+                                RegOrLocal::Reg(idx) => reg_file.get_f64(*idx),
+                                RegOrLocal::Local(idx) => {
+                                    self.frame.locals[*idx as usize].to_f64().unwrap()
+                                }
+                            };
+                            Val::Num(Num::F64(v))
                         }
                         _ => return Err(RuntimeError::InvalidHandlerIndex),
                     };
