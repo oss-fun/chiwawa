@@ -254,8 +254,8 @@ pub enum ProcessedInstr {
     },
     ConversionReg {
         handler_index: usize,
-        dst: Reg, // Destination register (type determined by output type)
-        src: Reg, // Source register (type determined by input type)
+        dst: RegOrLocal, // Destination register or local (type determined by output type)
+        src: Reg,        // Source register (type determined by input type)
     },
     MemoryLoadReg {
         handler_index: usize,
@@ -1052,6 +1052,7 @@ impl FrameStack {
                 } => {
                     let ctx = ConversionRegContext {
                         reg_file,
+                        locals: &mut self.frame.locals,
                         src: src.clone(),
                         dst: dst.clone(),
                     };
@@ -3024,29 +3025,42 @@ lazy_static! {
 // Conversion Reg handlers
 struct ConversionRegContext<'a> {
     reg_file: &'a mut RegFile,
+    locals: &'a mut [Val],
     src: Reg,
-    dst: Reg,
+    dst: RegOrLocal,
 }
 
 impl<'a> ConversionRegContext<'a> {
     #[inline]
     fn set_dst_i32(&mut self, val: i32) {
-        self.reg_file.set_i32(self.dst.index(), val);
+        match &self.dst {
+            RegOrLocal::Reg(idx) => self.reg_file.set_i32(*idx, val),
+            RegOrLocal::Local(idx) => self.locals[*idx as usize] = Val::Num(Num::I32(val)),
+        }
     }
 
     #[inline]
     fn set_dst_i64(&mut self, val: i64) {
-        self.reg_file.set_i64(self.dst.index(), val);
+        match &self.dst {
+            RegOrLocal::Reg(idx) => self.reg_file.set_i64(*idx, val),
+            RegOrLocal::Local(idx) => self.locals[*idx as usize] = Val::Num(Num::I64(val)),
+        }
     }
 
     #[inline]
     fn set_dst_f32(&mut self, val: f32) {
-        self.reg_file.set_f32(self.dst.index(), val);
+        match &self.dst {
+            RegOrLocal::Reg(idx) => self.reg_file.set_f32(*idx, val),
+            RegOrLocal::Local(idx) => self.locals[*idx as usize] = Val::Num(Num::F32(val)),
+        }
     }
 
     #[inline]
     fn set_dst_f64(&mut self, val: f64) {
-        self.reg_file.set_f64(self.dst.index(), val);
+        match &self.dst {
+            RegOrLocal::Reg(idx) => self.reg_file.set_f64(*idx, val),
+            RegOrLocal::Local(idx) => self.locals[*idx as usize] = Val::Num(Num::F64(val)),
+        }
     }
 }
 
@@ -3099,8 +3113,7 @@ fn conv_i32_trunc_f32_u(mut ctx: ConversionRegContext) -> Result<(), RuntimeErro
     if truncated < 0.0 || truncated > (u32::MAX as f32) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.reg_file
-        .set_i32(ctx.dst.index(), (truncated as u32) as i32);
+    ctx.set_dst_i32((truncated as u32) as i32);
     Ok(())
 }
 
@@ -3127,8 +3140,7 @@ fn conv_i32_trunc_f64_u(mut ctx: ConversionRegContext) -> Result<(), RuntimeErro
     if truncated < 0.0 || truncated > (u32::MAX as f64) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.reg_file
-        .set_i32(ctx.dst.index(), (truncated as u32) as i32);
+    ctx.set_dst_i32((truncated as u32) as i32);
     Ok(())
 }
 
@@ -3155,8 +3167,7 @@ fn conv_i64_trunc_f32_u(mut ctx: ConversionRegContext) -> Result<(), RuntimeErro
     if truncated < 0.0 || truncated >= (u64::MAX as f32) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.reg_file
-        .set_i64(ctx.dst.index(), (truncated as u64) as i64);
+    ctx.set_dst_i64((truncated as u64) as i64);
     Ok(())
 }
 
@@ -3183,8 +3194,7 @@ fn conv_i64_trunc_f64_u(mut ctx: ConversionRegContext) -> Result<(), RuntimeErro
     if truncated < 0.0 || truncated >= (u64::MAX as f64) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.reg_file
-        .set_i64(ctx.dst.index(), (truncated as u64) as i64);
+    ctx.set_dst_i64((truncated as u64) as i64);
     Ok(())
 }
 
@@ -3377,8 +3387,7 @@ fn conv_i32_reinterpret_f32(mut ctx: ConversionRegContext) -> Result<(), Runtime
 
 fn conv_f32_reinterpret_i32(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_i32(ctx.src.index());
-    ctx.reg_file
-        .set_f32(ctx.dst.index(), f32::from_bits(val as u32));
+    ctx.set_dst_f32(f32::from_bits(val as u32));
     Ok(())
 }
 
@@ -3390,8 +3399,7 @@ fn conv_i64_reinterpret_f64(mut ctx: ConversionRegContext) -> Result<(), Runtime
 
 fn conv_f64_reinterpret_i64(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_i64(ctx.src.index());
-    ctx.reg_file
-        .set_f64(ctx.dst.index(), f64::from_bits(val as u64));
+    ctx.set_dst_f64(f64::from_bits(val as u64));
     Ok(())
 }
 

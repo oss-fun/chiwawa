@@ -5605,399 +5605,828 @@ fn decode_processed_instrs_and_fixups<'a>(
                 // Conversion instructions - use ConversionReg
                 wasmparser::Operator::I64ExtendI32S => {
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I64));
+                        allocator.pop(&ValueType::NumType(NumType::I64));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_EXTEND_I32_S,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I64));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I64_EXTEND_I32_S,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I64ExtendI32U => {
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I64));
+                        allocator.pop(&ValueType::NumType(NumType::I64));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_EXTEND_I32_U,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I64));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I64_EXTEND_I32_U,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I32WrapI64 => {
                     let src = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I32));
+                        allocator.pop(&ValueType::NumType(NumType::I32));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_WRAP_I64,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I32));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I32_WRAP_I64,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I32TruncF32S => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I32));
+                        allocator.pop(&ValueType::NumType(NumType::I32));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_F32_S,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I32));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I32_TRUNC_F32_S,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I32TruncF32U => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I32));
+                        allocator.pop(&ValueType::NumType(NumType::I32));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_F32_U,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I32));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I32_TRUNC_F32_U,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I32TruncF64S => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I32));
+                        allocator.pop(&ValueType::NumType(NumType::I32));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_F64_S,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I32));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I32_TRUNC_F64_S,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I32TruncF64U => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I32));
+                        allocator.pop(&ValueType::NumType(NumType::I32));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_F64_U,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I32));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I32_TRUNC_F64_U,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I64TruncF32S => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I64));
+                        allocator.pop(&ValueType::NumType(NumType::I64));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_F32_S,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I64));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I64_TRUNC_F32_S,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I64TruncF32U => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I64));
+                        allocator.pop(&ValueType::NumType(NumType::I64));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_F32_U,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I64));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I64_TRUNC_F32_U,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I64TruncF64S => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I64));
+                        allocator.pop(&ValueType::NumType(NumType::I64));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_F64_S,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I64));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I64_TRUNC_F64_S,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I64TruncF64U => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I64));
+                        allocator.pop(&ValueType::NumType(NumType::I64));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_F64_U,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I64));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I64_TRUNC_F64_U,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I32TruncSatF32S => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I32));
+                        allocator.pop(&ValueType::NumType(NumType::I32));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_SAT_F32_S,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I32));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I32_TRUNC_SAT_F32_S,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I32TruncSatF32U => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I32));
+                        allocator.pop(&ValueType::NumType(NumType::I32));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_SAT_F32_U,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I32));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I32_TRUNC_SAT_F32_U,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I32TruncSatF64S => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I32));
+                        allocator.pop(&ValueType::NumType(NumType::I32));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_SAT_F64_S,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I32));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I32_TRUNC_SAT_F64_S,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I32TruncSatF64U => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I32));
+                        allocator.pop(&ValueType::NumType(NumType::I32));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_SAT_F64_U,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I32));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I32_TRUNC_SAT_F64_U,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I64TruncSatF32S => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I64));
+                        allocator.pop(&ValueType::NumType(NumType::I64));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_SAT_F32_S,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I64));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I64_TRUNC_SAT_F32_S,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I64TruncSatF32U => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I64));
+                        allocator.pop(&ValueType::NumType(NumType::I64));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_SAT_F32_U,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I64));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I64_TRUNC_SAT_F32_U,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I64TruncSatF64S => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I64));
+                        allocator.pop(&ValueType::NumType(NumType::I64));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_SAT_F64_S,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I64));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I64_TRUNC_SAT_F64_S,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I64TruncSatF64U => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I64));
+                        allocator.pop(&ValueType::NumType(NumType::I64));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_SAT_F64_U,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I64));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I64_TRUNC_SAT_F64_U,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::F32ConvertI32S => {
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_f32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::F32));
+                        allocator.pop(&ValueType::NumType(NumType::F32));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F32_CONVERT_I32_S,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::F32));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_F32_CONVERT_I32_S,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::F32ConvertI32U => {
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_f32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::F32));
+                        allocator.pop(&ValueType::NumType(NumType::F32));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F32_CONVERT_I32_U,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::F32));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_F32_CONVERT_I32_U,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::F32ConvertI64S => {
                     let src = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_f32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::F32));
+                        allocator.pop(&ValueType::NumType(NumType::F32));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F32_CONVERT_I64_S,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::F32));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_F32_CONVERT_I64_S,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::F32ConvertI64U => {
                     let src = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_f32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::F32));
+                        allocator.pop(&ValueType::NumType(NumType::F32));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F32_CONVERT_I64_U,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::F32));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_F32_CONVERT_I64_U,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::F64ConvertI32S => {
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_f64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::F64));
+                        allocator.pop(&ValueType::NumType(NumType::F64));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F64_CONVERT_I32_S,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::F64));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_F64_CONVERT_I32_S,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::F64ConvertI32U => {
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_f64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::F64));
+                        allocator.pop(&ValueType::NumType(NumType::F64));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F64_CONVERT_I32_U,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::F64));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_F64_CONVERT_I32_U,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::F64ConvertI64S => {
                     let src = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_f64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::F64));
+                        allocator.pop(&ValueType::NumType(NumType::F64));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F64_CONVERT_I64_S,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::F64));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_F64_CONVERT_I64_S,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::F64ConvertI64U => {
                     let src = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_f64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::F64));
+                        allocator.pop(&ValueType::NumType(NumType::F64));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F64_CONVERT_I64_U,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::F64));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_F64_CONVERT_I64_U,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::F32DemoteF64 => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_f32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::F32));
+                        allocator.pop(&ValueType::NumType(NumType::F32));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F32_DEMOTE_F64,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::F32));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_F32_DEMOTE_F64,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::F64PromoteF32 => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_f64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::F64));
+                        allocator.pop(&ValueType::NumType(NumType::F64));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F64_PROMOTE_F32,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::F64));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_F64_PROMOTE_F32,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I32ReinterpretF32 => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I32));
+                        allocator.pop(&ValueType::NumType(NumType::I32));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_REINTERPRET_F32,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I32));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I32_REINTERPRET_F32,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I64ReinterpretF64 => {
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_i64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I64));
+                        allocator.pop(&ValueType::NumType(NumType::I64));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_REINTERPRET_F64,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I64));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_I64_REINTERPRET_F64,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::F32ReinterpretI32 => {
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_f32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::F32));
+                        allocator.pop(&ValueType::NumType(NumType::F32));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F32_REINTERPRET_I32,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::F32));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_F32_REINTERPRET_I32,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::F64ReinterpretI64 => {
                     let src = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
+                    if let Some(local_idx) = try_fold_dst_f64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::F64));
+                        allocator.pop(&ValueType::NumType(NumType::F64));
+                        initial_processed_instrs.push(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F64_REINTERPRET_I64,
-                            dst,
+                            dst: RegOrLocal::Local(local_idx),
                             src,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::F64));
+                        (
+                            Some(ProcessedInstr::ConversionReg {
+                                handler_index: HANDLER_IDX_F64_REINTERPRET_I64,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                src,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 // Memory Load instructions
                 wasmparser::Operator::I32Load { memarg } => {
