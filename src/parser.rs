@@ -252,7 +252,9 @@ fn can_fold_f64<'a>(
     can_fold
 }
 
-/// Check if the instruction can consume an I32 operand (excluding br_if/if/loads)
+/// Check if the instruction can consume an I32 operand (excluding br_if/if/loads/stores)
+/// Note: Load/Store instructions are excluded because the 2-ahead lookahead in can_fold_i32
+/// doesn't verify the type of intervening LocalGet, which can cause incorrect folding.
 #[inline]
 fn is_i32_foldable_consumer(op: &wasmparser::Operator) -> bool {
     matches!(
@@ -287,6 +289,95 @@ fn is_i32_foldable_consumer(op: &wasmparser::Operator) -> bool {
             | wasmparser::Operator::I32Popcnt
             | wasmparser::Operator::I32Eqz
     )
+}
+
+/// Check if the instruction is a memory load (addr is I32, single operand)
+#[inline]
+fn is_memory_load(op: &wasmparser::Operator) -> bool {
+    matches!(
+        op,
+        wasmparser::Operator::I32Load { .. }
+            | wasmparser::Operator::I64Load { .. }
+            | wasmparser::Operator::F32Load { .. }
+            | wasmparser::Operator::F64Load { .. }
+            | wasmparser::Operator::I32Load8S { .. }
+            | wasmparser::Operator::I32Load8U { .. }
+            | wasmparser::Operator::I32Load16S { .. }
+            | wasmparser::Operator::I32Load16U { .. }
+            | wasmparser::Operator::I64Load8S { .. }
+            | wasmparser::Operator::I64Load8U { .. }
+            | wasmparser::Operator::I64Load16S { .. }
+            | wasmparser::Operator::I64Load16U { .. }
+            | wasmparser::Operator::I64Load32S { .. }
+            | wasmparser::Operator::I64Load32U { .. }
+    )
+}
+
+/// Check if the next instruction is a memory load (1-ahead only, for I32 addr folding)
+#[inline]
+fn can_fold_for_load<'a>(
+    ops: &mut itertools::MultiPeek<
+        impl Iterator<Item = Result<(wasmparser::Operator<'a>, usize), wasmparser::BinaryReaderError>>,
+    >,
+) -> bool {
+    let can_fold = if let Some(Ok((next_op, _))) = ops.peek() {
+        is_memory_load(next_op)
+    } else {
+        false
+    };
+    ops.reset_peek();
+    can_fold
+}
+
+/// Check if the instruction is a memory store (for 2-ahead matching)
+#[inline]
+fn is_memory_store(op: &wasmparser::Operator) -> bool {
+    matches!(
+        op,
+        wasmparser::Operator::I32Store { .. }
+            | wasmparser::Operator::I64Store { .. }
+            | wasmparser::Operator::F32Store { .. }
+            | wasmparser::Operator::F64Store { .. }
+            | wasmparser::Operator::I32Store8 { .. }
+            | wasmparser::Operator::I32Store16 { .. }
+            | wasmparser::Operator::I64Store8 { .. }
+            | wasmparser::Operator::I64Store16 { .. }
+            | wasmparser::Operator::I64Store32 { .. }
+    )
+}
+
+/// Check if 2-ahead pattern matches [value_producer, store] for addr folding
+/// Pattern: addr (current) -> value -> store
+#[inline]
+fn can_fold_for_store<'a>(
+    ops: &mut itertools::MultiPeek<
+        impl Iterator<Item = Result<(wasmparser::Operator<'a>, usize), wasmparser::BinaryReaderError>>,
+    >,
+) -> bool {
+    let can_fold = if let Some(Ok((value_op, _))) = ops.peek() {
+        // Check if value_op could produce a value for store
+        let is_value_candidate = matches!(
+            value_op,
+            wasmparser::Operator::I32Const { .. }
+                | wasmparser::Operator::I64Const { .. }
+                | wasmparser::Operator::F32Const { .. }
+                | wasmparser::Operator::F64Const { .. }
+                | wasmparser::Operator::LocalGet { .. }
+        );
+        if is_value_candidate {
+            if let Some(Ok((store_op, _))) = ops.peek() {
+                is_memory_store(store_op)
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    ops.reset_peek();
+    can_fold
 }
 
 /// Check if the instruction can consume an I64 operand
@@ -1748,7 +1839,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let local_type = get_local_type(param_types, locals, *local_index);
                     match local_type {
                         ValueType::NumType(NumType::I32) => {
-                            if can_fold_i32(&mut ops) {
+                            if can_fold_i32(&mut ops)
+                                || can_fold_for_load(&mut ops)
+                                || can_fold_for_store(&mut ops)
+                            {
                                 pending_operands
                                     .push(PendingOperand::I32Local(*local_index as u16));
                                 allocator.push(local_type);
@@ -2053,7 +2147,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                     }
                 }
                 wasmparser::Operator::I32Const { value } => {
-                    if can_fold_i32(&mut ops) {
+                    if can_fold_i32(&mut ops)
+                        || can_fold_for_load(&mut ops)
+                        || can_fold_for_store(&mut ops)
+                    {
                         pending_operands.push(PendingOperand::I32Const(*value));
                         allocator.push(ValueType::NumType(NumType::I32));
                         (ProcessedInstr::NopReg, None)
@@ -4594,7 +4691,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 // Memory Load instructions
                 wasmparser::Operator::I32Load { memarg } => {
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::MemoryLoadReg {
@@ -4607,7 +4705,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Load { memarg } => {
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::MemoryLoadReg {
@@ -4620,7 +4719,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F32Load { memarg } => {
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
                         ProcessedInstr::MemoryLoadReg {
@@ -4633,7 +4733,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::F64Load { memarg } => {
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
                         ProcessedInstr::MemoryLoadReg {
@@ -4646,7 +4747,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32Load8S { memarg } => {
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::MemoryLoadReg {
@@ -4659,7 +4761,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32Load8U { memarg } => {
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::MemoryLoadReg {
@@ -4672,7 +4775,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32Load16S { memarg } => {
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::MemoryLoadReg {
@@ -4685,7 +4789,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I32Load16U { memarg } => {
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         ProcessedInstr::MemoryLoadReg {
@@ -4698,7 +4803,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Load8S { memarg } => {
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::MemoryLoadReg {
@@ -4711,7 +4817,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Load8U { memarg } => {
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::MemoryLoadReg {
@@ -4724,7 +4831,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Load16S { memarg } => {
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::MemoryLoadReg {
@@ -4737,7 +4845,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Load16U { memarg } => {
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::MemoryLoadReg {
@@ -4750,7 +4859,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Load32S { memarg } => {
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::MemoryLoadReg {
@@ -4763,7 +4873,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::I64Load32U { memarg } => {
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
                         ProcessedInstr::MemoryLoadReg {
@@ -4778,7 +4889,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 // Memory Store instructions
                 wasmparser::Operator::I32Store { memarg } => {
                     let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     (
                         ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I32_STORE,
@@ -4791,7 +4903,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 wasmparser::Operator::I64Store { memarg } => {
                     let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     (
                         ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_STORE,
@@ -4804,7 +4917,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 wasmparser::Operator::F32Store { memarg } => {
                     let value = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     (
                         ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_F32_STORE,
@@ -4817,7 +4931,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 wasmparser::Operator::F64Store { memarg } => {
                     let value = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     (
                         ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_F64_STORE,
@@ -4830,7 +4945,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 wasmparser::Operator::I32Store8 { memarg } => {
                     let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     (
                         ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I32_STORE8,
@@ -4843,7 +4959,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 wasmparser::Operator::I32Store16 { memarg } => {
                     let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     (
                         ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I32_STORE16,
@@ -4856,7 +4973,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 wasmparser::Operator::I64Store8 { memarg } => {
                     let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     (
                         ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_STORE8,
@@ -4869,7 +4987,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 wasmparser::Operator::I64Store16 { memarg } => {
                     let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     (
                         ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_STORE16,
@@ -4882,7 +5001,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 wasmparser::Operator::I64Store32 { memarg } => {
                     let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     (
                         ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_STORE32,
