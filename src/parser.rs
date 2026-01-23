@@ -1955,16 +1955,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                                 pending_operands
                                     .push(PendingOperand::I32Local(*local_index as u16));
                                 allocator.push(local_type);
-                                (ProcessedInstr::NopReg, None)
+                                (None, None)
                             } else {
                                 let dst = allocator.push(local_type);
                                 (
-                                    ProcessedInstr::I32Reg {
+                                    Some(ProcessedInstr::I32Reg {
                                         handler_index: HANDLER_IDX_LOCAL_GET,
                                         dst: I32RegOperand::Reg(dst.index()),
                                         src1: I32RegOperand::Param(*local_index as u16),
                                         src2: None,
-                                    },
+                                    }),
                                     None,
                                 )
                             }
@@ -1974,16 +1974,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                                 pending_operands
                                     .push(PendingOperand::I64Local(*local_index as u16));
                                 allocator.push(local_type);
-                                (ProcessedInstr::NopReg, None)
+                                (None, None)
                             } else {
                                 let dst = allocator.push(local_type);
                                 (
-                                    ProcessedInstr::I64Reg {
+                                    Some(ProcessedInstr::I64Reg {
                                         handler_index: HANDLER_IDX_LOCAL_GET,
                                         dst: I64RegOperand::Reg(dst.index()),
                                         src1: I64RegOperand::Param(*local_index as u16),
                                         src2: None,
-                                    },
+                                    }),
                                     None,
                                 )
                             }
@@ -1993,16 +1993,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                                 pending_operands
                                     .push(PendingOperand::F32Local(*local_index as u16));
                                 allocator.push(local_type);
-                                (ProcessedInstr::NopReg, None)
+                                (None, None)
                             } else {
                                 let dst = allocator.push(local_type);
                                 (
-                                    ProcessedInstr::F32Reg {
+                                    Some(ProcessedInstr::F32Reg {
                                         handler_index: HANDLER_IDX_LOCAL_GET,
                                         dst: F32RegOperand::Reg(dst.index()),
                                         src1: F32RegOperand::Param(*local_index as u16),
                                         src2: None,
-                                    },
+                                    }),
                                     None,
                                 )
                             }
@@ -2012,16 +2012,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                                 pending_operands
                                     .push(PendingOperand::F64Local(*local_index as u16));
                                 allocator.push(local_type);
-                                (ProcessedInstr::NopReg, None)
+                                (None, None)
                             } else {
                                 let dst = allocator.push(local_type);
                                 (
-                                    ProcessedInstr::F64Reg {
+                                    Some(ProcessedInstr::F64Reg {
                                         handler_index: HANDLER_IDX_LOCAL_GET,
                                         dst: F64RegOperand::Reg(dst.index()),
                                         src1: F64RegOperand::Param(*local_index as u16),
                                         src2: None,
-                                    },
+                                    }),
                                     None,
                                 )
                             }
@@ -2030,12 +2030,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                             // For RefType, use RefLocalReg (no folding for ref types)
                             let dst = allocator.push(local_type);
                             (
-                                ProcessedInstr::RefLocalReg {
+                                Some(ProcessedInstr::RefLocalReg {
                                     handler_index: HANDLER_IDX_REF_LOCAL_GET_REG,
                                     dst: dst.index(),
                                     src: 0, // unused for get
                                     local_idx: *local_index as u16,
-                                },
+                                }),
                                 None,
                             )
                         }
@@ -2052,24 +2052,24 @@ fn decode_processed_instrs_and_fixups<'a>(
                     macro_rules! make_local_set {
                         ($instr:ident, $operand:ident) => {
                             (
-                                ProcessedInstr::$instr {
+                                Some(ProcessedInstr::$instr {
                                     handler_index: HANDLER_IDX_LOCAL_SET,
                                     dst: $operand::Param(local_idx),
                                     src1: $operand::Reg(src_idx),
                                     src2: None,
-                                },
+                                }),
                                 None,
                             )
                         };
                     }
                     match local_type {
                         ValueType::NumType(NumType::I32) => (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_LOCAL_SET,
                                 dst: I32RegOperand::Param(local_idx),
                                 src1: I32RegOperand::Reg(src_idx),
                                 src2: None,
-                            },
+                            }),
                             None,
                         ),
                         ValueType::NumType(NumType::I64) => {
@@ -2083,12 +2083,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                         }
                         ValueType::RefType(_) => {
                             (
-                                ProcessedInstr::RefLocalReg {
+                                Some(ProcessedInstr::RefLocalReg {
                                     handler_index: HANDLER_IDX_REF_LOCAL_SET_REG,
                                     dst: 0, // unused for set
                                     src: src_idx,
                                     local_idx,
-                                },
+                                }),
                                 None,
                             )
                         }
@@ -2106,24 +2106,24 @@ fn decode_processed_instrs_and_fixups<'a>(
                     macro_rules! make_local_tee {
                         ($instr:ident, $operand:ident) => {
                             (
-                                ProcessedInstr::$instr {
+                                Some(ProcessedInstr::$instr {
                                     handler_index: HANDLER_IDX_LOCAL_SET, // Reuse local.set handler
                                     dst: $operand::Param(local_idx),
                                     src1: $operand::Reg(src_idx),
                                     src2: None,
-                                },
+                                }),
                                 None,
                             )
                         };
                     }
                     match local_type {
                         ValueType::NumType(NumType::I32) => (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_LOCAL_SET,
                                 dst: I32RegOperand::Param(local_idx),
                                 src1: I32RegOperand::Reg(src_idx),
                                 src2: None,
-                            },
+                            }),
                             None,
                         ),
                         ValueType::NumType(NumType::I64) => {
@@ -2137,12 +2137,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                         }
                         ValueType::RefType(_) => {
                             (
-                                ProcessedInstr::RefLocalReg {
+                                Some(ProcessedInstr::RefLocalReg {
                                     handler_index: HANDLER_IDX_REF_LOCAL_SET_REG,
                                     dst: 0, // unused for set
                                     src: src_idx,
                                     local_idx,
-                                },
+                                }),
                                 None,
                             )
                         }
@@ -2157,44 +2157,44 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::NumType(NumType::I32) => {
                             let dst = allocator.push(global_type);
                             (
-                                ProcessedInstr::GlobalGetReg {
+                                Some(ProcessedInstr::GlobalGetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_GET_I32,
                                     dst,
                                     global_index: *global_index,
-                                },
+                                }),
                                 None,
                             )
                         }
                         ValueType::NumType(NumType::I64) => {
                             let dst = allocator.push(global_type);
                             (
-                                ProcessedInstr::GlobalGetReg {
+                                Some(ProcessedInstr::GlobalGetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_GET_I64,
                                     dst,
                                     global_index: *global_index,
-                                },
+                                }),
                                 None,
                             )
                         }
                         ValueType::NumType(NumType::F32) => {
                             let dst = allocator.push(global_type);
                             (
-                                ProcessedInstr::GlobalGetReg {
+                                Some(ProcessedInstr::GlobalGetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_GET_F32,
                                     dst,
                                     global_index: *global_index,
-                                },
+                                }),
                                 None,
                             )
                         }
                         ValueType::NumType(NumType::F64) => {
                             let dst = allocator.push(global_type);
                             (
-                                ProcessedInstr::GlobalGetReg {
+                                Some(ProcessedInstr::GlobalGetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_GET_F64,
                                     dst,
                                     global_index: *global_index,
-                                },
+                                }),
                                 None,
                             )
                         }
@@ -2209,44 +2209,44 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::NumType(NumType::I32) => {
                             let src = allocator.pop(&global_type);
                             (
-                                ProcessedInstr::GlobalSetReg {
+                                Some(ProcessedInstr::GlobalSetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_SET_I32,
                                     src,
                                     global_index: *global_index,
-                                },
+                                }),
                                 None,
                             )
                         }
                         ValueType::NumType(NumType::I64) => {
                             let src = allocator.pop(&global_type);
                             (
-                                ProcessedInstr::GlobalSetReg {
+                                Some(ProcessedInstr::GlobalSetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_SET_I64,
                                     src,
                                     global_index: *global_index,
-                                },
+                                }),
                                 None,
                             )
                         }
                         ValueType::NumType(NumType::F32) => {
                             let src = allocator.pop(&global_type);
                             (
-                                ProcessedInstr::GlobalSetReg {
+                                Some(ProcessedInstr::GlobalSetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_SET_F32,
                                     src,
                                     global_index: *global_index,
-                                },
+                                }),
                                 None,
                             )
                         }
                         ValueType::NumType(NumType::F64) => {
                             let src = allocator.pop(&global_type);
                             (
-                                ProcessedInstr::GlobalSetReg {
+                                Some(ProcessedInstr::GlobalSetReg {
                                     handler_index: HANDLER_IDX_GLOBAL_SET_F64,
                                     src,
                                     global_index: *global_index,
-                                },
+                                }),
                                 None,
                             )
                         }
@@ -2262,16 +2262,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                     {
                         pending_operands.push(PendingOperand::I32Const(*value));
                         allocator.push(ValueType::NumType(NumType::I32));
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_CONST,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1: I32RegOperand::Const(*value),
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2298,16 +2298,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                         });
                         current_processed_pc += 1;
                         // Insert NopReg for the consumed local.set
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_ADD,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2328,16 +2328,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_SUB,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2358,16 +2358,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_MUL,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2388,16 +2388,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_DIV_S,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2418,16 +2418,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_DIV_U,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2448,16 +2448,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_REM_S,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2478,16 +2478,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_REM_U,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2508,16 +2508,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_AND,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2538,16 +2538,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_OR,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2568,16 +2568,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_XOR,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2598,16 +2598,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_SHL,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2628,16 +2628,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_SHR_S,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2658,16 +2658,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_SHR_U,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2688,16 +2688,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_ROTL,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2718,16 +2718,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_ROTR,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2749,16 +2749,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_EQ,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2779,16 +2779,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_NE,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2809,16 +2809,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_LT_S,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2839,16 +2839,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_LT_U,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2869,16 +2869,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_LE_S,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2899,16 +2899,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_LE_U,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2929,16 +2929,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_GT_S,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2959,16 +2959,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_GT_U,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -2989,16 +2989,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_GE_S,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3019,16 +3019,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_GE_U,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3048,16 +3048,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_CLZ,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3076,16 +3076,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_CTZ,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3104,16 +3104,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_POPCNT,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3132,16 +3132,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_EQZ,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3160,16 +3160,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_EXTEND8_S,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3188,16 +3188,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I32));
                         (
-                            ProcessedInstr::I32Reg {
+                            Some(ProcessedInstr::I32Reg {
                                 handler_index: HANDLER_IDX_I32_EXTEND16_S,
                                 dst: I32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3209,16 +3209,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                     if can_fold_i64(&mut ops) {
                         pending_operands.push(PendingOperand::I64Const(*value));
                         allocator.push(ValueType::NumType(NumType::I64));
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_CONST,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1: I64RegOperand::Const(*value),
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3240,16 +3240,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_ADD,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3270,16 +3270,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_SUB,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3300,16 +3300,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_MUL,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3330,16 +3330,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_DIV_S,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3360,16 +3360,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_DIV_U,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3390,16 +3390,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_REM_S,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3420,16 +3420,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_REM_U,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3451,16 +3451,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_AND,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3481,16 +3481,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_OR,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3511,16 +3511,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_XOR,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3541,16 +3541,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_SHL,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3571,16 +3571,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_SHR_S,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3601,16 +3601,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_SHR_U,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3631,16 +3631,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_ROTL,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3661,16 +3661,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_ROTR,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3690,16 +3690,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_CLZ,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3718,16 +3718,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_CTZ,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3746,16 +3746,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_POPCNT,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3774,16 +3774,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_EXTEND8_S,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3802,16 +3802,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_EXTEND16_S,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3830,16 +3830,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::I64));
                         (
-                            ProcessedInstr::I64Reg {
+                            Some(ProcessedInstr::I64Reg {
                                 handler_index: HANDLER_IDX_I64_EXTEND32_S,
                                 dst: I64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -3850,12 +3850,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_i64_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Reg {
+                        Some(ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_EQZ,
                             dst: I64RegOperand::Reg(dst.index()),
                             src1,
                             src2: None,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -3866,12 +3866,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_i64_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Reg {
+                        Some(ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_EQ,
                             dst: I64RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -3882,12 +3882,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_i64_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Reg {
+                        Some(ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_NE,
                             dst: I64RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -3898,12 +3898,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_i64_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Reg {
+                        Some(ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_LT_S,
                             dst: I64RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -3914,12 +3914,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_i64_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Reg {
+                        Some(ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_LT_U,
                             dst: I64RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -3930,12 +3930,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_i64_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Reg {
+                        Some(ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_GT_S,
                             dst: I64RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -3946,12 +3946,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_i64_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Reg {
+                        Some(ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_GT_U,
                             dst: I64RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -3962,12 +3962,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_i64_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Reg {
+                        Some(ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_LE_S,
                             dst: I64RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -3978,12 +3978,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_i64_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Reg {
+                        Some(ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_LE_U,
                             dst: I64RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -3994,12 +3994,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_i64_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Reg {
+                        Some(ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_GE_S,
                             dst: I64RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -4010,12 +4010,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_i64_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::I64Reg {
+                        Some(ProcessedInstr::I64Reg {
                             handler_index: HANDLER_IDX_I64_GE_U,
                             dst: I64RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -4025,16 +4025,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                         pending_operands
                             .push(PendingOperand::F32Const(f32::from_bits(value.bits())));
                         allocator.push(ValueType::NumType(NumType::F32));
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F32));
                         (
-                            ProcessedInstr::F32Reg {
+                            Some(ProcessedInstr::F32Reg {
                                 handler_index: HANDLER_IDX_F32_CONST,
                                 dst: F32RegOperand::Reg(dst.index()),
                                 src1: F32RegOperand::Const(f32::from_bits(value.bits())),
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4056,16 +4056,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F32));
                         (
-                            ProcessedInstr::F32Reg {
+                            Some(ProcessedInstr::F32Reg {
                                 handler_index: HANDLER_IDX_F32_ADD,
                                 dst: F32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4086,16 +4086,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F32));
                         (
-                            ProcessedInstr::F32Reg {
+                            Some(ProcessedInstr::F32Reg {
                                 handler_index: HANDLER_IDX_F32_SUB,
                                 dst: F32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4116,16 +4116,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F32));
                         (
-                            ProcessedInstr::F32Reg {
+                            Some(ProcessedInstr::F32Reg {
                                 handler_index: HANDLER_IDX_F32_MUL,
                                 dst: F32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4146,16 +4146,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F32));
                         (
-                            ProcessedInstr::F32Reg {
+                            Some(ProcessedInstr::F32Reg {
                                 handler_index: HANDLER_IDX_F32_DIV,
                                 dst: F32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4176,16 +4176,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F32));
                         (
-                            ProcessedInstr::F32Reg {
+                            Some(ProcessedInstr::F32Reg {
                                 handler_index: HANDLER_IDX_F32_MIN,
                                 dst: F32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4206,16 +4206,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F32));
                         (
-                            ProcessedInstr::F32Reg {
+                            Some(ProcessedInstr::F32Reg {
                                 handler_index: HANDLER_IDX_F32_MAX,
                                 dst: F32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4236,16 +4236,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F32));
                         (
-                            ProcessedInstr::F32Reg {
+                            Some(ProcessedInstr::F32Reg {
                                 handler_index: HANDLER_IDX_F32_COPYSIGN,
                                 dst: F32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4265,16 +4265,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F32));
                         (
-                            ProcessedInstr::F32Reg {
+                            Some(ProcessedInstr::F32Reg {
                                 handler_index: HANDLER_IDX_F32_ABS,
                                 dst: F32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4293,16 +4293,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F32));
                         (
-                            ProcessedInstr::F32Reg {
+                            Some(ProcessedInstr::F32Reg {
                                 handler_index: HANDLER_IDX_F32_NEG,
                                 dst: F32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4321,16 +4321,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F32));
                         (
-                            ProcessedInstr::F32Reg {
+                            Some(ProcessedInstr::F32Reg {
                                 handler_index: HANDLER_IDX_F32_CEIL,
                                 dst: F32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4349,16 +4349,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F32));
                         (
-                            ProcessedInstr::F32Reg {
+                            Some(ProcessedInstr::F32Reg {
                                 handler_index: HANDLER_IDX_F32_FLOOR,
                                 dst: F32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4377,16 +4377,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F32));
                         (
-                            ProcessedInstr::F32Reg {
+                            Some(ProcessedInstr::F32Reg {
                                 handler_index: HANDLER_IDX_F32_TRUNC,
                                 dst: F32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4405,16 +4405,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F32));
                         (
-                            ProcessedInstr::F32Reg {
+                            Some(ProcessedInstr::F32Reg {
                                 handler_index: HANDLER_IDX_F32_NEAREST,
                                 dst: F32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4433,16 +4433,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F32));
                         (
-                            ProcessedInstr::F32Reg {
+                            Some(ProcessedInstr::F32Reg {
                                 handler_index: HANDLER_IDX_F32_SQRT,
                                 dst: F32RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4455,12 +4455,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_f32_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F32Reg {
+                        Some(ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_EQ,
                             dst: F32RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -4471,12 +4471,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_f32_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F32Reg {
+                        Some(ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_NE,
                             dst: F32RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -4487,12 +4487,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_f32_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F32Reg {
+                        Some(ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_LT,
                             dst: F32RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -4503,12 +4503,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_f32_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F32Reg {
+                        Some(ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_GT,
                             dst: F32RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -4519,12 +4519,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_f32_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F32Reg {
+                        Some(ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_LE,
                             dst: F32RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -4535,12 +4535,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_f32_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F32Reg {
+                        Some(ProcessedInstr::F32Reg {
                             handler_index: HANDLER_IDX_F32_GE,
                             dst: F32RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -4550,16 +4550,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                         pending_operands
                             .push(PendingOperand::F64Const(f64::from_bits(value.bits())));
                         allocator.push(ValueType::NumType(NumType::F64));
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F64));
                         (
-                            ProcessedInstr::F64Reg {
+                            Some(ProcessedInstr::F64Reg {
                                 handler_index: HANDLER_IDX_F64_CONST,
                                 dst: F64RegOperand::Reg(dst.index()),
                                 src1: F64RegOperand::Const(f64::from_bits(value.bits())),
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4581,16 +4581,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F64));
                         (
-                            ProcessedInstr::F64Reg {
+                            Some(ProcessedInstr::F64Reg {
                                 handler_index: HANDLER_IDX_F64_ADD,
                                 dst: F64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4611,16 +4611,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F64));
                         (
-                            ProcessedInstr::F64Reg {
+                            Some(ProcessedInstr::F64Reg {
                                 handler_index: HANDLER_IDX_F64_SUB,
                                 dst: F64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4641,16 +4641,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F64));
                         (
-                            ProcessedInstr::F64Reg {
+                            Some(ProcessedInstr::F64Reg {
                                 handler_index: HANDLER_IDX_F64_MUL,
                                 dst: F64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4671,16 +4671,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F64));
                         (
-                            ProcessedInstr::F64Reg {
+                            Some(ProcessedInstr::F64Reg {
                                 handler_index: HANDLER_IDX_F64_DIV,
                                 dst: F64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4701,16 +4701,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F64));
                         (
-                            ProcessedInstr::F64Reg {
+                            Some(ProcessedInstr::F64Reg {
                                 handler_index: HANDLER_IDX_F64_MIN,
                                 dst: F64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4731,16 +4731,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F64));
                         (
-                            ProcessedInstr::F64Reg {
+                            Some(ProcessedInstr::F64Reg {
                                 handler_index: HANDLER_IDX_F64_MAX,
                                 dst: F64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4761,16 +4761,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: Some(src2),
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F64));
                         (
-                            ProcessedInstr::F64Reg {
+                            Some(ProcessedInstr::F64Reg {
                                 handler_index: HANDLER_IDX_F64_COPYSIGN,
                                 dst: F64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: Some(src2),
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4790,16 +4790,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F64));
                         (
-                            ProcessedInstr::F64Reg {
+                            Some(ProcessedInstr::F64Reg {
                                 handler_index: HANDLER_IDX_F64_ABS,
                                 dst: F64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4818,16 +4818,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F64));
                         (
-                            ProcessedInstr::F64Reg {
+                            Some(ProcessedInstr::F64Reg {
                                 handler_index: HANDLER_IDX_F64_NEG,
                                 dst: F64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4846,16 +4846,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F64));
                         (
-                            ProcessedInstr::F64Reg {
+                            Some(ProcessedInstr::F64Reg {
                                 handler_index: HANDLER_IDX_F64_CEIL,
                                 dst: F64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4874,16 +4874,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F64));
                         (
-                            ProcessedInstr::F64Reg {
+                            Some(ProcessedInstr::F64Reg {
                                 handler_index: HANDLER_IDX_F64_FLOOR,
                                 dst: F64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4902,16 +4902,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F64));
                         (
-                            ProcessedInstr::F64Reg {
+                            Some(ProcessedInstr::F64Reg {
                                 handler_index: HANDLER_IDX_F64_TRUNC,
                                 dst: F64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4930,16 +4930,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F64));
                         (
-                            ProcessedInstr::F64Reg {
+                            Some(ProcessedInstr::F64Reg {
                                 handler_index: HANDLER_IDX_F64_NEAREST,
                                 dst: F64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4958,16 +4958,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                             src2: None,
                         });
                         current_processed_pc += 1;
-                        (ProcessedInstr::NopReg, None)
+                        (None, None)
                     } else {
                         let dst = allocator.push(ValueType::NumType(NumType::F64));
                         (
-                            ProcessedInstr::F64Reg {
+                            Some(ProcessedInstr::F64Reg {
                                 handler_index: HANDLER_IDX_F64_SQRT,
                                 dst: F64RegOperand::Reg(dst.index()),
                                 src1,
                                 src2: None,
-                            },
+                            }),
                             None,
                         )
                     }
@@ -4980,12 +4980,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_f64_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F64Reg {
+                        Some(ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_EQ,
                             dst: F64RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -4996,12 +4996,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_f64_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F64Reg {
+                        Some(ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_NE,
                             dst: F64RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5012,12 +5012,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_f64_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F64Reg {
+                        Some(ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_LT,
                             dst: F64RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5028,12 +5028,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_f64_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F64Reg {
+                        Some(ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_GT,
                             dst: F64RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5044,12 +5044,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_f64_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F64Reg {
+                        Some(ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_LE,
                             dst: F64RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5060,12 +5060,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src1 = take_f64_operand(&mut pending_operands, src1_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::F64Reg {
+                        Some(ProcessedInstr::F64Reg {
                             handler_index: HANDLER_IDX_F64_GE,
                             dst: F64RegOperand::Reg(dst.index()),
                             src1,
                             src2: Some(src2),
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5111,7 +5111,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         source_regs,
                         target_result_regs,
                     };
-                    (instr, None)
+                    (Some(instr), None)
                 }
                 wasmparser::Operator::Block { blockty }
                 | wasmparser::Operator::Loop { blockty } => {
@@ -5158,7 +5158,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         param_count,
                         is_loop,
                     };
-                    (instr, None)
+                    (Some(instr), None)
                 }
                 wasmparser::Operator::If { blockty } => {
                     let cond_reg = allocator.pop(&ValueType::NumType(NumType::I32));
@@ -5209,7 +5209,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         is_else_jump: false,
                         source_regs: vec![],
                     });
-                    (instr, fixup)
+                    (Some(instr), fixup)
                 }
                 wasmparser::Operator::Else => {
                     if let Some(state) = allocator_state_stack.last() {
@@ -5235,7 +5235,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         is_else_jump: true,
                         source_regs: vec![],
                     });
-                    (instr, fixup)
+                    (Some(instr), fixup)
                 }
 
                 wasmparser::Operator::Call { function_index } => {
@@ -5273,11 +5273,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                         };
 
                         (
-                            ProcessedInstr::CallWasiReg {
+                            Some(ProcessedInstr::CallWasiReg {
                                 wasi_func_type: wasi_type,
                                 param_regs,
                                 result_reg,
-                            },
+                            }),
                             None,
                         )
                     } else {
@@ -5316,11 +5316,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                         if param_types.is_empty() && result_types.is_empty() {
                             // No params/results - still use CallReg with empty registers
                             (
-                                ProcessedInstr::CallReg {
+                                Some(ProcessedInstr::CallReg {
                                     func_idx: FuncIdx(*function_index),
                                     param_regs: vec![],
                                     result_regs: vec![],
-                                },
+                                }),
                                 None,
                             )
                         } else {
@@ -5346,7 +5346,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                                 param_regs,
                                 result_regs,
                             };
-                            (instr, None)
+                            (Some(instr), None)
                         }
                     }
                 }
@@ -5402,7 +5402,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         param_regs,
                         result_regs,
                     };
-                    (instr, None)
+                    (Some(instr), None)
                 }
 
                 wasmparser::Operator::Br { relative_depth } => {
@@ -5426,7 +5426,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         is_else_jump: false,
                         source_regs,
                     };
-                    (instr, Some(fixup))
+                    (Some(instr), Some(fixup))
                 }
                 wasmparser::Operator::BrIf { relative_depth } => {
                     // Pop condition register
@@ -5457,7 +5457,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         is_else_jump: false,
                         source_regs,
                     };
-                    (instr, Some(fixup))
+                    (Some(instr), Some(fixup))
                 }
                 wasmparser::Operator::BrTable { ref targets } => {
                     // Pop index register
@@ -5507,7 +5507,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         is_else_jump: false,
                         source_regs,
                     };
-                    (instr, Some(fixup))
+                    (Some(instr), Some(fixup))
                 }
                 wasmparser::Operator::Return => {
                     // Get result registers based on function result types
@@ -5517,25 +5517,25 @@ fn decode_processed_instrs_and_fixups<'a>(
                     }
 
                     let instr = ProcessedInstr::ReturnReg { result_regs };
-                    (instr, None)
+                    (Some(instr), None)
                 }
-                wasmparser::Operator::Nop => (ProcessedInstr::NopReg, None),
-                wasmparser::Operator::Unreachable => (ProcessedInstr::UnreachableReg, None),
+                wasmparser::Operator::Nop => (None, None),
+                wasmparser::Operator::Unreachable => (Some(ProcessedInstr::UnreachableReg), None),
                 wasmparser::Operator::Drop => {
                     // Pop from type_stack to keep it in sync, but no runtime operation needed
                     allocator.pop_any();
-                    (ProcessedInstr::NopReg, None)
+                    (None, None)
                 }
                 // Conversion instructions - use ConversionReg
                 wasmparser::Operator::I64ExtendI32S => {
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_EXTEND_I32_S,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5543,11 +5543,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_EXTEND_I32_U,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5555,11 +5555,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_WRAP_I64,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5567,11 +5567,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_F32_S,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5579,11 +5579,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_F32_U,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5591,11 +5591,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_F64_S,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5603,11 +5603,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_F64_U,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5615,11 +5615,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_F32_S,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5627,11 +5627,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_F32_U,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5639,11 +5639,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_F64_S,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5651,11 +5651,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_F64_U,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5663,11 +5663,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_SAT_F32_S,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5675,11 +5675,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_SAT_F32_U,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5687,11 +5687,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_SAT_F64_S,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5699,11 +5699,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_TRUNC_SAT_F64_U,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5711,11 +5711,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_SAT_F32_S,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5723,11 +5723,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_SAT_F32_U,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5735,11 +5735,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_SAT_F64_S,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5747,11 +5747,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_TRUNC_SAT_F64_U,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5759,11 +5759,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F32_CONVERT_I32_S,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5771,11 +5771,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F32_CONVERT_I32_U,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5783,11 +5783,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F32_CONVERT_I64_S,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5795,11 +5795,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F32_CONVERT_I64_U,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5807,11 +5807,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F64_CONVERT_I32_S,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5819,11 +5819,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F64_CONVERT_I32_U,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5831,11 +5831,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F64_CONVERT_I64_S,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5843,11 +5843,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F64_CONVERT_I64_U,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5855,11 +5855,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F32_DEMOTE_F64,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5867,11 +5867,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F64_PROMOTE_F32,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5879,11 +5879,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I32_REINTERPRET_F32,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5891,11 +5891,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::F64));
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_I64_REINTERPRET_F64,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5903,11 +5903,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F32_REINTERPRET_I32,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5915,11 +5915,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I64));
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::ConversionReg {
+                        Some(ProcessedInstr::ConversionReg {
                             handler_index: HANDLER_IDX_F64_REINTERPRET_I64,
                             dst,
                             src,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5929,12 +5929,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryLoadReg {
+                        Some(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I32_LOAD,
                             dst,
                             addr,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5943,12 +5943,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::MemoryLoadReg {
+                        Some(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I64_LOAD,
                             dst,
                             addr,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5957,12 +5957,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::F32));
                     (
-                        ProcessedInstr::MemoryLoadReg {
+                        Some(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_F32_LOAD,
                             dst,
                             addr,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5971,12 +5971,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::F64));
                     (
-                        ProcessedInstr::MemoryLoadReg {
+                        Some(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_F64_LOAD,
                             dst,
                             addr,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5985,12 +5985,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryLoadReg {
+                        Some(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I32_LOAD8_S,
                             dst,
                             addr,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -5999,12 +5999,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryLoadReg {
+                        Some(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I32_LOAD8_U,
                             dst,
                             addr,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6013,12 +6013,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryLoadReg {
+                        Some(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I32_LOAD16_S,
                             dst,
                             addr,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6027,12 +6027,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryLoadReg {
+                        Some(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I32_LOAD16_U,
                             dst,
                             addr,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6041,12 +6041,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::MemoryLoadReg {
+                        Some(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I64_LOAD8_S,
                             dst,
                             addr,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6055,12 +6055,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::MemoryLoadReg {
+                        Some(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I64_LOAD8_U,
                             dst,
                             addr,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6069,12 +6069,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::MemoryLoadReg {
+                        Some(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I64_LOAD16_S,
                             dst,
                             addr,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6083,12 +6083,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::MemoryLoadReg {
+                        Some(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I64_LOAD16_U,
                             dst,
                             addr,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6097,12 +6097,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::MemoryLoadReg {
+                        Some(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I64_LOAD32_S,
                             dst,
                             addr,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6111,12 +6111,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     let dst = allocator.push(ValueType::NumType(NumType::I64));
                     (
-                        ProcessedInstr::MemoryLoadReg {
+                        Some(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I64_LOAD32_U,
                             dst,
                             addr,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6126,12 +6126,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     (
-                        ProcessedInstr::MemoryStoreReg {
+                        Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I32_STORE,
                             addr,
                             value,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6140,12 +6140,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     (
-                        ProcessedInstr::MemoryStoreReg {
+                        Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_STORE,
                             addr,
                             value,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6154,12 +6154,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     (
-                        ProcessedInstr::MemoryStoreReg {
+                        Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_F32_STORE,
                             addr,
                             value,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6168,12 +6168,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     (
-                        ProcessedInstr::MemoryStoreReg {
+                        Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_F64_STORE,
                             addr,
                             value,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6182,12 +6182,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     (
-                        ProcessedInstr::MemoryStoreReg {
+                        Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I32_STORE8,
                             addr,
                             value,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6196,12 +6196,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     (
-                        ProcessedInstr::MemoryStoreReg {
+                        Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I32_STORE16,
                             addr,
                             value,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6210,12 +6210,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     (
-                        ProcessedInstr::MemoryStoreReg {
+                        Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_STORE8,
                             addr,
                             value,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6224,12 +6224,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     (
-                        ProcessedInstr::MemoryStoreReg {
+                        Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_STORE16,
                             addr,
                             value,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6238,12 +6238,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr = take_i32_operand(&mut pending_operands, addr_reg.index());
                     (
-                        ProcessedInstr::MemoryStoreReg {
+                        Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_STORE32,
                             addr,
                             value,
                             offset: memarg.offset,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6252,12 +6252,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                 wasmparser::Operator::MemorySize { .. } => {
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryOpsReg {
+                        Some(ProcessedInstr::MemoryOpsReg {
                             handler_index: HANDLER_IDX_MEMORY_SIZE,
                             dst: Some(dst),
                             args: vec![],
                             data_index: 0,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6265,12 +6265,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let delta = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryOpsReg {
+                        Some(ProcessedInstr::MemoryOpsReg {
                             handler_index: HANDLER_IDX_MEMORY_GROW,
                             dst: Some(dst),
                             args: vec![delta],
                             data_index: 0,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6279,12 +6279,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dest = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryOpsReg {
+                        Some(ProcessedInstr::MemoryOpsReg {
                             handler_index: HANDLER_IDX_MEMORY_COPY,
                             dst: None,
                             args: vec![dest, src, len],
                             data_index: 0,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6293,12 +6293,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let offset = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dest = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryOpsReg {
+                        Some(ProcessedInstr::MemoryOpsReg {
                             handler_index: HANDLER_IDX_MEMORY_INIT,
                             dst: None,
                             args: vec![dest, offset, len],
                             data_index: *data_index,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6307,19 +6307,19 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let val = allocator.pop(&ValueType::NumType(NumType::I32));
                     let dest = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::MemoryOpsReg {
+                        Some(ProcessedInstr::MemoryOpsReg {
                             handler_index: HANDLER_IDX_MEMORY_FILL,
                             dst: None,
                             args: vec![dest, val, size],
                             data_index: 0,
-                        },
+                        }),
                         None,
                     )
                 }
                 wasmparser::Operator::DataDrop { data_index } => (
-                    ProcessedInstr::DataDropReg {
+                    Some(ProcessedInstr::DataDropReg {
                         data_index: *data_index,
-                    },
+                    }),
                     None,
                 ),
 
@@ -6342,13 +6342,13 @@ fn decode_processed_instrs_and_fixups<'a>(
                     };
 
                     (
-                        ProcessedInstr::SelectReg {
+                        Some(ProcessedInstr::SelectReg {
                             handler_index,
                             dst,
                             val1,
                             val2,
                             cond,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6374,13 +6374,13 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(val_type);
 
                     (
-                        ProcessedInstr::SelectReg {
+                        Some(ProcessedInstr::SelectReg {
                             handler_index,
                             dst,
                             val1,
                             val2,
                             cond,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6392,12 +6392,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     };
                     let dst = allocator.push(ValueType::RefType(ref_type.clone()));
                     (
-                        ProcessedInstr::TableRefReg {
+                        Some(ProcessedInstr::TableRefReg {
                             handler_index: HANDLER_IDX_REF_NULL_REG,
                             table_idx: 0,
                             regs: [dst.index(), 0, 0],
                             ref_type,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6407,12 +6407,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let src = allocator.pop(&ValueType::RefType(RefType::FuncRef));
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::TableRefReg {
+                        Some(ProcessedInstr::TableRefReg {
                             handler_index: HANDLER_IDX_REF_IS_NULL_REG,
                             table_idx: 0,
                             regs: [dst.index(), src.index(), 0],
                             ref_type: RefType::FuncRef, // Not used for RefIsNull
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6427,12 +6427,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                         _ => RefType::FuncRef,
                     };
                     (
-                        ProcessedInstr::TableRefReg {
+                        Some(ProcessedInstr::TableRefReg {
                             handler_index: HANDLER_IDX_TABLE_GET_REG,
                             table_idx: *table,
                             regs: [dst.index(), idx.index(), 0],
                             ref_type,
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6443,12 +6443,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let val = allocator.pop(&ref_type_vt);
                     let idx = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::TableRefReg {
+                        Some(ProcessedInstr::TableRefReg {
                             handler_index: HANDLER_IDX_TABLE_SET_REG,
                             table_idx: *table,
                             regs: [idx.index(), val.index(), 0],
                             ref_type: RefType::FuncRef, // Not used for TableSet
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6460,12 +6460,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let val = allocator.pop(&ref_type_vt);
                     let i = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
-                        ProcessedInstr::TableRefReg {
+                        Some(ProcessedInstr::TableRefReg {
                             handler_index: HANDLER_IDX_TABLE_FILL_REG,
                             table_idx: *table,
                             regs: [i.index(), val.index(), n.index()],
                             ref_type: RefType::FuncRef, // Not used for TableFill
-                        },
+                        }),
                         None,
                     )
                 }
@@ -6522,57 +6522,60 @@ fn decode_processed_instrs_and_fixups<'a>(
         }
 
         // All instructions are now register-based
-        initial_processed_instrs.push(processed_instr_template);
-        if let Some(fixup_info) = fixup_info_opt {
-            initial_fixups.push(fixup_info);
-        }
+        // Only push if we have an instruction (None means folded away)
+        if let Some(instr) = processed_instr_template {
+            initial_processed_instrs.push(instr);
+            if let Some(fixup_info) = fixup_info_opt {
+                initial_fixups.push(fixup_info);
+            }
 
-        // Update control_info_stack and block_result_regs_map
-        match op {
-            wasmparser::Operator::Block { .. } => {
-                // Register for BrTable resolution (always needed)
-                if let Some(block_info) = control_info_stack.last() {
-                    block_result_regs_map.insert(
-                        current_processed_pc,
-                        (block_info.result_regs.clone(), false),
-                    );
+            // Update control_info_stack and block_result_regs_map
+            match op {
+                wasmparser::Operator::Block { .. } => {
+                    // Register for BrTable resolution (always needed)
+                    if let Some(block_info) = control_info_stack.last() {
+                        block_result_regs_map.insert(
+                            current_processed_pc,
+                            (block_info.result_regs.clone(), false),
+                        );
+                    }
                 }
-            }
-            wasmparser::Operator::Loop { .. } => {
-                // Register for BrTable resolution (always needed)
-                // For loops, register param_regs (used when branching to loop)
-                if let Some(block_info) = control_info_stack.last() {
-                    block_result_regs_map
-                        .insert(current_processed_pc, (block_info.param_regs.clone(), true));
+                wasmparser::Operator::Loop { .. } => {
+                    // Register for BrTable resolution (always needed)
+                    // For loops, register param_regs (used when branching to loop)
+                    if let Some(block_info) = control_info_stack.last() {
+                        block_result_regs_map
+                            .insert(current_processed_pc, (block_info.param_regs.clone(), true));
+                    }
                 }
-            }
-            wasmparser::Operator::If { .. } => {
-                // Register for BrTable resolution (always needed)
-                if let Some(block_info) = control_info_stack.last() {
-                    block_result_regs_map.insert(
-                        current_processed_pc,
-                        (block_info.result_regs.clone(), false),
-                    );
+                wasmparser::Operator::If { .. } => {
+                    // Register for BrTable resolution (always needed)
+                    if let Some(block_info) = control_info_stack.last() {
+                        block_result_regs_map.insert(
+                            current_processed_pc,
+                            (block_info.result_regs.clone(), false),
+                        );
+                    }
                 }
+                wasmparser::Operator::End => {
+                    // Register mode End already popped in its match arm above
+                }
+                _ => {}
             }
-            wasmparser::Operator::End => {
-                // Register mode End already popped in its match arm above
-            }
-            _ => {}
-        }
 
-        // Mark following code as unreachable after unconditional control flow
-        match op {
-            wasmparser::Operator::Br { .. }
-            | wasmparser::Operator::BrTable { .. }
-            | wasmparser::Operator::Return
-            | wasmparser::Operator::Unreachable => {
-                unreachable_depth = 1;
+            // Mark following code as unreachable after unconditional control flow
+            match op {
+                wasmparser::Operator::Br { .. }
+                | wasmparser::Operator::BrTable { .. }
+                | wasmparser::Operator::Return
+                | wasmparser::Operator::Unreachable => {
+                    unreachable_depth = 1;
+                }
+                _ => {}
             }
-            _ => {}
-        }
 
-        current_processed_pc += 1;
+            current_processed_pc += 1;
+        }
     }
 
     if !control_stack_for_map_building.is_empty() {
