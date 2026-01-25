@@ -464,7 +464,7 @@ impl RegAllocator {
 
     /// Push a value onto the stack (allocate a new register)
     pub fn push(&mut self, vtype: ValueType) -> Reg {
-        self.type_stack.push(vtype.clone());
+        self.type_stack.push(vtype);
         match vtype {
             ValueType::NumType(NumType::I32) => {
                 let reg = Reg::I32(self.i32_depth as u16);
@@ -604,7 +604,7 @@ impl RegAllocator {
 
     /// Pop the top value from the stack (using type_stack to determine the type)
     pub fn pop_any(&mut self) -> Option<Reg> {
-        let vtype = self.type_stack.last()?.clone();
+        let vtype = *self.type_stack.last()?;
         Some(self.pop(&vtype))
     }
 

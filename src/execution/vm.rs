@@ -28,9 +28,14 @@ use crate::execution::{
 use crate::structure::module::WasiFuncType;
 use crate::structure::types::LabelIdx as StructureLabelIdx;
 use crate::structure::{instructions::*, types::*};
+use arrayvec::ArrayVec;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::rc::{Rc, Weak};
+
+/// Type alias for boxed register slice (ProcessedInstr use).
+/// 16 bytes vs Vec's 24 bytes, no capacity overhead.
+pub type RegSlice = Box<[Reg]>;
 
 /// Value source for hybrid stack/register approach.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -273,7 +278,7 @@ pub enum ProcessedInstr {
     MemoryOpsReg {
         handler_index: usize,
         dst: Option<Reg>, // Destination register (for size/grow results)
-        args: Vec<Reg>,   // Argument registers (varies by operation)
+        args: RegSlice,   // Argument registers (varies by operation)
         data_index: u32,  // Data segment index (for memory.init)
     },
 
@@ -317,23 +322,23 @@ pub enum ProcessedInstr {
     },
     CallWasiReg {
         wasi_func_type: WasiFuncType,
-        param_regs: Vec<Reg>,    // Parameter registers
+        param_regs: RegSlice,    // Parameter registers
         result_reg: Option<Reg>, // Result register (most WASI functions return i32)
     },
     CallIndirectReg {
         type_idx: TypeIdx,
         table_idx: TableIdx,
         index_reg: Reg,        // Table index register
-        param_regs: Vec<Reg>,  // Parameter registers
-        result_regs: Vec<Reg>, // Result registers
+        param_regs: RegSlice,  // Parameter registers
+        result_regs: RegSlice, // Result registers
     },
     CallReg {
         func_idx: FuncIdx,
-        param_regs: Vec<Reg>,  // Parameter registers
-        result_regs: Vec<Reg>, // Result registers
+        param_regs: RegSlice,  // Parameter registers
+        result_regs: RegSlice, // Result registers
     },
     ReturnReg {
-        result_regs: Vec<Reg>, // Result registers to return
+        result_regs: RegSlice, // Result registers to return
     },
     /// Unconditional jump (for Else)
     JumpReg { target_ip: usize },
@@ -352,30 +357,30 @@ pub enum ProcessedInstr {
     },
     /// End of block/loop/if
     EndReg {
-        source_regs: Vec<Reg>,
-        target_result_regs: Vec<Reg>,
+        source_regs: RegSlice,
+        target_result_regs: RegSlice,
     },
     /// Unconditional branch
     BrReg {
         relative_depth: u32,
         target_ip: usize, // Target instruction pointer (set by fixup)
-        source_regs: Vec<Reg>,
-        target_result_regs: Vec<Reg>,
+        source_regs: RegSlice,
+        target_result_regs: RegSlice,
     },
     /// Conditional branch
     BrIfReg {
         relative_depth: u32,
         target_ip: usize, // Target instruction pointer (set by fixup)
         cond_reg: Reg,
-        source_regs: Vec<Reg>,
-        target_result_regs: Vec<Reg>,
+        source_regs: RegSlice,
+        target_result_regs: RegSlice,
     },
     /// Branch table
     BrTableReg {
-        targets: Vec<(u32, usize, Vec<Reg>)>, // (relative_depth, target_ip, target_result_regs) for each target
-        default_target: (u32, usize, Vec<Reg>), // (relative_depth, target_ip, target_result_regs) for default
+        targets: Vec<(u32, usize, RegSlice)>, // (relative_depth, target_ip, target_result_regs) for each target
+        default_target: (u32, usize, RegSlice), // (relative_depth, target_ip, target_result_regs) for default
         index_reg: Reg,                         // Index register
-        source_regs: Vec<Reg>,                  // Source registers (same for all targets)
+        source_regs: RegSlice,                  // Source registers (same for all targets)
     },
     /// No operation
     NopReg,
@@ -434,8 +439,8 @@ pub enum ModuleLevelInstr {
     /// Invoke WebAssembly function with register-based parameters.
     InvokeReg {
         func_addr: FuncAddr,
-        params: Vec<Val>,      // Parameters read from registers
-        result_regs: Vec<Reg>, // Registers to write results to
+        params: Vec<Val>,              // Parameters read from registers
+        result_regs: ArrayVec<Reg, 8>, // Registers to write results to (max 8)
     },
 }
 
@@ -775,8 +780,8 @@ impl VMState {
                     void: type_.results.is_empty(),
                     instruction_count: 0,
                     enable_checkpoint: false,
-                    result_regs: vec![],
-                    return_result_regs: vec![],
+                    result_regs: ArrayVec::new(),
+                    return_result_regs: ArrayVec::new(),
                 };
 
                 Ok(VMState {
@@ -822,10 +827,10 @@ pub struct FrameStack {
     pub instruction_count: u64,
     #[serde(skip)]
     pub enable_checkpoint: bool,
-    /// Registers where caller expects results to be written
-    pub result_regs: Vec<Reg>,
-    /// Registers containing this function's return values (set on return)
-    pub return_result_regs: Vec<Reg>,
+    /// Registers where caller expects results to be written (max 8 for multi-value)
+    pub result_regs: ArrayVec<Reg, 8>,
+    /// Registers containing this function's return values (set on return, max 8)
+    pub return_result_regs: ArrayVec<Reg, 8>,
 }
 
 impl FrameStack {
@@ -938,19 +943,23 @@ impl FrameStack {
             // Trace instruction execution (compile-time feature gate)
             #[cfg(feature = "trace")]
             if let Some(ref mut t) = tracer {
-                let global_addrs = self
-                    .frame
-                    .module
-                    .upgrade()
-                    .map(|m| m.global_addrs.clone())
-                    .unwrap_or_default();
-                t.trace_instruction(
-                    ip,
-                    instruction_ref.handler_index(),
-                    reg_file,
-                    &self.frame.locals,
-                    &global_addrs,
-                );
+                if let Some(m) = self.frame.module.upgrade() {
+                    t.trace_instruction(
+                        ip,
+                        instruction_ref.handler_index(),
+                        reg_file,
+                        &self.frame.locals,
+                        &m.global_addrs,
+                    );
+                } else {
+                    t.trace_instruction(
+                        ip,
+                        instruction_ref.handler_index(),
+                        reg_file,
+                        &self.frame.locals,
+                        &[],
+                    );
+                }
             }
 
             // Match on instruction type
@@ -965,9 +974,9 @@ impl FrameStack {
                     let ctx = I32RegContext {
                         reg_file: reg_file.get_i32_regs(),
                         locals: &mut self.frame.locals,
-                        dst: dst.clone(),
-                        src1: src1.clone(),
-                        src2: src2.clone(),
+                        dst: *dst,
+                        src1: *src1,
+                        src2: *src2,
                     };
 
                     let handler = I32_REG_HANDLER_TABLE[*handler_index];
@@ -988,9 +997,9 @@ impl FrameStack {
                         i64_regs,
                         i32_regs,
                         locals: &mut self.frame.locals,
-                        dst: dst.clone(),
-                        src1: src1.clone(),
-                        src2: src2.clone(),
+                        dst: *dst,
+                        src1: *src1,
+                        src2: *src2,
                     };
 
                     let handler = I64_REG_HANDLER_TABLE[*handler_index];
@@ -1011,9 +1020,9 @@ impl FrameStack {
                         f32_regs,
                         i32_regs,
                         locals: &mut self.frame.locals,
-                        src1: src1.clone(),
-                        src2: src2.clone(),
-                        dst: dst.clone(),
+                        src1: *src1,
+                        src2: *src2,
+                        dst: *dst,
                     };
 
                     let handler = F32_REG_HANDLER_TABLE[*handler_index];
@@ -1034,9 +1043,9 @@ impl FrameStack {
                         f64_regs,
                         i32_regs,
                         locals: &mut self.frame.locals,
-                        src1: src1.clone(),
-                        src2: src2.clone(),
-                        dst: dst.clone(),
+                        src1: *src1,
+                        src2: *src2,
+                        dst: *dst,
                     };
 
                     let handler = F64_REG_HANDLER_TABLE[*handler_index];
@@ -1053,8 +1062,8 @@ impl FrameStack {
                     let ctx = ConversionRegContext {
                         reg_file,
                         locals: &mut self.frame.locals,
-                        src: src.clone(),
-                        dst: dst.clone(),
+                        src: *src,
+                        dst: *dst,
                     };
 
                     let handler = CONVERSION_REG_HANDLER_TABLE[*handler_index];
@@ -1083,8 +1092,8 @@ impl FrameStack {
                         reg_file,
                         locals: &mut self.frame.locals,
                         mem_addr,
-                        addr: addr.clone(),
-                        dst: dst.clone(),
+                        addr: *addr,
+                        dst: *dst,
                         offset: *offset,
                     };
 
@@ -1114,8 +1123,8 @@ impl FrameStack {
                         reg_file,
                         locals: &self.frame.locals,
                         mem_addr,
-                        addr: addr.clone(),
-                        value: value.clone(),
+                        addr: *addr,
+                        value: *value,
                         offset: *offset,
                     };
 
@@ -1145,8 +1154,8 @@ impl FrameStack {
                         reg_file,
                         mem_addr,
                         module_inst: &module_inst,
-                        dst: dst.clone(),
-                        args: args.clone(),
+                        dst: *dst,
+                        args,
                         data_index: *data_index,
                     };
 
@@ -1165,10 +1174,10 @@ impl FrameStack {
                 } => {
                     let ctx = SelectRegContext {
                         reg_file,
-                        dst: dst.clone(),
-                        val1: val1.clone(),
-                        val2: val2.clone(),
-                        cond: cond.clone(),
+                        dst: *dst,
+                        val1: *val1,
+                        val2: *val2,
+                        cond: *cond,
                     };
 
                     let handler = SELECT_REG_HANDLER_TABLE[*handler_index];
@@ -1363,7 +1372,8 @@ impl FrameStack {
                     result_reg,
                 } => {
                     let wasi_func_type_copy = *wasi_func_type;
-                    let param_regs_copy = param_regs.clone();
+                    // Copy to stack instead of heap clone
+                    let param_regs_copy: ArrayVec<Reg, 16> = param_regs.iter().copied().collect();
                     let result_reg_copy = *result_reg;
 
                     // Read parameters from registers
@@ -1389,8 +1399,9 @@ impl FrameStack {
                     let type_idx = *type_idx;
                     let table_idx = *table_idx;
                     let index_reg = *index_reg;
-                    let param_regs = param_regs.clone();
-                    let result_regs = result_regs.clone();
+                    // Copy to stack instead of heap clone
+                    let param_regs: ArrayVec<Reg, 16> = param_regs.iter().copied().collect();
+                    let result_regs: ArrayVec<Reg, 8> = result_regs.iter().copied().collect();
 
                     // Read table index from register
                     let i = reg_file.get_i32(index_reg.index());
@@ -1411,7 +1422,7 @@ impl FrameStack {
                         let actual_type = func_addr.func_type();
                         let expected_type = &module_inst.types[type_idx.0 as usize];
 
-                        if actual_type != *expected_type {
+                        if *actual_type != *expected_type {
                             return Err(RuntimeError::IndirectCallTypeMismatch);
                         }
 
@@ -1436,7 +1447,7 @@ impl FrameStack {
                         return Ok(Ok(Some(ModuleLevelInstr::InvokeReg {
                             func_addr,
                             params,
-                            result_regs,
+                            result_regs: result_regs.iter().copied().collect(),
                         })));
                     } else {
                         return Err(RuntimeError::UninitializedElement);
@@ -1448,8 +1459,9 @@ impl FrameStack {
                     result_regs,
                 } => {
                     let func_idx = *func_idx;
-                    let param_regs = param_regs.clone();
-                    let result_regs = result_regs.clone();
+                    // Copy to stack instead of heap clone
+                    let param_regs: ArrayVec<Reg, 16> = param_regs.iter().copied().collect();
+                    let result_regs: ArrayVec<Reg, 8> = result_regs.iter().copied().collect();
 
                     let module_inst = self
                         .frame
@@ -1485,12 +1497,12 @@ impl FrameStack {
                     return Ok(Ok(Some(ModuleLevelInstr::InvokeReg {
                         func_addr,
                         params,
-                        result_regs,
+                        result_regs: result_regs.iter().copied().collect(),
                     })));
                 }
                 ProcessedInstr::ReturnReg { result_regs } => {
                     // Store result registers for caller to read
-                    self.return_result_regs = result_regs.clone();
+                    self.return_result_regs = result_regs.iter().copied().collect();
 
                     return Ok(Ok(Some(ModuleLevelInstr::Return)));
                 }
@@ -1588,8 +1600,10 @@ impl FrameStack {
                     source_regs,
                     target_result_regs,
                 } => {
-                    let source_regs = source_regs.clone();
-                    let target_result_regs = target_result_regs.clone();
+                    // Copy to stack instead of heap clone
+                    let source_regs: ArrayVec<Reg, 8> = source_regs.iter().copied().collect();
+                    let target_result_regs: ArrayVec<Reg, 8> =
+                        target_result_regs.iter().copied().collect();
 
                     // Pop label stack
                     if self.label_stack.len() > 1 {
@@ -1604,12 +1618,12 @@ impl FrameStack {
                         let parent_processed_code =
                             &self.label_stack[current_label_stack_idx].processed_instrs;
                         if ip + 1 >= parent_processed_code.len() && current_label_stack_idx == 0 {
-                            self.return_result_regs = source_regs.clone();
+                            self.return_result_regs = source_regs.iter().copied().collect();
                             break;
                         }
                     } else {
                         // Function level end: store result registers for return
-                        self.return_result_regs = source_regs.clone();
+                        self.return_result_regs = source_regs.iter().copied().collect();
                         break;
                     }
                     continue;
@@ -1622,8 +1636,10 @@ impl FrameStack {
                 } => {
                     let relative_depth = *relative_depth as usize;
                     let target_ip = *target_ip;
-                    let source_regs = source_regs.clone();
-                    let target_result_regs = target_result_regs.clone();
+                    // Copy to stack instead of heap clone
+                    let source_regs: ArrayVec<Reg, 8> = source_regs.iter().copied().collect();
+                    let target_result_regs: ArrayVec<Reg, 8> =
+                        target_result_regs.iter().copied().collect();
 
                     if !source_regs.is_empty() && !target_result_regs.is_empty() {
                         reg_file.copy_regs(&source_regs, &target_result_regs);
@@ -1657,8 +1673,10 @@ impl FrameStack {
                     let relative_depth = *relative_depth as usize;
                     let target_ip = *target_ip;
                     let cond_reg = *cond_reg;
-                    let source_regs = source_regs.clone();
-                    let target_result_regs = target_result_regs.clone();
+                    // Copy to stack instead of heap clone
+                    let source_regs: ArrayVec<Reg, 8> = source_regs.iter().copied().collect();
+                    let target_result_regs: ArrayVec<Reg, 8> =
+                        target_result_regs.iter().copied().collect();
 
                     // Read condition from register
                     let cond = reg_file.get_i32(cond_reg.index());
@@ -1692,21 +1710,25 @@ impl FrameStack {
                     index_reg,
                     source_regs,
                 } => {
-                    let targets = targets.clone();
-                    let default_target = default_target.clone();
                     let index_reg = *index_reg;
-                    let source_regs = source_regs.clone();
+                    // Copy source_regs to stack instead of heap clone
+                    let source_regs: ArrayVec<Reg, 8> = source_regs.iter().copied().collect();
 
                     // Read index from register
                     let idx = reg_file.get_i32(index_reg.index()) as usize;
 
-                    // Select target (relative_depth, target_ip, target_result_regs) tuple
-                    let (relative_depth, target_ip, target_result_regs) = if idx < targets.len() {
-                        targets[idx].clone()
+                    // Select target and extract values without cloning entire Vec
+                    let (relative_depth, target_ip, target_result_regs): (
+                        usize,
+                        usize,
+                        ArrayVec<Reg, 8>,
+                    ) = if idx < targets.len() {
+                        let (depth, ip, regs) = &targets[idx];
+                        (*depth as usize, *ip, regs.iter().copied().collect())
                     } else {
-                        default_target
+                        let (depth, ip, regs) = default_target;
+                        (*depth as usize, *ip, regs.iter().copied().collect())
                     };
-                    let relative_depth = relative_depth as usize;
 
                     // Copy source to target result registers
                     if !source_regs.is_empty() && !target_result_regs.is_empty() {
@@ -3526,7 +3548,7 @@ fn make_memarg(offset: u64) -> Memarg {
 fn mem_load_i32(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: i32 = ctx.mem_addr.load(&memarg, ptr)?;
+    let val: i32 = ctx.mem_addr.load(&memarg, ptr);
     ctx.set_dst_i32(val);
     Ok(())
 }
@@ -3534,7 +3556,7 @@ fn mem_load_i32(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
 fn mem_load_i64(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: i64 = ctx.mem_addr.load(&memarg, ptr)?;
+    let val: i64 = ctx.mem_addr.load(&memarg, ptr);
     ctx.set_dst_i64(val);
     Ok(())
 }
@@ -3542,7 +3564,7 @@ fn mem_load_i64(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
 fn mem_load_f32(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: f32 = ctx.mem_addr.load(&memarg, ptr)?;
+    let val: f32 = ctx.mem_addr.load(&memarg, ptr);
     ctx.set_dst_f32(val);
     Ok(())
 }
@@ -3550,7 +3572,7 @@ fn mem_load_f32(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
 fn mem_load_f64(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: f64 = ctx.mem_addr.load(&memarg, ptr)?;
+    let val: f64 = ctx.mem_addr.load(&memarg, ptr);
     ctx.set_dst_f64(val);
     Ok(())
 }
@@ -3558,7 +3580,7 @@ fn mem_load_f64(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
 fn mem_load_i32_8s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: i8 = ctx.mem_addr.load(&memarg, ptr)?;
+    let val: i8 = ctx.mem_addr.load(&memarg, ptr);
     ctx.set_dst_i32(val as i32);
     Ok(())
 }
@@ -3566,7 +3588,7 @@ fn mem_load_i32_8s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
 fn mem_load_i32_8u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: u8 = ctx.mem_addr.load(&memarg, ptr)?;
+    let val: u8 = ctx.mem_addr.load(&memarg, ptr);
     ctx.set_dst_i32(val as i32);
     Ok(())
 }
@@ -3574,7 +3596,7 @@ fn mem_load_i32_8u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
 fn mem_load_i32_16s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: i16 = ctx.mem_addr.load(&memarg, ptr)?;
+    let val: i16 = ctx.mem_addr.load(&memarg, ptr);
     ctx.set_dst_i32(val as i32);
     Ok(())
 }
@@ -3582,7 +3604,7 @@ fn mem_load_i32_16s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
 fn mem_load_i32_16u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: u16 = ctx.mem_addr.load(&memarg, ptr)?;
+    let val: u16 = ctx.mem_addr.load(&memarg, ptr);
     ctx.set_dst_i32(val as i32);
     Ok(())
 }
@@ -3590,7 +3612,7 @@ fn mem_load_i32_16u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
 fn mem_load_i64_8s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: i8 = ctx.mem_addr.load(&memarg, ptr)?;
+    let val: i8 = ctx.mem_addr.load(&memarg, ptr);
     ctx.set_dst_i64(val as i64);
     Ok(())
 }
@@ -3598,7 +3620,7 @@ fn mem_load_i64_8s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
 fn mem_load_i64_8u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: u8 = ctx.mem_addr.load(&memarg, ptr)?;
+    let val: u8 = ctx.mem_addr.load(&memarg, ptr);
     ctx.set_dst_i64(val as i64);
     Ok(())
 }
@@ -3606,7 +3628,7 @@ fn mem_load_i64_8u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
 fn mem_load_i64_16s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: i16 = ctx.mem_addr.load(&memarg, ptr)?;
+    let val: i16 = ctx.mem_addr.load(&memarg, ptr);
     ctx.set_dst_i64(val as i64);
     Ok(())
 }
@@ -3614,7 +3636,7 @@ fn mem_load_i64_16s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
 fn mem_load_i64_16u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: u16 = ctx.mem_addr.load(&memarg, ptr)?;
+    let val: u16 = ctx.mem_addr.load(&memarg, ptr);
     ctx.set_dst_i64(val as i64);
     Ok(())
 }
@@ -3622,7 +3644,7 @@ fn mem_load_i64_16u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
 fn mem_load_i64_32s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: i32 = ctx.mem_addr.load(&memarg, ptr)?;
+    let val: i32 = ctx.mem_addr.load(&memarg, ptr);
     ctx.set_dst_i64(val as i64);
     Ok(())
 }
@@ -3630,7 +3652,7 @@ fn mem_load_i64_32s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
 fn mem_load_i64_32u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: u32 = ctx.mem_addr.load(&memarg, ptr)?;
+    let val: u32 = ctx.mem_addr.load(&memarg, ptr);
     ctx.set_dst_i64(val as i64);
     Ok(())
 }
@@ -3689,7 +3711,7 @@ fn mem_store_i32(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i32(ctx.value.index());
     let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val)?;
+    ctx.mem_addr.store(&memarg, ptr, val);
     Ok(())
 }
 
@@ -3697,7 +3719,7 @@ fn mem_store_i64(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i64(ctx.value.index());
     let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val)?;
+    ctx.mem_addr.store(&memarg, ptr, val);
     Ok(())
 }
 
@@ -3705,7 +3727,7 @@ fn mem_store_f32(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_f32(ctx.value.index());
     let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val)?;
+    ctx.mem_addr.store(&memarg, ptr, val);
     Ok(())
 }
 
@@ -3713,7 +3735,7 @@ fn mem_store_f64(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_f64(ctx.value.index());
     let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val)?;
+    ctx.mem_addr.store(&memarg, ptr, val);
     Ok(())
 }
 
@@ -3721,7 +3743,7 @@ fn mem_store_i32_8(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i32(ctx.value.index()) as u8;
     let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val)?;
+    ctx.mem_addr.store(&memarg, ptr, val);
     Ok(())
 }
 
@@ -3729,7 +3751,7 @@ fn mem_store_i32_16(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i32(ctx.value.index()) as u16;
     let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val)?;
+    ctx.mem_addr.store(&memarg, ptr, val);
     Ok(())
 }
 
@@ -3737,7 +3759,7 @@ fn mem_store_i64_8(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i64(ctx.value.index()) as u8;
     let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val)?;
+    ctx.mem_addr.store(&memarg, ptr, val);
     Ok(())
 }
 
@@ -3745,7 +3767,7 @@ fn mem_store_i64_16(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i64(ctx.value.index()) as u16;
     let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val)?;
+    ctx.mem_addr.store(&memarg, ptr, val);
     Ok(())
 }
 
@@ -3753,7 +3775,7 @@ fn mem_store_i64_32(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i64(ctx.value.index()) as u32;
     let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val)?;
+    ctx.mem_addr.store(&memarg, ptr, val);
     Ok(())
 }
 
@@ -3781,7 +3803,7 @@ struct MemoryOpsRegContext<'a> {
     mem_addr: &'a MemAddr,
     module_inst: &'a ModuleInst,
     dst: Option<Reg>,
-    args: Vec<Reg>,
+    args: &'a [Reg],
     data_index: u32,
 }
 
@@ -3819,7 +3841,7 @@ fn mem_ops_copy(ctx: MemoryOpsRegContext) -> Result<(), RuntimeError> {
     let dest = ctx.reg_file.get_i32(ctx.args[0].index());
     let src = ctx.reg_file.get_i32(ctx.args[1].index());
     let len = ctx.reg_file.get_i32(ctx.args[2].index());
-    ctx.mem_addr.memory_copy(dest, src, len)?;
+    ctx.mem_addr.memory_copy(dest, src, len);
     Ok(())
 }
 
@@ -3836,8 +3858,7 @@ fn mem_ops_init(ctx: MemoryOpsRegContext) -> Result<(), RuntimeError> {
     let data_bytes = data_addr.get_data();
 
     if len > 0 {
-        let init_data = data_bytes[offset..offset + len].to_vec();
-        ctx.mem_addr.init(dest, &init_data);
+        ctx.mem_addr.init(dest, &data_bytes[offset..offset + len]);
     }
     Ok(())
 }
@@ -3846,7 +3867,7 @@ fn mem_ops_fill(ctx: MemoryOpsRegContext) -> Result<(), RuntimeError> {
     let dest = ctx.reg_file.get_i32(ctx.args[0].index());
     let val = ctx.reg_file.get_i32(ctx.args[1].index()) as u8;
     let size = ctx.reg_file.get_i32(ctx.args[2].index());
-    ctx.mem_addr.memory_fill(dest, val, size)?;
+    ctx.mem_addr.memory_fill(dest, val, size);
     Ok(())
 }
 

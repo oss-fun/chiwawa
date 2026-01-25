@@ -241,16 +241,12 @@ impl PassthroughWasiImpl {
             )
         };
 
-        drop(memory_guard);
-
         if wasi_errno == 0 {
             let nwritten_memarg = Memarg {
                 offset: 0,
                 align: 4,
             };
-            memory
-                .store(&nwritten_memarg, nwritten_ptr as i32, nwritten)
-                .map_err(|_| WasiError::Fault)?;
+            memory.store(&nwritten_memarg, nwritten_ptr as i32, nwritten);
         }
 
         Ok(wasi_errno as i32)
@@ -303,16 +299,12 @@ impl PassthroughWasiImpl {
         let wasi_errno =
             unsafe { __wasi_fd_read(fd as u32, iovecs.as_ptr(), iovs_len, &mut nread as *mut u32) };
 
-        drop(memory_guard);
-
         if wasi_errno == 0 {
             let nread_memarg = Memarg {
                 offset: 0,
                 align: 4,
             };
-            memory
-                .store(&nread_memarg, nread_ptr as i32, nread)
-                .map_err(|_| WasiError::Fault)?;
+            memory.store(&nread_memarg, nread_ptr as i32, nread);
         }
 
         Ok(wasi_errno as i32)
@@ -335,8 +327,6 @@ impl PassthroughWasiImpl {
 
         let wasi_errno =
             unsafe { __wasi_random_get(memory_base.add(buf_ptr as usize) as *mut u8, buf_len) };
-
-        drop(memory_guard);
 
         Ok(wasi_errno as i32)
     }
@@ -390,14 +380,10 @@ impl PassthroughWasiImpl {
         ptr_data.extend_from_slice(&0u32.to_le_bytes());
 
         // Write pointer array to WebAssembly memory
-        memory
-            .store_bytes(environ_ptr as i32, &ptr_data)
-            .map_err(|_| WasiError::Fault)?;
+        memory.store_bytes(environ_ptr as i32, &ptr_data);
 
         // Write environment strings to WebAssembly memory
-        memory
-            .store_bytes(environ_buf_ptr as i32, &environ_buf)
-            .map_err(|_| WasiError::Fault)?;
+        memory.store_bytes(environ_buf_ptr as i32, &environ_buf);
 
         Ok(0)
     }
@@ -423,18 +409,14 @@ impl PassthroughWasiImpl {
             offset: 0,
             align: 4,
         };
-        memory
-            .store(&count_memarg, environ_count_ptr as i32, environ_count)
-            .map_err(|_| WasiError::Fault)?;
+        memory.store(&count_memarg, environ_count_ptr as i32, environ_count);
 
         // Write total buffer size needed
         let size_memarg = Memarg {
             offset: 0,
             align: 4,
         };
-        memory
-            .store(&size_memarg, environ_buf_size_ptr as i32, environ_buf_size)
-            .map_err(|_| WasiError::Fault)?;
+        memory.store(&size_memarg, environ_buf_size_ptr as i32, environ_buf_size);
 
         Ok(0)
     }
@@ -463,14 +445,10 @@ impl PassthroughWasiImpl {
         ptr_data.extend_from_slice(&0u32.to_le_bytes());
 
         // Write pointer array to WebAssembly memory
-        memory
-            .store_bytes(argv_ptr as i32, &ptr_data)
-            .map_err(|_| WasiError::Fault)?;
+        memory.store_bytes(argv_ptr as i32, &ptr_data);
 
         // Write argument strings to WebAssembly memory
-        memory
-            .store_bytes(argv_buf_ptr as i32, &argv_buf)
-            .map_err(|_| WasiError::Fault)?;
+        memory.store_bytes(argv_buf_ptr as i32, &argv_buf);
 
         Ok(0)
     }
@@ -494,22 +472,18 @@ impl PassthroughWasiImpl {
             offset: 0,
             align: 4,
         };
-        memory
-            .store(&argc_memarg, argc_ptr as i32, argc)
-            .map_err(|_| WasiError::Fault)?;
+        memory.store(&argc_memarg, argc_ptr as i32, argc);
 
         // Write total buffer size needed to WebAssembly memory
         let argv_buf_size_memarg = Memarg {
             offset: 0,
             align: 4,
         };
-        memory
-            .store(
-                &argv_buf_size_memarg,
-                argv_buf_size_ptr as i32,
-                argv_buf_size,
-            )
-            .map_err(|_| WasiError::Fault)?;
+        memory.store(
+            &argv_buf_size_memarg,
+            argv_buf_size_ptr as i32,
+            argv_buf_size,
+        );
 
         Ok(0)
     }
@@ -531,9 +505,7 @@ impl PassthroughWasiImpl {
         }
 
         // Write timestamp (64-bit nanoseconds) to memory using store_bytes
-        memory
-            .store_bytes(time_ptr as i32, &time.to_le_bytes())
-            .map_err(|_| WasiError::Fault)?;
+        memory.store_bytes(time_ptr as i32, &time.to_le_bytes());
 
         Ok(wasi_errno as i32)
     }
@@ -553,9 +525,7 @@ impl PassthroughWasiImpl {
         }
 
         // Write resolution (64-bit nanoseconds) to memory using store_bytes
-        memory
-            .store_bytes(resolution_ptr as i32, &resolution.to_le_bytes())
-            .map_err(|_| WasiError::Fault)?;
+        memory.store_bytes(resolution_ptr as i32, &resolution.to_le_bytes());
 
         Ok(wasi_errno as i32)
     }
@@ -567,8 +537,6 @@ impl PassthroughWasiImpl {
         let wasi_errno = unsafe {
             __wasi_fd_prestat_get(fd as u32, memory_base.add(prestat_ptr as usize) as *mut u8)
         };
-
-        drop(memory_guard);
 
         Ok(wasi_errno as i32)
     }
@@ -591,8 +559,6 @@ impl PassthroughWasiImpl {
             )
         };
 
-        drop(memory_guard);
-
         Ok(wasi_errno as i32)
     }
 
@@ -609,8 +575,6 @@ impl PassthroughWasiImpl {
         let wasi_errno = unsafe {
             __wasi_fd_fdstat_get(fd as u32, memory_base.add(stat_ptr as usize) as *mut u8)
         };
-
-        drop(memory_guard);
 
         Ok(wasi_errno as i32)
     }
@@ -651,8 +615,6 @@ impl PassthroughWasiImpl {
             )
         };
 
-        drop(memory_guard);
-
         Ok(wasi_errno as i32)
     }
 
@@ -676,8 +638,6 @@ impl PassthroughWasiImpl {
             )
         };
 
-        drop(memory_guard);
-
         Ok(wasi_errno as i32)
     }
 
@@ -687,8 +647,6 @@ impl PassthroughWasiImpl {
 
         let wasi_errno =
             unsafe { __wasi_fd_tell(fd as u32, memory_base.add(offset_ptr as usize) as *mut u64) };
-
-        drop(memory_guard);
 
         Ok(wasi_errno as i32)
     }
@@ -706,8 +664,6 @@ impl PassthroughWasiImpl {
         let wasi_errno = unsafe {
             __wasi_fd_filestat_get(fd as u32, memory_base.add(filestat_ptr as usize) as *mut u8)
         };
-
-        drop(memory_guard);
 
         Ok(wasi_errno as i32)
     }
@@ -733,8 +689,6 @@ impl PassthroughWasiImpl {
                 memory_base.add(buf_used_ptr as usize) as *mut u32,
             )
         };
-
-        drop(memory_guard);
 
         Ok(wasi_errno as i32)
     }
@@ -795,8 +749,6 @@ impl PassthroughWasiImpl {
             )
         };
 
-        drop(memory_guard);
-
         if wasi_errno != 0 {
             return Ok(wasi_errno as i32);
         }
@@ -805,9 +757,7 @@ impl PassthroughWasiImpl {
             offset: 0,
             align: 4,
         };
-        memory
-            .store(&nread_memarg, nread_ptr as i32, nread)
-            .map_err(|_| WasiError::Fault)?;
+        memory.store(&nread_memarg, nread_ptr as i32, nread);
 
         Ok(0)
     }
@@ -886,8 +836,6 @@ impl PassthroughWasiImpl {
             )
         };
 
-        drop(memory_guard);
-
         if wasi_errno != 0 {
             return Ok(wasi_errno as i32);
         }
@@ -896,9 +844,7 @@ impl PassthroughWasiImpl {
             offset: 0,
             align: 4,
         };
-        memory
-            .store(&nwritten_memarg, nwritten_ptr as i32, nwritten)
-            .map_err(|_| WasiError::Fault)?;
+        memory.store(&nwritten_memarg, nwritten_ptr as i32, nwritten);
 
         Ok(0)
     }
@@ -921,8 +867,6 @@ impl PassthroughWasiImpl {
         path_vec.push(0); // Add null terminator
 
         let wasi_errno = unsafe { __wasi_path_create_directory(fd as u32, path_vec.as_ptr()) };
-
-        drop(memory_guard);
 
         Ok(wasi_errno as i32)
     }
@@ -954,8 +898,6 @@ impl PassthroughWasiImpl {
                 memory_base.add(filestat_ptr as usize) as *mut u8,
             )
         };
-
-        drop(memory_guard);
 
         Ok(wasi_errno as i32)
     }
@@ -992,8 +934,6 @@ impl PassthroughWasiImpl {
             )
         };
 
-        drop(memory_guard);
-
         Ok(wasi_errno as i32)
     }
 
@@ -1027,8 +967,6 @@ impl PassthroughWasiImpl {
             )
         };
 
-        drop(memory_guard);
-
         Ok(wasi_errno as i32)
     }
 
@@ -1051,8 +989,6 @@ impl PassthroughWasiImpl {
 
         let wasi_errno = unsafe { __wasi_path_remove_directory(fd as u32, path_vec.as_ptr()) };
 
-        drop(memory_guard);
-
         Ok(wasi_errno as i32)
     }
 
@@ -1073,8 +1009,6 @@ impl PassthroughWasiImpl {
         path_vec.push(0);
 
         let wasi_errno = unsafe { __wasi_path_unlink_file(fd as u32, path_vec.as_ptr()) };
-
-        drop(memory_guard);
 
         Ok(wasi_errno as i32)
     }
@@ -1098,8 +1032,6 @@ impl PassthroughWasiImpl {
                 memory_base.add(nevents_ptr as usize) as *mut u32,
             )
         };
-
-        drop(memory_guard);
 
         Ok(wasi_errno as i32)
     }
@@ -1210,8 +1142,6 @@ impl PassthroughWasiImpl {
             )
         };
 
-        drop(memory_guard);
-
         Ok(wasi_errno as i32)
     }
 
@@ -1256,8 +1186,6 @@ impl PassthroughWasiImpl {
             )
         };
 
-        drop(memory_guard);
-
         Ok(wasi_errno as i32)
     }
 
@@ -1295,8 +1223,6 @@ impl PassthroughWasiImpl {
         let wasi_errno =
             unsafe { __wasi_path_symlink(old_path_vec.as_ptr(), fd, new_path_vec.as_ptr()) };
 
-        drop(memory_guard);
-
         Ok(wasi_errno as i32)
     }
 
@@ -1312,8 +1238,6 @@ impl PassthroughWasiImpl {
 
         let wasi_errno =
             unsafe { __wasi_sock_accept(fd, flags, memory_base.add(fd_ptr as usize) as *mut u32) };
-
-        drop(memory_guard);
 
         Ok(wasi_errno as i32)
     }
@@ -1342,8 +1266,6 @@ impl PassthroughWasiImpl {
             )
         };
 
-        drop(memory_guard);
-
         Ok(wasi_errno as i32)
     }
 
@@ -1368,8 +1290,6 @@ impl PassthroughWasiImpl {
                 memory_base.add(so_datalen_ptr as usize) as *mut u32,
             )
         };
-
-        drop(memory_guard);
 
         Ok(wasi_errno as i32)
     }

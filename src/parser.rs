@@ -1507,7 +1507,7 @@ fn preprocess_instructions(
                     let default_result_regs = default_info.2;
 
                     // Compute target_ip for each target (keeping existing result_regs)
-                    let mut resolved_reg_targets: Vec<(u32, usize, Vec<Reg>)> = Vec::new();
+                    let mut resolved_reg_targets: Vec<(u32, usize, RegSlice)> = Vec::new();
                     for (rel_depth, _, result_regs) in targets_clone.iter() {
                         let depth = *rel_depth as usize;
                         if current_control_stack_pass3.len() <= depth {
@@ -1714,7 +1714,7 @@ fn preprocess_instructions(
                                     reg_targets[i] = (
                                         *original_wasm_depth as u32,
                                         *target_ip,
-                                        target_result_regs.clone(),
+                                        target_result_regs.clone().into_boxed_slice(),
                                     );
                                 }
                             }
@@ -1730,7 +1730,7 @@ fn preprocess_instructions(
                             *reg_default = (
                                 *original_wasm_depth as u32,
                                 *target_ip,
-                                target_result_regs.clone(),
+                                target_result_regs.clone().into_boxed_slice(),
                             );
                         }
                     }
@@ -1773,7 +1773,7 @@ fn get_local_type(
 
     // First, check if the index is within the parameters range
     if index < params.len() {
-        return params[index].clone();
+        return params[index];
     }
 
     // Subtract parameter count to get index into locals
@@ -1782,7 +1782,7 @@ fn get_local_type(
     // Now search through declared locals
     for (count, vtype) in locals {
         if index < *count as usize {
-            return vtype.clone();
+            return *vtype;
         }
         index -= *count as usize;
     }
@@ -1798,7 +1798,7 @@ fn get_global_type(module: &Module, global_index: u32) -> ValueType {
     for import in &module.imports {
         if let ImportDesc::Global(global_type) = &import.desc {
             if imported_global_count == global_index {
-                return global_type.1.clone();
+                return global_type.1;
             }
             imported_global_count += 1;
         }
@@ -1806,7 +1806,7 @@ fn get_global_type(module: &Module, global_index: u32) -> ValueType {
 
     let local_global_index = (global_index - imported_global_count) as usize;
     if local_global_index < module.globals.len() {
-        return module.globals[local_global_index].type_.1.clone();
+        return module.globals[local_global_index].type_.1;
     }
 
     ValueType::NumType(NumType::I32)
@@ -1821,7 +1821,7 @@ fn get_table_element_type(module: &Module, table_index: u32) -> ValueType {
     for import in &module.imports {
         if let ImportDesc::Table(table_type) = &import.desc {
             if imported_table_count == table_index {
-                return ValueType::RefType(table_type.1.clone());
+                return ValueType::RefType(table_type.1);
             }
             imported_table_count += 1;
         }
@@ -1830,7 +1830,7 @@ fn get_table_element_type(module: &Module, table_index: u32) -> ValueType {
     // Check module-defined tables
     let local_table_index = (table_index - imported_table_count) as usize;
     if local_table_index < module.tables.len() {
-        return ValueType::RefType(module.tables[local_table_index].type_.1.clone());
+        return ValueType::RefType(module.tables[local_table_index].type_.1);
     }
 
     // Default to funcref
@@ -5184,8 +5184,8 @@ fn decode_processed_instrs_and_fixups<'a>(
 
                     // Use EndReg for register-based execution
                     let instr = ProcessedInstr::EndReg {
-                        source_regs,
-                        target_result_regs,
+                        source_regs: source_regs.into_boxed_slice(),
+                        target_result_regs: target_result_regs.into_boxed_slice(),
                     };
                     (Some(instr), None)
                 }
@@ -5215,7 +5215,7 @@ fn decode_processed_instrs_and_fixups<'a>(
 
                     // Push params back - they're still on the stack inside the block
                     for vtype in param_types.iter() {
-                        allocator.push(vtype.clone());
+                        allocator.push(*vtype);
                     }
 
                     let arity = result_types.len();
@@ -5225,8 +5225,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     control_info_stack.push(ControlBlockInfo {
                         block_type: *blockty,
                         is_loop,
-                        result_regs,
-                        param_regs: vec![],
+                        result_regs: result_regs.into(),
+                        param_regs: Vec::new(),
                     });
 
                     let instr = ProcessedInstr::BlockReg {
@@ -5259,7 +5259,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     };
 
                     for vtype in param_types.iter() {
-                        allocator.push(vtype.clone());
+                        allocator.push(*vtype);
                     }
 
                     let arity = result_types.len();
@@ -5268,8 +5268,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     control_info_stack.push(ControlBlockInfo {
                         block_type: *blockty,
                         is_loop: false,
-                        result_regs,
-                        param_regs: vec![],
+                        result_regs: result_regs.into(),
+                        param_regs: Vec::new(),
                     });
 
                     let instr = ProcessedInstr::IfReg {
@@ -5283,7 +5283,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         original_wasm_depth: 0,
                         is_if_false_jump: true,
                         is_else_jump: false,
-                        source_regs: vec![],
+                        source_regs: Vec::new(),
                     });
                     (Some(instr), fixup)
                 }
@@ -5296,7 +5296,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     if let Some(block_info) = control_info_stack.last() {
                         let param_types = get_block_param_types(&block_info.block_type, module);
                         for vtype in param_types.iter() {
-                            allocator.push(vtype.clone());
+                            allocator.push(*vtype);
                         }
                     }
 
@@ -5309,7 +5309,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         original_wasm_depth: 0,
                         is_if_false_jump: false,
                         is_else_jump: true,
-                        source_regs: vec![],
+                        source_regs: Vec::new(),
                     });
                     (Some(instr), fixup)
                 }
@@ -5343,7 +5343,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         }
 
                         let result_reg = if let Some(result_type) = result_types.first() {
-                            Some(allocator.push(result_type.clone()))
+                            Some(allocator.push(*result_type))
                         } else {
                             None
                         };
@@ -5351,7 +5351,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         (
                             Some(ProcessedInstr::CallWasiReg {
                                 wasi_func_type: wasi_type,
-                                param_regs,
+                                param_regs: param_regs.into_boxed_slice(),
                                 result_reg,
                             }),
                             None,
@@ -5394,8 +5394,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                             (
                                 Some(ProcessedInstr::CallReg {
                                     func_idx: FuncIdx(*function_index),
-                                    param_regs: vec![],
-                                    result_regs: vec![],
+                                    param_regs: Box::new([]),
+                                    result_regs: Box::new([]),
                                 }),
                                 None,
                             )
@@ -5412,15 +5412,15 @@ fn decode_processed_instrs_and_fixups<'a>(
                             // Push result types to allocator and collect result_regs
                             let mut result_regs = Vec::new();
                             for result_type in &result_types {
-                                let reg = allocator.push(result_type.clone());
+                                let reg = allocator.push(*result_type);
                                 result_regs.push(reg);
                             }
 
                             // Use CallReg for register-based execution
                             let instr = ProcessedInstr::CallReg {
                                 func_idx: FuncIdx(*function_index),
-                                param_regs,
-                                result_regs,
+                                param_regs: param_regs.into_boxed_slice(),
+                                result_regs: result_regs.into_boxed_slice(),
                             };
                             (Some(instr), None)
                         }
@@ -5446,8 +5446,7 @@ fn decode_processed_instrs_and_fixups<'a>(
 
                     // Get param registers (in order, from bottom to top)
                     // We need to collect the param registers before popping them
-                    let param_count = param_types.len();
-                    let mut param_regs = Vec::with_capacity(param_count);
+                    let mut param_regs = Vec::new();
                     for param_type in param_types.iter() {
                         if let Some(reg) = allocator.peek(param_type) {
                             param_regs.push(reg);
@@ -5466,7 +5465,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     // Push result types to allocator and collect result_regs
                     let mut result_regs = Vec::new();
                     for result_type in &result_types_vec {
-                        let reg = allocator.push(result_type.clone());
+                        let reg = allocator.push(*result_type);
                         result_regs.push(reg);
                     }
 
@@ -5475,8 +5474,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                         type_idx: TypeIdx(*type_index),
                         table_idx: TableIdx(*table_index),
                         index_reg,
-                        param_regs,
-                        result_regs,
+                        param_regs: param_regs.into_boxed_slice(),
+                        result_regs: result_regs.into_boxed_slice(),
                     };
                     (Some(instr), None)
                 }
@@ -5492,8 +5491,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let instr = ProcessedInstr::BrReg {
                         relative_depth: *relative_depth,
                         target_ip: usize::MAX, // Will be set by fixup
-                        source_regs: source_regs.clone(),
-                        target_result_regs,
+                        source_regs: source_regs.clone().into_boxed_slice(),
+                        target_result_regs: target_result_regs.into_boxed_slice(),
                     };
                     let fixup = FixupInfo {
                         pc: current_processed_pc,
@@ -5523,8 +5522,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                         relative_depth: *relative_depth,
                         target_ip: usize::MAX, // Will be set by fixup
                         cond_reg,
-                        source_regs: source_regs.clone(),
-                        target_result_regs,
+                        source_regs: source_regs.clone().into_boxed_slice(),
+                        target_result_regs: target_result_regs.into_boxed_slice(),
                     };
                     let fixup = FixupInfo {
                         pc: current_processed_pc,
@@ -5547,7 +5546,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let target_depths: Vec<u32> =
                         targets.targets().collect::<Result<Vec<_>, _>>()?;
 
-                    let mut table_targets: Vec<(u32, usize, Vec<Reg>)> =
+                    let mut table_targets: Vec<(u32, usize, RegSlice)> =
                         Vec::with_capacity(target_depths.len());
                     for depth in target_depths.iter() {
                         let (_, target_result_regs) = compute_branch_regs(
@@ -5555,7 +5554,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                             *depth as usize,
                             reg_allocator.as_ref(),
                         );
-                        table_targets.push((*depth, usize::MAX, target_result_regs));
+                        table_targets.push((
+                            *depth,
+                            usize::MAX,
+                            target_result_regs.into_boxed_slice(),
+                        ));
                         // target_ip will be set by fixup
                     }
 
@@ -5565,13 +5568,17 @@ fn decode_processed_instrs_and_fixups<'a>(
                         targets.default() as usize,
                         reg_allocator.as_ref(),
                     );
-                    let default_target = (targets.default(), usize::MAX, default_result_regs); // target_ip will be set by fixup
+                    let default_target = (
+                        targets.default(),
+                        usize::MAX,
+                        default_result_regs.into_boxed_slice(),
+                    ); // target_ip will be set by fixup
 
                     let instr = ProcessedInstr::BrTableReg {
                         targets: table_targets.clone(),
                         default_target,
                         index_reg,
-                        source_regs: source_regs.clone(),
+                        source_regs: source_regs.clone().into_boxed_slice(),
                     };
 
                     // Create fixups for each target and default
@@ -5592,7 +5599,9 @@ fn decode_processed_instrs_and_fixups<'a>(
                         allocator.pop(result_type);
                     }
 
-                    let instr = ProcessedInstr::ReturnReg { result_regs };
+                    let instr = ProcessedInstr::ReturnReg {
+                        result_regs: result_regs.into_boxed_slice(),
+                    };
                     (Some(instr), None)
                 }
                 wasmparser::Operator::Nop => (None, None),
@@ -6956,7 +6965,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         Some(ProcessedInstr::MemoryOpsReg {
                             handler_index: HANDLER_IDX_MEMORY_SIZE,
                             dst: Some(dst),
-                            args: vec![],
+                            args: Box::new([]),
                             data_index: 0,
                         }),
                         None,
@@ -6969,7 +6978,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         Some(ProcessedInstr::MemoryOpsReg {
                             handler_index: HANDLER_IDX_MEMORY_GROW,
                             dst: Some(dst),
-                            args: vec![delta],
+                            args: Box::new([delta]),
                             data_index: 0,
                         }),
                         None,
@@ -6983,7 +6992,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         Some(ProcessedInstr::MemoryOpsReg {
                             handler_index: HANDLER_IDX_MEMORY_COPY,
                             dst: None,
-                            args: vec![dest, src, len],
+                            args: Box::new([dest, src, len]),
                             data_index: 0,
                         }),
                         None,
@@ -6997,7 +7006,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         Some(ProcessedInstr::MemoryOpsReg {
                             handler_index: HANDLER_IDX_MEMORY_INIT,
                             dst: None,
-                            args: vec![dest, offset, len],
+                            args: Box::new([dest, offset, len]),
                             data_index: *data_index,
                         }),
                         None,
@@ -7011,7 +7020,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         Some(ProcessedInstr::MemoryOpsReg {
                             handler_index: HANDLER_IDX_MEMORY_FILL,
                             dst: None,
-                            args: vec![dest, val, size],
+                            args: Box::new([dest, val, size]),
                             data_index: 0,
                         }),
                         None,
@@ -7031,7 +7040,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let cond = allocator.pop(&ValueType::NumType(NumType::I32));
                     let val2 = allocator.pop(&val_type);
                     let val1 = allocator.pop(&val_type);
-                    let dst = allocator.push(val_type.clone());
+                    let dst = allocator.push(val_type);
 
                     let handler_index = match &val_type {
                         ValueType::NumType(NumType::I32) => HANDLER_IDX_SELECT_I32,
@@ -7091,7 +7100,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         wasmparser::HeapType::Extern => RefType::ExternalRef,
                         _ => RefType::ExternalRef,
                     };
-                    let dst = allocator.push(ValueType::RefType(ref_type.clone()));
+                    let dst = allocator.push(ValueType::RefType(ref_type));
                     (
                         Some(ProcessedInstr::TableRefReg {
                             handler_index: HANDLER_IDX_REF_NULL_REG,
@@ -7122,7 +7131,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     // table.get: [i32] -> [ref]
                     let ref_type_vt = get_table_element_type(module, *table);
                     let idx = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ref_type_vt.clone());
+                    let dst = allocator.push(ref_type_vt);
                     let ref_type = match ref_type_vt {
                         ValueType::RefType(rt) => rt,
                         _ => RefType::FuncRef,
@@ -7322,7 +7331,7 @@ fn compute_branch_regs(
     // Get target block from control_info_stack
     let stack_len = control_info_stack.len();
     if stack_len == 0 || relative_depth >= stack_len {
-        return (vec![], vec![]);
+        return (Vec::new(), Vec::new());
     }
 
     let target_idx = stack_len - 1 - relative_depth;
@@ -7340,7 +7349,7 @@ fn compute_branch_regs(
         // Get the registers at stack top matching result types
         let result_count = target_result_regs.len();
         if result_count == 0 {
-            vec![]
+            Vec::new()
         } else {
             // Get current state and compute source registers
             let state = allocator.save_state();
@@ -7379,7 +7388,7 @@ fn compute_branch_regs(
                 .collect()
         }
     } else {
-        vec![]
+        Vec::new()
     };
 
     (source_regs, target_result_regs)

@@ -25,7 +25,7 @@ impl GlobalAddr {
     pub fn new(type_: &GlobalType, value: Val) -> GlobalAddr {
         GlobalAddr {
             global_inst: Rc::new(RefCell::new(GlobalInst {
-                _type_: type_.clone(),
+                _type_: *type_,
                 value: value,
             })),
         }
