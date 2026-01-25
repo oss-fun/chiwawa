@@ -12,6 +12,7 @@ use crate::execution::vm::{Frame, FrameStack, Label, LabelStack, ModuleLevelInst
 use crate::structure::module::WasiFuncType;
 use crate::structure::types::{NumType, ValueType, VecType};
 use crate::wasi::{WasiError, WasiResult};
+use arrayvec::ArrayVec;
 use std::path::Path;
 use std::rc::Rc;
 #[cfg(all(target_os = "wasi", target_env = "p1", target_feature = "atomics"))]
@@ -210,7 +211,7 @@ impl Runtime {
                             result_reg,
                         }) => {
                             // Call WASI function directly with params from registers
-                            match self.call_wasi_function(&wasi_func_type, params) {
+                            match self.call_wasi_function(&wasi_func_type, &params) {
                                 Ok(result) => {
                                     if let Some(reg) = result_reg {
                                         if let Some(val) = result {
@@ -264,7 +265,7 @@ impl Runtime {
                                             locals,
                                             module: func_module_weak.clone(),
                                             n: type_.results.len(),
-                                            result_reg: code.result_reg.clone(),
+                                            result_reg: code.result_reg,
                                         },
                                         label_stack: vec![LabelStack {
                                             label: Label {
@@ -280,8 +281,8 @@ impl Runtime {
                                         void: type_.results.is_empty(),
                                         instruction_count: 0,
                                         enable_checkpoint: self.enable_checkpoint,
-                                        result_regs: vec![],
-                                        return_result_regs: vec![],
+                                        result_regs: ArrayVec::new(),
+                                        return_result_regs: ArrayVec::new(),
                                     };
                                     self.stacks.activation_frame_stack.push(new_frame);
                                 }
@@ -309,20 +310,22 @@ impl Runtime {
                             // Pop register file frame but keep reference for reading return values
                             let finished_frame = self.stacks.activation_frame_stack.pop().unwrap();
                             let expected_n = finished_frame.frame.n;
-                            let return_result_regs = finished_frame.return_result_regs.clone();
+                            let return_result_regs = finished_frame.return_result_regs;
 
                             if self.stacks.activation_frame_stack.is_empty() {
                                 // Read values from registers before restoring
-                                let values_to_pass: Vec<Val> = return_result_regs
+                                // Use ArrayVec to avoid heap allocation (most functions return 0-2 values)
+                                let values_to_pass: ArrayVec<Val, 8> = return_result_regs
                                     .iter()
                                     .take(expected_n)
                                     .map(|reg| self.stacks.reg_file.get_val(reg))
                                     .collect();
                                 self.stacks.reg_file.restore_offsets();
-                                return Ok(values_to_pass);
+                                return Ok(values_to_pass.into_iter().collect());
                             } else {
                                 // First read values from finished frame's registers (before restore)
-                                let values_to_pass: Vec<Val> = return_result_regs
+                                // Use ArrayVec to avoid heap allocation
+                                let values_to_pass: ArrayVec<Val, 8> = return_result_regs
                                     .iter()
                                     .map(|reg| self.stacks.reg_file.get_val(reg))
                                     .collect();
@@ -355,7 +358,7 @@ impl Runtime {
     fn call_wasi_function(
         &self,
         func_type: &WasiFuncType,
-        params: Vec<Val>,
+        params: &[Val],
     ) -> WasiResult<Option<Val>> {
         let wasi_impl = self
             .module_inst

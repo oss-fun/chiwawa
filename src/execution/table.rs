@@ -25,7 +25,7 @@ impl TableAddr {
     /// Creates a new table initialized with null references.
     pub fn new(type_: &TableType) -> TableAddr {
         TableAddr(Rc::new(RefCell::new(TableInst {
-            _type_: type_.clone(),
+            _type_: *type_,
             elem: {
                 let min = type_.0.min as usize;
                 let mut vec = Vec::with_capacity(min);

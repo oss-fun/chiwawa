@@ -28,9 +28,14 @@ use crate::execution::{
 use crate::structure::module::WasiFuncType;
 use crate::structure::types::LabelIdx as StructureLabelIdx;
 use crate::structure::{instructions::*, types::*};
+use arrayvec::ArrayVec;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::rc::{Rc, Weak};
+
+/// Type alias for boxed register slice (ProcessedInstr use).
+/// 16 bytes vs Vec's 24 bytes, no capacity overhead.
+pub type RegSlice = Box<[Reg]>;
 
 /// Value source for hybrid stack/register approach.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -137,6 +142,14 @@ pub enum Operand {
     Optimized(OptimizedOperand),
 }
 
+/// Destination that can be either a register or a local variable.
+/// Used for instructions where dst folding is applied.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum RegOrLocal {
+    Reg(u16),   // Write to register
+    Local(u16), // Write to local variable
+}
+
 /// Register-based operand for I32 operations
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum I32RegOperand {
@@ -219,53 +232,53 @@ pub enum ProcessedInstr {
     /// Register-based I32 instruction
     I32Reg {
         handler_index: usize,
-        dst: u16,                    // Destination register index
+        dst: I32RegOperand,          // Destination: Reg(idx) or Param(local_idx)
         src1: I32RegOperand,         // First operand
         src2: Option<I32RegOperand>, // Second operand (None for unary ops)
     },
     /// Register-based I64 instruction
     I64Reg {
         handler_index: usize,
-        dst: Reg, // Destination register (I64 for arithmetic, I32 for comparisons)
+        dst: I64RegOperand, // Destination (Reg for register, Param for local variable)
         src1: I64RegOperand,
         src2: Option<I64RegOperand>,
     },
 
     F32Reg {
         handler_index: usize,
-        dst: Reg,
+        dst: F32RegOperand,
         src1: F32RegOperand,
         src2: Option<F32RegOperand>,
     },
 
     F64Reg {
         handler_index: usize,
-        dst: Reg,
+        dst: F64RegOperand,
         src1: F64RegOperand,
         src2: Option<F64RegOperand>,
     },
     ConversionReg {
         handler_index: usize,
-        dst: Reg, // Destination register (type determined by output type)
-        src: Reg, // Source register (type determined by input type)
+        dst: RegOrLocal, // Destination register or local (type determined by output type)
+        src: Reg,        // Source register (type determined by input type)
     },
     MemoryLoadReg {
         handler_index: usize,
-        dst: Reg,    // Destination register for loaded value
-        addr: Reg,   // Address register (always I32)
-        offset: u64, // Memory offset
+        dst: RegOrLocal,     // Destination (register or local for dst folding)
+        addr: I32RegOperand, // Address operand (can be folded)
+        offset: u64,         // Memory offset
     },
     MemoryStoreReg {
         handler_index: usize,
-        addr: Reg,   // Address register (always I32)
-        value: Reg,  // Value register to store
-        offset: u64, // Memory offset
+        addr: I32RegOperand, // Address operand (can be folded)
+        value: Reg,          // Value register to store
+        offset: u64,         // Memory offset
     },
 
     MemoryOpsReg {
         handler_index: usize,
         dst: Option<Reg>, // Destination register (for size/grow results)
-        args: Vec<Reg>,   // Argument registers (varies by operation)
+        args: RegSlice,   // Argument registers (varies by operation)
         data_index: u32,  // Data segment index (for memory.init)
     },
 
@@ -279,13 +292,13 @@ pub enum ProcessedInstr {
 
     GlobalGetReg {
         handler_index: usize,
-        dst: Reg,          // Destination register
+        dst: RegOrLocal,   // Destination register or local
         global_index: u32, // Global variable index
     },
 
     GlobalSetReg {
         handler_index: usize,
-        src: Reg,          // Source register
+        src: RegOrLocal,   // Source register or local
         global_index: u32, // Global variable index
     },
 
@@ -309,23 +322,23 @@ pub enum ProcessedInstr {
     },
     CallWasiReg {
         wasi_func_type: WasiFuncType,
-        param_regs: Vec<Reg>,    // Parameter registers
+        param_regs: RegSlice,    // Parameter registers
         result_reg: Option<Reg>, // Result register (most WASI functions return i32)
     },
     CallIndirectReg {
         type_idx: TypeIdx,
         table_idx: TableIdx,
         index_reg: Reg,        // Table index register
-        param_regs: Vec<Reg>,  // Parameter registers
-        result_regs: Vec<Reg>, // Result registers
+        param_regs: RegSlice,  // Parameter registers
+        result_regs: RegSlice, // Result registers
     },
     CallReg {
         func_idx: FuncIdx,
-        param_regs: Vec<Reg>,  // Parameter registers
-        result_regs: Vec<Reg>, // Result registers
+        param_regs: RegSlice,  // Parameter registers
+        result_regs: RegSlice, // Result registers
     },
     ReturnReg {
-        result_regs: Vec<Reg>, // Result registers to return
+        result_regs: RegSlice, // Result registers to return
     },
     /// Unconditional jump (for Else)
     JumpReg { target_ip: usize },
@@ -344,30 +357,30 @@ pub enum ProcessedInstr {
     },
     /// End of block/loop/if
     EndReg {
-        source_regs: Vec<Reg>,
-        target_result_regs: Vec<Reg>,
+        source_regs: RegSlice,
+        target_result_regs: RegSlice,
     },
     /// Unconditional branch
     BrReg {
         relative_depth: u32,
         target_ip: usize, // Target instruction pointer (set by fixup)
-        source_regs: Vec<Reg>,
-        target_result_regs: Vec<Reg>,
+        source_regs: RegSlice,
+        target_result_regs: RegSlice,
     },
     /// Conditional branch
     BrIfReg {
         relative_depth: u32,
         target_ip: usize, // Target instruction pointer (set by fixup)
         cond_reg: Reg,
-        source_regs: Vec<Reg>,
-        target_result_regs: Vec<Reg>,
+        source_regs: RegSlice,
+        target_result_regs: RegSlice,
     },
     /// Branch table
     BrTableReg {
-        targets: Vec<(u32, usize, Vec<Reg>)>, // (relative_depth, target_ip, target_result_regs) for each target
-        default_target: (u32, usize, Vec<Reg>), // (relative_depth, target_ip, target_result_regs) for default
+        targets: Vec<(u32, usize, RegSlice)>, // (relative_depth, target_ip, target_result_regs) for each target
+        default_target: (u32, usize, RegSlice), // (relative_depth, target_ip, target_result_regs) for default
         index_reg: Reg,                         // Index register
-        source_regs: Vec<Reg>,                  // Source registers (same for all targets)
+        source_regs: RegSlice,                  // Source registers (same for all targets)
     },
     /// No operation
     NopReg,
@@ -426,8 +439,8 @@ pub enum ModuleLevelInstr {
     /// Invoke WebAssembly function with register-based parameters.
     InvokeReg {
         func_addr: FuncAddr,
-        params: Vec<Val>,      // Parameters read from registers
-        result_regs: Vec<Reg>, // Registers to write results to
+        params: Vec<Val>,              // Parameters read from registers
+        result_regs: ArrayVec<Reg, 8>, // Registers to write results to (max 8)
     },
 }
 
@@ -767,8 +780,8 @@ impl VMState {
                     void: type_.results.is_empty(),
                     instruction_count: 0,
                     enable_checkpoint: false,
-                    result_regs: vec![],
-                    return_result_regs: vec![],
+                    result_regs: ArrayVec::new(),
+                    return_result_regs: ArrayVec::new(),
                 };
 
                 Ok(VMState {
@@ -814,10 +827,10 @@ pub struct FrameStack {
     pub instruction_count: u64,
     #[serde(skip)]
     pub enable_checkpoint: bool,
-    /// Registers where caller expects results to be written
-    pub result_regs: Vec<Reg>,
-    /// Registers containing this function's return values (set on return)
-    pub return_result_regs: Vec<Reg>,
+    /// Registers where caller expects results to be written (max 8 for multi-value)
+    pub result_regs: ArrayVec<Reg, 8>,
+    /// Registers containing this function's return values (set on return, max 8)
+    pub return_result_regs: ArrayVec<Reg, 8>,
 }
 
 impl FrameStack {
@@ -930,19 +943,23 @@ impl FrameStack {
             // Trace instruction execution (compile-time feature gate)
             #[cfg(feature = "trace")]
             if let Some(ref mut t) = tracer {
-                let global_addrs = self
-                    .frame
-                    .module
-                    .upgrade()
-                    .map(|m| m.global_addrs.clone())
-                    .unwrap_or_default();
-                t.trace_instruction(
-                    ip,
-                    instruction_ref.handler_index(),
-                    reg_file,
-                    &self.frame.locals,
-                    &global_addrs,
-                );
+                if let Some(m) = self.frame.module.upgrade() {
+                    t.trace_instruction(
+                        ip,
+                        instruction_ref.handler_index(),
+                        reg_file,
+                        &self.frame.locals,
+                        &m.global_addrs,
+                    );
+                } else {
+                    t.trace_instruction(
+                        ip,
+                        instruction_ref.handler_index(),
+                        reg_file,
+                        &self.frame.locals,
+                        &[],
+                    );
+                }
             }
 
             // Match on instruction type
@@ -957,12 +974,13 @@ impl FrameStack {
                     let ctx = I32RegContext {
                         reg_file: reg_file.get_i32_regs(),
                         locals: &mut self.frame.locals,
-                        src1: src1.clone(),
-                        src2: src2.clone(),
+                        dst: *dst,
+                        src1: *src1,
+                        src2: *src2,
                     };
 
                     let handler = I32_REG_HANDLER_TABLE[*handler_index];
-                    handler(ctx, *dst)?;
+                    handler(ctx)?;
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
@@ -979,9 +997,9 @@ impl FrameStack {
                         i64_regs,
                         i32_regs,
                         locals: &mut self.frame.locals,
-                        src1: src1.clone(),
-                        src2: src2.clone(),
-                        dst: dst.clone(),
+                        dst: *dst,
+                        src1: *src1,
+                        src2: *src2,
                     };
 
                     let handler = I64_REG_HANDLER_TABLE[*handler_index];
@@ -1002,9 +1020,9 @@ impl FrameStack {
                         f32_regs,
                         i32_regs,
                         locals: &mut self.frame.locals,
-                        src1: src1.clone(),
-                        src2: src2.clone(),
-                        dst: dst.clone(),
+                        src1: *src1,
+                        src2: *src2,
+                        dst: *dst,
                     };
 
                     let handler = F32_REG_HANDLER_TABLE[*handler_index];
@@ -1025,9 +1043,9 @@ impl FrameStack {
                         f64_regs,
                         i32_regs,
                         locals: &mut self.frame.locals,
-                        src1: src1.clone(),
-                        src2: src2.clone(),
-                        dst: dst.clone(),
+                        src1: *src1,
+                        src2: *src2,
+                        dst: *dst,
                     };
 
                     let handler = F64_REG_HANDLER_TABLE[*handler_index];
@@ -1043,8 +1061,9 @@ impl FrameStack {
                 } => {
                     let ctx = ConversionRegContext {
                         reg_file,
-                        src: src.clone(),
-                        dst: dst.clone(),
+                        locals: &mut self.frame.locals,
+                        src: *src,
+                        dst: *dst,
                     };
 
                     let handler = CONVERSION_REG_HANDLER_TABLE[*handler_index];
@@ -1071,9 +1090,10 @@ impl FrameStack {
 
                     let ctx = MemoryLoadRegContext {
                         reg_file,
+                        locals: &mut self.frame.locals,
                         mem_addr,
-                        addr: addr.clone(),
-                        dst: dst.clone(),
+                        addr: *addr,
+                        dst: *dst,
                         offset: *offset,
                     };
 
@@ -1101,9 +1121,10 @@ impl FrameStack {
 
                     let ctx = MemoryStoreRegContext {
                         reg_file,
+                        locals: &self.frame.locals,
                         mem_addr,
-                        addr: addr.clone(),
-                        value: value.clone(),
+                        addr: *addr,
+                        value: *value,
                         offset: *offset,
                     };
 
@@ -1133,8 +1154,8 @@ impl FrameStack {
                         reg_file,
                         mem_addr,
                         module_inst: &module_inst,
-                        dst: dst.clone(),
-                        args: args.clone(),
+                        dst: *dst,
+                        args,
                         data_index: *data_index,
                     };
 
@@ -1153,10 +1174,10 @@ impl FrameStack {
                 } => {
                     let ctx = SelectRegContext {
                         reg_file,
-                        dst: dst.clone(),
-                        val1: val1.clone(),
-                        val2: val2.clone(),
-                        cond: cond.clone(),
+                        dst: *dst,
+                        val1: *val1,
+                        val2: *val2,
+                        cond: *cond,
                     };
 
                     let handler = SELECT_REG_HANDLER_TABLE[*handler_index];
@@ -1183,16 +1204,40 @@ impl FrameStack {
 
                     match *handler_index {
                         HANDLER_IDX_GLOBAL_GET_I32 => {
-                            reg_file.set_i32(dst.index(), val.to_i32().unwrap());
+                            let v = val.to_i32().unwrap();
+                            match dst {
+                                RegOrLocal::Reg(idx) => reg_file.set_i32(*idx, v),
+                                RegOrLocal::Local(idx) => {
+                                    self.frame.locals[*idx as usize] = Val::Num(Num::I32(v))
+                                }
+                            }
                         }
                         HANDLER_IDX_GLOBAL_GET_I64 => {
-                            reg_file.set_i64(dst.index(), val.to_i64().unwrap());
+                            let v = val.to_i64().unwrap();
+                            match dst {
+                                RegOrLocal::Reg(idx) => reg_file.set_i64(*idx, v),
+                                RegOrLocal::Local(idx) => {
+                                    self.frame.locals[*idx as usize] = Val::Num(Num::I64(v))
+                                }
+                            }
                         }
                         HANDLER_IDX_GLOBAL_GET_F32 => {
-                            reg_file.set_f32(dst.index(), val.to_f32().unwrap());
+                            let v = val.to_f32().unwrap();
+                            match dst {
+                                RegOrLocal::Reg(idx) => reg_file.set_f32(*idx, v),
+                                RegOrLocal::Local(idx) => {
+                                    self.frame.locals[*idx as usize] = Val::Num(Num::F32(v))
+                                }
+                            }
                         }
                         HANDLER_IDX_GLOBAL_GET_F64 => {
-                            reg_file.set_f64(dst.index(), val.to_f64().unwrap());
+                            let v = val.to_f64().unwrap();
+                            match dst {
+                                RegOrLocal::Reg(idx) => reg_file.set_f64(*idx, v),
+                                RegOrLocal::Local(idx) => {
+                                    self.frame.locals[*idx as usize] = Val::Num(Num::F64(v))
+                                }
+                            }
                         }
                         _ => return Err(RuntimeError::InvalidHandlerIndex),
                     }
@@ -1207,16 +1252,40 @@ impl FrameStack {
                 } => {
                     let val = match *handler_index {
                         HANDLER_IDX_GLOBAL_SET_I32 => {
-                            Val::Num(Num::I32(reg_file.get_i32(src.index())))
+                            let v = match src {
+                                RegOrLocal::Reg(idx) => reg_file.get_i32(*idx),
+                                RegOrLocal::Local(idx) => {
+                                    self.frame.locals[*idx as usize].to_i32().unwrap()
+                                }
+                            };
+                            Val::Num(Num::I32(v))
                         }
                         HANDLER_IDX_GLOBAL_SET_I64 => {
-                            Val::Num(Num::I64(reg_file.get_i64(src.index())))
+                            let v = match src {
+                                RegOrLocal::Reg(idx) => reg_file.get_i64(*idx),
+                                RegOrLocal::Local(idx) => {
+                                    self.frame.locals[*idx as usize].to_i64().unwrap()
+                                }
+                            };
+                            Val::Num(Num::I64(v))
                         }
                         HANDLER_IDX_GLOBAL_SET_F32 => {
-                            Val::Num(Num::F32(reg_file.get_f32(src.index())))
+                            let v = match src {
+                                RegOrLocal::Reg(idx) => reg_file.get_f32(*idx),
+                                RegOrLocal::Local(idx) => {
+                                    self.frame.locals[*idx as usize].to_f32().unwrap()
+                                }
+                            };
+                            Val::Num(Num::F32(v))
                         }
                         HANDLER_IDX_GLOBAL_SET_F64 => {
-                            Val::Num(Num::F64(reg_file.get_f64(src.index())))
+                            let v = match src {
+                                RegOrLocal::Reg(idx) => reg_file.get_f64(*idx),
+                                RegOrLocal::Local(idx) => {
+                                    self.frame.locals[*idx as usize].to_f64().unwrap()
+                                }
+                            };
+                            Val::Num(Num::F64(v))
                         }
                         _ => return Err(RuntimeError::InvalidHandlerIndex),
                     };
@@ -1303,7 +1372,8 @@ impl FrameStack {
                     result_reg,
                 } => {
                     let wasi_func_type_copy = *wasi_func_type;
-                    let param_regs_copy = param_regs.clone();
+                    // Copy to stack instead of heap clone
+                    let param_regs_copy: ArrayVec<Reg, 16> = param_regs.iter().copied().collect();
                     let result_reg_copy = *result_reg;
 
                     // Read parameters from registers
@@ -1329,8 +1399,9 @@ impl FrameStack {
                     let type_idx = *type_idx;
                     let table_idx = *table_idx;
                     let index_reg = *index_reg;
-                    let param_regs = param_regs.clone();
-                    let result_regs = result_regs.clone();
+                    // Copy to stack instead of heap clone
+                    let param_regs: ArrayVec<Reg, 16> = param_regs.iter().copied().collect();
+                    let result_regs: ArrayVec<Reg, 8> = result_regs.iter().copied().collect();
 
                     // Read table index from register
                     let i = reg_file.get_i32(index_reg.index());
@@ -1351,7 +1422,7 @@ impl FrameStack {
                         let actual_type = func_addr.func_type();
                         let expected_type = &module_inst.types[type_idx.0 as usize];
 
-                        if actual_type != *expected_type {
+                        if *actual_type != *expected_type {
                             return Err(RuntimeError::IndirectCallTypeMismatch);
                         }
 
@@ -1376,7 +1447,7 @@ impl FrameStack {
                         return Ok(Ok(Some(ModuleLevelInstr::InvokeReg {
                             func_addr,
                             params,
-                            result_regs,
+                            result_regs: result_regs.iter().copied().collect(),
                         })));
                     } else {
                         return Err(RuntimeError::UninitializedElement);
@@ -1388,8 +1459,9 @@ impl FrameStack {
                     result_regs,
                 } => {
                     let func_idx = *func_idx;
-                    let param_regs = param_regs.clone();
-                    let result_regs = result_regs.clone();
+                    // Copy to stack instead of heap clone
+                    let param_regs: ArrayVec<Reg, 16> = param_regs.iter().copied().collect();
+                    let result_regs: ArrayVec<Reg, 8> = result_regs.iter().copied().collect();
 
                     let module_inst = self
                         .frame
@@ -1425,12 +1497,12 @@ impl FrameStack {
                     return Ok(Ok(Some(ModuleLevelInstr::InvokeReg {
                         func_addr,
                         params,
-                        result_regs,
+                        result_regs: result_regs.iter().copied().collect(),
                     })));
                 }
                 ProcessedInstr::ReturnReg { result_regs } => {
                     // Store result registers for caller to read
-                    self.return_result_regs = result_regs.clone();
+                    self.return_result_regs = result_regs.iter().copied().collect();
 
                     return Ok(Ok(Some(ModuleLevelInstr::Return)));
                 }
@@ -1528,8 +1600,10 @@ impl FrameStack {
                     source_regs,
                     target_result_regs,
                 } => {
-                    let source_regs = source_regs.clone();
-                    let target_result_regs = target_result_regs.clone();
+                    // Copy to stack instead of heap clone
+                    let source_regs: ArrayVec<Reg, 8> = source_regs.iter().copied().collect();
+                    let target_result_regs: ArrayVec<Reg, 8> =
+                        target_result_regs.iter().copied().collect();
 
                     // Pop label stack
                     if self.label_stack.len() > 1 {
@@ -1544,12 +1618,12 @@ impl FrameStack {
                         let parent_processed_code =
                             &self.label_stack[current_label_stack_idx].processed_instrs;
                         if ip + 1 >= parent_processed_code.len() && current_label_stack_idx == 0 {
-                            self.return_result_regs = source_regs.clone();
+                            self.return_result_regs = source_regs.iter().copied().collect();
                             break;
                         }
                     } else {
                         // Function level end: store result registers for return
-                        self.return_result_regs = source_regs.clone();
+                        self.return_result_regs = source_regs.iter().copied().collect();
                         break;
                     }
                     continue;
@@ -1562,8 +1636,10 @@ impl FrameStack {
                 } => {
                     let relative_depth = *relative_depth as usize;
                     let target_ip = *target_ip;
-                    let source_regs = source_regs.clone();
-                    let target_result_regs = target_result_regs.clone();
+                    // Copy to stack instead of heap clone
+                    let source_regs: ArrayVec<Reg, 8> = source_regs.iter().copied().collect();
+                    let target_result_regs: ArrayVec<Reg, 8> =
+                        target_result_regs.iter().copied().collect();
 
                     if !source_regs.is_empty() && !target_result_regs.is_empty() {
                         reg_file.copy_regs(&source_regs, &target_result_regs);
@@ -1597,8 +1673,10 @@ impl FrameStack {
                     let relative_depth = *relative_depth as usize;
                     let target_ip = *target_ip;
                     let cond_reg = *cond_reg;
-                    let source_regs = source_regs.clone();
-                    let target_result_regs = target_result_regs.clone();
+                    // Copy to stack instead of heap clone
+                    let source_regs: ArrayVec<Reg, 8> = source_regs.iter().copied().collect();
+                    let target_result_regs: ArrayVec<Reg, 8> =
+                        target_result_regs.iter().copied().collect();
 
                     // Read condition from register
                     let cond = reg_file.get_i32(cond_reg.index());
@@ -1632,21 +1710,25 @@ impl FrameStack {
                     index_reg,
                     source_regs,
                 } => {
-                    let targets = targets.clone();
-                    let default_target = default_target.clone();
                     let index_reg = *index_reg;
-                    let source_regs = source_regs.clone();
+                    // Copy source_regs to stack instead of heap clone
+                    let source_regs: ArrayVec<Reg, 8> = source_regs.iter().copied().collect();
 
                     // Read index from register
                     let idx = reg_file.get_i32(index_reg.index()) as usize;
 
-                    // Select target (relative_depth, target_ip, target_result_regs) tuple
-                    let (relative_depth, target_ip, target_result_regs) = if idx < targets.len() {
-                        targets[idx].clone()
+                    // Select target and extract values without cloning entire Vec
+                    let (relative_depth, target_ip, target_result_regs): (
+                        usize,
+                        usize,
+                        ArrayVec<Reg, 8>,
+                    ) = if idx < targets.len() {
+                        let (depth, ip, regs) = &targets[idx];
+                        (*depth as usize, *ip, regs.iter().copied().collect())
                     } else {
-                        default_target
+                        let (depth, ip, regs) = default_target;
+                        (*depth as usize, *ip, regs.iter().copied().collect())
                     };
-                    let relative_depth = relative_depth as usize;
 
                     // Copy source to target result registers
                     if !source_regs.is_empty() && !target_result_regs.is_empty() {
@@ -1761,6 +1843,7 @@ pub enum AdminInstr {
 struct I32RegContext<'a> {
     reg_file: &'a mut [i32],
     locals: &'a mut [Val],
+    dst: I32RegOperand,
     src1: I32RegOperand,
     src2: Option<I32RegOperand>,
 }
@@ -1774,259 +1857,268 @@ impl<'a> I32RegContext<'a> {
             I32RegOperand::Param(idx) => self.locals[*idx as usize].to_i32(),
         }
     }
+
+    #[inline]
+    fn set_dst(&mut self, val: i32) {
+        match &self.dst {
+            I32RegOperand::Reg(idx) => self.reg_file[*idx as usize] = val,
+            I32RegOperand::Param(idx) => self.locals[*idx as usize] = Val::Num(Num::I32(val)),
+            I32RegOperand::Const(_) => unreachable!("Cannot write to Const dst"),
+        }
+    }
 }
 
-fn i32_reg_local_get(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_local_get(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.reg_file[dst as usize] = val;
+    ctx.set_dst(val);
     Ok(())
 }
 
-fn i32_reg_local_set(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
-    // dst is the local variable index, src1 is the value source
+fn i32_reg_local_set(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
+    // dst is the local variable (Param), src1 is the value source
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.locals[dst as usize] = Val::Num(Num::I32(val));
+    ctx.set_dst(val);
     Ok(())
 }
 
-fn i32_reg_const(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_const(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.reg_file[dst as usize] = val;
+    ctx.set_dst(val);
     Ok(())
 }
 
-fn i32_reg_add(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_add(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = lhs.wrapping_add(rhs);
+    ctx.set_dst(lhs.wrapping_add(rhs));
     Ok(())
 }
 
-fn i32_reg_sub(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_sub(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = lhs.wrapping_sub(rhs);
+    ctx.set_dst(lhs.wrapping_sub(rhs));
     Ok(())
 }
 
-fn i32_reg_mul(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_mul(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = lhs.wrapping_mul(rhs);
+    ctx.set_dst(lhs.wrapping_mul(rhs));
     Ok(())
 }
 
-fn i32_reg_div_s(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_div_s(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
     if rhs == 0 {
         return Err(RuntimeError::ZeroDivideError);
     }
-    ctx.reg_file[dst as usize] = lhs.wrapping_div(rhs);
+    ctx.set_dst(lhs.wrapping_div(rhs));
     Ok(())
 }
 
-fn i32_reg_div_u(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_div_u(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
     let rhs_u = rhs as u32;
     if rhs_u == 0 {
         return Err(RuntimeError::ZeroDivideError);
     }
-    ctx.reg_file[dst as usize] = ((lhs as u32) / rhs_u) as i32;
+    ctx.set_dst(((lhs as u32) / rhs_u) as i32);
     Ok(())
 }
 
-fn i32_reg_rem_s(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_rem_s(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
     if rhs == 0 {
         return Err(RuntimeError::ZeroDivideError);
     }
-    ctx.reg_file[dst as usize] = lhs.wrapping_rem(rhs);
+    ctx.set_dst(lhs.wrapping_rem(rhs));
     Ok(())
 }
 
-fn i32_reg_rem_u(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_rem_u(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
     let rhs_u = rhs as u32;
     if rhs_u == 0 {
         return Err(RuntimeError::ZeroDivideError);
     }
-    ctx.reg_file[dst as usize] = ((lhs as u32) % rhs_u) as i32;
+    ctx.set_dst(((lhs as u32) % rhs_u) as i32);
     Ok(())
 }
 
-fn i32_reg_and(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_and(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = lhs & rhs;
+    ctx.set_dst(lhs & rhs);
     Ok(())
 }
 
-fn i32_reg_or(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_or(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = lhs | rhs;
+    ctx.set_dst(lhs | rhs);
     Ok(())
 }
 
-fn i32_reg_xor(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_xor(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = lhs ^ rhs;
+    ctx.set_dst(lhs ^ rhs);
     Ok(())
 }
 
-fn i32_reg_shl(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_shl(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = lhs.wrapping_shl(rhs as u32);
+    ctx.set_dst(lhs.wrapping_shl(rhs as u32));
     Ok(())
 }
 
-fn i32_reg_shr_s(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_shr_s(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = lhs.wrapping_shr(rhs as u32);
+    ctx.set_dst(lhs.wrapping_shr(rhs as u32));
     Ok(())
 }
 
-fn i32_reg_shr_u(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_shr_u(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = ((lhs as u32).wrapping_shr(rhs as u32)) as i32;
+    ctx.set_dst(((lhs as u32).wrapping_shr(rhs as u32)) as i32);
     Ok(())
 }
 
-fn i32_reg_rotl(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_rotl(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = lhs.rotate_left(rhs as u32);
+    ctx.set_dst(lhs.rotate_left(rhs as u32));
     Ok(())
 }
 
-fn i32_reg_rotr(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_rotr(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = lhs.rotate_right(rhs as u32);
+    ctx.set_dst(lhs.rotate_right(rhs as u32));
     Ok(())
 }
 
 // Comparison handlers
-fn i32_reg_eq(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_eq(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = if lhs == rhs { 1 } else { 0 };
+    ctx.set_dst(if lhs == rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn i32_reg_ne(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_ne(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = if lhs != rhs { 1 } else { 0 };
+    ctx.set_dst(if lhs != rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn i32_reg_lt_s(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_lt_s(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = if lhs < rhs { 1 } else { 0 };
+    ctx.set_dst(if lhs < rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn i32_reg_lt_u(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_lt_u(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = if (lhs as u32) < (rhs as u32) { 1 } else { 0 };
+    ctx.set_dst(if (lhs as u32) < (rhs as u32) { 1 } else { 0 });
     Ok(())
 }
 
-fn i32_reg_le_s(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_le_s(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = if lhs <= rhs { 1 } else { 0 };
+    ctx.set_dst(if lhs <= rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn i32_reg_le_u(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_le_u(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = if (lhs as u32) <= (rhs as u32) { 1 } else { 0 };
+    ctx.set_dst(if (lhs as u32) <= (rhs as u32) { 1 } else { 0 });
     Ok(())
 }
 
-fn i32_reg_gt_s(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_gt_s(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = if lhs > rhs { 1 } else { 0 };
+    ctx.set_dst(if lhs > rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn i32_reg_gt_u(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_gt_u(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = if (lhs as u32) > (rhs as u32) { 1 } else { 0 };
+    ctx.set_dst(if (lhs as u32) > (rhs as u32) { 1 } else { 0 });
     Ok(())
 }
 
-fn i32_reg_ge_s(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_ge_s(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = if lhs >= rhs { 1 } else { 0 };
+    ctx.set_dst(if lhs >= rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn i32_reg_ge_u(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_ge_u(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.reg_file[dst as usize] = if (lhs as u32) >= (rhs as u32) { 1 } else { 0 };
+    ctx.set_dst(if (lhs as u32) >= (rhs as u32) { 1 } else { 0 });
     Ok(())
 }
 
 // Unary operation handlers
-fn i32_reg_clz(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_clz(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.reg_file[dst as usize] = val.leading_zeros() as i32;
+    ctx.set_dst(val.leading_zeros() as i32);
     Ok(())
 }
 
-fn i32_reg_ctz(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_ctz(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.reg_file[dst as usize] = val.trailing_zeros() as i32;
+    ctx.set_dst(val.trailing_zeros() as i32);
     Ok(())
 }
 
-fn i32_reg_popcnt(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_popcnt(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.reg_file[dst as usize] = val.count_ones() as i32;
+    ctx.set_dst(val.count_ones() as i32);
     Ok(())
 }
 
-fn i32_reg_eqz(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_eqz(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.reg_file[dst as usize] = if val == 0 { 1 } else { 0 };
+    ctx.set_dst(if val == 0 { 1 } else { 0 });
     Ok(())
 }
 
-fn i32_reg_extend8_s(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_extend8_s(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.reg_file[dst as usize] = (val as i8) as i32;
+    ctx.set_dst((val as i8) as i32);
     Ok(())
 }
 
-fn i32_reg_extend16_s(ctx: I32RegContext, dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_extend16_s(mut ctx: I32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.reg_file[dst as usize] = (val as i16) as i32;
+    ctx.set_dst((val as i16) as i32);
     Ok(())
 }
 
 // Handler function type
-type I32RegHandler = fn(I32RegContext, u16) -> Result<(), RuntimeError>;
+type I32RegHandler = fn(I32RegContext) -> Result<(), RuntimeError>;
 
 // Default error handler
-fn i32_reg_invalid_handler(_ctx: I32RegContext, _dst: u16) -> Result<(), RuntimeError> {
+fn i32_reg_invalid_handler(_ctx: I32RegContext) -> Result<(), RuntimeError> {
     Err(RuntimeError::InvalidHandlerIndex)
 }
 
@@ -2085,9 +2177,9 @@ struct I64RegContext<'a> {
     i64_regs: &'a mut [i64],
     i32_regs: &'a mut [i32], // For comparison operations that return i32
     locals: &'a mut [Val],
+    dst: I64RegOperand,
     src1: I64RegOperand,
     src2: Option<I64RegOperand>,
-    dst: Reg, // Destination register (type determines which array to write to)
 }
 
 impl<'a> I64RegContext<'a> {
@@ -2099,49 +2191,69 @@ impl<'a> I64RegContext<'a> {
             I64RegOperand::Param(idx) => self.locals[*idx as usize].to_i64(),
         }
     }
+
+    #[inline]
+    fn set_dst(&mut self, val: i64) {
+        match &self.dst {
+            I64RegOperand::Reg(idx) => self.i64_regs[*idx as usize] = val,
+            I64RegOperand::Param(idx) => self.locals[*idx as usize] = Val::Num(Num::I64(val)),
+            I64RegOperand::Const(_) => unreachable!("Cannot write to Const dst"),
+        }
+    }
+
+    /// For comparison operations that return i32
+    /// dst must be I64RegOperand::Reg (index into i32_regs)
+    #[inline]
+    fn set_dst_i32(&mut self, val: i32) {
+        match &self.dst {
+            I64RegOperand::Reg(idx) => self.i32_regs[*idx as usize] = val,
+            I64RegOperand::Param(idx) => self.locals[*idx as usize] = Val::Num(Num::I32(val)),
+            I64RegOperand::Const(_) => unreachable!("Cannot write to Const dst"),
+        }
+    }
 }
 
-fn i64_reg_local_get(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_local_get(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.i64_regs[ctx.dst.index() as usize] = val;
+    ctx.set_dst(val);
     Ok(())
 }
 
-fn i64_reg_local_set(ctx: I64RegContext) -> Result<(), RuntimeError> {
-    // dst.index() is the local variable index, src1 is the value source
+fn i64_reg_local_set(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
+    // dst is Param(local_idx), src1 is the value source
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.locals[ctx.dst.index() as usize] = Val::Num(Num::I64(val));
+    ctx.set_dst(val);
     Ok(())
 }
 
-fn i64_reg_const(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_const(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.i64_regs[ctx.dst.index() as usize] = val;
+    ctx.set_dst(val);
     Ok(())
 }
 
-fn i64_reg_add(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_add(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_regs[ctx.dst.index() as usize] = lhs.wrapping_add(rhs);
+    ctx.set_dst(lhs.wrapping_add(rhs));
     Ok(())
 }
 
-fn i64_reg_sub(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_sub(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_regs[ctx.dst.index() as usize] = lhs.wrapping_sub(rhs);
+    ctx.set_dst(lhs.wrapping_sub(rhs));
     Ok(())
 }
 
-fn i64_reg_mul(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_mul(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_regs[ctx.dst.index() as usize] = lhs.wrapping_mul(rhs);
+    ctx.set_dst(lhs.wrapping_mul(rhs));
     Ok(())
 }
 
-fn i64_reg_div_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_div_s(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
     if rhs == 0 {
@@ -2150,209 +2262,208 @@ fn i64_reg_div_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
     if lhs == i64::MIN && rhs == -1 {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.i64_regs[ctx.dst.index() as usize] = lhs.wrapping_div(rhs);
+    ctx.set_dst(lhs.wrapping_div(rhs));
     Ok(())
 }
 
-fn i64_reg_div_u(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_div_u(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
     let rhs_u = rhs as u64;
     if rhs_u == 0 {
         return Err(RuntimeError::ZeroDivideError);
     }
-    ctx.i64_regs[ctx.dst.index() as usize] = ((lhs as u64) / rhs_u) as i64;
+    ctx.set_dst(((lhs as u64) / rhs_u) as i64);
     Ok(())
 }
 
-fn i64_reg_rem_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_rem_s(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
     if rhs == 0 {
         return Err(RuntimeError::ZeroDivideError);
     }
-    ctx.i64_regs[ctx.dst.index() as usize] = lhs.wrapping_rem(rhs);
+    ctx.set_dst(lhs.wrapping_rem(rhs));
     Ok(())
 }
 
-fn i64_reg_rem_u(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_rem_u(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
     let rhs_u = rhs as u64;
     if rhs_u == 0 {
         return Err(RuntimeError::ZeroDivideError);
     }
-    ctx.i64_regs[ctx.dst.index() as usize] = ((lhs as u64) % rhs_u) as i64;
+    ctx.set_dst(((lhs as u64) % rhs_u) as i64);
     Ok(())
 }
 
-fn i64_reg_and(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_and(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_regs[ctx.dst.index() as usize] = lhs & rhs;
+    ctx.set_dst(lhs & rhs);
     Ok(())
 }
 
-fn i64_reg_or(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_or(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_regs[ctx.dst.index() as usize] = lhs | rhs;
+    ctx.set_dst(lhs | rhs);
     Ok(())
 }
 
-fn i64_reg_xor(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_xor(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_regs[ctx.dst.index() as usize] = lhs ^ rhs;
+    ctx.set_dst(lhs ^ rhs);
     Ok(())
 }
 
-fn i64_reg_shl(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_shl(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_regs[ctx.dst.index() as usize] = lhs.wrapping_shl((rhs & 0x3f) as u32);
+    ctx.set_dst(lhs.wrapping_shl((rhs & 0x3f) as u32));
     Ok(())
 }
 
-fn i64_reg_shr_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_shr_s(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_regs[ctx.dst.index() as usize] = lhs.wrapping_shr((rhs & 0x3f) as u32);
+    ctx.set_dst(lhs.wrapping_shr((rhs & 0x3f) as u32));
     Ok(())
 }
 
-fn i64_reg_shr_u(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_shr_u(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_regs[ctx.dst.index() as usize] =
-        ((lhs as u64).wrapping_shr((rhs & 0x3f) as u32)) as i64;
+    ctx.set_dst(((lhs as u64).wrapping_shr((rhs & 0x3f) as u32)) as i64);
     Ok(())
 }
 
-fn i64_reg_rotl(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_rotl(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_regs[ctx.dst.index() as usize] = (lhs as u64).rotate_left((rhs & 0x3f) as u32) as i64;
+    ctx.set_dst((lhs as u64).rotate_left((rhs & 0x3f) as u32) as i64);
     Ok(())
 }
 
-fn i64_reg_rotr(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_rotr(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i64_regs[ctx.dst.index() as usize] = (lhs as u64).rotate_right((rhs & 0x3f) as u32) as i64;
+    ctx.set_dst((lhs as u64).rotate_right((rhs & 0x3f) as u32) as i64);
     Ok(())
 }
 
-fn i64_reg_clz(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_clz(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.i64_regs[ctx.dst.index() as usize] = val.leading_zeros() as i64;
+    ctx.set_dst(val.leading_zeros() as i64);
     Ok(())
 }
 
-fn i64_reg_ctz(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_ctz(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.i64_regs[ctx.dst.index() as usize] = val.trailing_zeros() as i64;
+    ctx.set_dst(val.trailing_zeros() as i64);
     Ok(())
 }
 
-fn i64_reg_popcnt(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_popcnt(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.i64_regs[ctx.dst.index() as usize] = val.count_ones() as i64;
+    ctx.set_dst(val.count_ones() as i64);
     Ok(())
 }
 
-fn i64_reg_extend8_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_extend8_s(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.i64_regs[ctx.dst.index() as usize] = (val as i8) as i64;
+    ctx.set_dst((val as i8) as i64);
     Ok(())
 }
 
-fn i64_reg_extend16_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_extend16_s(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.i64_regs[ctx.dst.index() as usize] = (val as i16) as i64;
+    ctx.set_dst((val as i16) as i64);
     Ok(())
 }
 
-fn i64_reg_extend32_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_extend32_s(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.i64_regs[ctx.dst.index() as usize] = (val as i32) as i64;
+    ctx.set_dst((val as i32) as i64);
     Ok(())
 }
 
-// Comparison operations - write to i32_regs (ctx.dst is Reg::I32)
-fn i64_reg_eq(ctx: I64RegContext) -> Result<(), RuntimeError> {
+// Comparison operations - write to i32 (via set_dst_i32)
+fn i64_reg_eq(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if lhs == rhs { 1 } else { 0 };
+    ctx.set_dst_i32(if lhs == rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn i64_reg_ne(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_ne(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if lhs != rhs { 1 } else { 0 };
+    ctx.set_dst_i32(if lhs != rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn i64_reg_lt_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_lt_s(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if lhs < rhs { 1 } else { 0 };
+    ctx.set_dst_i32(if lhs < rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn i64_reg_lt_u(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_lt_u(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if (lhs as u64) < (rhs as u64) { 1 } else { 0 };
+    ctx.set_dst_i32(if (lhs as u64) < (rhs as u64) { 1 } else { 0 });
     Ok(())
 }
 
-fn i64_reg_le_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_le_s(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if lhs <= rhs { 1 } else { 0 };
+    ctx.set_dst_i32(if lhs <= rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn i64_reg_le_u(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_le_u(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if (lhs as u64) <= (rhs as u64) { 1 } else { 0 };
+    ctx.set_dst_i32(if (lhs as u64) <= (rhs as u64) { 1 } else { 0 });
     Ok(())
 }
 
-fn i64_reg_gt_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_gt_s(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if lhs > rhs { 1 } else { 0 };
+    ctx.set_dst_i32(if lhs > rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn i64_reg_gt_u(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_gt_u(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if (lhs as u64) > (rhs as u64) { 1 } else { 0 };
+    ctx.set_dst_i32(if (lhs as u64) > (rhs as u64) { 1 } else { 0 });
     Ok(())
 }
 
-fn i64_reg_ge_s(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_ge_s(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if lhs >= rhs { 1 } else { 0 };
+    ctx.set_dst_i32(if lhs >= rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn i64_reg_ge_u(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_ge_u(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if (lhs as u64) >= (rhs as u64) { 1 } else { 0 };
+    ctx.set_dst_i32(if (lhs as u64) >= (rhs as u64) { 1 } else { 0 });
     Ok(())
 }
 
-fn i64_reg_eqz(ctx: I64RegContext) -> Result<(), RuntimeError> {
+fn i64_reg_eqz(mut ctx: I64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if val == 0 { 1 } else { 0 };
+    ctx.set_dst_i32(if val == 0 { 1 } else { 0 });
     Ok(())
 }
 
@@ -2424,9 +2535,9 @@ struct F32RegContext<'a> {
     f32_regs: &'a mut [f32],
     i32_regs: &'a mut [i32], // For comparison operations that return i32
     locals: &'a mut [Val],
+    dst: F32RegOperand,
     src1: F32RegOperand,
     src2: Option<F32RegOperand>,
-    dst: Reg, // Destination register (type determines which array to write to)
 }
 
 impl<'a> F32RegContext<'a> {
@@ -2438,59 +2549,77 @@ impl<'a> F32RegContext<'a> {
             F32RegOperand::Param(idx) => self.locals[*idx as usize].to_f32(),
         }
     }
+
+    #[inline]
+    fn set_dst(&mut self, val: f32) {
+        match &self.dst {
+            F32RegOperand::Reg(idx) => self.f32_regs[*idx as usize] = val,
+            F32RegOperand::Param(idx) => self.locals[*idx as usize] = Val::Num(Num::F32(val)),
+            F32RegOperand::Const(_) => unreachable!("Cannot write to Const dst"),
+        }
+    }
+
+    #[inline]
+    fn set_dst_i32(&mut self, val: i32) {
+        match &self.dst {
+            F32RegOperand::Reg(idx) => self.i32_regs[*idx as usize] = val,
+            F32RegOperand::Param(idx) => self.locals[*idx as usize] = Val::Num(Num::I32(val)),
+            F32RegOperand::Const(_) => unreachable!("Cannot write to Const dst"),
+        }
+    }
 }
 
-fn f32_reg_local_get(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_local_get(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f32_regs[ctx.dst.index() as usize] = val;
+    ctx.set_dst(val);
     Ok(())
 }
 
-fn f32_reg_local_set(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_local_set(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     // dst.index() is the local variable index, src1 is the value source
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.locals[ctx.dst.index() as usize] = Val::Num(Num::F32(val));
+    ctx.set_dst(val);
     Ok(())
 }
 
-fn f32_reg_const(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_const(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f32_regs[ctx.dst.index() as usize] = val;
+    ctx.set_dst(val);
     Ok(())
 }
 
-fn f32_reg_add(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_add(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f32_regs[ctx.dst.index() as usize] = lhs + rhs;
+    ctx.set_dst(lhs + rhs);
     Ok(())
 }
 
-fn f32_reg_sub(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_sub(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f32_regs[ctx.dst.index() as usize] = lhs - rhs;
+    ctx.set_dst(lhs - rhs);
     Ok(())
 }
 
-fn f32_reg_mul(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_mul(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f32_regs[ctx.dst.index() as usize] = lhs * rhs;
+    ctx.set_dst(lhs * rhs);
     Ok(())
 }
 
-fn f32_reg_div(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_div(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f32_regs[ctx.dst.index() as usize] = lhs / rhs;
+    ctx.set_dst(lhs / rhs);
     Ok(())
 }
 
-fn f32_reg_min(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_min(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f32_regs[ctx.dst.index() as usize] = if lhs.is_nan() || rhs.is_nan() {
+    let result = if lhs.is_nan() || rhs.is_nan() {
         f32::NAN
     } else if lhs == 0.0 && rhs == 0.0 {
         if lhs.is_sign_negative() || rhs.is_sign_negative() {
@@ -2501,13 +2630,14 @@ fn f32_reg_min(ctx: F32RegContext) -> Result<(), RuntimeError> {
     } else {
         lhs.min(rhs)
     };
+    ctx.set_dst(result);
     Ok(())
 }
 
-fn f32_reg_max(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_max(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f32_regs[ctx.dst.index() as usize] = if lhs.is_nan() || rhs.is_nan() {
+    let result = if lhs.is_nan() || rhs.is_nan() {
         f32::NAN
     } else if lhs == 0.0 && rhs == 0.0 {
         if lhs.is_sign_positive() || rhs.is_sign_positive() {
@@ -2518,99 +2648,100 @@ fn f32_reg_max(ctx: F32RegContext) -> Result<(), RuntimeError> {
     } else {
         lhs.max(rhs)
     };
+    ctx.set_dst(result);
     Ok(())
 }
 
-fn f32_reg_copysign(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_copysign(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f32_regs[ctx.dst.index() as usize] = lhs.copysign(rhs);
+    ctx.set_dst(lhs.copysign(rhs));
     Ok(())
 }
 
 // Unary operations
-fn f32_reg_abs(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_abs(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f32_regs[ctx.dst.index() as usize] = val.abs();
+    ctx.set_dst(val.abs());
     Ok(())
 }
 
-fn f32_reg_neg(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_neg(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f32_regs[ctx.dst.index() as usize] = -val;
+    ctx.set_dst(-val);
     Ok(())
 }
 
-fn f32_reg_ceil(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_ceil(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f32_regs[ctx.dst.index() as usize] = val.ceil();
+    ctx.set_dst(val.ceil());
     Ok(())
 }
 
-fn f32_reg_floor(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_floor(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f32_regs[ctx.dst.index() as usize] = val.floor();
+    ctx.set_dst(val.floor());
     Ok(())
 }
 
-fn f32_reg_trunc(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_trunc(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f32_regs[ctx.dst.index() as usize] = val.trunc();
+    ctx.set_dst(val.trunc());
     Ok(())
 }
 
-fn f32_reg_nearest(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_nearest(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f32_regs[ctx.dst.index() as usize] = val.round_ties_even();
+    ctx.set_dst(val.round_ties_even());
     Ok(())
 }
 
-fn f32_reg_sqrt(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_sqrt(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f32_regs[ctx.dst.index() as usize] = val.sqrt();
+    ctx.set_dst(val.sqrt());
     Ok(())
 }
 
 // Comparison operations (return i32)
-fn f32_reg_eq(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_eq(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if lhs == rhs { 1 } else { 0 };
+    ctx.set_dst_i32(if lhs == rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn f32_reg_ne(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_ne(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if lhs != rhs { 1 } else { 0 };
+    ctx.set_dst_i32(if lhs != rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn f32_reg_lt(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_lt(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if lhs < rhs { 1 } else { 0 };
+    ctx.set_dst_i32(if lhs < rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn f32_reg_gt(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_gt(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if lhs > rhs { 1 } else { 0 };
+    ctx.set_dst_i32(if lhs > rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn f32_reg_le(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_le(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if lhs <= rhs { 1 } else { 0 };
+    ctx.set_dst_i32(if lhs <= rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn f32_reg_ge(ctx: F32RegContext) -> Result<(), RuntimeError> {
+fn f32_reg_ge(mut ctx: F32RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if lhs >= rhs { 1 } else { 0 };
+    ctx.set_dst_i32(if lhs >= rhs { 1 } else { 0 });
     Ok(())
 }
 
@@ -2664,9 +2795,9 @@ struct F64RegContext<'a> {
     f64_regs: &'a mut [f64],
     i32_regs: &'a mut [i32], // For comparison operations that return i32
     locals: &'a mut [Val],
+    dst: F64RegOperand,
     src1: F64RegOperand,
     src2: Option<F64RegOperand>,
-    dst: Reg,
 }
 
 impl<'a> F64RegContext<'a> {
@@ -2678,59 +2809,77 @@ impl<'a> F64RegContext<'a> {
             F64RegOperand::Param(idx) => self.locals[*idx as usize].to_f64(),
         }
     }
+
+    #[inline]
+    fn set_dst(&mut self, val: f64) {
+        match &self.dst {
+            F64RegOperand::Reg(idx) => self.f64_regs[*idx as usize] = val,
+            F64RegOperand::Param(idx) => self.locals[*idx as usize] = Val::Num(Num::F64(val)),
+            F64RegOperand::Const(_) => unreachable!("Cannot write to Const dst"),
+        }
+    }
+
+    #[inline]
+    fn set_dst_i32(&mut self, val: i32) {
+        match &self.dst {
+            F64RegOperand::Reg(idx) => self.i32_regs[*idx as usize] = val,
+            F64RegOperand::Param(idx) => self.locals[*idx as usize] = Val::Num(Num::I32(val)),
+            F64RegOperand::Const(_) => unreachable!("Cannot write to Const dst"),
+        }
+    }
 }
 
-fn f64_reg_local_get(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_local_get(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f64_regs[ctx.dst.index() as usize] = val;
+    ctx.set_dst(val);
     Ok(())
 }
 
-fn f64_reg_local_set(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_local_set(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     // dst.index() is the local variable index, src1 is the value source
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.locals[ctx.dst.index() as usize] = Val::Num(Num::F64(val));
+    ctx.set_dst(val);
     Ok(())
 }
 
-fn f64_reg_const(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_const(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f64_regs[ctx.dst.index() as usize] = val;
+    ctx.set_dst(val);
     Ok(())
 }
 
-fn f64_reg_add(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_add(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f64_regs[ctx.dst.index() as usize] = lhs + rhs;
+    ctx.set_dst(lhs + rhs);
     Ok(())
 }
 
-fn f64_reg_sub(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_sub(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f64_regs[ctx.dst.index() as usize] = lhs - rhs;
+    ctx.set_dst(lhs - rhs);
     Ok(())
 }
 
-fn f64_reg_mul(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_mul(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f64_regs[ctx.dst.index() as usize] = lhs * rhs;
+    ctx.set_dst(lhs * rhs);
     Ok(())
 }
 
-fn f64_reg_div(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_div(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f64_regs[ctx.dst.index() as usize] = lhs / rhs;
+    ctx.set_dst(lhs / rhs);
     Ok(())
 }
 
-fn f64_reg_min(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_min(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f64_regs[ctx.dst.index() as usize] = if lhs.is_nan() || rhs.is_nan() {
+    let result = if lhs.is_nan() || rhs.is_nan() {
         f64::NAN
     } else if lhs == 0.0 && rhs == 0.0 {
         if lhs.is_sign_negative() || rhs.is_sign_negative() {
@@ -2741,13 +2890,14 @@ fn f64_reg_min(ctx: F64RegContext) -> Result<(), RuntimeError> {
     } else {
         lhs.min(rhs)
     };
+    ctx.set_dst(result);
     Ok(())
 }
 
-fn f64_reg_max(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_max(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f64_regs[ctx.dst.index() as usize] = if lhs.is_nan() || rhs.is_nan() {
+    let result = if lhs.is_nan() || rhs.is_nan() {
         f64::NAN
     } else if lhs == 0.0 && rhs == 0.0 {
         if lhs.is_sign_positive() || rhs.is_sign_positive() {
@@ -2758,99 +2908,100 @@ fn f64_reg_max(ctx: F64RegContext) -> Result<(), RuntimeError> {
     } else {
         lhs.max(rhs)
     };
+    ctx.set_dst(result);
     Ok(())
 }
 
-fn f64_reg_copysign(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_copysign(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.f64_regs[ctx.dst.index() as usize] = lhs.copysign(rhs);
+    ctx.set_dst(lhs.copysign(rhs));
     Ok(())
 }
 
 // Unary operations
-fn f64_reg_abs(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_abs(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f64_regs[ctx.dst.index() as usize] = val.abs();
+    ctx.set_dst(val.abs());
     Ok(())
 }
 
-fn f64_reg_neg(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_neg(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f64_regs[ctx.dst.index() as usize] = -val;
+    ctx.set_dst(-val);
     Ok(())
 }
 
-fn f64_reg_ceil(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_ceil(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f64_regs[ctx.dst.index() as usize] = val.ceil();
+    ctx.set_dst(val.ceil());
     Ok(())
 }
 
-fn f64_reg_floor(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_floor(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f64_regs[ctx.dst.index() as usize] = val.floor();
+    ctx.set_dst(val.floor());
     Ok(())
 }
 
-fn f64_reg_trunc(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_trunc(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f64_regs[ctx.dst.index() as usize] = val.trunc();
+    ctx.set_dst(val.trunc());
     Ok(())
 }
 
-fn f64_reg_nearest(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_nearest(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f64_regs[ctx.dst.index() as usize] = val.round_ties_even();
+    ctx.set_dst(val.round_ties_even());
     Ok(())
 }
 
-fn f64_reg_sqrt(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_sqrt(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let val = ctx.get_operand(&ctx.src1)?;
-    ctx.f64_regs[ctx.dst.index() as usize] = val.sqrt();
+    ctx.set_dst(val.sqrt());
     Ok(())
 }
 
 // Comparison operations (return i32)
-fn f64_reg_eq(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_eq(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if lhs == rhs { 1 } else { 0 };
+    ctx.set_dst_i32(if lhs == rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn f64_reg_ne(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_ne(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if lhs != rhs { 1 } else { 0 };
+    ctx.set_dst_i32(if lhs != rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn f64_reg_lt(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_lt(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if lhs < rhs { 1 } else { 0 };
+    ctx.set_dst_i32(if lhs < rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn f64_reg_gt(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_gt(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if lhs > rhs { 1 } else { 0 };
+    ctx.set_dst_i32(if lhs > rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn f64_reg_le(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_le(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if lhs <= rhs { 1 } else { 0 };
+    ctx.set_dst_i32(if lhs <= rhs { 1 } else { 0 });
     Ok(())
 }
 
-fn f64_reg_ge(ctx: F64RegContext) -> Result<(), RuntimeError> {
+fn f64_reg_ge(mut ctx: F64RegContext) -> Result<(), RuntimeError> {
     let lhs = ctx.get_operand(&ctx.src1)?;
     let rhs = ctx.get_operand(&ctx.src2.as_ref().unwrap())?;
-    ctx.i32_regs[ctx.dst.index() as usize] = if lhs >= rhs { 1 } else { 0 };
+    ctx.set_dst_i32(if lhs >= rhs { 1 } else { 0 });
     Ok(())
 }
 
@@ -2896,8 +3047,43 @@ lazy_static! {
 // Conversion Reg handlers
 struct ConversionRegContext<'a> {
     reg_file: &'a mut RegFile,
+    locals: &'a mut [Val],
     src: Reg,
-    dst: Reg,
+    dst: RegOrLocal,
+}
+
+impl<'a> ConversionRegContext<'a> {
+    #[inline]
+    fn set_dst_i32(&mut self, val: i32) {
+        match &self.dst {
+            RegOrLocal::Reg(idx) => self.reg_file.set_i32(*idx, val),
+            RegOrLocal::Local(idx) => self.locals[*idx as usize] = Val::Num(Num::I32(val)),
+        }
+    }
+
+    #[inline]
+    fn set_dst_i64(&mut self, val: i64) {
+        match &self.dst {
+            RegOrLocal::Reg(idx) => self.reg_file.set_i64(*idx, val),
+            RegOrLocal::Local(idx) => self.locals[*idx as usize] = Val::Num(Num::I64(val)),
+        }
+    }
+
+    #[inline]
+    fn set_dst_f32(&mut self, val: f32) {
+        match &self.dst {
+            RegOrLocal::Reg(idx) => self.reg_file.set_f32(*idx, val),
+            RegOrLocal::Local(idx) => self.locals[*idx as usize] = Val::Num(Num::F32(val)),
+        }
+    }
+
+    #[inline]
+    fn set_dst_f64(&mut self, val: f64) {
+        match &self.dst {
+            RegOrLocal::Reg(idx) => self.reg_file.set_f64(*idx, val),
+            RegOrLocal::Local(idx) => self.locals[*idx as usize] = Val::Num(Num::F64(val)),
+        }
+    }
 }
 
 type ConversionRegHandler = fn(ConversionRegContext) -> Result<(), RuntimeError>;
@@ -2907,27 +3093,27 @@ fn conversion_reg_invalid_handler(_ctx: ConversionRegContext) -> Result<(), Runt
 }
 
 // i32 -> i64
-fn conv_i64_extend_i32_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i64_extend_i32_s(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_i32(ctx.src.index());
-    ctx.reg_file.set_i64(ctx.dst.index(), val as i64);
+    ctx.set_dst_i64(val as i64);
     Ok(())
 }
 
-fn conv_i64_extend_i32_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i64_extend_i32_u(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_i32(ctx.src.index());
-    ctx.reg_file.set_i64(ctx.dst.index(), (val as u32) as i64);
+    ctx.set_dst_i64((val as u32) as i64);
     Ok(())
 }
 
 // i64 -> i32
-fn conv_i32_wrap_i64(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i32_wrap_i64(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_i64(ctx.src.index());
-    ctx.reg_file.set_i32(ctx.dst.index(), val as i32);
+    ctx.set_dst_i32(val as i32);
     Ok(())
 }
 
 // f32 -> i32
-fn conv_i32_trunc_f32_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i32_trunc_f32_s(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f32(ctx.src.index());
     if val.is_nan() {
         return Err(RuntimeError::InvalidConversionToInt);
@@ -2936,11 +3122,11 @@ fn conv_i32_trunc_f32_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     if truncated < (i32::MIN as f32) || truncated > (i32::MAX as f32) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.reg_file.set_i32(ctx.dst.index(), truncated as i32);
+    ctx.set_dst_i32(truncated as i32);
     Ok(())
 }
 
-fn conv_i32_trunc_f32_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i32_trunc_f32_u(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f32(ctx.src.index());
     if val.is_nan() {
         return Err(RuntimeError::InvalidConversionToInt);
@@ -2949,13 +3135,12 @@ fn conv_i32_trunc_f32_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     if truncated < 0.0 || truncated > (u32::MAX as f32) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.reg_file
-        .set_i32(ctx.dst.index(), (truncated as u32) as i32);
+    ctx.set_dst_i32((truncated as u32) as i32);
     Ok(())
 }
 
 // f64 -> i32
-fn conv_i32_trunc_f64_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i32_trunc_f64_s(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f64(ctx.src.index());
     if val.is_nan() {
         return Err(RuntimeError::InvalidConversionToInt);
@@ -2964,11 +3149,11 @@ fn conv_i32_trunc_f64_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     if truncated < (i32::MIN as f64) || truncated > (i32::MAX as f64) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.reg_file.set_i32(ctx.dst.index(), truncated as i32);
+    ctx.set_dst_i32(truncated as i32);
     Ok(())
 }
 
-fn conv_i32_trunc_f64_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i32_trunc_f64_u(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f64(ctx.src.index());
     if val.is_nan() {
         return Err(RuntimeError::InvalidConversionToInt);
@@ -2977,13 +3162,12 @@ fn conv_i32_trunc_f64_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     if truncated < 0.0 || truncated > (u32::MAX as f64) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.reg_file
-        .set_i32(ctx.dst.index(), (truncated as u32) as i32);
+    ctx.set_dst_i32((truncated as u32) as i32);
     Ok(())
 }
 
 // f32 -> i64
-fn conv_i64_trunc_f32_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i64_trunc_f32_s(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f32(ctx.src.index());
     if val.is_nan() {
         return Err(RuntimeError::InvalidConversionToInt);
@@ -2992,11 +3176,11 @@ fn conv_i64_trunc_f32_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     if truncated < (i64::MIN as f32) || truncated >= (i64::MAX as f32) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.reg_file.set_i64(ctx.dst.index(), truncated as i64);
+    ctx.set_dst_i64(truncated as i64);
     Ok(())
 }
 
-fn conv_i64_trunc_f32_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i64_trunc_f32_u(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f32(ctx.src.index());
     if val.is_nan() {
         return Err(RuntimeError::InvalidConversionToInt);
@@ -3005,13 +3189,12 @@ fn conv_i64_trunc_f32_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     if truncated < 0.0 || truncated >= (u64::MAX as f32) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.reg_file
-        .set_i64(ctx.dst.index(), (truncated as u64) as i64);
+    ctx.set_dst_i64((truncated as u64) as i64);
     Ok(())
 }
 
 // f64 -> i64
-fn conv_i64_trunc_f64_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i64_trunc_f64_s(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f64(ctx.src.index());
     if val.is_nan() {
         return Err(RuntimeError::InvalidConversionToInt);
@@ -3020,11 +3203,11 @@ fn conv_i64_trunc_f64_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     if truncated < (i64::MIN as f64) || truncated >= (i64::MAX as f64) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.reg_file.set_i64(ctx.dst.index(), truncated as i64);
+    ctx.set_dst_i64(truncated as i64);
     Ok(())
 }
 
-fn conv_i64_trunc_f64_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i64_trunc_f64_u(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f64(ctx.src.index());
     if val.is_nan() {
         return Err(RuntimeError::InvalidConversionToInt);
@@ -3033,13 +3216,12 @@ fn conv_i64_trunc_f64_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     if truncated < 0.0 || truncated >= (u64::MAX as f64) {
         return Err(RuntimeError::IntegerOverflow);
     }
-    ctx.reg_file
-        .set_i64(ctx.dst.index(), (truncated as u64) as i64);
+    ctx.set_dst_i64((truncated as u64) as i64);
     Ok(())
 }
 
 // Saturating truncations (i32)
-fn conv_i32_trunc_sat_f32_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i32_trunc_sat_f32_s(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f32(ctx.src.index());
     let result = if val.is_nan() {
         0
@@ -3050,11 +3232,11 @@ fn conv_i32_trunc_sat_f32_s(ctx: ConversionRegContext) -> Result<(), RuntimeErro
     } else {
         val.trunc() as i32
     };
-    ctx.reg_file.set_i32(ctx.dst.index(), result);
+    ctx.set_dst_i32(result);
     Ok(())
 }
 
-fn conv_i32_trunc_sat_f32_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i32_trunc_sat_f32_u(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f32(ctx.src.index());
     let result = if val.is_nan() || val <= 0.0 {
         0
@@ -3063,11 +3245,11 @@ fn conv_i32_trunc_sat_f32_u(ctx: ConversionRegContext) -> Result<(), RuntimeErro
     } else {
         val.trunc() as u32
     };
-    ctx.reg_file.set_i32(ctx.dst.index(), result as i32);
+    ctx.set_dst_i32(result as i32);
     Ok(())
 }
 
-fn conv_i32_trunc_sat_f64_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i32_trunc_sat_f64_s(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f64(ctx.src.index());
     let result = if val.is_nan() {
         0
@@ -3078,11 +3260,11 @@ fn conv_i32_trunc_sat_f64_s(ctx: ConversionRegContext) -> Result<(), RuntimeErro
     } else {
         val.trunc() as i32
     };
-    ctx.reg_file.set_i32(ctx.dst.index(), result);
+    ctx.set_dst_i32(result);
     Ok(())
 }
 
-fn conv_i32_trunc_sat_f64_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i32_trunc_sat_f64_u(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f64(ctx.src.index());
     let result = if val.is_nan() || val <= 0.0 {
         0
@@ -3091,12 +3273,12 @@ fn conv_i32_trunc_sat_f64_u(ctx: ConversionRegContext) -> Result<(), RuntimeErro
     } else {
         val.trunc() as u32
     };
-    ctx.reg_file.set_i32(ctx.dst.index(), result as i32);
+    ctx.set_dst_i32(result as i32);
     Ok(())
 }
 
 // Saturating truncations (i64)
-fn conv_i64_trunc_sat_f32_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i64_trunc_sat_f32_s(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f32(ctx.src.index());
     let result = if val.is_nan() {
         0
@@ -3107,11 +3289,11 @@ fn conv_i64_trunc_sat_f32_s(ctx: ConversionRegContext) -> Result<(), RuntimeErro
     } else {
         val.trunc() as i64
     };
-    ctx.reg_file.set_i64(ctx.dst.index(), result);
+    ctx.set_dst_i64(result);
     Ok(())
 }
 
-fn conv_i64_trunc_sat_f32_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i64_trunc_sat_f32_u(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f32(ctx.src.index());
     let result = if val.is_nan() || val <= 0.0 {
         0
@@ -3120,11 +3302,11 @@ fn conv_i64_trunc_sat_f32_u(ctx: ConversionRegContext) -> Result<(), RuntimeErro
     } else {
         val.trunc() as u64
     };
-    ctx.reg_file.set_i64(ctx.dst.index(), result as i64);
+    ctx.set_dst_i64(result as i64);
     Ok(())
 }
 
-fn conv_i64_trunc_sat_f64_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i64_trunc_sat_f64_s(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f64(ctx.src.index());
     let result = if val.is_nan() {
         0
@@ -3135,11 +3317,11 @@ fn conv_i64_trunc_sat_f64_s(ctx: ConversionRegContext) -> Result<(), RuntimeErro
     } else {
         val.trunc() as i64
     };
-    ctx.reg_file.set_i64(ctx.dst.index(), result);
+    ctx.set_dst_i64(result);
     Ok(())
 }
 
-fn conv_i64_trunc_sat_f64_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i64_trunc_sat_f64_u(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f64(ctx.src.index());
     let result = if val.is_nan() || val <= 0.0 {
         0
@@ -3148,100 +3330,98 @@ fn conv_i64_trunc_sat_f64_u(ctx: ConversionRegContext) -> Result<(), RuntimeErro
     } else {
         val.trunc() as u64
     };
-    ctx.reg_file.set_i64(ctx.dst.index(), result as i64);
+    ctx.set_dst_i64(result as i64);
     Ok(())
 }
 
 // i32 -> f32
-fn conv_f32_convert_i32_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_f32_convert_i32_s(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_i32(ctx.src.index());
-    ctx.reg_file.set_f32(ctx.dst.index(), val as f32);
+    ctx.set_dst_f32(val as f32);
     Ok(())
 }
 
-fn conv_f32_convert_i32_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_f32_convert_i32_u(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_i32(ctx.src.index());
-    ctx.reg_file.set_f32(ctx.dst.index(), (val as u32) as f32);
+    ctx.set_dst_f32((val as u32) as f32);
     Ok(())
 }
 
 // i64 -> f32
-fn conv_f32_convert_i64_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_f32_convert_i64_s(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_i64(ctx.src.index());
-    ctx.reg_file.set_f32(ctx.dst.index(), val as f32);
+    ctx.set_dst_f32(val as f32);
     Ok(())
 }
 
-fn conv_f32_convert_i64_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_f32_convert_i64_u(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_i64(ctx.src.index());
-    ctx.reg_file.set_f32(ctx.dst.index(), (val as u64) as f32);
+    ctx.set_dst_f32((val as u64) as f32);
     Ok(())
 }
 
 // i32 -> f64
-fn conv_f64_convert_i32_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_f64_convert_i32_s(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_i32(ctx.src.index());
-    ctx.reg_file.set_f64(ctx.dst.index(), val as f64);
+    ctx.set_dst_f64(val as f64);
     Ok(())
 }
 
-fn conv_f64_convert_i32_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_f64_convert_i32_u(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_i32(ctx.src.index());
-    ctx.reg_file.set_f64(ctx.dst.index(), (val as u32) as f64);
+    ctx.set_dst_f64((val as u32) as f64);
     Ok(())
 }
 
 // i64 -> f64
-fn conv_f64_convert_i64_s(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_f64_convert_i64_s(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_i64(ctx.src.index());
-    ctx.reg_file.set_f64(ctx.dst.index(), val as f64);
+    ctx.set_dst_f64(val as f64);
     Ok(())
 }
 
-fn conv_f64_convert_i64_u(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_f64_convert_i64_u(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_i64(ctx.src.index());
-    ctx.reg_file.set_f64(ctx.dst.index(), (val as u64) as f64);
+    ctx.set_dst_f64((val as u64) as f64);
     Ok(())
 }
 
 // f64 -> f32
-fn conv_f32_demote_f64(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_f32_demote_f64(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f64(ctx.src.index());
-    ctx.reg_file.set_f32(ctx.dst.index(), val as f32);
+    ctx.set_dst_f32(val as f32);
     Ok(())
 }
 
 // f32 -> f64
-fn conv_f64_promote_f32(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_f64_promote_f32(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f32(ctx.src.index());
-    ctx.reg_file.set_f64(ctx.dst.index(), val as f64);
+    ctx.set_dst_f64(val as f64);
     Ok(())
 }
 
 // Reinterpret operations
-fn conv_i32_reinterpret_f32(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i32_reinterpret_f32(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f32(ctx.src.index());
-    ctx.reg_file.set_i32(ctx.dst.index(), val.to_bits() as i32);
+    ctx.set_dst_i32(val.to_bits() as i32);
     Ok(())
 }
 
-fn conv_f32_reinterpret_i32(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_f32_reinterpret_i32(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_i32(ctx.src.index());
-    ctx.reg_file
-        .set_f32(ctx.dst.index(), f32::from_bits(val as u32));
+    ctx.set_dst_f32(f32::from_bits(val as u32));
     Ok(())
 }
 
-fn conv_i64_reinterpret_f64(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_i64_reinterpret_f64(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_f64(ctx.src.index());
-    ctx.reg_file.set_i64(ctx.dst.index(), val.to_bits() as i64);
+    ctx.set_dst_i64(val.to_bits() as i64);
     Ok(())
 }
 
-fn conv_f64_reinterpret_i64(ctx: ConversionRegContext) -> Result<(), RuntimeError> {
+fn conv_f64_reinterpret_i64(mut ctx: ConversionRegContext) -> Result<(), RuntimeError> {
     let val = ctx.reg_file.get_i64(ctx.src.index());
-    ctx.reg_file
-        .set_f64(ctx.dst.index(), f64::from_bits(val as u64));
+    ctx.set_dst_f64(f64::from_bits(val as u64));
     Ok(())
 }
 
@@ -3301,10 +3481,54 @@ lazy_static! {
 // Memory Load Reg handlers
 struct MemoryLoadRegContext<'a> {
     reg_file: &'a mut RegFile,
+    locals: &'a mut [Val],
     mem_addr: &'a MemAddr,
-    addr: Reg,
-    dst: Reg,
+    addr: I32RegOperand,
+    dst: RegOrLocal,
     offset: u64,
+}
+
+impl<'a> MemoryLoadRegContext<'a> {
+    #[inline]
+    fn get_addr(&self) -> Result<i32, RuntimeError> {
+        match &self.addr {
+            I32RegOperand::Reg(idx) => Ok(self.reg_file.get_i32(*idx)),
+            I32RegOperand::Const(val) => Ok(*val),
+            I32RegOperand::Param(idx) => self.locals[*idx as usize].to_i32(),
+        }
+    }
+
+    #[inline]
+    fn set_dst_i32(&mut self, val: i32) {
+        match &self.dst {
+            RegOrLocal::Reg(idx) => self.reg_file.set_i32(*idx, val),
+            RegOrLocal::Local(idx) => self.locals[*idx as usize] = Val::Num(Num::I32(val)),
+        }
+    }
+
+    #[inline]
+    fn set_dst_i64(&mut self, val: i64) {
+        match &self.dst {
+            RegOrLocal::Reg(idx) => self.reg_file.set_i64(*idx, val),
+            RegOrLocal::Local(idx) => self.locals[*idx as usize] = Val::Num(Num::I64(val)),
+        }
+    }
+
+    #[inline]
+    fn set_dst_f32(&mut self, val: f32) {
+        match &self.dst {
+            RegOrLocal::Reg(idx) => self.reg_file.set_f32(*idx, val),
+            RegOrLocal::Local(idx) => self.locals[*idx as usize] = Val::Num(Num::F32(val)),
+        }
+    }
+
+    #[inline]
+    fn set_dst_f64(&mut self, val: f64) {
+        match &self.dst {
+            RegOrLocal::Reg(idx) => self.reg_file.set_f64(*idx, val),
+            RegOrLocal::Local(idx) => self.locals[*idx as usize] = Val::Num(Num::F64(val)),
+        }
+    }
 }
 
 type MemoryLoadRegHandler = fn(MemoryLoadRegContext) -> Result<(), RuntimeError>;
@@ -3321,115 +3545,115 @@ fn make_memarg(offset: u64) -> Memarg {
     }
 }
 
-fn mem_load_i32(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+fn mem_load_i32(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: i32 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.reg_file.set_i32(ctx.dst.index(), val);
+    let val: i32 = ctx.mem_addr.load(&memarg, ptr);
+    ctx.set_dst_i32(val);
     Ok(())
 }
 
-fn mem_load_i64(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+fn mem_load_i64(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: i64 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.reg_file.set_i64(ctx.dst.index(), val);
+    let val: i64 = ctx.mem_addr.load(&memarg, ptr);
+    ctx.set_dst_i64(val);
     Ok(())
 }
 
-fn mem_load_f32(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+fn mem_load_f32(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: f32 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.reg_file.set_f32(ctx.dst.index(), val);
+    let val: f32 = ctx.mem_addr.load(&memarg, ptr);
+    ctx.set_dst_f32(val);
     Ok(())
 }
 
-fn mem_load_f64(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+fn mem_load_f64(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: f64 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.reg_file.set_f64(ctx.dst.index(), val);
+    let val: f64 = ctx.mem_addr.load(&memarg, ptr);
+    ctx.set_dst_f64(val);
     Ok(())
 }
 
-fn mem_load_i32_8s(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+fn mem_load_i32_8s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: i8 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.reg_file.set_i32(ctx.dst.index(), val as i32);
+    let val: i8 = ctx.mem_addr.load(&memarg, ptr);
+    ctx.set_dst_i32(val as i32);
     Ok(())
 }
 
-fn mem_load_i32_8u(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+fn mem_load_i32_8u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: u8 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.reg_file.set_i32(ctx.dst.index(), val as i32);
+    let val: u8 = ctx.mem_addr.load(&memarg, ptr);
+    ctx.set_dst_i32(val as i32);
     Ok(())
 }
 
-fn mem_load_i32_16s(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+fn mem_load_i32_16s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: i16 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.reg_file.set_i32(ctx.dst.index(), val as i32);
+    let val: i16 = ctx.mem_addr.load(&memarg, ptr);
+    ctx.set_dst_i32(val as i32);
     Ok(())
 }
 
-fn mem_load_i32_16u(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+fn mem_load_i32_16u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: u16 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.reg_file.set_i32(ctx.dst.index(), val as i32);
+    let val: u16 = ctx.mem_addr.load(&memarg, ptr);
+    ctx.set_dst_i32(val as i32);
     Ok(())
 }
 
-fn mem_load_i64_8s(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+fn mem_load_i64_8s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: i8 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.reg_file.set_i64(ctx.dst.index(), val as i64);
+    let val: i8 = ctx.mem_addr.load(&memarg, ptr);
+    ctx.set_dst_i64(val as i64);
     Ok(())
 }
 
-fn mem_load_i64_8u(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+fn mem_load_i64_8u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: u8 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.reg_file.set_i64(ctx.dst.index(), val as i64);
+    let val: u8 = ctx.mem_addr.load(&memarg, ptr);
+    ctx.set_dst_i64(val as i64);
     Ok(())
 }
 
-fn mem_load_i64_16s(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+fn mem_load_i64_16s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: i16 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.reg_file.set_i64(ctx.dst.index(), val as i64);
+    let val: i16 = ctx.mem_addr.load(&memarg, ptr);
+    ctx.set_dst_i64(val as i64);
     Ok(())
 }
 
-fn mem_load_i64_16u(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+fn mem_load_i64_16u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: u16 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.reg_file.set_i64(ctx.dst.index(), val as i64);
+    let val: u16 = ctx.mem_addr.load(&memarg, ptr);
+    ctx.set_dst_i64(val as i64);
     Ok(())
 }
 
-fn mem_load_i64_32s(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+fn mem_load_i64_32s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: i32 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.reg_file.set_i64(ctx.dst.index(), val as i64);
+    let val: i32 = ctx.mem_addr.load(&memarg, ptr);
+    ctx.set_dst_i64(val as i64);
     Ok(())
 }
 
-fn mem_load_i64_32u(ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+fn mem_load_i64_32u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
+    let ptr = ctx.get_addr()?;
     let memarg = make_memarg(ctx.offset);
-    let val: u32 = ctx.mem_addr.load(&memarg, ptr)?;
-    ctx.reg_file.set_i64(ctx.dst.index(), val as i64);
+    let val: u32 = ctx.mem_addr.load(&memarg, ptr);
+    ctx.set_dst_i64(val as i64);
     Ok(())
 }
 
@@ -3459,10 +3683,22 @@ lazy_static! {
 // Memory Store Reg handlers
 struct MemoryStoreRegContext<'a> {
     reg_file: &'a RegFile,
+    locals: &'a [Val],
     mem_addr: &'a MemAddr,
-    addr: Reg,
+    addr: I32RegOperand,
     value: Reg,
     offset: u64,
+}
+
+impl<'a> MemoryStoreRegContext<'a> {
+    #[inline]
+    fn get_addr(&self) -> Result<i32, RuntimeError> {
+        match &self.addr {
+            I32RegOperand::Reg(idx) => Ok(self.reg_file.get_i32(*idx)),
+            I32RegOperand::Const(val) => Ok(*val),
+            I32RegOperand::Param(idx) => self.locals[*idx as usize].to_i32(),
+        }
+    }
 }
 
 type MemoryStoreRegHandler = fn(MemoryStoreRegContext) -> Result<(), RuntimeError>;
@@ -3472,74 +3708,74 @@ fn memory_store_reg_invalid_handler(_ctx: MemoryStoreRegContext) -> Result<(), R
 }
 
 fn mem_store_i32(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+    let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i32(ctx.value.index());
     let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val)?;
+    ctx.mem_addr.store(&memarg, ptr, val);
     Ok(())
 }
 
 fn mem_store_i64(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+    let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i64(ctx.value.index());
     let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val)?;
+    ctx.mem_addr.store(&memarg, ptr, val);
     Ok(())
 }
 
 fn mem_store_f32(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+    let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_f32(ctx.value.index());
     let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val)?;
+    ctx.mem_addr.store(&memarg, ptr, val);
     Ok(())
 }
 
 fn mem_store_f64(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+    let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_f64(ctx.value.index());
     let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val)?;
+    ctx.mem_addr.store(&memarg, ptr, val);
     Ok(())
 }
 
 fn mem_store_i32_8(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+    let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i32(ctx.value.index()) as u8;
     let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val)?;
+    ctx.mem_addr.store(&memarg, ptr, val);
     Ok(())
 }
 
 fn mem_store_i32_16(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+    let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i32(ctx.value.index()) as u16;
     let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val)?;
+    ctx.mem_addr.store(&memarg, ptr, val);
     Ok(())
 }
 
 fn mem_store_i64_8(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+    let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i64(ctx.value.index()) as u8;
     let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val)?;
+    ctx.mem_addr.store(&memarg, ptr, val);
     Ok(())
 }
 
 fn mem_store_i64_16(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+    let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i64(ctx.value.index()) as u16;
     let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val)?;
+    ctx.mem_addr.store(&memarg, ptr, val);
     Ok(())
 }
 
 fn mem_store_i64_32(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
-    let ptr = ctx.reg_file.get_i32(ctx.addr.index());
+    let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i64(ctx.value.index()) as u32;
     let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val)?;
+    ctx.mem_addr.store(&memarg, ptr, val);
     Ok(())
 }
 
@@ -3567,7 +3803,7 @@ struct MemoryOpsRegContext<'a> {
     mem_addr: &'a MemAddr,
     module_inst: &'a ModuleInst,
     dst: Option<Reg>,
-    args: Vec<Reg>,
+    args: &'a [Reg],
     data_index: u32,
 }
 
@@ -3605,7 +3841,7 @@ fn mem_ops_copy(ctx: MemoryOpsRegContext) -> Result<(), RuntimeError> {
     let dest = ctx.reg_file.get_i32(ctx.args[0].index());
     let src = ctx.reg_file.get_i32(ctx.args[1].index());
     let len = ctx.reg_file.get_i32(ctx.args[2].index());
-    ctx.mem_addr.memory_copy(dest, src, len)?;
+    ctx.mem_addr.memory_copy(dest, src, len);
     Ok(())
 }
 
@@ -3622,8 +3858,7 @@ fn mem_ops_init(ctx: MemoryOpsRegContext) -> Result<(), RuntimeError> {
     let data_bytes = data_addr.get_data();
 
     if len > 0 {
-        let init_data = data_bytes[offset..offset + len].to_vec();
-        ctx.mem_addr.init(dest, &init_data);
+        ctx.mem_addr.init(dest, &data_bytes[offset..offset + len]);
     }
     Ok(())
 }
@@ -3632,7 +3867,7 @@ fn mem_ops_fill(ctx: MemoryOpsRegContext) -> Result<(), RuntimeError> {
     let dest = ctx.reg_file.get_i32(ctx.args[0].index());
     let val = ctx.reg_file.get_i32(ctx.args[1].index()) as u8;
     let size = ctx.reg_file.get_i32(ctx.args[2].index());
-    ctx.mem_addr.memory_fill(dest, val, size)?;
+    ctx.mem_addr.memory_fill(dest, val, size);
     Ok(())
 }
 
@@ -3659,53 +3894,75 @@ struct SelectRegContext<'a> {
     cond: Reg,
 }
 
+impl<'a> SelectRegContext<'a> {
+    #[inline]
+    fn set_dst_i32(&mut self, val: i32) {
+        self.reg_file.set_i32(self.dst.index(), val);
+    }
+
+    #[inline]
+    fn set_dst_i64(&mut self, val: i64) {
+        self.reg_file.set_i64(self.dst.index(), val);
+    }
+
+    #[inline]
+    fn set_dst_f32(&mut self, val: f32) {
+        self.reg_file.set_f32(self.dst.index(), val);
+    }
+
+    #[inline]
+    fn set_dst_f64(&mut self, val: f64) {
+        self.reg_file.set_f64(self.dst.index(), val);
+    }
+}
+
 type SelectRegHandler = fn(SelectRegContext) -> Result<(), RuntimeError>;
 
 fn select_reg_invalid_handler(_ctx: SelectRegContext) -> Result<(), RuntimeError> {
     Err(RuntimeError::InvalidHandlerIndex)
 }
 
-fn select_i32(ctx: SelectRegContext) -> Result<(), RuntimeError> {
+fn select_i32(mut ctx: SelectRegContext) -> Result<(), RuntimeError> {
     let cond = ctx.reg_file.get_i32(ctx.cond.index());
     let result = if cond != 0 {
         ctx.reg_file.get_i32(ctx.val1.index())
     } else {
         ctx.reg_file.get_i32(ctx.val2.index())
     };
-    ctx.reg_file.set_i32(ctx.dst.index(), result);
+    ctx.set_dst_i32(result);
     Ok(())
 }
 
-fn select_i64(ctx: SelectRegContext) -> Result<(), RuntimeError> {
+fn select_i64(mut ctx: SelectRegContext) -> Result<(), RuntimeError> {
     let cond = ctx.reg_file.get_i32(ctx.cond.index());
     let result = if cond != 0 {
         ctx.reg_file.get_i64(ctx.val1.index())
     } else {
         ctx.reg_file.get_i64(ctx.val2.index())
     };
-    ctx.reg_file.set_i64(ctx.dst.index(), result);
+    ctx.set_dst_i64(result);
     Ok(())
 }
 
-fn select_f32(ctx: SelectRegContext) -> Result<(), RuntimeError> {
+fn select_f32(mut ctx: SelectRegContext) -> Result<(), RuntimeError> {
     let cond = ctx.reg_file.get_i32(ctx.cond.index());
     let result = if cond != 0 {
         ctx.reg_file.get_f32(ctx.val1.index())
     } else {
         ctx.reg_file.get_f32(ctx.val2.index())
     };
-    ctx.reg_file.set_f32(ctx.dst.index(), result);
+    ctx.set_dst_f32(result);
     Ok(())
 }
 
-fn select_f64(ctx: SelectRegContext) -> Result<(), RuntimeError> {
+fn select_f64(mut ctx: SelectRegContext) -> Result<(), RuntimeError> {
     let cond = ctx.reg_file.get_i32(ctx.cond.index());
     let result = if cond != 0 {
         ctx.reg_file.get_f64(ctx.val1.index())
     } else {
         ctx.reg_file.get_f64(ctx.val2.index())
     };
-    ctx.reg_file.set_f64(ctx.dst.index(), result);
+    ctx.set_dst_f64(result);
     Ok(())
 }
 

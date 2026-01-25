@@ -24,6 +24,7 @@ trace = []
 
 [dependencies]
 anyhow = "1.0.86"
+arrayvec = { version = "0.7", features = ["serde"] }
 byteorder = "1.5.0"
 clap = { version = "4.5.7", features = ["derive"] }
 fancy-regex = "0.14.0"

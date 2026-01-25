@@ -25,7 +25,7 @@ impl ElemAddr {
             .map(|i| Ref::FuncAddr(funcs.get_by_idx(FuncIdx(*i as u32)).clone()))
             .collect();
         ElemAddr(Rc::new(RefCell::new(ElemInst {
-            _type_: type_.clone(),
+            _type_: *type_,
             _elem: elem,
         })))
     }

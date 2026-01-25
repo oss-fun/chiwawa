@@ -61,7 +61,7 @@ impl Val {
 }
 
 /// Numeric value variants (i32, i64, f32, f64).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub enum Num {
     I32(i32),
     I64(i64),

@@ -99,7 +99,7 @@ pub fn checkpoint<P: AsRef<Path>>(
 
     // 1. Gather Memory state
     let memory_data = if let Some(mem_addr) = mem_addrs.get(0) {
-        mem_addr.get_data()?
+        mem_addr.get_data()
     } else {
         Vec::new()
     };
@@ -178,7 +178,7 @@ pub fn restore<P: AsRef<Path>>(
     // 3. Restore memory state into module_inst
     // Assuming only one memory instance for now
     if let Some(mem_addr) = module_inst.mem_addrs.get(0) {
-        mem_addr.set_data(state.memory_data)?;
+        mem_addr.set_data(state.memory_data);
         println!("Memory state restored into module instance.");
     } else if !state.memory_data.is_empty() {
         eprintln!("Warning: Checkpoint contains memory data, but module has no memory instance.");
