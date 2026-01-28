@@ -64,6 +64,8 @@ pub struct RegFile {
     pub v128_regs: Vec<i128>,
     /// Frame register offset stack
     frame_offsets: Vec<FrameRegOffsets>,
+    /// Cached current frame offsets (updated on save/restore)
+    cached_offsets: FrameRegOffsets,
 }
 
 impl RegFile {
@@ -77,6 +79,7 @@ impl RegFile {
             ref_regs: Vec::with_capacity(32),
             v128_regs: Vec::with_capacity(16),
             frame_offsets: Vec::with_capacity(64),
+            cached_offsets: FrameRegOffsets::default(),
         }
     }
 
@@ -89,6 +92,7 @@ impl RegFile {
         ref_count: usize,
         v128_count: usize,
     ) -> Self {
+        let default_offsets = FrameRegOffsets::default();
         let mut sf = Self {
             i32_regs: vec![0; i32_count],
             i64_regs: vec![0; i64_count],
@@ -97,9 +101,10 @@ impl RegFile {
             ref_regs: vec![Ref::RefNull; ref_count],
             v128_regs: vec![0; v128_count],
             frame_offsets: Vec::new(),
+            cached_offsets: default_offsets.clone(),
         };
         // Push initial frame offset at 0
-        sf.frame_offsets.push(FrameRegOffsets::default());
+        sf.frame_offsets.push(default_offsets);
         sf
     }
 
@@ -133,7 +138,8 @@ impl RegFile {
             ref_offset: self.ref_regs.len() as u32,
             v128_offset: self.v128_regs.len() as u32,
         };
-        self.frame_offsets.push(new_offsets);
+        self.frame_offsets.push(new_offsets.clone());
+        self.cached_offsets = new_offsets;
 
         // Resize only if capacity is insufficient
         if i32_new_end > self.i32_regs.len() {
@@ -159,19 +165,13 @@ impl RegFile {
     /// Restore offsets to previous frame (does not deallocate registers)
     pub fn restore_offsets(&mut self) {
         self.frame_offsets.pop();
+        self.cached_offsets = self.frame_offsets.last().cloned().unwrap_or_default();
     }
 
-    /// Get current frame offsets
+    /// Get current frame offsets (returns cached value for performance)
     #[inline(always)]
     fn current_offsets(&self) -> &FrameRegOffsets {
-        self.frame_offsets.last().unwrap_or(&FrameRegOffsets {
-            i32_offset: 0,
-            i64_offset: 0,
-            f32_offset: 0,
-            f64_offset: 0,
-            ref_offset: 0,
-            v128_offset: 0,
-        })
+        &self.cached_offsets
     }
 
     /// Get frame depth
