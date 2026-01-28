@@ -1,6 +1,6 @@
 //! Linear memory instances and load/store operations.
 
-use crate::structure::{instructions::Memarg, types::*};
+use crate::structure::types::*;
 use serde::{Deserialize, Serialize};
 use std::cell::UnsafeCell;
 use std::rc::Rc;
@@ -51,9 +51,9 @@ impl MemAddr {
     /// Loads a typed value from memory at ptr + offset.
     /// No bounds checking - relies on host runtime for memory safety.
     /// No heap allocation - reads directly from memory pointer.
-    #[inline]
-    pub fn load<T: ByteMem>(&self, arg: &Memarg, ptr: i32) -> T {
-        let pos = (ptr as usize) + (arg.offset as usize);
+    #[inline(always)]
+    pub fn load<T: ByteMem>(&self, offset: u64, ptr: i32) -> T {
+        let pos = (ptr as usize) + (offset as usize);
         // Safety: Single-threaded access, no overlapping borrows
         let mem = unsafe { &*self.mem_inst.get() };
         unsafe { T::read_from_ptr(mem.data.as_ptr().add(pos)) }
@@ -62,9 +62,9 @@ impl MemAddr {
     /// Stores a typed value to memory at ptr + offset.
     /// No bounds checking - relies on host runtime for memory safety.
     /// No heap allocation - writes directly to memory pointer.
-    #[inline]
-    pub fn store<T: ByteMem>(&self, arg: &Memarg, ptr: i32, data: T) {
-        let pos = (ptr as usize) + (arg.offset as usize);
+    #[inline(always)]
+    pub fn store<T: ByteMem>(&self, offset: u64, ptr: i32, data: T) {
+        let pos = (ptr as usize) + (offset as usize);
         // Safety: Single-threaded access, no overlapping borrows
         let mem = unsafe { &mut *self.mem_inst.get() };
         unsafe { data.write_to_ptr(mem.data.as_mut_ptr().add(pos)) }
