@@ -3537,122 +3537,100 @@ fn memory_load_reg_invalid_handler(_ctx: MemoryLoadRegContext) -> Result<(), Run
     Err(RuntimeError::InvalidHandlerIndex)
 }
 
-#[inline]
-fn make_memarg(offset: u64) -> Memarg {
-    Memarg {
-        offset: offset as u32,
-        align: 0,
-    }
-}
-
 fn mem_load_i32(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let memarg = make_memarg(ctx.offset);
-    let val: i32 = ctx.mem_addr.load(&memarg, ptr);
+    let val: i32 = ctx.mem_addr.load(ctx.offset, ptr);
     ctx.set_dst_i32(val);
     Ok(())
 }
 
 fn mem_load_i64(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let memarg = make_memarg(ctx.offset);
-    let val: i64 = ctx.mem_addr.load(&memarg, ptr);
+    let val: i64 = ctx.mem_addr.load(ctx.offset, ptr);
     ctx.set_dst_i64(val);
     Ok(())
 }
 
 fn mem_load_f32(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let memarg = make_memarg(ctx.offset);
-    let val: f32 = ctx.mem_addr.load(&memarg, ptr);
+    let val: f32 = ctx.mem_addr.load(ctx.offset, ptr);
     ctx.set_dst_f32(val);
     Ok(())
 }
 
 fn mem_load_f64(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let memarg = make_memarg(ctx.offset);
-    let val: f64 = ctx.mem_addr.load(&memarg, ptr);
+    let val: f64 = ctx.mem_addr.load(ctx.offset, ptr);
     ctx.set_dst_f64(val);
     Ok(())
 }
 
 fn mem_load_i32_8s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let memarg = make_memarg(ctx.offset);
-    let val: i8 = ctx.mem_addr.load(&memarg, ptr);
+    let val: i8 = ctx.mem_addr.load(ctx.offset, ptr);
     ctx.set_dst_i32(val as i32);
     Ok(())
 }
 
 fn mem_load_i32_8u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let memarg = make_memarg(ctx.offset);
-    let val: u8 = ctx.mem_addr.load(&memarg, ptr);
+    let val: u8 = ctx.mem_addr.load(ctx.offset, ptr);
     ctx.set_dst_i32(val as i32);
     Ok(())
 }
 
 fn mem_load_i32_16s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let memarg = make_memarg(ctx.offset);
-    let val: i16 = ctx.mem_addr.load(&memarg, ptr);
+    let val: i16 = ctx.mem_addr.load(ctx.offset, ptr);
     ctx.set_dst_i32(val as i32);
     Ok(())
 }
 
 fn mem_load_i32_16u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let memarg = make_memarg(ctx.offset);
-    let val: u16 = ctx.mem_addr.load(&memarg, ptr);
+    let val: u16 = ctx.mem_addr.load(ctx.offset, ptr);
     ctx.set_dst_i32(val as i32);
     Ok(())
 }
 
 fn mem_load_i64_8s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let memarg = make_memarg(ctx.offset);
-    let val: i8 = ctx.mem_addr.load(&memarg, ptr);
+    let val: i8 = ctx.mem_addr.load(ctx.offset, ptr);
     ctx.set_dst_i64(val as i64);
     Ok(())
 }
 
 fn mem_load_i64_8u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let memarg = make_memarg(ctx.offset);
-    let val: u8 = ctx.mem_addr.load(&memarg, ptr);
+    let val: u8 = ctx.mem_addr.load(ctx.offset, ptr);
     ctx.set_dst_i64(val as i64);
     Ok(())
 }
 
 fn mem_load_i64_16s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let memarg = make_memarg(ctx.offset);
-    let val: i16 = ctx.mem_addr.load(&memarg, ptr);
+    let val: i16 = ctx.mem_addr.load(ctx.offset, ptr);
     ctx.set_dst_i64(val as i64);
     Ok(())
 }
 
 fn mem_load_i64_16u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let memarg = make_memarg(ctx.offset);
-    let val: u16 = ctx.mem_addr.load(&memarg, ptr);
+    let val: u16 = ctx.mem_addr.load(ctx.offset, ptr);
     ctx.set_dst_i64(val as i64);
     Ok(())
 }
 
 fn mem_load_i64_32s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let memarg = make_memarg(ctx.offset);
-    let val: i32 = ctx.mem_addr.load(&memarg, ptr);
+    let val: i32 = ctx.mem_addr.load(ctx.offset, ptr);
     ctx.set_dst_i64(val as i64);
     Ok(())
 }
 
 fn mem_load_i64_32u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let memarg = make_memarg(ctx.offset);
-    let val: u32 = ctx.mem_addr.load(&memarg, ptr);
+    let val: u32 = ctx.mem_addr.load(ctx.offset, ptr);
     ctx.set_dst_i64(val as i64);
     Ok(())
 }
@@ -3710,72 +3688,63 @@ fn memory_store_reg_invalid_handler(_ctx: MemoryStoreRegContext) -> Result<(), R
 fn mem_store_i32(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i32(ctx.value.index());
-    let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val);
+    ctx.mem_addr.store(ctx.offset, ptr, val);
     Ok(())
 }
 
 fn mem_store_i64(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i64(ctx.value.index());
-    let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val);
+    ctx.mem_addr.store(ctx.offset, ptr, val);
     Ok(())
 }
 
 fn mem_store_f32(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_f32(ctx.value.index());
-    let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val);
+    ctx.mem_addr.store(ctx.offset, ptr, val);
     Ok(())
 }
 
 fn mem_store_f64(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_f64(ctx.value.index());
-    let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val);
+    ctx.mem_addr.store(ctx.offset, ptr, val);
     Ok(())
 }
 
 fn mem_store_i32_8(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i32(ctx.value.index()) as u8;
-    let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val);
+    ctx.mem_addr.store(ctx.offset, ptr, val);
     Ok(())
 }
 
 fn mem_store_i32_16(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i32(ctx.value.index()) as u16;
-    let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val);
+    ctx.mem_addr.store(ctx.offset, ptr, val);
     Ok(())
 }
 
 fn mem_store_i64_8(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i64(ctx.value.index()) as u8;
-    let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val);
+    ctx.mem_addr.store(ctx.offset, ptr, val);
     Ok(())
 }
 
 fn mem_store_i64_16(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i64(ctx.value.index()) as u16;
-    let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val);
+    ctx.mem_addr.store(ctx.offset, ptr, val);
     Ok(())
 }
 
 fn mem_store_i64_32(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i64(ctx.value.index()) as u32;
-    let memarg = make_memarg(ctx.offset);
-    ctx.mem_addr.store(&memarg, ptr, val);
+    ctx.mem_addr.store(ctx.offset, ptr, val);
     Ok(())
 }
 

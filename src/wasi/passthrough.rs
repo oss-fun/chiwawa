@@ -9,7 +9,6 @@
 
 use super::*;
 use crate::execution::mem::MemAddr;
-use crate::structure::instructions::Memarg;
 use WasiError;
 
 /// WASI iovec structure that matches wasi-libc layout.
@@ -242,11 +241,7 @@ impl PassthroughWasiImpl {
         };
 
         if wasi_errno == 0 {
-            let nwritten_memarg = Memarg {
-                offset: 0,
-                align: 4,
-            };
-            memory.store(&nwritten_memarg, nwritten_ptr as i32, nwritten);
+            memory.store(0, nwritten_ptr as i32, nwritten);
         }
 
         Ok(wasi_errno as i32)
@@ -300,11 +295,7 @@ impl PassthroughWasiImpl {
             unsafe { __wasi_fd_read(fd as u32, iovecs.as_ptr(), iovs_len, &mut nread as *mut u32) };
 
         if wasi_errno == 0 {
-            let nread_memarg = Memarg {
-                offset: 0,
-                align: 4,
-            };
-            memory.store(&nread_memarg, nread_ptr as i32, nread);
+            memory.store(0, nread_ptr as i32, nread);
         }
 
         Ok(wasi_errno as i32)
@@ -405,18 +396,10 @@ impl PassthroughWasiImpl {
         }
 
         // Write environment variable count
-        let count_memarg = Memarg {
-            offset: 0,
-            align: 4,
-        };
-        memory.store(&count_memarg, environ_count_ptr as i32, environ_count);
+        memory.store(0, environ_count_ptr as i32, environ_count);
 
         // Write total buffer size needed
-        let size_memarg = Memarg {
-            offset: 0,
-            align: 4,
-        };
-        memory.store(&size_memarg, environ_buf_size_ptr as i32, environ_buf_size);
+        memory.store(0, environ_buf_size_ptr as i32, environ_buf_size);
 
         Ok(0)
     }
@@ -468,22 +451,10 @@ impl PassthroughWasiImpl {
         let argv_buf_size: u32 = args.iter().map(|arg| arg.len() + 1).sum::<usize>() as u32;
 
         // Write argument count to WebAssembly memory
-        let argc_memarg = Memarg {
-            offset: 0,
-            align: 4,
-        };
-        memory.store(&argc_memarg, argc_ptr as i32, argc);
+        memory.store(0, argc_ptr as i32, argc);
 
         // Write total buffer size needed to WebAssembly memory
-        let argv_buf_size_memarg = Memarg {
-            offset: 0,
-            align: 4,
-        };
-        memory.store(
-            &argv_buf_size_memarg,
-            argv_buf_size_ptr as i32,
-            argv_buf_size,
-        );
+        memory.store(0, argv_buf_size_ptr as i32, argv_buf_size);
 
         Ok(0)
     }
@@ -753,11 +724,7 @@ impl PassthroughWasiImpl {
             return Ok(wasi_errno as i32);
         }
 
-        let nread_memarg = Memarg {
-            offset: 0,
-            align: 4,
-        };
-        memory.store(&nread_memarg, nread_ptr as i32, nread);
+        memory.store(0, nread_ptr as i32, nread);
 
         Ok(0)
     }
@@ -840,11 +807,7 @@ impl PassthroughWasiImpl {
             return Ok(wasi_errno as i32);
         }
 
-        let nwritten_memarg = Memarg {
-            offset: 0,
-            align: 4,
-        };
-        memory.store(&nwritten_memarg, nwritten_ptr as i32, nwritten);
+        memory.store(0, nwritten_ptr as i32, nwritten);
 
         Ok(0)
     }
