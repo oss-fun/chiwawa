@@ -70,6 +70,15 @@ impl MemAddr {
         unsafe { data.write_to_ptr(mem.data.as_mut_ptr().add(pos)) }
     }
 
+    /// Returns raw mutable pointer to memory data for caching.
+    /// Safety: Caller must ensure pointer is not used after memory grows.
+    #[inline(always)]
+    pub fn data_ptr(&self) -> *mut u8 {
+        // Safety: Single-threaded access
+        let mem = unsafe { &mut *self.mem_inst.get() };
+        mem.data.as_mut_ptr()
+    }
+
     /// Returns current memory size in pages (64KB each).
     #[inline]
     pub fn mem_size(&self) -> i32 {

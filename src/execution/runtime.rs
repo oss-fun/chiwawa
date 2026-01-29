@@ -260,10 +260,11 @@ impl Runtime {
                                     {
                                         caller.result_regs = result_regs;
                                     }
-                                    // Cache primary memory address
+                                    // Cache primary memory address and raw pointer
                                     let primary_mem = func_module_weak
                                         .upgrade()
                                         .and_then(|m| m.mem_addrs.first().cloned());
+                                    let cached_mem_ptr = primary_mem.as_ref().map(|m| m.data_ptr());
 
                                     let new_frame = FrameStack {
                                         frame: Frame {
@@ -289,6 +290,7 @@ impl Runtime {
                                         result_regs: ArrayVec::new(),
                                         return_result_regs: ArrayVec::new(),
                                         primary_mem,
+                                        cached_mem_ptr,
                                     };
                                     self.stacks.activation_frame_stack.push(new_frame);
                                 }
@@ -342,6 +344,10 @@ impl Runtime {
                                 // Write to caller's registers (after restore, in caller's coordinate system)
                                 let (reg_file, frames) = self.stacks.get_reg_file_and_frames();
                                 let caller_frame = frames.last_mut().unwrap();
+
+                                // Refresh cached memory pointer (may have changed due to memory.grow in callee)
+                                caller_frame.cached_mem_ptr =
+                                    caller_frame.primary_mem.as_ref().map(|m| m.data_ptr());
 
                                 if !caller_frame.result_regs.is_empty() {
                                     for (caller_reg, val) in

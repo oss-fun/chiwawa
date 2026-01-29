@@ -759,8 +759,9 @@ impl VMState {
                     reg_file.save_offsets(alloc);
                 }
 
-                // Cache primary memory address
+                // Cache primary memory address and raw pointer
                 let primary_mem = module.upgrade().and_then(|m| m.mem_addrs.first().cloned());
+                let cached_mem_ptr = primary_mem.as_ref().map(|m| m.data_ptr());
 
                 let initial_frame = FrameStack {
                     frame: Frame {
@@ -786,6 +787,7 @@ impl VMState {
                     result_regs: ArrayVec::new(),
                     return_result_regs: ArrayVec::new(),
                     primary_mem,
+                    cached_mem_ptr,
                 };
 
                 Ok(VMState {
@@ -838,6 +840,10 @@ pub struct FrameStack {
     /// Cached primary memory address (avoids module.upgrade() on every memory op)
     #[serde(skip)]
     pub primary_mem: Option<MemAddr>,
+    /// Cached raw pointer to memory data (avoids Rc/UnsafeCell indirection on every memory op)
+    /// Must be updated after memory.grow
+    #[serde(skip)]
+    pub cached_mem_ptr: Option<*mut u8>,
 }
 
 impl FrameStack {
@@ -1085,15 +1091,13 @@ impl FrameStack {
                     addr,
                     offset,
                 } => {
-                    let mem_addr = self
-                        .primary_mem
-                        .as_ref()
-                        .ok_or(RuntimeError::MemoryNotFound)?;
+                    // Safety: Memory must exist if we reach a load instruction
+                    let mem_ptr = unsafe { self.cached_mem_ptr.unwrap_unchecked() };
 
                     let ctx = MemoryLoadRegContext {
                         reg_file,
                         locals: &mut self.frame.locals,
-                        mem_addr,
+                        mem_ptr,
                         addr: *addr,
                         dst: *dst,
                         offset: *offset,
@@ -1111,15 +1115,13 @@ impl FrameStack {
                     value,
                     offset,
                 } => {
-                    let mem_addr = self
-                        .primary_mem
-                        .as_ref()
-                        .ok_or(RuntimeError::MemoryNotFound)?;
+                    // Safety: Memory must exist if we reach a store instruction
+                    let mem_ptr = unsafe { self.cached_mem_ptr.unwrap_unchecked() };
 
                     let ctx = MemoryStoreRegContext {
                         reg_file,
                         locals: &self.frame.locals,
-                        mem_addr,
+                        mem_ptr,
                         addr: *addr,
                         value: *value,
                         offset: *offset,
@@ -1137,10 +1139,8 @@ impl FrameStack {
                     args,
                     data_index,
                 } => {
-                    let mem_addr = self
-                        .primary_mem
-                        .as_ref()
-                        .ok_or(RuntimeError::MemoryNotFound)?;
+                    // Safety: Memory must exist if we reach a memory ops instruction
+                    let mem_addr = unsafe { self.primary_mem.as_ref().unwrap_unchecked() };
                     let module_inst = self
                         .frame
                         .module
@@ -1158,6 +1158,11 @@ impl FrameStack {
 
                     let handler = MEMORY_OPS_REG_HANDLER_TABLE[*handler_index];
                     handler(ctx)?;
+
+                    // Refresh cached memory pointer after memory.grow (Vec may have reallocated)
+                    if *handler_index == HANDLER_IDX_MEMORY_GROW {
+                        self.cached_mem_ptr = Some(mem_addr.data_ptr());
+                    }
 
                     self.label_stack[current_label_stack_idx].ip = ip + 1;
                     continue;
@@ -3479,7 +3484,7 @@ lazy_static! {
 struct MemoryLoadRegContext<'a> {
     reg_file: &'a mut RegFile,
     locals: &'a mut [Val],
-    mem_addr: &'a MemAddr,
+    mem_ptr: *const u8, // Raw pointer to memory data (cached)
     addr: I32RegOperand,
     dst: RegOrLocal,
     offset: u64,
@@ -3536,98 +3541,126 @@ fn memory_load_reg_invalid_handler(_ctx: MemoryLoadRegContext) -> Result<(), Run
 
 fn mem_load_i32(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let val: i32 = ctx.mem_addr.load(ctx.offset, ptr);
+    let val: i32 = unsafe {
+        std::ptr::read_unaligned(ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *const _)
+    };
     ctx.set_dst_i32(val);
     Ok(())
 }
 
 fn mem_load_i64(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let val: i64 = ctx.mem_addr.load(ctx.offset, ptr);
+    let val: i64 = unsafe {
+        std::ptr::read_unaligned(ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *const _)
+    };
     ctx.set_dst_i64(val);
     Ok(())
 }
 
 fn mem_load_f32(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let val: f32 = ctx.mem_addr.load(ctx.offset, ptr);
+    let val: f32 = unsafe {
+        std::ptr::read_unaligned(ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *const _)
+    };
     ctx.set_dst_f32(val);
     Ok(())
 }
 
 fn mem_load_f64(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let val: f64 = ctx.mem_addr.load(ctx.offset, ptr);
+    let val: f64 = unsafe {
+        std::ptr::read_unaligned(ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *const _)
+    };
     ctx.set_dst_f64(val);
     Ok(())
 }
 
 fn mem_load_i32_8s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let val: i8 = ctx.mem_addr.load(ctx.offset, ptr);
+    let val: i8 = unsafe {
+        std::ptr::read_unaligned(ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *const _)
+    };
     ctx.set_dst_i32(val as i32);
     Ok(())
 }
 
 fn mem_load_i32_8u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let val: u8 = ctx.mem_addr.load(ctx.offset, ptr);
+    let val: u8 = unsafe {
+        std::ptr::read_unaligned(ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *const _)
+    };
     ctx.set_dst_i32(val as i32);
     Ok(())
 }
 
 fn mem_load_i32_16s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let val: i16 = ctx.mem_addr.load(ctx.offset, ptr);
+    let val: i16 = unsafe {
+        std::ptr::read_unaligned(ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *const _)
+    };
     ctx.set_dst_i32(val as i32);
     Ok(())
 }
 
 fn mem_load_i32_16u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let val: u16 = ctx.mem_addr.load(ctx.offset, ptr);
+    let val: u16 = unsafe {
+        std::ptr::read_unaligned(ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *const _)
+    };
     ctx.set_dst_i32(val as i32);
     Ok(())
 }
 
 fn mem_load_i64_8s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let val: i8 = ctx.mem_addr.load(ctx.offset, ptr);
+    let val: i8 = unsafe {
+        std::ptr::read_unaligned(ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *const _)
+    };
     ctx.set_dst_i64(val as i64);
     Ok(())
 }
 
 fn mem_load_i64_8u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let val: u8 = ctx.mem_addr.load(ctx.offset, ptr);
+    let val: u8 = unsafe {
+        std::ptr::read_unaligned(ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *const _)
+    };
     ctx.set_dst_i64(val as i64);
     Ok(())
 }
 
 fn mem_load_i64_16s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let val: i16 = ctx.mem_addr.load(ctx.offset, ptr);
+    let val: i16 = unsafe {
+        std::ptr::read_unaligned(ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *const _)
+    };
     ctx.set_dst_i64(val as i64);
     Ok(())
 }
 
 fn mem_load_i64_16u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let val: u16 = ctx.mem_addr.load(ctx.offset, ptr);
+    let val: u16 = unsafe {
+        std::ptr::read_unaligned(ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *const _)
+    };
     ctx.set_dst_i64(val as i64);
     Ok(())
 }
 
 fn mem_load_i64_32s(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let val: i32 = ctx.mem_addr.load(ctx.offset, ptr);
+    let val: i32 = unsafe {
+        std::ptr::read_unaligned(ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *const _)
+    };
     ctx.set_dst_i64(val as i64);
     Ok(())
 }
 
 fn mem_load_i64_32u(mut ctx: MemoryLoadRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
-    let val: u32 = ctx.mem_addr.load(ctx.offset, ptr);
+    let val: u32 = unsafe {
+        std::ptr::read_unaligned(ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *const _)
+    };
     ctx.set_dst_i64(val as i64);
     Ok(())
 }
@@ -3659,7 +3692,7 @@ lazy_static! {
 struct MemoryStoreRegContext<'a> {
     reg_file: &'a RegFile,
     locals: &'a [Val],
-    mem_addr: &'a MemAddr,
+    mem_ptr: *mut u8, // Raw pointer to memory data (cached)
     addr: I32RegOperand,
     value: Reg,
     offset: u64,
@@ -3685,63 +3718,108 @@ fn memory_store_reg_invalid_handler(_ctx: MemoryStoreRegContext) -> Result<(), R
 fn mem_store_i32(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i32(ctx.value.index());
-    ctx.mem_addr.store(ctx.offset, ptr, val);
+    unsafe {
+        std::ptr::write_unaligned(
+            ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *mut _,
+            val,
+        )
+    };
     Ok(())
 }
 
 fn mem_store_i64(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i64(ctx.value.index());
-    ctx.mem_addr.store(ctx.offset, ptr, val);
+    unsafe {
+        std::ptr::write_unaligned(
+            ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *mut _,
+            val,
+        )
+    };
     Ok(())
 }
 
 fn mem_store_f32(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_f32(ctx.value.index());
-    ctx.mem_addr.store(ctx.offset, ptr, val);
+    unsafe {
+        std::ptr::write_unaligned(
+            ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *mut _,
+            val,
+        )
+    };
     Ok(())
 }
 
 fn mem_store_f64(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_f64(ctx.value.index());
-    ctx.mem_addr.store(ctx.offset, ptr, val);
+    unsafe {
+        std::ptr::write_unaligned(
+            ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *mut _,
+            val,
+        )
+    };
     Ok(())
 }
 
 fn mem_store_i32_8(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i32(ctx.value.index()) as u8;
-    ctx.mem_addr.store(ctx.offset, ptr, val);
+    unsafe {
+        std::ptr::write_unaligned(
+            ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *mut _,
+            val,
+        )
+    };
     Ok(())
 }
 
 fn mem_store_i32_16(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i32(ctx.value.index()) as u16;
-    ctx.mem_addr.store(ctx.offset, ptr, val);
+    unsafe {
+        std::ptr::write_unaligned(
+            ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *mut _,
+            val,
+        )
+    };
     Ok(())
 }
 
 fn mem_store_i64_8(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i64(ctx.value.index()) as u8;
-    ctx.mem_addr.store(ctx.offset, ptr, val);
+    unsafe {
+        std::ptr::write_unaligned(
+            ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *mut _,
+            val,
+        )
+    };
     Ok(())
 }
 
 fn mem_store_i64_16(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i64(ctx.value.index()) as u16;
-    ctx.mem_addr.store(ctx.offset, ptr, val);
+    unsafe {
+        std::ptr::write_unaligned(
+            ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *mut _,
+            val,
+        )
+    };
     Ok(())
 }
 
 fn mem_store_i64_32(ctx: MemoryStoreRegContext) -> Result<(), RuntimeError> {
     let ptr = ctx.get_addr()?;
     let val = ctx.reg_file.get_i64(ctx.value.index()) as u32;
-    ctx.mem_addr.store(ctx.offset, ptr, val);
+    unsafe {
+        std::ptr::write_unaligned(
+            ctx.mem_ptr.add((ptr as usize) + (ctx.offset as usize)) as *mut _,
+            val,
+        )
+    };
     Ok(())
 }
 
