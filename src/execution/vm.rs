@@ -759,6 +759,9 @@ impl VMState {
                     reg_file.save_offsets(alloc);
                 }
 
+                // Cache primary memory address
+                let primary_mem = module.upgrade().and_then(|m| m.mem_addrs.first().cloned());
+
                 let initial_frame = FrameStack {
                     frame: Frame {
                         locals,
@@ -782,6 +785,7 @@ impl VMState {
                     enable_checkpoint: false,
                     result_regs: ArrayVec::new(),
                     return_result_regs: ArrayVec::new(),
+                    primary_mem,
                 };
 
                 Ok(VMState {
@@ -831,6 +835,9 @@ pub struct FrameStack {
     pub result_regs: ArrayVec<Reg, 8>,
     /// Registers containing this function's return values (set on return, max 8)
     pub return_result_regs: ArrayVec<Reg, 8>,
+    /// Cached primary memory address (avoids module.upgrade() on every memory op)
+    #[serde(skip)]
+    pub primary_mem: Option<MemAddr>,
 }
 
 impl FrameStack {
@@ -1078,14 +1085,9 @@ impl FrameStack {
                     addr,
                     offset,
                 } => {
-                    let module_inst = self
-                        .frame
-                        .module
-                        .upgrade()
-                        .ok_or(RuntimeError::ModuleInstanceGone)?;
-                    let mem_addr = module_inst
-                        .mem_addrs
-                        .first()
+                    let mem_addr = self
+                        .primary_mem
+                        .as_ref()
                         .ok_or(RuntimeError::MemoryNotFound)?;
 
                     let ctx = MemoryLoadRegContext {
@@ -1109,14 +1111,9 @@ impl FrameStack {
                     value,
                     offset,
                 } => {
-                    let module_inst = self
-                        .frame
-                        .module
-                        .upgrade()
-                        .ok_or(RuntimeError::ModuleInstanceGone)?;
-                    let mem_addr = module_inst
-                        .mem_addrs
-                        .first()
+                    let mem_addr = self
+                        .primary_mem
+                        .as_ref()
                         .ok_or(RuntimeError::MemoryNotFound)?;
 
                     let ctx = MemoryStoreRegContext {
@@ -1140,15 +1137,15 @@ impl FrameStack {
                     args,
                     data_index,
                 } => {
+                    let mem_addr = self
+                        .primary_mem
+                        .as_ref()
+                        .ok_or(RuntimeError::MemoryNotFound)?;
                     let module_inst = self
                         .frame
                         .module
                         .upgrade()
                         .ok_or(RuntimeError::ModuleInstanceGone)?;
-                    let mem_addr = module_inst
-                        .mem_addrs
-                        .first()
-                        .ok_or(RuntimeError::MemoryNotFound)?;
 
                     let ctx = MemoryOpsRegContext {
                         reg_file,
