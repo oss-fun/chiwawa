@@ -232,9 +232,11 @@ pub fn restore<P: AsRef<Path>>(
         );
     }
 
-    // 6. Reconstruct skipped fields in Stacks (Frame::module)
+    // 6. Reconstruct skipped fields in Stacks (Frame::module and primary_mem)
+    let primary_mem = module_inst.mem_addrs.first().cloned();
     for frame_stack in state.stacks.activation_frame_stack.iter_mut() {
         frame_stack.frame.module = Rc::downgrade(&module_inst);
+        frame_stack.primary_mem = primary_mem.clone();
     }
     println!("Frame module references restored.");
 

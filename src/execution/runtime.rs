@@ -260,6 +260,11 @@ impl Runtime {
                                     {
                                         caller.result_regs = result_regs;
                                     }
+                                    // Cache primary memory address
+                                    let primary_mem = func_module_weak
+                                        .upgrade()
+                                        .and_then(|m| m.mem_addrs.first().cloned());
+
                                     let new_frame = FrameStack {
                                         frame: Frame {
                                             locals,
@@ -283,6 +288,7 @@ impl Runtime {
                                         enable_checkpoint: self.enable_checkpoint,
                                         result_regs: ArrayVec::new(),
                                         return_result_regs: ArrayVec::new(),
+                                        primary_mem,
                                     };
                                     self.stacks.activation_frame_stack.push(new_frame);
                                 }
