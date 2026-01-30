@@ -182,74 +182,86 @@ impl RegFile {
     /// Get/set methods for each type (with frame offset)
     #[inline(always)]
     pub fn get_i32(&self, reg: u16) -> i32 {
-        let offset = self.current_offsets().i32_offset as usize;
-        self.i32_regs[offset + reg as usize]
+        let idx = self.current_offsets().i32_offset as usize + reg as usize;
+        unsafe { *self.i32_regs.get_unchecked(idx) }
     }
 
     #[inline(always)]
     pub fn set_i32(&mut self, reg: u16, val: i32) {
-        let offset = self.current_offsets().i32_offset as usize;
-        self.i32_regs[offset + reg as usize] = val;
+        let idx = self.current_offsets().i32_offset as usize + reg as usize;
+        unsafe {
+            *self.i32_regs.get_unchecked_mut(idx) = val;
+        }
     }
 
     #[inline(always)]
     pub fn get_i64(&self, reg: u16) -> i64 {
-        let offset = self.current_offsets().i64_offset as usize;
-        self.i64_regs[offset + reg as usize]
+        let idx = self.current_offsets().i64_offset as usize + reg as usize;
+        unsafe { *self.i64_regs.get_unchecked(idx) }
     }
 
     #[inline(always)]
     pub fn set_i64(&mut self, reg: u16, val: i64) {
-        let offset = self.current_offsets().i64_offset as usize;
-        self.i64_regs[offset + reg as usize] = val;
+        let idx = self.current_offsets().i64_offset as usize + reg as usize;
+        unsafe {
+            *self.i64_regs.get_unchecked_mut(idx) = val;
+        }
     }
 
     #[inline(always)]
     pub fn get_f32(&self, reg: u16) -> f32 {
-        let offset = self.current_offsets().f32_offset as usize;
-        self.f32_regs[offset + reg as usize]
+        let idx = self.current_offsets().f32_offset as usize + reg as usize;
+        unsafe { *self.f32_regs.get_unchecked(idx) }
     }
 
     #[inline(always)]
     pub fn set_f32(&mut self, reg: u16, val: f32) {
-        let offset = self.current_offsets().f32_offset as usize;
-        self.f32_regs[offset + reg as usize] = val;
+        let idx = self.current_offsets().f32_offset as usize + reg as usize;
+        unsafe {
+            *self.f32_regs.get_unchecked_mut(idx) = val;
+        }
     }
 
     #[inline(always)]
     pub fn get_f64(&self, reg: u16) -> f64 {
-        let offset = self.current_offsets().f64_offset as usize;
-        self.f64_regs[offset + reg as usize]
+        let idx = self.current_offsets().f64_offset as usize + reg as usize;
+        unsafe { *self.f64_regs.get_unchecked(idx) }
     }
 
     #[inline(always)]
     pub fn set_f64(&mut self, reg: u16, val: f64) {
-        let offset = self.current_offsets().f64_offset as usize;
-        self.f64_regs[offset + reg as usize] = val;
+        let idx = self.current_offsets().f64_offset as usize + reg as usize;
+        unsafe {
+            *self.f64_regs.get_unchecked_mut(idx) = val;
+        }
     }
 
     #[inline(always)]
     pub fn get_ref(&self, reg: u16) -> Ref {
-        let offset = self.current_offsets().ref_offset as usize;
-        self.ref_regs[offset + reg as usize].clone()
+        let idx = self.current_offsets().ref_offset as usize + reg as usize;
+        unsafe { self.ref_regs.get_unchecked(idx).clone() }
     }
 
     #[inline(always)]
     pub fn set_ref(&mut self, reg: u16, val: Ref) {
-        let offset = self.current_offsets().ref_offset as usize;
-        self.ref_regs[offset + reg as usize] = val;
+        let idx = self.current_offsets().ref_offset as usize + reg as usize;
+        unsafe {
+            *self.ref_regs.get_unchecked_mut(idx) = val;
+        }
     }
 
     #[inline(always)]
     pub fn get_v128(&self, reg: u16) -> i128 {
-        let offset = self.current_offsets().v128_offset as usize;
-        self.v128_regs[offset + reg as usize]
+        let idx = self.current_offsets().v128_offset as usize + reg as usize;
+        unsafe { *self.v128_regs.get_unchecked(idx) }
     }
 
     #[inline(always)]
     pub fn set_v128(&mut self, reg: u16, val: i128) {
-        let offset = self.current_offsets().v128_offset as usize;
-        self.v128_regs[offset + reg as usize] = val;
+        let idx = self.current_offsets().v128_offset as usize + reg as usize;
+        unsafe {
+            *self.v128_regs.get_unchecked_mut(idx) = val;
+        }
     }
 
     /// Copy value from source register to destination register.
