@@ -162,9 +162,20 @@ impl RegFile {
         }
     }
 
-    /// Restore offsets to previous frame (does not deallocate registers)
+    /// Restore offsets to previous frame, truncating register vectors to reclaim space.
+    ///
+    /// The popped frame's offset values were recorded as `Vec::len()` at the time
+    /// `save_offsets` was called, so truncating to them restores the vectors to
+    /// the state before that frame was pushed. Capacity is preserved for reuse.
     pub fn restore_offsets(&mut self) {
-        self.frame_offsets.pop();
+        if let Some(popped) = self.frame_offsets.pop() {
+            self.i32_regs.truncate(popped.i32_offset as usize);
+            self.i64_regs.truncate(popped.i64_offset as usize);
+            self.f32_regs.truncate(popped.f32_offset as usize);
+            self.f64_regs.truncate(popped.f64_offset as usize);
+            self.ref_regs.truncate(popped.ref_offset as usize);
+            self.v128_regs.truncate(popped.v128_offset as usize);
+        }
         self.cached_offsets = self.frame_offsets.last().cloned().unwrap_or_default();
     }
 

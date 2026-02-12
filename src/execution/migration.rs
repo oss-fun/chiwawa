@@ -17,6 +17,7 @@
 //! - **wasm32-wasip1**: WASI-based file existence check at instruction boundaries
 
 use crate::error::RuntimeError;
+use crate::execution::func::FuncInst;
 use crate::execution::global::GlobalAddr;
 use crate::execution::mem::MemAddr;
 use crate::execution::module::ModuleInst;
@@ -82,6 +83,7 @@ pub struct SerializableState {
     pub memory_data: Vec<u8>,
     pub global_values: Vec<Val>,
     pub tables_data: Vec<Vec<Option<u32>>>,
+    pub frame_func_indices: Vec<u32>,
 }
 
 /// Serializes runtime state to a checkpoint file.
@@ -135,17 +137,86 @@ pub fn checkpoint<P: AsRef<Path>>(
         })
         .collect::<Result<Vec<Vec<Option<u32>>>, _>>()?;
 
-    // 4. Assemble state
+    // 4. Compute function indices for each activation frame (using Rc::ptr_eq)
+    let frame_func_indices = stacks
+        .activation_frame_stack
+        .iter()
+        .map(|frame_stack| {
+            let frame_instrs = &frame_stack.label_stack[0].processed_instrs;
+            module_inst
+                .func_addrs
+                .iter()
+                .position(|func_addr| {
+                    let inst = func_addr.read_lock();
+                    if let FuncInst::RuntimeFunc { code, .. } = inst {
+                        Rc::ptr_eq(frame_instrs, &code.body)
+                    } else {
+                        false
+                    }
+                })
+                .expect("Function not found in module func_addrs during checkpoint")
+                as u32
+        })
+        .collect::<Vec<u32>>();
+
+    // 5. Assemble state
+    // Note: Register file is already compact because restore_offsets() truncates
+    // register vectors on function return, so no checkpoint-time compaction needed.
     let state = SerializableState {
         stacks: stacks.clone(),
         memory_data,
         global_values,
         tables_data,
+        frame_func_indices,
     };
 
-    // 5. Serialize and write
+    // 6. Serialize and write (with per-component size diagnostics)
+    let reg_file_size = bincode::serialize(&state.stacks.reg_file)
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let frames_count = state.stacks.activation_frame_stack.len();
+    let total_labels: usize = state
+        .stacks
+        .activation_frame_stack
+        .iter()
+        .map(|f| f.label_stack.len())
+        .sum();
+    let frames_size = bincode::serialize(&state.stacks.activation_frame_stack)
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let total_locals: usize = state
+        .stacks
+        .activation_frame_stack
+        .iter()
+        .map(|f| f.frame.locals.len())
+        .sum();
+    let _stacks_size = reg_file_size + frames_size;
+    let memory_size = state.memory_data.len();
+    let globals_size = bincode::serialize(&state.global_values)
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let tables_size = bincode::serialize(&state.tables_data)
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let indices_size = bincode::serialize(&state.frame_func_indices)
+        .map(|v| v.len())
+        .unwrap_or(0);
+    println!("Checkpoint component sizes:");
+    println!("  reg_file:           {} bytes", reg_file_size);
+    println!(
+        "  frames:             {} bytes ({} frames, {} labels, {} locals total)",
+        frames_size, frames_count, total_labels, total_locals
+    );
+    println!("  memory_data:        {} bytes", memory_size);
+    println!("  global_values:      {} bytes", globals_size);
+    println!("  tables_data:        {} bytes", tables_size);
+    println!("  frame_func_indices: {} bytes", indices_size);
+
     let encoded: Vec<u8> =
         bincode::serialize(&state).map_err(|e| RuntimeError::SerializationError(e.to_string()))?;
+
+    println!("  total encoded:      {} bytes", encoded.len());
+
     let mut file =
         File::create(output_path).map_err(|e| RuntimeError::CheckpointSaveError(e.to_string()))?;
     file.write_all(&encoded)
@@ -232,13 +303,28 @@ pub fn restore<P: AsRef<Path>>(
         );
     }
 
-    // 6. Reconstruct skipped fields in Stacks (Frame::module and primary_mem)
+    // 6. Reconstruct skipped fields in Stacks (Frame::module, primary_mem, processed_instrs)
     let primary_mem = module_inst.mem_addrs.first().cloned();
-    for frame_stack in state.stacks.activation_frame_stack.iter_mut() {
+    for (frame_stack, &func_idx) in state
+        .stacks
+        .activation_frame_stack
+        .iter_mut()
+        .zip(state.frame_func_indices.iter())
+    {
         frame_stack.frame.module = Rc::downgrade(&module_inst);
         frame_stack.primary_mem = primary_mem.clone();
+
+        // Reconstruct processed_instrs from module function body
+        let func_addr = &module_inst.func_addrs[func_idx as usize];
+        let func_inst = func_addr.read_lock();
+        if let FuncInst::RuntimeFunc { code, .. } = func_inst {
+            let body = code.body.clone();
+            for label_stack in frame_stack.label_stack.iter_mut() {
+                label_stack.processed_instrs = body.clone();
+            }
+        }
     }
-    println!("Frame module references restored.");
+    println!("Frame module references and processed instructions restored.");
 
     println!("Restore successful (state applied to module). Returning Stacks.");
     Ok(state.stacks)
