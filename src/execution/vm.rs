@@ -1790,9 +1790,10 @@ impl Serialize for LabelStack {
         S: Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("LabelStack", 3)?;
+        // Skip processed_instrs: it is deterministically derived from the Wasm binary
+        // and will be reconstructed from the module during restore.
+        let mut state = serializer.serialize_struct("LabelStack", 2)?;
         state.serialize_field("label", &self.label)?;
-        state.serialize_field("processed_instrs", self.processed_instrs.as_ref())?;
         state.serialize_field("ip", &self.ip)?;
         state.end()
     }
@@ -1806,14 +1807,14 @@ impl<'de> Deserialize<'de> for LabelStack {
         #[derive(Deserialize)]
         struct LabelStackData {
             label: Label,
-            processed_instrs: Vec<ProcessedInstr>,
             ip: usize,
         }
 
         let data = LabelStackData::deserialize(deserializer)?;
         Ok(LabelStack {
             label: data.label,
-            processed_instrs: Rc::new(data.processed_instrs),
+            // Placeholder: reconstructed from module during restore
+            processed_instrs: Rc::new(Vec::new()),
             ip: data.ip,
         })
     }
