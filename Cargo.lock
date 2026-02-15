@@ -154,6 +154,7 @@ dependencies = [
  "getrandom",
  "itertools",
  "lazy_static",
+ "lz4_flex",
  "maplit",
  "num",
  "rmp",
@@ -304,6 +305,15 @@ name = "libc"
 version = "0.2.172"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d750af042f7ef4f724306de029d18836c26c1765a54a6a3f094cbd23a7267ffa"
+
+[[package]]
+name = "lz4_flex"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08ab2867e3eeeca90e844d1940eab391c9dc5228783db2ed999acbc0a9ed375a"
+dependencies = [
+ "twox-hash",
+]
 
 [[package]]
 name = "maplit"
@@ -516,6 +526,12 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "twox-hash"
+version = "2.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ea3136b675547379c4bd395ca6b938e5ad3c3d20fad76e7fe85f9e0d011419c"
 
 [[package]]
 name = "typenum"

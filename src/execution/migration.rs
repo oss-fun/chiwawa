@@ -21,8 +21,7 @@ use crate::execution::func::FuncInst;
 use crate::execution::global::GlobalAddr;
 use crate::execution::mem::MemAddr;
 use crate::execution::module::ModuleInst;
-use crate::execution::table::TableAddr;
-use crate::execution::value::{Ref, Val};
+use crate::execution::value::Val;
 use crate::execution::vm::{Frame, Stacks};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
@@ -74,15 +73,17 @@ pub fn check_checkpoint_trigger(frame: &Frame) -> Result<bool, RuntimeError> {
 ///
 /// Contains all information needed to restore execution:
 /// - Call stack and register state
-/// - Linear memory contents
+/// - Linear memory contents (LZ4 compressed)
 /// - Global variable values
-/// - Table entries
+///
+/// Tables are excluded: they are deterministically initialized from element
+/// segments during module instantiation (C/C++ compilers do not generate
+/// runtime table mutations).
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SerializableState {
     pub stacks: Stacks,
-    pub memory_data: Vec<u8>,
+    pub memory_data_compressed: Vec<u8>,
     pub global_values: Vec<Val>,
-    pub tables_data: Vec<Vec<Option<u32>>>,
     pub frame_func_indices: Vec<u32>,
 }
 
@@ -94,16 +95,18 @@ pub fn checkpoint<P: AsRef<Path>>(
     stacks: &Stacks,
     mem_addrs: &[MemAddr],
     global_addrs: &[GlobalAddr],
-    table_addrs: &[TableAddr],
     output_path: P,
 ) -> Result<(), RuntimeError> {
     println!("Checkpointing state to {:?}...", output_path.as_ref());
 
-    // 1. Gather Memory state
-    let memory_data = if let Some(mem_addr) = mem_addrs.get(0) {
-        mem_addr.get_data()
+    // 1. Gather Memory state (LZ4 compressed)
+    let (memory_data_compressed, mem_raw_size) = if let Some(mem_addr) = mem_addrs.get(0) {
+        let raw = mem_addr.get_data();
+        let raw_len = raw.len();
+        let compressed = lz4_flex::compress_prepend_size(&raw);
+        (compressed, raw_len)
     } else {
-        Vec::new()
+        (Vec::new(), 0)
     };
 
     // 2. Gather Global state
@@ -112,32 +115,7 @@ pub fn checkpoint<P: AsRef<Path>>(
         .map(|global_addr| Ok(global_addr.get()))
         .collect::<Result<Vec<Val>, RuntimeError>>()?;
 
-    // 3. Gather Table state (using Arc::ptr_eq)
-    let tables_data = table_addrs
-        .iter()
-        .map(|table_addr| -> Result<Vec<Option<u32>>, RuntimeError> {
-            let table_inst = table_addr.read_lock();
-            let mut table_indices = Vec::with_capacity(table_inst.elem.len());
-            for val in table_inst.elem.iter() {
-                if let Val::Ref(Ref::FuncAddr(target_func_addr)) = val {
-                    let found_index = module_inst.func_addrs.iter().position(|module_func_addr| {
-                        Rc::ptr_eq(target_func_addr.get_rc(), module_func_addr.get_rc())
-                    });
-                    if let Some(index) = found_index {
-                        table_indices.push(Some(index as u32));
-                    } else {
-                        eprintln!("Warning: FuncAddr in table not found in module func_addrs during checkpoint.");
-                        table_indices.push(None);
-                    }
-                } else {
-                    table_indices.push(None);
-                }
-            }
-            Ok(table_indices)
-        })
-        .collect::<Result<Vec<Vec<Option<u32>>>, _>>()?;
-
-    // 4. Compute function indices for each activation frame (using Rc::ptr_eq)
+    // 3. Compute function indices for each activation frame (using Rc::ptr_eq)
     let frame_func_indices = stacks
         .activation_frame_stack
         .iter()
@@ -159,14 +137,13 @@ pub fn checkpoint<P: AsRef<Path>>(
         })
         .collect::<Vec<u32>>();
 
-    // 5. Assemble state
+    // 4. Assemble state
     // Note: Register file is already compact because restore_offsets() truncates
     // register vectors on function return, so no checkpoint-time compaction needed.
     let state = SerializableState {
         stacks: stacks.clone(),
-        memory_data,
+        memory_data_compressed,
         global_values,
-        tables_data,
         frame_func_indices,
     };
 
@@ -191,11 +168,10 @@ pub fn checkpoint<P: AsRef<Path>>(
         .map(|f| f.frame.locals.len())
         .sum();
     let _stacks_size = reg_file_size + frames_size;
-    let memory_size = state.memory_data.len();
-    let globals_size = bincode::serialize(&state.global_values)
+    let memory_size = bincode::serialize(&state.memory_data_compressed)
         .map(|v| v.len())
         .unwrap_or(0);
-    let tables_size = bincode::serialize(&state.tables_data)
+    let globals_size = bincode::serialize(&state.global_values)
         .map(|v| v.len())
         .unwrap_or(0);
     let indices_size = bincode::serialize(&state.frame_func_indices)
@@ -207,9 +183,11 @@ pub fn checkpoint<P: AsRef<Path>>(
         "  frames:             {} bytes ({} frames, {} labels, {} locals total)",
         frames_size, frames_count, total_labels, total_locals
     );
-    println!("  memory_data:        {} bytes", memory_size);
+    println!(
+        "  memory_data:        {} bytes (raw {} bytes, LZ4 compressed)",
+        memory_size, mem_raw_size
+    );
     println!("  global_values:      {} bytes", globals_size);
-    println!("  tables_data:        {} bytes", tables_size);
     println!("  frame_func_indices: {} bytes", indices_size);
 
     let encoded: Vec<u8> =
@@ -246,12 +224,15 @@ pub fn restore<P: AsRef<Path>>(
     let mut state: SerializableState = bincode::deserialize(&encoded[..])
         .map_err(|e| RuntimeError::DeserializationError(e.to_string()))?;
 
-    // 3. Restore memory state into module_inst
-    // Assuming only one memory instance for now
+    // 3. Restore memory state (LZ4 decompress)
     if let Some(mem_addr) = module_inst.mem_addrs.get(0) {
-        mem_addr.set_data(state.memory_data);
+        let memory_data = lz4_flex::decompress_size_prepended(&state.memory_data_compressed)
+            .map_err(|e| {
+                RuntimeError::DeserializationError(format!("LZ4 decompression failed: {}", e))
+            })?;
+        mem_addr.set_data(memory_data);
         println!("Memory state restored into module instance.");
-    } else if !state.memory_data.is_empty() {
+    } else if !state.memory_data_compressed.is_empty() {
         eprintln!("Warning: Checkpoint contains memory data, but module has no memory instance.");
     }
 
@@ -269,41 +250,7 @@ pub fn restore<P: AsRef<Path>>(
         );
     }
 
-    // 5. Restore table state into module_inst
-    if module_inst.table_addrs.len() == state.tables_data.len() {
-        for (table_idx, table_indices) in state.tables_data.iter().enumerate() {
-            let table_addr = &module_inst.table_addrs[table_idx];
-            let restored_elements = table_indices
-                .iter()
-                .map(|maybe_index| {
-                    maybe_index
-                        .map(|index| {
-                            module_inst
-                                .func_addrs
-                                .get(index as usize)
-                                .cloned()
-                                .ok_or_else(|| {
-                                    RuntimeError::RestoreError(format!(
-                                        "Invalid function index {} found in table data",
-                                        index
-                                    ))
-                                })
-                        })
-                        .transpose()
-                })
-                .collect::<Result<Vec<Option<_>>, _>>()?;
-            table_addr.set_elements(restored_elements)?;
-        }
-        println!("Table state restored into module instance.");
-    } else {
-        eprintln!(
-            "Warning: Mismatch in table count between module ({}) and checkpoint ({}). Tables not restored.",
-            module_inst.table_addrs.len(),
-            state.tables_data.len()
-        );
-    }
-
-    // 6. Reconstruct skipped fields in Stacks (Frame::module, primary_mem, processed_instrs)
+    // 5. Reconstruct skipped fields in Stacks (Frame::module, primary_mem, processed_instrs)
     let primary_mem = module_inst.mem_addrs.first().cloned();
     for (frame_stack, &func_idx) in state
         .stacks

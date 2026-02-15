@@ -170,14 +170,12 @@ impl Runtime {
                     let checkpoint_path = Path::new("./checkpoint.bin");
                     let mem_addrs = &self.module_inst.mem_addrs;
                     let global_addrs = &self.module_inst.global_addrs;
-                    let table_addrs = &self.module_inst.table_addrs;
 
                     match migration::checkpoint(
                         &self.module_inst,
                         &self.stacks,
                         mem_addrs,
                         global_addrs,
-                        table_addrs,
                         checkpoint_path,
                     ) {
                         Ok(_) => {
