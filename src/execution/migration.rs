@@ -9,7 +9,6 @@
 //! - Execution stacks (call frames and register state)
 //! - Linear memory contents
 //! - Global variable values
-//! - Table entries (function references)
 //!
 //! ## Trigger Mechanisms
 //!
@@ -77,8 +76,7 @@ pub fn check_checkpoint_trigger(frame: &Frame) -> Result<bool, RuntimeError> {
 /// - Global variable values
 ///
 /// Tables are excluded: they are deterministically initialized from element
-/// segments during module instantiation (C/C++ compilers do not generate
-/// runtime table mutations).
+/// segments during module instantiation.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SerializableState {
     pub stacks: Stacks,
@@ -89,7 +87,7 @@ pub struct SerializableState {
 
 /// Serializes runtime state to a checkpoint file.
 ///
-/// Captures memory, globals, tables, and stack state for later restoration.
+/// Captures memory, globals, and stack state for later restoration.
 pub fn checkpoint<P: AsRef<Path>>(
     module_inst: &ModuleInst,
     stacks: &Stacks,
@@ -206,7 +204,7 @@ pub fn checkpoint<P: AsRef<Path>>(
 
 /// Restores runtime state from a checkpoint file.
 ///
-/// Reads serialized state and restores memory, globals, tables, and stacks.
+/// Reads serialized state and restores memory, globals, and stacks.
 pub fn restore<P: AsRef<Path>>(
     module_inst: Rc<ModuleInst>,
     input_path: P,
