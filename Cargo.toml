@@ -9,6 +9,12 @@ license = "MIT OR Apache-2.0"
 keywords = ["webassembly", "wasm", "runtime", "checkpoint", "migration"]
 categories = ["wasm", "virtualization"]
 
+[profile.dev]
+opt-level = 1
+
+[profile.test]
+opt-level = 1
+
 [profile.release]
 opt-level = 3
 lto = "fat"
