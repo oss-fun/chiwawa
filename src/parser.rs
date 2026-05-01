@@ -860,6 +860,7 @@ fn decode_func_section(
             body: Rc::new(Vec::new()),
             reg_allocation: None,
             result_reg: None,
+            handlers: Rc::new(Vec::new()),
         });
     }
 
@@ -1240,12 +1241,22 @@ fn decode_code_section(
 
     let body_rc = Rc::new(processed_instrs);
 
+    // v2 dispatcher handler array: parallel to body + h_halt sentinel at end
+    // for safe out-of-range dispatch in TCO mode.
+    let mut handlers_vec: Vec<crate::execution::ir::Handler> = body_rc
+        .iter()
+        .map(crate::execution::handlers::select_handler)
+        .collect();
+    handlers_vec.push(crate::execution::handlers::h_halt);
+    let handlers_rc = Rc::new(handlers_vec);
+
     // Store function body and metadata in module
     if let Some(func) = module.funcs.get_mut(relative_func_index) {
         func.body = body_rc;
         // Store register mode metadata (None for stack mode)
         func.reg_allocation = reg_allocation.clone();
         func.result_reg = result_reg;
+        func.handlers = handlers_rc;
     } else {
         return Err(Box::new(RuntimeError::InvalidWasm(
             "Invalid function index when storing body",

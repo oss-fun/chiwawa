@@ -788,6 +788,7 @@ impl VMState {
                     return_result_regs: ArrayVec::new(),
                     primary_mem,
                     cached_mem_ptr,
+                    handlers: code.handlers.clone(),
                 };
 
                 Ok(VMState {
@@ -844,6 +845,10 @@ pub struct FrameStack {
     /// Must be updated after memory.grow
     #[serde(skip)]
     pub cached_mem_ptr: Option<*mut u8>,
+    /// v2 dispatcher handler array (parallel to label_stack[*].processed_instrs).
+    /// Cloned (Rc bump) from `Func.handlers` at frame entry.
+    #[serde(skip)]
+    pub handlers: Rc<Vec<super::ir::Handler>>,
 }
 
 impl FrameStack {

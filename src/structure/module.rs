@@ -15,6 +15,7 @@
 //! - **Data**: Memory initialization data
 //! - **Imports/Exports**: Module interface
 
+use crate::execution::ir;
 use crate::execution::regs::Reg;
 use crate::execution::vm::ProcessedInstr;
 use crate::structure::instructions::*;
@@ -31,6 +32,9 @@ pub struct Func {
     pub body: Rc<Vec<ProcessedInstr>>,
     pub reg_allocation: Option<crate::execution::regs::RegAllocation>,
     pub result_reg: Option<Reg>, // Register for return value (register mode only)
+    /// v2 dispatcher handler array. Built once at parse time, length =
+    /// body.len() + 1 (last entry is `h_halt` sentinel).
+    pub handlers: Rc<Vec<ir::Handler>>,
 }
 
 /// Table definition.

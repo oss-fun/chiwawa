@@ -87,6 +87,7 @@ impl FuncAddr {
                 body: Rc::new(Vec::new()),
                 reg_allocation: None,
                 result_reg: None,
+                handlers: Rc::new(Vec::new()),
             },
         })))
     }

@@ -1,9 +1,13 @@
 //! Runtime core managing execution lifecycle and host function invocation.
 
 use crate::error::RuntimeError;
+use crate::execution::dispatch;
 use crate::execution::func::{FuncAddr, FuncInst};
+use crate::execution::ir::Outcome;
 use crate::execution::migration;
 use crate::execution::module::ModuleInst;
+use crate::execution::regs::{Reg, RegFile};
+use crate::execution::state::VmState;
 use crate::execution::stats::ExecutionStats;
 #[cfg(feature = "trace")]
 use crate::execution::trace::{TraceConfig, Tracer};
@@ -119,20 +123,81 @@ impl Runtime {
         }
     }
 
-    /// Executes interpreter loop for a specific frame stack.
+    /// Executes interpreter loop for a specific frame stack via the v2
+    /// dispatcher (`dispatch::run`). Constructs a `VmState`, runs dispatch,
+    /// writes back state, and translates `Outcome` into the legacy result.
     fn run_dtc(
         &mut self,
         frame_stack_idx: usize,
-        called_func_addr: &mut Option<FuncAddr>,
+        _called_func_addr: &mut Option<FuncAddr>,
     ) -> Result<Result<Option<super::vm::ModuleLevelInstr>, RuntimeError>, RuntimeError> {
-        let reg_file = &mut self.stacks.reg_file;
+        let module_ptr: *const ModuleInst = Rc::as_ptr(&self.module_inst);
+        let reg_file_ptr: *mut RegFile = &mut self.stacks.reg_file as *mut RegFile;
         let frame_stack = &mut self.stacks.activation_frame_stack[frame_stack_idx];
-        let stats_ref = self.execution_stats.as_mut();
-        #[cfg(feature = "trace")]
-        let tracer_ref = self.tracer.as_mut();
-        #[cfg(not(feature = "trace"))]
-        let tracer_ref: Option<()> = None;
-        frame_stack.run_dtc_loop(reg_file, called_func_addr, stats_ref, tracer_ref)
+
+        let current_label_idx = frame_stack.label_stack.len().saturating_sub(1);
+        let (instrs_ptr, instrs_len, pc) = {
+            let ls = &frame_stack.label_stack[current_label_idx];
+            (
+                ls.processed_instrs.as_ptr(),
+                ls.processed_instrs.len(),
+                ls.ip,
+            )
+        };
+        let handlers_ptr = frame_stack.handlers.as_ptr();
+        let mem_ptr = frame_stack.cached_mem_ptr.unwrap_or(std::ptr::null_mut());
+        let locals_ptr = frame_stack.frame.locals.as_mut_ptr();
+        let locals_len = frame_stack.frame.locals.len();
+        let label_stack_ptr: *mut Vec<LabelStack> =
+            &mut frame_stack.label_stack as *mut Vec<LabelStack>;
+        let return_result_regs_ptr: *mut ArrayVec<Reg, 8> =
+            &mut frame_stack.return_result_regs as *mut ArrayVec<Reg, 8>;
+        let enable_checkpoint = frame_stack.enable_checkpoint;
+
+        let mut state = VmState {
+            reg_file: reg_file_ptr,
+            locals: locals_ptr,
+            locals_len,
+            pc,
+            instrs: instrs_ptr,
+            instrs_len,
+            handlers: handlers_ptr,
+            label_stack: label_stack_ptr,
+            current_label_idx,
+            mem_ptr,
+            module: module_ptr,
+            trap: None,
+            yielded: None,
+            return_result_regs: return_result_regs_ptr,
+            enable_checkpoint,
+        };
+
+        let outcome = dispatch::run(&mut state);
+
+        unsafe {
+            if state.current_label_idx < (*state.label_stack).len() {
+                (*state.label_stack)[state.current_label_idx].ip = state.pc;
+            }
+        }
+        frame_stack.cached_mem_ptr = if state.mem_ptr.is_null() {
+            None
+        } else {
+            Some(state.mem_ptr)
+        };
+
+        match outcome {
+            Outcome::Halt => Ok(Ok(None)),
+            Outcome::Yield => Ok(Ok(state.yielded)),
+            Outcome::Trap => {
+                let err = state.trap.unwrap_or(RuntimeError::Unreachable);
+                if matches!(err, RuntimeError::CheckpointRequested) {
+                    Ok(Err(err))
+                } else {
+                    Err(err)
+                }
+            }
+            Outcome::Continue => unreachable!("dispatcher must not return Continue"),
+        }
     }
 
     /// Executes the runtime and returns the result values.
@@ -289,6 +354,7 @@ impl Runtime {
                                         return_result_regs: ArrayVec::new(),
                                         primary_mem,
                                         cached_mem_ptr,
+                                        handlers: code.handlers.clone(),
                                     };
                                     self.stacks.activation_frame_stack.push(new_frame);
                                 }
