@@ -21,6 +21,7 @@ wasmtime = []
 wasmedge = []
 stats = []
 trace = []
+tco = []
 
 [dependencies]
 anyhow = "1.0.86"
