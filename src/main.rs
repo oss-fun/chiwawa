@@ -5,7 +5,7 @@ use chiwawa::{
     execution::module::*,
     execution::runtime::Runtime,
     execution::value::*,
-    execution::{migration, vm::Stacks},
+    execution::{migration, state::Stacks},
     parser,
     structure::module::Module,
 };

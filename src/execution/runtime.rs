@@ -8,11 +8,11 @@ use crate::execution::migration;
 use crate::execution::module::ModuleInst;
 use crate::execution::regs::{Reg, RegFile};
 use crate::execution::state::VmState;
+use crate::execution::state::{Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, Stacks};
 use crate::execution::stats::ExecutionStats;
 #[cfg(feature = "trace")]
 use crate::execution::trace::{TraceConfig, Tracer};
 use crate::execution::value::{Num, Val, Vec_};
-use crate::execution::vm::{Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, Stacks};
 use crate::structure::module::WasiFuncType;
 use crate::structure::types::{NumType, ValueType, VecType};
 use crate::wasi::{WasiError, WasiResult};
@@ -130,7 +130,7 @@ impl Runtime {
         &mut self,
         frame_stack_idx: usize,
         _called_func_addr: &mut Option<FuncAddr>,
-    ) -> Result<Result<Option<super::vm::ModuleLevelInstr>, RuntimeError>, RuntimeError> {
+    ) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError> {
         let module_ptr: *const ModuleInst = Rc::as_ptr(&self.module_inst);
         let reg_file_ptr: *mut RegFile = &mut self.stacks.reg_file as *mut RegFile;
         let frame_stack = &mut self.stacks.activation_frame_stack[frame_stack_idx];

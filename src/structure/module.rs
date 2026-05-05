@@ -15,9 +15,8 @@
 //! - **Data**: Memory initialization data
 //! - **Imports/Exports**: Module interface
 
-use crate::execution::ir;
+use crate::execution::ir::{self, ProcessedInstr};
 use crate::execution::regs::Reg;
-use crate::execution::vm::ProcessedInstr;
 use crate::structure::instructions::*;
 use crate::structure::types::*;
 use std::rc::Rc;

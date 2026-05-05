@@ -45,8 +45,9 @@ use wasmparser::{
 };
 
 use crate::error::{ParserError, RuntimeError};
+use crate::execution::handlers::*;
+use crate::execution::ir::*;
 use crate::execution::regs::{Reg, RegAllocator};
-use crate::execution::vm::*;
 use crate::structure::{instructions::*, module::*, types::*};
 use itertools::Itertools;
 use rustc_hash::FxHashMap;
@@ -1714,36 +1715,32 @@ fn preprocess_instructions(
                     {
                         // Extract target_ip and target_result_regs from resolved_targets (Operand::LabelIdx)
                         for (i, operand) in resolved_targets.iter().enumerate() {
-                            if let Operand::LabelIdx {
+                            let Operand::LabelIdx {
                                 target_ip,
                                 original_wasm_depth,
                                 target_result_regs,
                                 ..
-                            } = operand
-                            {
-                                if i < reg_targets.len() {
-                                    reg_targets[i] = (
-                                        *original_wasm_depth as u32,
-                                        *target_ip,
-                                        target_result_regs.clone().into_boxed_slice(),
-                                    );
-                                }
+                            } = operand;
+                            if i < reg_targets.len() {
+                                reg_targets[i] = (
+                                    *original_wasm_depth as u32,
+                                    *target_ip,
+                                    target_result_regs.clone().into_boxed_slice(),
+                                );
                             }
                         }
                         // Set default target
-                        if let Operand::LabelIdx {
+                        let Operand::LabelIdx {
                             target_ip,
                             original_wasm_depth,
                             target_result_regs,
                             ..
-                        } = &default_target_operand
-                        {
-                            *reg_default = (
-                                *original_wasm_depth as u32,
-                                *target_ip,
-                                target_result_regs.clone().into_boxed_slice(),
-                            );
-                        }
+                        } = &default_target_operand;
+                        *reg_default = (
+                            *original_wasm_depth as u32,
+                            *target_ip,
+                            target_result_regs.clone().into_boxed_slice(),
+                        );
                     }
                 } else {
                     return Err(RuntimeError::InvalidWasm(
@@ -2042,7 +2039,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                             let dst = allocator.push(local_type);
                             (
                                 Some(ProcessedInstr::RefLocalReg {
-                                    handler_index: HANDLER_IDX_REF_LOCAL_GET_REG,
+                                    handler_index: HANDLER_IDX_REF_LOCAL_GET,
                                     dst: dst.index(),
                                     src: 0, // unused for get
                                     local_idx: *local_index as u16,
@@ -2095,7 +2092,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::RefType(_) => {
                             (
                                 Some(ProcessedInstr::RefLocalReg {
-                                    handler_index: HANDLER_IDX_REF_LOCAL_SET_REG,
+                                    handler_index: HANDLER_IDX_REF_LOCAL_SET,
                                     dst: 0, // unused for set
                                     src: src_idx,
                                     local_idx,
@@ -2118,7 +2115,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ($instr:ident, $operand:ident) => {
                             (
                                 Some(ProcessedInstr::$instr {
-                                    handler_index: HANDLER_IDX_LOCAL_SET, // Reuse local.set handler
+                                    handler_index: HANDLER_IDX_LOCAL_TEE, // Same runtime as local.set, distinct label
                                     dst: $operand::Param(local_idx),
                                     src1: $operand::Reg(src_idx),
                                     src2: None,
@@ -2149,7 +2146,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::RefType(_) => {
                             (
                                 Some(ProcessedInstr::RefLocalReg {
-                                    handler_index: HANDLER_IDX_REF_LOCAL_SET_REG,
+                                    handler_index: HANDLER_IDX_REF_LOCAL_SET,
                                     dst: 0, // unused for set
                                     src: src_idx,
                                     local_idx,
@@ -7114,7 +7111,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::RefType(ref_type));
                     (
                         Some(ProcessedInstr::TableRefReg {
-                            handler_index: HANDLER_IDX_REF_NULL_REG,
+                            handler_index: HANDLER_IDX_REF_NULL,
                             table_idx: 0,
                             regs: [dst.index(), 0, 0],
                             ref_type,
@@ -7129,7 +7126,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         Some(ProcessedInstr::TableRefReg {
-                            handler_index: HANDLER_IDX_REF_IS_NULL_REG,
+                            handler_index: HANDLER_IDX_REF_IS_NULL,
                             table_idx: 0,
                             regs: [dst.index(), src.index(), 0],
                             ref_type: RefType::FuncRef, // Not used for RefIsNull
@@ -7149,7 +7146,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     };
                     (
                         Some(ProcessedInstr::TableRefReg {
-                            handler_index: HANDLER_IDX_TABLE_GET_REG,
+                            handler_index: HANDLER_IDX_TABLE_GET,
                             table_idx: *table,
                             regs: [dst.index(), idx.index(), 0],
                             ref_type,
@@ -7165,7 +7162,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let idx = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
                         Some(ProcessedInstr::TableRefReg {
-                            handler_index: HANDLER_IDX_TABLE_SET_REG,
+                            handler_index: HANDLER_IDX_TABLE_SET,
                             table_idx: *table,
                             regs: [idx.index(), val.index(), 0],
                             ref_type: RefType::FuncRef, // Not used for TableSet
@@ -7182,7 +7179,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let i = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
                         Some(ProcessedInstr::TableRefReg {
-                            handler_index: HANDLER_IDX_TABLE_FILL_REG,
+                            handler_index: HANDLER_IDX_TABLE_FILL,
                             table_idx: *table,
                             regs: [i.index(), val.index(), n.index()],
                             ref_type: RefType::FuncRef, // Not used for TableFill

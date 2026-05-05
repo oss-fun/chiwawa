@@ -2,17 +2,17 @@
 //!
 //! These functions bridge raw `VmState` pointers to the typed operand
 //! enums (`I32RegOperand`, `I64RegOperand`, `F32RegOperand`, `F64RegOperand`,
-//! `RegOrLocal`, `Reg`) defined alongside the legacy ProcessedInstr in vm.rs.
+//! `RegOrLocal`, `Reg`) defined in `ir.rs` alongside `ProcessedInstr`.
 //!
 //! All functions are `#[inline(always)]` so handlers compile to tight code
 //! without function-call overhead per operand access.
 
+use crate::execution::ir::{
+    F32RegOperand, F64RegOperand, I32RegOperand, I64RegOperand, RegOrLocal,
+};
 use crate::execution::regs::Reg;
 use crate::execution::state::VmState;
 use crate::execution::value::{Num, Val};
-use crate::execution::vm::{
-    F32RegOperand, F64RegOperand, I32RegOperand, I64RegOperand, RegOrLocal,
-};
 
 // ============================================================================
 // I32 typed operand (I32RegOperand: Reg | Const | Param)

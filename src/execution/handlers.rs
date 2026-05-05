@@ -18,15 +18,275 @@
 #![allow(unused_unsafe)]
 
 use crate::error::RuntimeError;
-use crate::execution::ir::{Handler, Outcome};
+use crate::execution::ir::{Handler, Outcome, ProcessedInstr, RegOrLocal};
 use crate::execution::module::GetInstanceByIdx;
 use crate::execution::operand;
 use crate::execution::ops;
 use crate::execution::regs::Reg;
-use crate::execution::state::VmState;
+use crate::execution::state::{Label, LabelStack, ModuleLevelInstr, VmState};
 use crate::execution::value::Val;
-use crate::execution::vm::{self, Label, LabelStack, ModuleLevelInstr, ProcessedInstr, RegOrLocal};
 use arrayvec::ArrayVec;
+
+// ============================================================================
+// Handler index constants
+//
+// These indices identify each Wasm instruction handler. Numbered by Wasm
+// opcode where applicable, with extensions in the 0xF0-0x103 range for
+// type-specialized variants. The parser uses these to look up handlers via
+// `select_handler` (and to populate the `handlers` array on each Func).
+// ============================================================================
+
+// Control Instructions
+pub const HANDLER_IDX_UNREACHABLE: usize = 0x00;
+pub const HANDLER_IDX_NOP: usize = 0x01;
+pub const HANDLER_IDX_BLOCK: usize = 0x02;
+pub const HANDLER_IDX_LOOP: usize = 0x03;
+pub const HANDLER_IDX_IF: usize = 0x04;
+pub const HANDLER_IDX_ELSE: usize = 0x05;
+pub const HANDLER_IDX_END: usize = 0x0B;
+pub const HANDLER_IDX_BR: usize = 0x0C;
+pub const HANDLER_IDX_BR_IF: usize = 0x0D;
+pub const HANDLER_IDX_BR_TABLE: usize = 0x0E;
+pub const HANDLER_IDX_RETURN: usize = 0x0F;
+pub const HANDLER_IDX_CALL: usize = 0x10;
+pub const HANDLER_IDX_CALL_INDIRECT: usize = 0x11;
+
+// Variable Instructions
+pub const HANDLER_IDX_LOCAL_GET: usize = 0x20;
+pub const HANDLER_IDX_LOCAL_SET: usize = 0x21;
+/// `local.tee` shares the runtime handler with `local.set` but keeps a
+/// distinct index so stats/trace output can label it correctly.
+pub const HANDLER_IDX_LOCAL_TEE: usize = 0x22;
+
+// Memory Instructions
+pub const HANDLER_IDX_I32_LOAD: usize = 0x28;
+pub const HANDLER_IDX_I64_LOAD: usize = 0x29;
+pub const HANDLER_IDX_F32_LOAD: usize = 0x2A;
+pub const HANDLER_IDX_F64_LOAD: usize = 0x2B;
+pub const HANDLER_IDX_I32_LOAD8_S: usize = 0x2C;
+pub const HANDLER_IDX_I32_LOAD8_U: usize = 0x2D;
+pub const HANDLER_IDX_I32_LOAD16_S: usize = 0x2E;
+pub const HANDLER_IDX_I32_LOAD16_U: usize = 0x2F;
+pub const HANDLER_IDX_I64_LOAD8_S: usize = 0x30;
+pub const HANDLER_IDX_I64_LOAD8_U: usize = 0x31;
+pub const HANDLER_IDX_I64_LOAD16_S: usize = 0x32;
+pub const HANDLER_IDX_I64_LOAD16_U: usize = 0x33;
+pub const HANDLER_IDX_I64_LOAD32_S: usize = 0x34;
+pub const HANDLER_IDX_I64_LOAD32_U: usize = 0x35;
+pub const HANDLER_IDX_I32_STORE: usize = 0x36;
+pub const HANDLER_IDX_I64_STORE: usize = 0x37;
+pub const HANDLER_IDX_F32_STORE: usize = 0x38;
+pub const HANDLER_IDX_F64_STORE: usize = 0x39;
+pub const HANDLER_IDX_I32_STORE8: usize = 0x3A;
+pub const HANDLER_IDX_I32_STORE16: usize = 0x3B;
+pub const HANDLER_IDX_I64_STORE8: usize = 0x3C;
+pub const HANDLER_IDX_I64_STORE16: usize = 0x3D;
+pub const HANDLER_IDX_I64_STORE32: usize = 0x3E;
+pub const HANDLER_IDX_MEMORY_SIZE: usize = 0x3F;
+pub const HANDLER_IDX_MEMORY_GROW: usize = 0x40;
+
+// Const Instructions
+pub const HANDLER_IDX_I32_CONST: usize = 0x41;
+pub const HANDLER_IDX_I64_CONST: usize = 0x42;
+pub const HANDLER_IDX_F32_CONST: usize = 0x43;
+pub const HANDLER_IDX_F64_CONST: usize = 0x44;
+
+// Numeric Instructions - i32 comparison
+pub const HANDLER_IDX_I32_EQZ: usize = 0x45;
+pub const HANDLER_IDX_I32_EQ: usize = 0x46;
+pub const HANDLER_IDX_I32_NE: usize = 0x47;
+pub const HANDLER_IDX_I32_LT_S: usize = 0x48;
+pub const HANDLER_IDX_I32_LT_U: usize = 0x49;
+pub const HANDLER_IDX_I32_GT_S: usize = 0x4A;
+pub const HANDLER_IDX_I32_GT_U: usize = 0x4B;
+pub const HANDLER_IDX_I32_LE_S: usize = 0x4C;
+pub const HANDLER_IDX_I32_LE_U: usize = 0x4D;
+pub const HANDLER_IDX_I32_GE_S: usize = 0x4E;
+pub const HANDLER_IDX_I32_GE_U: usize = 0x4F;
+
+// Numeric Instructions - i64 comparison
+pub const HANDLER_IDX_I64_EQZ: usize = 0x50;
+pub const HANDLER_IDX_I64_EQ: usize = 0x51;
+pub const HANDLER_IDX_I64_NE: usize = 0x52;
+pub const HANDLER_IDX_I64_LT_S: usize = 0x53;
+pub const HANDLER_IDX_I64_LT_U: usize = 0x54;
+pub const HANDLER_IDX_I64_GT_S: usize = 0x55;
+pub const HANDLER_IDX_I64_GT_U: usize = 0x56;
+pub const HANDLER_IDX_I64_LE_S: usize = 0x57;
+pub const HANDLER_IDX_I64_LE_U: usize = 0x58;
+pub const HANDLER_IDX_I64_GE_S: usize = 0x59;
+pub const HANDLER_IDX_I64_GE_U: usize = 0x5A;
+
+// Numeric Instructions - f32 comparison
+pub const HANDLER_IDX_F32_EQ: usize = 0x5B;
+pub const HANDLER_IDX_F32_NE: usize = 0x5C;
+pub const HANDLER_IDX_F32_LT: usize = 0x5D;
+pub const HANDLER_IDX_F32_GT: usize = 0x5E;
+pub const HANDLER_IDX_F32_LE: usize = 0x5F;
+pub const HANDLER_IDX_F32_GE: usize = 0x60;
+
+// Numeric Instructions - f64 comparison
+pub const HANDLER_IDX_F64_EQ: usize = 0x61;
+pub const HANDLER_IDX_F64_NE: usize = 0x62;
+pub const HANDLER_IDX_F64_LT: usize = 0x63;
+pub const HANDLER_IDX_F64_GT: usize = 0x64;
+pub const HANDLER_IDX_F64_LE: usize = 0x65;
+pub const HANDLER_IDX_F64_GE: usize = 0x66;
+
+// Numeric Instructions - i32 arithmetic / bitwise
+pub const HANDLER_IDX_I32_CLZ: usize = 0x67;
+pub const HANDLER_IDX_I32_CTZ: usize = 0x68;
+pub const HANDLER_IDX_I32_POPCNT: usize = 0x69;
+pub const HANDLER_IDX_I32_ADD: usize = 0x6A;
+pub const HANDLER_IDX_I32_SUB: usize = 0x6B;
+pub const HANDLER_IDX_I32_MUL: usize = 0x6C;
+pub const HANDLER_IDX_I32_DIV_S: usize = 0x6D;
+pub const HANDLER_IDX_I32_DIV_U: usize = 0x6E;
+pub const HANDLER_IDX_I32_REM_S: usize = 0x6F;
+pub const HANDLER_IDX_I32_REM_U: usize = 0x70;
+pub const HANDLER_IDX_I32_AND: usize = 0x71;
+pub const HANDLER_IDX_I32_OR: usize = 0x72;
+pub const HANDLER_IDX_I32_XOR: usize = 0x73;
+pub const HANDLER_IDX_I32_SHL: usize = 0x74;
+pub const HANDLER_IDX_I32_SHR_S: usize = 0x75;
+pub const HANDLER_IDX_I32_SHR_U: usize = 0x76;
+pub const HANDLER_IDX_I32_ROTL: usize = 0x77;
+pub const HANDLER_IDX_I32_ROTR: usize = 0x78;
+
+// Numeric Instructions - i64 arithmetic / bitwise
+pub const HANDLER_IDX_I64_CLZ: usize = 0x79;
+pub const HANDLER_IDX_I64_CTZ: usize = 0x7A;
+pub const HANDLER_IDX_I64_POPCNT: usize = 0x7B;
+pub const HANDLER_IDX_I64_ADD: usize = 0x7C;
+pub const HANDLER_IDX_I64_SUB: usize = 0x7D;
+pub const HANDLER_IDX_I64_MUL: usize = 0x7E;
+pub const HANDLER_IDX_I64_DIV_S: usize = 0x7F;
+pub const HANDLER_IDX_I64_DIV_U: usize = 0x80;
+pub const HANDLER_IDX_I64_REM_S: usize = 0x81;
+pub const HANDLER_IDX_I64_REM_U: usize = 0x82;
+pub const HANDLER_IDX_I64_AND: usize = 0x83;
+pub const HANDLER_IDX_I64_OR: usize = 0x84;
+pub const HANDLER_IDX_I64_XOR: usize = 0x85;
+pub const HANDLER_IDX_I64_SHL: usize = 0x86;
+pub const HANDLER_IDX_I64_SHR_S: usize = 0x87;
+pub const HANDLER_IDX_I64_SHR_U: usize = 0x88;
+pub const HANDLER_IDX_I64_ROTL: usize = 0x89;
+pub const HANDLER_IDX_I64_ROTR: usize = 0x8A;
+
+// Numeric Instructions - f32 arithmetic / unary
+pub const HANDLER_IDX_F32_ABS: usize = 0x8B;
+pub const HANDLER_IDX_F32_NEG: usize = 0x8C;
+pub const HANDLER_IDX_F32_CEIL: usize = 0x8D;
+pub const HANDLER_IDX_F32_FLOOR: usize = 0x8E;
+pub const HANDLER_IDX_F32_TRUNC: usize = 0x8F;
+pub const HANDLER_IDX_F32_NEAREST: usize = 0x90;
+pub const HANDLER_IDX_F32_SQRT: usize = 0x91;
+pub const HANDLER_IDX_F32_ADD: usize = 0x92;
+pub const HANDLER_IDX_F32_SUB: usize = 0x93;
+pub const HANDLER_IDX_F32_MUL: usize = 0x94;
+pub const HANDLER_IDX_F32_DIV: usize = 0x95;
+pub const HANDLER_IDX_F32_MIN: usize = 0x96;
+pub const HANDLER_IDX_F32_MAX: usize = 0x97;
+pub const HANDLER_IDX_F32_COPYSIGN: usize = 0x98;
+
+// Numeric Instructions - f64 arithmetic / unary
+pub const HANDLER_IDX_F64_ABS: usize = 0x99;
+pub const HANDLER_IDX_F64_NEG: usize = 0x9A;
+pub const HANDLER_IDX_F64_CEIL: usize = 0x9B;
+pub const HANDLER_IDX_F64_FLOOR: usize = 0x9C;
+pub const HANDLER_IDX_F64_TRUNC: usize = 0x9D;
+pub const HANDLER_IDX_F64_NEAREST: usize = 0x9E;
+pub const HANDLER_IDX_F64_SQRT: usize = 0x9F;
+pub const HANDLER_IDX_F64_ADD: usize = 0xA0;
+pub const HANDLER_IDX_F64_SUB: usize = 0xA1;
+pub const HANDLER_IDX_F64_MUL: usize = 0xA2;
+pub const HANDLER_IDX_F64_DIV: usize = 0xA3;
+pub const HANDLER_IDX_F64_MIN: usize = 0xA4;
+pub const HANDLER_IDX_F64_MAX: usize = 0xA5;
+pub const HANDLER_IDX_F64_COPYSIGN: usize = 0xA6;
+
+// Conversion Instructions
+pub const HANDLER_IDX_I32_WRAP_I64: usize = 0xA7;
+pub const HANDLER_IDX_I32_TRUNC_F32_S: usize = 0xA8;
+pub const HANDLER_IDX_I32_TRUNC_F32_U: usize = 0xA9;
+pub const HANDLER_IDX_I32_TRUNC_F64_S: usize = 0xAA;
+pub const HANDLER_IDX_I32_TRUNC_F64_U: usize = 0xAB;
+pub const HANDLER_IDX_I64_EXTEND_I32_S: usize = 0xAC;
+pub const HANDLER_IDX_I64_EXTEND_I32_U: usize = 0xAD;
+pub const HANDLER_IDX_I64_TRUNC_F32_S: usize = 0xAE;
+pub const HANDLER_IDX_I64_TRUNC_F32_U: usize = 0xAF;
+pub const HANDLER_IDX_I64_TRUNC_F64_S: usize = 0xB0;
+pub const HANDLER_IDX_I64_TRUNC_F64_U: usize = 0xB1;
+pub const HANDLER_IDX_F32_CONVERT_I32_S: usize = 0xB2;
+pub const HANDLER_IDX_F32_CONVERT_I32_U: usize = 0xB3;
+pub const HANDLER_IDX_F32_CONVERT_I64_S: usize = 0xB4;
+pub const HANDLER_IDX_F32_CONVERT_I64_U: usize = 0xB5;
+pub const HANDLER_IDX_F32_DEMOTE_F64: usize = 0xB6;
+pub const HANDLER_IDX_F64_CONVERT_I32_S: usize = 0xB7;
+pub const HANDLER_IDX_F64_CONVERT_I32_U: usize = 0xB8;
+pub const HANDLER_IDX_F64_CONVERT_I64_S: usize = 0xB9;
+pub const HANDLER_IDX_F64_CONVERT_I64_U: usize = 0xBA;
+pub const HANDLER_IDX_F64_PROMOTE_F32: usize = 0xBB;
+pub const HANDLER_IDX_I32_REINTERPRET_F32: usize = 0xBC;
+pub const HANDLER_IDX_I64_REINTERPRET_F64: usize = 0xBD;
+pub const HANDLER_IDX_F32_REINTERPRET_I32: usize = 0xBE;
+pub const HANDLER_IDX_F64_REINTERPRET_I64: usize = 0xBF;
+
+// Sign Extension Instructions
+pub const HANDLER_IDX_I32_EXTEND8_S: usize = 0xC0;
+pub const HANDLER_IDX_I32_EXTEND16_S: usize = 0xC1;
+pub const HANDLER_IDX_I64_EXTEND8_S: usize = 0xC2;
+pub const HANDLER_IDX_I64_EXTEND16_S: usize = 0xC3;
+pub const HANDLER_IDX_I64_EXTEND32_S: usize = 0xC4;
+
+// Bulk Memory Instructions
+pub const HANDLER_IDX_MEMORY_COPY: usize = 0xC5;
+pub const HANDLER_IDX_MEMORY_INIT: usize = 0xC6;
+pub const HANDLER_IDX_MEMORY_FILL: usize = 0xC7;
+
+// Saturating Truncation Instructions
+pub const HANDLER_IDX_I32_TRUNC_SAT_F32_S: usize = 0xC8;
+pub const HANDLER_IDX_I32_TRUNC_SAT_F32_U: usize = 0xC9;
+pub const HANDLER_IDX_I32_TRUNC_SAT_F64_S: usize = 0xCA;
+pub const HANDLER_IDX_I32_TRUNC_SAT_F64_U: usize = 0xCB;
+pub const HANDLER_IDX_I64_TRUNC_SAT_F32_S: usize = 0xCC;
+pub const HANDLER_IDX_I64_TRUNC_SAT_F32_U: usize = 0xCD;
+pub const HANDLER_IDX_I64_TRUNC_SAT_F64_S: usize = 0xCE;
+pub const HANDLER_IDX_I64_TRUNC_SAT_F64_U: usize = 0xCF;
+
+pub const HANDLER_IDX_DATA_DROP: usize = 0xE8;
+
+// Type-specialized select handler constants
+pub const HANDLER_IDX_SELECT_I32: usize = 0xF0;
+pub const HANDLER_IDX_SELECT_I64: usize = 0xF1;
+pub const HANDLER_IDX_SELECT_F32: usize = 0xF2;
+pub const HANDLER_IDX_SELECT_F64: usize = 0xF3;
+
+// Type-specialized global.get handler constants
+pub const HANDLER_IDX_GLOBAL_GET_I32: usize = 0xF4;
+pub const HANDLER_IDX_GLOBAL_GET_I64: usize = 0xF5;
+pub const HANDLER_IDX_GLOBAL_GET_F32: usize = 0xF6;
+pub const HANDLER_IDX_GLOBAL_GET_F64: usize = 0xF7;
+
+// Type-specialized global.set handler constants
+pub const HANDLER_IDX_GLOBAL_SET_I32: usize = 0xF8;
+pub const HANDLER_IDX_GLOBAL_SET_I64: usize = 0xF9;
+pub const HANDLER_IDX_GLOBAL_SET_F32: usize = 0xFA;
+pub const HANDLER_IDX_GLOBAL_SET_F64: usize = 0xFB;
+
+// Table / ref handler constants
+pub const HANDLER_IDX_REF_NULL: usize = 0xFC;
+pub const HANDLER_IDX_REF_IS_NULL: usize = 0xFD;
+pub const HANDLER_IDX_TABLE_GET: usize = 0xFE;
+pub const HANDLER_IDX_TABLE_SET: usize = 0xFF;
+pub const HANDLER_IDX_TABLE_FILL: usize = 0x100;
+
+// Ref local.get / local.set handler constants
+pub const HANDLER_IDX_REF_LOCAL_GET: usize = 0x101;
+pub const HANDLER_IDX_REF_LOCAL_SET: usize = 0x102;
+
+// WASI call handler constant
+pub const HANDLER_IDX_CALL_WASI: usize = 0x103;
 
 // ============================================================================
 // advance! macro — the difference between tco and non-tco mode
@@ -631,7 +891,7 @@ f64_cmp!(h_f64_le, ops::f64_le);
 f64_cmp!(h_f64_ge, ops::f64_ge);
 
 // ============================================================================
-// ConversionReg handlers
+// Conversion handlers
 // ============================================================================
 
 /// Macro for non-trapping conversions (extend, reinterpret, sat trunc, int↔float).
@@ -1035,7 +1295,7 @@ pub fn h_conv_i64_trunc_f64_u(state: &mut VmState) -> Outcome {
 }
 
 // ============================================================================
-// MemoryLoadReg handlers
+// Memory load handlers
 // ============================================================================
 
 /// Macro for memory load — N-byte read from `mem_ptr + addr + offset`,
@@ -1085,7 +1345,7 @@ mem_load!(h_mem_load_i64_32u, u32, i64, write_dst_i64, |v: u32| v
     as i64);
 
 // ============================================================================
-// MemoryStoreReg handlers
+// Memory store handlers
 // ============================================================================
 
 macro_rules! mem_store {
@@ -1125,7 +1385,7 @@ mem_store!(h_mem_store_i64_16, read_reg_i64, u16, |v: i64| v as u16);
 mem_store!(h_mem_store_i64_32, read_reg_i64, u32, |v: i64| v as u32);
 
 // ============================================================================
-// SelectReg handlers
+// Select handlers
 // ============================================================================
 
 macro_rules! select {
@@ -1582,7 +1842,7 @@ pub fn h_return(state: &mut VmState) -> Outcome {
 }
 
 // ============================================================================
-// GlobalGetReg / GlobalSetReg
+// Global get/set
 // ============================================================================
 
 macro_rules! global_get {
@@ -1676,7 +1936,7 @@ pub fn h_data_drop(state: &mut VmState) -> Outcome {
 }
 
 // ============================================================================
-// RefLocalReg
+// Ref local.get / local.set
 // ============================================================================
 
 pub fn h_ref_local_get(state: &mut VmState) -> Outcome {
@@ -1718,7 +1978,7 @@ pub fn h_ref_local_set(state: &mut VmState) -> Outcome {
 }
 
 // ============================================================================
-// TableRefReg (ref.null / ref.is_null / table.get / table.set / table.fill)
+// Table / ref ops (ref.null / ref.is_null / table.get / table.set / table.fill)
 // ============================================================================
 
 pub fn h_ref_null(state: &mut VmState) -> Outcome {
@@ -1838,7 +2098,7 @@ pub fn h_table_fill(state: &mut VmState) -> Outcome {
 }
 
 // ============================================================================
-// MemoryOpsReg (memory.size / grow / copy / init / fill)
+// Memory ops (memory.size / grow / copy / init / fill)
 // ============================================================================
 
 pub fn h_mem_size(state: &mut VmState) -> Outcome {
@@ -1987,237 +2247,237 @@ pub fn h_mem_fill(state: &mut VmState) -> Outcome {
 pub fn select_handler(instr: &ProcessedInstr) -> Handler {
     match instr {
         ProcessedInstr::I32Reg { handler_index, .. } => match *handler_index {
-            vm::HANDLER_IDX_LOCAL_GET => h_i32_local_get,
-            vm::HANDLER_IDX_LOCAL_SET => h_i32_local_set,
-            vm::HANDLER_IDX_I32_CONST => h_i32_const,
-            vm::HANDLER_IDX_I32_ADD => h_i32_add,
-            vm::HANDLER_IDX_I32_SUB => h_i32_sub,
-            vm::HANDLER_IDX_I32_MUL => h_i32_mul,
-            vm::HANDLER_IDX_I32_DIV_S => h_i32_div_s,
-            vm::HANDLER_IDX_I32_DIV_U => h_i32_div_u,
-            vm::HANDLER_IDX_I32_REM_S => h_i32_rem_s,
-            vm::HANDLER_IDX_I32_REM_U => h_i32_rem_u,
-            vm::HANDLER_IDX_I32_AND => h_i32_and,
-            vm::HANDLER_IDX_I32_OR => h_i32_or,
-            vm::HANDLER_IDX_I32_XOR => h_i32_xor,
-            vm::HANDLER_IDX_I32_SHL => h_i32_shl,
-            vm::HANDLER_IDX_I32_SHR_S => h_i32_shr_s,
-            vm::HANDLER_IDX_I32_SHR_U => h_i32_shr_u,
-            vm::HANDLER_IDX_I32_ROTL => h_i32_rotl,
-            vm::HANDLER_IDX_I32_ROTR => h_i32_rotr,
-            vm::HANDLER_IDX_I32_EQ => h_i32_eq,
-            vm::HANDLER_IDX_I32_NE => h_i32_ne,
-            vm::HANDLER_IDX_I32_LT_S => h_i32_lt_s,
-            vm::HANDLER_IDX_I32_LT_U => h_i32_lt_u,
-            vm::HANDLER_IDX_I32_LE_S => h_i32_le_s,
-            vm::HANDLER_IDX_I32_LE_U => h_i32_le_u,
-            vm::HANDLER_IDX_I32_GT_S => h_i32_gt_s,
-            vm::HANDLER_IDX_I32_GT_U => h_i32_gt_u,
-            vm::HANDLER_IDX_I32_GE_S => h_i32_ge_s,
-            vm::HANDLER_IDX_I32_GE_U => h_i32_ge_u,
-            vm::HANDLER_IDX_I32_CLZ => h_i32_clz,
-            vm::HANDLER_IDX_I32_CTZ => h_i32_ctz,
-            vm::HANDLER_IDX_I32_POPCNT => h_i32_popcnt,
-            vm::HANDLER_IDX_I32_EQZ => h_i32_eqz,
-            vm::HANDLER_IDX_I32_EXTEND8_S => h_i32_extend8_s,
-            vm::HANDLER_IDX_I32_EXTEND16_S => h_i32_extend16_s,
+            HANDLER_IDX_LOCAL_GET => h_i32_local_get,
+            HANDLER_IDX_LOCAL_SET | HANDLER_IDX_LOCAL_TEE => h_i32_local_set,
+            HANDLER_IDX_I32_CONST => h_i32_const,
+            HANDLER_IDX_I32_ADD => h_i32_add,
+            HANDLER_IDX_I32_SUB => h_i32_sub,
+            HANDLER_IDX_I32_MUL => h_i32_mul,
+            HANDLER_IDX_I32_DIV_S => h_i32_div_s,
+            HANDLER_IDX_I32_DIV_U => h_i32_div_u,
+            HANDLER_IDX_I32_REM_S => h_i32_rem_s,
+            HANDLER_IDX_I32_REM_U => h_i32_rem_u,
+            HANDLER_IDX_I32_AND => h_i32_and,
+            HANDLER_IDX_I32_OR => h_i32_or,
+            HANDLER_IDX_I32_XOR => h_i32_xor,
+            HANDLER_IDX_I32_SHL => h_i32_shl,
+            HANDLER_IDX_I32_SHR_S => h_i32_shr_s,
+            HANDLER_IDX_I32_SHR_U => h_i32_shr_u,
+            HANDLER_IDX_I32_ROTL => h_i32_rotl,
+            HANDLER_IDX_I32_ROTR => h_i32_rotr,
+            HANDLER_IDX_I32_EQ => h_i32_eq,
+            HANDLER_IDX_I32_NE => h_i32_ne,
+            HANDLER_IDX_I32_LT_S => h_i32_lt_s,
+            HANDLER_IDX_I32_LT_U => h_i32_lt_u,
+            HANDLER_IDX_I32_LE_S => h_i32_le_s,
+            HANDLER_IDX_I32_LE_U => h_i32_le_u,
+            HANDLER_IDX_I32_GT_S => h_i32_gt_s,
+            HANDLER_IDX_I32_GT_U => h_i32_gt_u,
+            HANDLER_IDX_I32_GE_S => h_i32_ge_s,
+            HANDLER_IDX_I32_GE_U => h_i32_ge_u,
+            HANDLER_IDX_I32_CLZ => h_i32_clz,
+            HANDLER_IDX_I32_CTZ => h_i32_ctz,
+            HANDLER_IDX_I32_POPCNT => h_i32_popcnt,
+            HANDLER_IDX_I32_EQZ => h_i32_eqz,
+            HANDLER_IDX_I32_EXTEND8_S => h_i32_extend8_s,
+            HANDLER_IDX_I32_EXTEND16_S => h_i32_extend16_s,
             _ => h_invalid,
         },
         ProcessedInstr::I64Reg { handler_index, .. } => match *handler_index {
-            vm::HANDLER_IDX_LOCAL_GET => h_i64_local_get,
-            vm::HANDLER_IDX_LOCAL_SET => h_i64_local_set,
-            vm::HANDLER_IDX_I64_CONST => h_i64_const,
-            vm::HANDLER_IDX_I64_ADD => h_i64_add,
-            vm::HANDLER_IDX_I64_SUB => h_i64_sub,
-            vm::HANDLER_IDX_I64_MUL => h_i64_mul,
-            vm::HANDLER_IDX_I64_DIV_S => h_i64_div_s,
-            vm::HANDLER_IDX_I64_DIV_U => h_i64_div_u,
-            vm::HANDLER_IDX_I64_REM_S => h_i64_rem_s,
-            vm::HANDLER_IDX_I64_REM_U => h_i64_rem_u,
-            vm::HANDLER_IDX_I64_AND => h_i64_and,
-            vm::HANDLER_IDX_I64_OR => h_i64_or,
-            vm::HANDLER_IDX_I64_XOR => h_i64_xor,
-            vm::HANDLER_IDX_I64_SHL => h_i64_shl,
-            vm::HANDLER_IDX_I64_SHR_S => h_i64_shr_s,
-            vm::HANDLER_IDX_I64_SHR_U => h_i64_shr_u,
-            vm::HANDLER_IDX_I64_ROTL => h_i64_rotl,
-            vm::HANDLER_IDX_I64_ROTR => h_i64_rotr,
-            vm::HANDLER_IDX_I64_EQ => h_i64_eq,
-            vm::HANDLER_IDX_I64_NE => h_i64_ne,
-            vm::HANDLER_IDX_I64_LT_S => h_i64_lt_s,
-            vm::HANDLER_IDX_I64_LT_U => h_i64_lt_u,
-            vm::HANDLER_IDX_I64_LE_S => h_i64_le_s,
-            vm::HANDLER_IDX_I64_LE_U => h_i64_le_u,
-            vm::HANDLER_IDX_I64_GT_S => h_i64_gt_s,
-            vm::HANDLER_IDX_I64_GT_U => h_i64_gt_u,
-            vm::HANDLER_IDX_I64_GE_S => h_i64_ge_s,
-            vm::HANDLER_IDX_I64_GE_U => h_i64_ge_u,
-            vm::HANDLER_IDX_I64_CLZ => h_i64_clz,
-            vm::HANDLER_IDX_I64_CTZ => h_i64_ctz,
-            vm::HANDLER_IDX_I64_POPCNT => h_i64_popcnt,
-            vm::HANDLER_IDX_I64_EQZ => h_i64_eqz,
-            vm::HANDLER_IDX_I64_EXTEND8_S => h_i64_extend8_s,
-            vm::HANDLER_IDX_I64_EXTEND16_S => h_i64_extend16_s,
-            vm::HANDLER_IDX_I64_EXTEND32_S => h_i64_extend32_s,
+            HANDLER_IDX_LOCAL_GET => h_i64_local_get,
+            HANDLER_IDX_LOCAL_SET | HANDLER_IDX_LOCAL_TEE => h_i64_local_set,
+            HANDLER_IDX_I64_CONST => h_i64_const,
+            HANDLER_IDX_I64_ADD => h_i64_add,
+            HANDLER_IDX_I64_SUB => h_i64_sub,
+            HANDLER_IDX_I64_MUL => h_i64_mul,
+            HANDLER_IDX_I64_DIV_S => h_i64_div_s,
+            HANDLER_IDX_I64_DIV_U => h_i64_div_u,
+            HANDLER_IDX_I64_REM_S => h_i64_rem_s,
+            HANDLER_IDX_I64_REM_U => h_i64_rem_u,
+            HANDLER_IDX_I64_AND => h_i64_and,
+            HANDLER_IDX_I64_OR => h_i64_or,
+            HANDLER_IDX_I64_XOR => h_i64_xor,
+            HANDLER_IDX_I64_SHL => h_i64_shl,
+            HANDLER_IDX_I64_SHR_S => h_i64_shr_s,
+            HANDLER_IDX_I64_SHR_U => h_i64_shr_u,
+            HANDLER_IDX_I64_ROTL => h_i64_rotl,
+            HANDLER_IDX_I64_ROTR => h_i64_rotr,
+            HANDLER_IDX_I64_EQ => h_i64_eq,
+            HANDLER_IDX_I64_NE => h_i64_ne,
+            HANDLER_IDX_I64_LT_S => h_i64_lt_s,
+            HANDLER_IDX_I64_LT_U => h_i64_lt_u,
+            HANDLER_IDX_I64_LE_S => h_i64_le_s,
+            HANDLER_IDX_I64_LE_U => h_i64_le_u,
+            HANDLER_IDX_I64_GT_S => h_i64_gt_s,
+            HANDLER_IDX_I64_GT_U => h_i64_gt_u,
+            HANDLER_IDX_I64_GE_S => h_i64_ge_s,
+            HANDLER_IDX_I64_GE_U => h_i64_ge_u,
+            HANDLER_IDX_I64_CLZ => h_i64_clz,
+            HANDLER_IDX_I64_CTZ => h_i64_ctz,
+            HANDLER_IDX_I64_POPCNT => h_i64_popcnt,
+            HANDLER_IDX_I64_EQZ => h_i64_eqz,
+            HANDLER_IDX_I64_EXTEND8_S => h_i64_extend8_s,
+            HANDLER_IDX_I64_EXTEND16_S => h_i64_extend16_s,
+            HANDLER_IDX_I64_EXTEND32_S => h_i64_extend32_s,
             _ => h_invalid,
         },
         ProcessedInstr::F32Reg { handler_index, .. } => match *handler_index {
-            vm::HANDLER_IDX_LOCAL_GET => h_f32_local_get,
-            vm::HANDLER_IDX_LOCAL_SET => h_f32_local_set,
-            vm::HANDLER_IDX_F32_CONST => h_f32_const,
-            vm::HANDLER_IDX_F32_ADD => h_f32_add,
-            vm::HANDLER_IDX_F32_SUB => h_f32_sub,
-            vm::HANDLER_IDX_F32_MUL => h_f32_mul,
-            vm::HANDLER_IDX_F32_DIV => h_f32_div,
-            vm::HANDLER_IDX_F32_MIN => h_f32_min,
-            vm::HANDLER_IDX_F32_MAX => h_f32_max,
-            vm::HANDLER_IDX_F32_COPYSIGN => h_f32_copysign,
-            vm::HANDLER_IDX_F32_ABS => h_f32_abs,
-            vm::HANDLER_IDX_F32_NEG => h_f32_neg,
-            vm::HANDLER_IDX_F32_CEIL => h_f32_ceil,
-            vm::HANDLER_IDX_F32_FLOOR => h_f32_floor,
-            vm::HANDLER_IDX_F32_TRUNC => h_f32_trunc,
-            vm::HANDLER_IDX_F32_NEAREST => h_f32_nearest,
-            vm::HANDLER_IDX_F32_SQRT => h_f32_sqrt,
-            vm::HANDLER_IDX_F32_EQ => h_f32_eq,
-            vm::HANDLER_IDX_F32_NE => h_f32_ne,
-            vm::HANDLER_IDX_F32_LT => h_f32_lt,
-            vm::HANDLER_IDX_F32_GT => h_f32_gt,
-            vm::HANDLER_IDX_F32_LE => h_f32_le,
-            vm::HANDLER_IDX_F32_GE => h_f32_ge,
+            HANDLER_IDX_LOCAL_GET => h_f32_local_get,
+            HANDLER_IDX_LOCAL_SET | HANDLER_IDX_LOCAL_TEE => h_f32_local_set,
+            HANDLER_IDX_F32_CONST => h_f32_const,
+            HANDLER_IDX_F32_ADD => h_f32_add,
+            HANDLER_IDX_F32_SUB => h_f32_sub,
+            HANDLER_IDX_F32_MUL => h_f32_mul,
+            HANDLER_IDX_F32_DIV => h_f32_div,
+            HANDLER_IDX_F32_MIN => h_f32_min,
+            HANDLER_IDX_F32_MAX => h_f32_max,
+            HANDLER_IDX_F32_COPYSIGN => h_f32_copysign,
+            HANDLER_IDX_F32_ABS => h_f32_abs,
+            HANDLER_IDX_F32_NEG => h_f32_neg,
+            HANDLER_IDX_F32_CEIL => h_f32_ceil,
+            HANDLER_IDX_F32_FLOOR => h_f32_floor,
+            HANDLER_IDX_F32_TRUNC => h_f32_trunc,
+            HANDLER_IDX_F32_NEAREST => h_f32_nearest,
+            HANDLER_IDX_F32_SQRT => h_f32_sqrt,
+            HANDLER_IDX_F32_EQ => h_f32_eq,
+            HANDLER_IDX_F32_NE => h_f32_ne,
+            HANDLER_IDX_F32_LT => h_f32_lt,
+            HANDLER_IDX_F32_GT => h_f32_gt,
+            HANDLER_IDX_F32_LE => h_f32_le,
+            HANDLER_IDX_F32_GE => h_f32_ge,
             _ => h_invalid,
         },
         ProcessedInstr::F64Reg { handler_index, .. } => match *handler_index {
-            vm::HANDLER_IDX_LOCAL_GET => h_f64_local_get,
-            vm::HANDLER_IDX_LOCAL_SET => h_f64_local_set,
-            vm::HANDLER_IDX_F64_CONST => h_f64_const,
-            vm::HANDLER_IDX_F64_ADD => h_f64_add,
-            vm::HANDLER_IDX_F64_SUB => h_f64_sub,
-            vm::HANDLER_IDX_F64_MUL => h_f64_mul,
-            vm::HANDLER_IDX_F64_DIV => h_f64_div,
-            vm::HANDLER_IDX_F64_MIN => h_f64_min,
-            vm::HANDLER_IDX_F64_MAX => h_f64_max,
-            vm::HANDLER_IDX_F64_COPYSIGN => h_f64_copysign,
-            vm::HANDLER_IDX_F64_ABS => h_f64_abs,
-            vm::HANDLER_IDX_F64_NEG => h_f64_neg,
-            vm::HANDLER_IDX_F64_CEIL => h_f64_ceil,
-            vm::HANDLER_IDX_F64_FLOOR => h_f64_floor,
-            vm::HANDLER_IDX_F64_TRUNC => h_f64_trunc,
-            vm::HANDLER_IDX_F64_NEAREST => h_f64_nearest,
-            vm::HANDLER_IDX_F64_SQRT => h_f64_sqrt,
-            vm::HANDLER_IDX_F64_EQ => h_f64_eq,
-            vm::HANDLER_IDX_F64_NE => h_f64_ne,
-            vm::HANDLER_IDX_F64_LT => h_f64_lt,
-            vm::HANDLER_IDX_F64_GT => h_f64_gt,
-            vm::HANDLER_IDX_F64_LE => h_f64_le,
-            vm::HANDLER_IDX_F64_GE => h_f64_ge,
+            HANDLER_IDX_LOCAL_GET => h_f64_local_get,
+            HANDLER_IDX_LOCAL_SET | HANDLER_IDX_LOCAL_TEE => h_f64_local_set,
+            HANDLER_IDX_F64_CONST => h_f64_const,
+            HANDLER_IDX_F64_ADD => h_f64_add,
+            HANDLER_IDX_F64_SUB => h_f64_sub,
+            HANDLER_IDX_F64_MUL => h_f64_mul,
+            HANDLER_IDX_F64_DIV => h_f64_div,
+            HANDLER_IDX_F64_MIN => h_f64_min,
+            HANDLER_IDX_F64_MAX => h_f64_max,
+            HANDLER_IDX_F64_COPYSIGN => h_f64_copysign,
+            HANDLER_IDX_F64_ABS => h_f64_abs,
+            HANDLER_IDX_F64_NEG => h_f64_neg,
+            HANDLER_IDX_F64_CEIL => h_f64_ceil,
+            HANDLER_IDX_F64_FLOOR => h_f64_floor,
+            HANDLER_IDX_F64_TRUNC => h_f64_trunc,
+            HANDLER_IDX_F64_NEAREST => h_f64_nearest,
+            HANDLER_IDX_F64_SQRT => h_f64_sqrt,
+            HANDLER_IDX_F64_EQ => h_f64_eq,
+            HANDLER_IDX_F64_NE => h_f64_ne,
+            HANDLER_IDX_F64_LT => h_f64_lt,
+            HANDLER_IDX_F64_GT => h_f64_gt,
+            HANDLER_IDX_F64_LE => h_f64_le,
+            HANDLER_IDX_F64_GE => h_f64_ge,
             _ => h_invalid,
         },
         ProcessedInstr::ConversionReg { handler_index, .. } => match *handler_index {
-            vm::HANDLER_IDX_I64_EXTEND_I32_S => h_conv_i64_extend_i32_s,
-            vm::HANDLER_IDX_I64_EXTEND_I32_U => h_conv_i64_extend_i32_u,
-            vm::HANDLER_IDX_I32_WRAP_I64 => h_conv_i32_wrap_i64,
-            vm::HANDLER_IDX_I32_TRUNC_F32_S => h_conv_i32_trunc_f32_s,
-            vm::HANDLER_IDX_I32_TRUNC_F32_U => h_conv_i32_trunc_f32_u,
-            vm::HANDLER_IDX_I32_TRUNC_F64_S => h_conv_i32_trunc_f64_s,
-            vm::HANDLER_IDX_I32_TRUNC_F64_U => h_conv_i32_trunc_f64_u,
-            vm::HANDLER_IDX_I64_TRUNC_F32_S => h_conv_i64_trunc_f32_s,
-            vm::HANDLER_IDX_I64_TRUNC_F32_U => h_conv_i64_trunc_f32_u,
-            vm::HANDLER_IDX_I64_TRUNC_F64_S => h_conv_i64_trunc_f64_s,
-            vm::HANDLER_IDX_I64_TRUNC_F64_U => h_conv_i64_trunc_f64_u,
-            vm::HANDLER_IDX_I32_TRUNC_SAT_F32_S => h_conv_i32_trunc_sat_f32_s,
-            vm::HANDLER_IDX_I32_TRUNC_SAT_F32_U => h_conv_i32_trunc_sat_f32_u,
-            vm::HANDLER_IDX_I32_TRUNC_SAT_F64_S => h_conv_i32_trunc_sat_f64_s,
-            vm::HANDLER_IDX_I32_TRUNC_SAT_F64_U => h_conv_i32_trunc_sat_f64_u,
-            vm::HANDLER_IDX_I64_TRUNC_SAT_F32_S => h_conv_i64_trunc_sat_f32_s,
-            vm::HANDLER_IDX_I64_TRUNC_SAT_F32_U => h_conv_i64_trunc_sat_f32_u,
-            vm::HANDLER_IDX_I64_TRUNC_SAT_F64_S => h_conv_i64_trunc_sat_f64_s,
-            vm::HANDLER_IDX_I64_TRUNC_SAT_F64_U => h_conv_i64_trunc_sat_f64_u,
-            vm::HANDLER_IDX_F32_CONVERT_I32_S => h_conv_f32_convert_i32_s,
-            vm::HANDLER_IDX_F32_CONVERT_I32_U => h_conv_f32_convert_i32_u,
-            vm::HANDLER_IDX_F32_CONVERT_I64_S => h_conv_f32_convert_i64_s,
-            vm::HANDLER_IDX_F32_CONVERT_I64_U => h_conv_f32_convert_i64_u,
-            vm::HANDLER_IDX_F64_CONVERT_I32_S => h_conv_f64_convert_i32_s,
-            vm::HANDLER_IDX_F64_CONVERT_I32_U => h_conv_f64_convert_i32_u,
-            vm::HANDLER_IDX_F64_CONVERT_I64_S => h_conv_f64_convert_i64_s,
-            vm::HANDLER_IDX_F64_CONVERT_I64_U => h_conv_f64_convert_i64_u,
-            vm::HANDLER_IDX_F32_DEMOTE_F64 => h_conv_f32_demote_f64,
-            vm::HANDLER_IDX_F64_PROMOTE_F32 => h_conv_f64_promote_f32,
-            vm::HANDLER_IDX_I32_REINTERPRET_F32 => h_conv_i32_reinterpret_f32,
-            vm::HANDLER_IDX_F32_REINTERPRET_I32 => h_conv_f32_reinterpret_i32,
-            vm::HANDLER_IDX_I64_REINTERPRET_F64 => h_conv_i64_reinterpret_f64,
-            vm::HANDLER_IDX_F64_REINTERPRET_I64 => h_conv_f64_reinterpret_i64,
+            HANDLER_IDX_I64_EXTEND_I32_S => h_conv_i64_extend_i32_s,
+            HANDLER_IDX_I64_EXTEND_I32_U => h_conv_i64_extend_i32_u,
+            HANDLER_IDX_I32_WRAP_I64 => h_conv_i32_wrap_i64,
+            HANDLER_IDX_I32_TRUNC_F32_S => h_conv_i32_trunc_f32_s,
+            HANDLER_IDX_I32_TRUNC_F32_U => h_conv_i32_trunc_f32_u,
+            HANDLER_IDX_I32_TRUNC_F64_S => h_conv_i32_trunc_f64_s,
+            HANDLER_IDX_I32_TRUNC_F64_U => h_conv_i32_trunc_f64_u,
+            HANDLER_IDX_I64_TRUNC_F32_S => h_conv_i64_trunc_f32_s,
+            HANDLER_IDX_I64_TRUNC_F32_U => h_conv_i64_trunc_f32_u,
+            HANDLER_IDX_I64_TRUNC_F64_S => h_conv_i64_trunc_f64_s,
+            HANDLER_IDX_I64_TRUNC_F64_U => h_conv_i64_trunc_f64_u,
+            HANDLER_IDX_I32_TRUNC_SAT_F32_S => h_conv_i32_trunc_sat_f32_s,
+            HANDLER_IDX_I32_TRUNC_SAT_F32_U => h_conv_i32_trunc_sat_f32_u,
+            HANDLER_IDX_I32_TRUNC_SAT_F64_S => h_conv_i32_trunc_sat_f64_s,
+            HANDLER_IDX_I32_TRUNC_SAT_F64_U => h_conv_i32_trunc_sat_f64_u,
+            HANDLER_IDX_I64_TRUNC_SAT_F32_S => h_conv_i64_trunc_sat_f32_s,
+            HANDLER_IDX_I64_TRUNC_SAT_F32_U => h_conv_i64_trunc_sat_f32_u,
+            HANDLER_IDX_I64_TRUNC_SAT_F64_S => h_conv_i64_trunc_sat_f64_s,
+            HANDLER_IDX_I64_TRUNC_SAT_F64_U => h_conv_i64_trunc_sat_f64_u,
+            HANDLER_IDX_F32_CONVERT_I32_S => h_conv_f32_convert_i32_s,
+            HANDLER_IDX_F32_CONVERT_I32_U => h_conv_f32_convert_i32_u,
+            HANDLER_IDX_F32_CONVERT_I64_S => h_conv_f32_convert_i64_s,
+            HANDLER_IDX_F32_CONVERT_I64_U => h_conv_f32_convert_i64_u,
+            HANDLER_IDX_F64_CONVERT_I32_S => h_conv_f64_convert_i32_s,
+            HANDLER_IDX_F64_CONVERT_I32_U => h_conv_f64_convert_i32_u,
+            HANDLER_IDX_F64_CONVERT_I64_S => h_conv_f64_convert_i64_s,
+            HANDLER_IDX_F64_CONVERT_I64_U => h_conv_f64_convert_i64_u,
+            HANDLER_IDX_F32_DEMOTE_F64 => h_conv_f32_demote_f64,
+            HANDLER_IDX_F64_PROMOTE_F32 => h_conv_f64_promote_f32,
+            HANDLER_IDX_I32_REINTERPRET_F32 => h_conv_i32_reinterpret_f32,
+            HANDLER_IDX_F32_REINTERPRET_I32 => h_conv_f32_reinterpret_i32,
+            HANDLER_IDX_I64_REINTERPRET_F64 => h_conv_i64_reinterpret_f64,
+            HANDLER_IDX_F64_REINTERPRET_I64 => h_conv_f64_reinterpret_i64,
             _ => h_invalid,
         },
         ProcessedInstr::MemoryLoadReg { handler_index, .. } => match *handler_index {
-            vm::HANDLER_IDX_I32_LOAD => h_mem_load_i32,
-            vm::HANDLER_IDX_I64_LOAD => h_mem_load_i64,
-            vm::HANDLER_IDX_F32_LOAD => h_mem_load_f32,
-            vm::HANDLER_IDX_F64_LOAD => h_mem_load_f64,
-            vm::HANDLER_IDX_I32_LOAD8_S => h_mem_load_i32_8s,
-            vm::HANDLER_IDX_I32_LOAD8_U => h_mem_load_i32_8u,
-            vm::HANDLER_IDX_I32_LOAD16_S => h_mem_load_i32_16s,
-            vm::HANDLER_IDX_I32_LOAD16_U => h_mem_load_i32_16u,
-            vm::HANDLER_IDX_I64_LOAD8_S => h_mem_load_i64_8s,
-            vm::HANDLER_IDX_I64_LOAD8_U => h_mem_load_i64_8u,
-            vm::HANDLER_IDX_I64_LOAD16_S => h_mem_load_i64_16s,
-            vm::HANDLER_IDX_I64_LOAD16_U => h_mem_load_i64_16u,
-            vm::HANDLER_IDX_I64_LOAD32_S => h_mem_load_i64_32s,
-            vm::HANDLER_IDX_I64_LOAD32_U => h_mem_load_i64_32u,
+            HANDLER_IDX_I32_LOAD => h_mem_load_i32,
+            HANDLER_IDX_I64_LOAD => h_mem_load_i64,
+            HANDLER_IDX_F32_LOAD => h_mem_load_f32,
+            HANDLER_IDX_F64_LOAD => h_mem_load_f64,
+            HANDLER_IDX_I32_LOAD8_S => h_mem_load_i32_8s,
+            HANDLER_IDX_I32_LOAD8_U => h_mem_load_i32_8u,
+            HANDLER_IDX_I32_LOAD16_S => h_mem_load_i32_16s,
+            HANDLER_IDX_I32_LOAD16_U => h_mem_load_i32_16u,
+            HANDLER_IDX_I64_LOAD8_S => h_mem_load_i64_8s,
+            HANDLER_IDX_I64_LOAD8_U => h_mem_load_i64_8u,
+            HANDLER_IDX_I64_LOAD16_S => h_mem_load_i64_16s,
+            HANDLER_IDX_I64_LOAD16_U => h_mem_load_i64_16u,
+            HANDLER_IDX_I64_LOAD32_S => h_mem_load_i64_32s,
+            HANDLER_IDX_I64_LOAD32_U => h_mem_load_i64_32u,
             _ => h_invalid,
         },
         ProcessedInstr::MemoryStoreReg { handler_index, .. } => match *handler_index {
-            vm::HANDLER_IDX_I32_STORE => h_mem_store_i32,
-            vm::HANDLER_IDX_I64_STORE => h_mem_store_i64,
-            vm::HANDLER_IDX_F32_STORE => h_mem_store_f32,
-            vm::HANDLER_IDX_F64_STORE => h_mem_store_f64,
-            vm::HANDLER_IDX_I32_STORE8 => h_mem_store_i32_8,
-            vm::HANDLER_IDX_I32_STORE16 => h_mem_store_i32_16,
-            vm::HANDLER_IDX_I64_STORE8 => h_mem_store_i64_8,
-            vm::HANDLER_IDX_I64_STORE16 => h_mem_store_i64_16,
-            vm::HANDLER_IDX_I64_STORE32 => h_mem_store_i64_32,
+            HANDLER_IDX_I32_STORE => h_mem_store_i32,
+            HANDLER_IDX_I64_STORE => h_mem_store_i64,
+            HANDLER_IDX_F32_STORE => h_mem_store_f32,
+            HANDLER_IDX_F64_STORE => h_mem_store_f64,
+            HANDLER_IDX_I32_STORE8 => h_mem_store_i32_8,
+            HANDLER_IDX_I32_STORE16 => h_mem_store_i32_16,
+            HANDLER_IDX_I64_STORE8 => h_mem_store_i64_8,
+            HANDLER_IDX_I64_STORE16 => h_mem_store_i64_16,
+            HANDLER_IDX_I64_STORE32 => h_mem_store_i64_32,
             _ => h_invalid,
         },
         ProcessedInstr::MemoryOpsReg { handler_index, .. } => match *handler_index {
-            vm::HANDLER_IDX_MEMORY_SIZE => h_mem_size,
-            vm::HANDLER_IDX_MEMORY_GROW => h_mem_grow,
-            vm::HANDLER_IDX_MEMORY_COPY => h_mem_copy,
-            vm::HANDLER_IDX_MEMORY_INIT => h_mem_init,
-            vm::HANDLER_IDX_MEMORY_FILL => h_mem_fill,
+            HANDLER_IDX_MEMORY_SIZE => h_mem_size,
+            HANDLER_IDX_MEMORY_GROW => h_mem_grow,
+            HANDLER_IDX_MEMORY_COPY => h_mem_copy,
+            HANDLER_IDX_MEMORY_INIT => h_mem_init,
+            HANDLER_IDX_MEMORY_FILL => h_mem_fill,
             _ => h_invalid,
         },
         ProcessedInstr::SelectReg { handler_index, .. } => match *handler_index {
-            vm::HANDLER_IDX_SELECT_I32 => h_select_i32,
-            vm::HANDLER_IDX_SELECT_I64 => h_select_i64,
-            vm::HANDLER_IDX_SELECT_F32 => h_select_f32,
-            vm::HANDLER_IDX_SELECT_F64 => h_select_f64,
+            HANDLER_IDX_SELECT_I32 => h_select_i32,
+            HANDLER_IDX_SELECT_I64 => h_select_i64,
+            HANDLER_IDX_SELECT_F32 => h_select_f32,
+            HANDLER_IDX_SELECT_F64 => h_select_f64,
             _ => h_invalid,
         },
         ProcessedInstr::GlobalGetReg { handler_index, .. } => match *handler_index {
-            vm::HANDLER_IDX_GLOBAL_GET_I32 => h_global_get_i32,
-            vm::HANDLER_IDX_GLOBAL_GET_I64 => h_global_get_i64,
-            vm::HANDLER_IDX_GLOBAL_GET_F32 => h_global_get_f32,
-            vm::HANDLER_IDX_GLOBAL_GET_F64 => h_global_get_f64,
+            HANDLER_IDX_GLOBAL_GET_I32 => h_global_get_i32,
+            HANDLER_IDX_GLOBAL_GET_I64 => h_global_get_i64,
+            HANDLER_IDX_GLOBAL_GET_F32 => h_global_get_f32,
+            HANDLER_IDX_GLOBAL_GET_F64 => h_global_get_f64,
             _ => h_invalid,
         },
         ProcessedInstr::GlobalSetReg { handler_index, .. } => match *handler_index {
-            vm::HANDLER_IDX_GLOBAL_SET_I32 => h_global_set_i32,
-            vm::HANDLER_IDX_GLOBAL_SET_I64 => h_global_set_i64,
-            vm::HANDLER_IDX_GLOBAL_SET_F32 => h_global_set_f32,
-            vm::HANDLER_IDX_GLOBAL_SET_F64 => h_global_set_f64,
+            HANDLER_IDX_GLOBAL_SET_I32 => h_global_set_i32,
+            HANDLER_IDX_GLOBAL_SET_I64 => h_global_set_i64,
+            HANDLER_IDX_GLOBAL_SET_F32 => h_global_set_f32,
+            HANDLER_IDX_GLOBAL_SET_F64 => h_global_set_f64,
             _ => h_invalid,
         },
         ProcessedInstr::RefLocalReg { handler_index, .. } => match *handler_index {
-            vm::HANDLER_IDX_REF_LOCAL_GET_REG => h_ref_local_get,
-            vm::HANDLER_IDX_REF_LOCAL_SET_REG => h_ref_local_set,
+            HANDLER_IDX_REF_LOCAL_GET => h_ref_local_get,
+            HANDLER_IDX_REF_LOCAL_SET => h_ref_local_set,
             _ => h_invalid,
         },
         ProcessedInstr::TableRefReg { handler_index, .. } => match *handler_index {
-            vm::HANDLER_IDX_REF_NULL_REG => h_ref_null,
-            vm::HANDLER_IDX_REF_IS_NULL_REG => h_ref_is_null,
-            vm::HANDLER_IDX_TABLE_GET_REG => h_table_get,
-            vm::HANDLER_IDX_TABLE_SET_REG => h_table_set,
-            vm::HANDLER_IDX_TABLE_FILL_REG => h_table_fill,
+            HANDLER_IDX_REF_NULL => h_ref_null,
+            HANDLER_IDX_REF_IS_NULL => h_ref_is_null,
+            HANDLER_IDX_TABLE_GET => h_table_get,
+            HANDLER_IDX_TABLE_SET => h_table_set,
+            HANDLER_IDX_TABLE_FILL => h_table_fill,
             _ => h_invalid,
         },
         ProcessedInstr::DataDropReg { .. } => h_data_drop,

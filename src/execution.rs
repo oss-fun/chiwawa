@@ -23,4 +23,3 @@ mod table;
 #[cfg(feature = "trace")]
 pub mod trace;
 pub mod value;
-pub mod vm;

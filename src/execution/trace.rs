@@ -5,9 +5,9 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use super::global::GlobalAddr;
+use super::handlers::*;
 use super::regs::RegFile;
 use super::value::Val;
-use super::vm::*;
 
 /// Event types that can trigger tracing.
 #[derive(Debug, Clone, PartialEq)]
@@ -322,15 +322,23 @@ impl Tracer {
             HANDLER_IDX_CALL_INDIRECT => "call_indirect",
 
             // Parametric Instructions
-            HANDLER_IDX_DROP => "drop",
-            HANDLER_IDX_SELECT => "select",
+            HANDLER_IDX_SELECT_I32
+            | HANDLER_IDX_SELECT_I64
+            | HANDLER_IDX_SELECT_F32
+            | HANDLER_IDX_SELECT_F64 => "select",
 
             // Variable Instructions
             HANDLER_IDX_LOCAL_GET => "local.get",
             HANDLER_IDX_LOCAL_SET => "local.set",
             HANDLER_IDX_LOCAL_TEE => "local.tee",
-            HANDLER_IDX_GLOBAL_GET => "global.get",
-            HANDLER_IDX_GLOBAL_SET => "global.set",
+            HANDLER_IDX_GLOBAL_GET_I32
+            | HANDLER_IDX_GLOBAL_GET_I64
+            | HANDLER_IDX_GLOBAL_GET_F32
+            | HANDLER_IDX_GLOBAL_GET_F64 => "global.get",
+            HANDLER_IDX_GLOBAL_SET_I32
+            | HANDLER_IDX_GLOBAL_SET_I64
+            | HANDLER_IDX_GLOBAL_SET_F32
+            | HANDLER_IDX_GLOBAL_SET_F64 => "global.set",
 
             // Memory Instructions
             HANDLER_IDX_I32_LOAD => "i32.load",
@@ -526,6 +534,13 @@ impl Tracer {
             HANDLER_IDX_TABLE_GET => "table.get",
             HANDLER_IDX_TABLE_SET => "table.set",
             HANDLER_IDX_TABLE_FILL => "table.fill",
+
+            // Ref Local Instructions
+            HANDLER_IDX_REF_LOCAL_GET => "local.get",
+            HANDLER_IDX_REF_LOCAL_SET => "local.set",
+
+            // WASI Call
+            HANDLER_IDX_CALL_WASI => "call_wasi",
 
             _ => "unknown",
         }
