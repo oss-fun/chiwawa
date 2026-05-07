@@ -39,10 +39,10 @@ jobs:
         curl -L https://github.com/bytecodealliance/wasmtime/releases/download/v35.0.0/wasmtime-v35.0.0-x86_64-linux.tar.xz | tar -xJ
         sudo mv wasmtime-v35.0.0-x86_64-linux/wasmtime /usr/local/bin/
         wasmtime --version
-    - name: Build test (wasm32-wasip1, tco)
-      run: cargo build-wasmtime-tco --verbose
+    - name: Build (wasm32-wasip1, tco)
+      run: cargo build-tco --verbose
 
-    - name: Run tests (wasm32-wasip1, tco)
+    - name: Run tests (wasm32-wasip1, wasmtime + tco)
       run: |
         echo "Running wasm32-wasip1 tests with wasmtime (tco)"
         cargo test-wasmtime-tco --verbose
