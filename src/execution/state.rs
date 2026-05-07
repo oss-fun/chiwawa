@@ -58,31 +58,6 @@ pub struct VmState {
     pub enable_checkpoint: bool,
 }
 
-impl VmState {
-    /// Reload `pc`/`instrs`/`instrs_len` from the active label stack entry.
-    /// Called by control-flow handlers after `current_label_idx` changes.
-    ///
-    /// # Safety
-    /// `label_stack` and `current_label_idx` must point to a valid entry.
-    #[inline]
-    pub unsafe fn reload_active_label(&mut self) {
-        let ls = &(*self.label_stack)[self.current_label_idx];
-        self.pc = ls.ip;
-        self.instrs = ls.processed_instrs.as_ptr();
-        self.instrs_len = ls.processed_instrs.len();
-    }
-
-    /// Write the current `pc` back into the active label stack entry's `ip`.
-    /// Called by the dispatcher driver before yielding to runtime.
-    ///
-    /// # Safety
-    /// `label_stack` and `current_label_idx` must point to a valid entry.
-    #[inline]
-    pub unsafe fn writeback_pc(&mut self) {
-        (*self.label_stack)[self.current_label_idx].ip = self.pc;
-    }
-}
-
 /// Module-level instructions that require runtime handling outside the DTC loop.
 #[derive(Clone)]
 pub enum ModuleLevelInstr {
@@ -214,24 +189,6 @@ pub struct FrameStack {
     pub cached_mem_ptr: Option<*mut u8>,
     #[serde(skip)]
     pub handlers: Rc<Vec<Handler>>,
-}
-
-impl FrameStack {
-    pub fn push_label_stack(&mut self, label: Label, instructions: Vec<ProcessedInstr>) {
-        self.label_stack.push(LabelStack {
-            label,
-            processed_instrs: Rc::new(instructions),
-            ip: 0,
-        });
-    }
-
-    pub fn pop_label_stack(&mut self) -> Option<LabelStack> {
-        if self.label_stack.len() > 1 {
-            self.label_stack.pop()
-        } else {
-            None
-        }
-    }
 }
 
 /// Block/loop label with arity and return information.
