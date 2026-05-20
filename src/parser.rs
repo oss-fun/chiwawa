@@ -1173,7 +1173,6 @@ fn decode_code_section(
     body: FunctionBody<'_>,
     module: &mut Module,
     func_index: usize,
-    enable_superinstructions: bool,
     cache: &mut BlockArityCache,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut locals: Vec<(u32, ValueType)> = Vec::new();
@@ -1208,14 +1207,7 @@ fn decode_code_section(
         block_type_map,
         reg_allocation,
         block_result_regs_map,
-    ) = decode_processed_instrs_and_fixups(
-        ops_iter,
-        module,
-        enable_superinstructions,
-        &locals,
-        &param_types,
-        &result_types,
-    )?;
+    ) = decode_processed_instrs_and_fixups(ops_iter, module, &locals, &param_types, &result_types)?;
 
     let relative_func_index = func_index - module.num_imported_funcs;
     if let Some(func) = module.funcs.get_mut(relative_func_index) {
@@ -1864,7 +1856,6 @@ fn get_table_element_type(module: &Module, table_index: u32) -> ValueType {
 fn decode_processed_instrs_and_fixups<'a>(
     ops_iter: wasmparser::OperatorsIteratorWithOffsets<'a>,
     module: &Module,
-    _enable_superinstructions: bool,
     locals: &[(u32, ValueType)],
     param_types: &[ValueType],
     result_types: &[ValueType],
@@ -7396,11 +7387,9 @@ fn compute_branch_regs(
 ///
 /// * `module` - The module structure to populate
 /// * `path` - Path to the WebAssembly binary file
-/// * `enable_superinstructions` - Deprecated, no longer used
 pub fn parse_bytecode(
     mut module: &mut Module,
     path: &str,
-    enable_superinstructions: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut current_func_index = module.num_imported_funcs;
     let mut arity_cache = BlockArityCache::new();
@@ -7471,13 +7460,8 @@ pub fn parse_bytecode(
 
             CodeSectionStart { .. } => { /* ... */ }
             CodeSectionEntry(body) => {
-                let result = decode_code_section(
-                    body,
-                    &mut module,
-                    current_func_index,
-                    enable_superinstructions,
-                    &mut arity_cache,
-                );
+                let result =
+                    decode_code_section(body, &mut module, current_func_index, &mut arity_cache);
                 result?;
                 current_func_index += 1;
             }
