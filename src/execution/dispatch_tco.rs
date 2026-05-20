@@ -20,19 +20,9 @@ use crate::execution::state::VmState;
 /// last entry set to a sentinel handler (e.g., `h_halt`) so out-of-range
 /// dispatch terminates safely.
 pub fn run(state: &mut VmState) -> Outcome {
-    if state.enable_checkpoint {
-        #[cfg(all(
-            target_arch = "wasm32",
-            target_os = "wasi",
-            target_env = "p1",
-            target_feature = "atomics"
-        ))]
-        {
-            if migration::check_checkpoint_flag() {
-                state.trap = Some(RuntimeError::CheckpointRequested);
-                return Outcome::Trap;
-            }
-        }
+    if migration::poll_checkpoint(state) {
+        state.trap = Some(RuntimeError::CheckpointRequested);
+        return Outcome::Trap;
     }
     if state.pc >= state.instrs_len {
         return Outcome::Halt;

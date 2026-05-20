@@ -20,7 +20,7 @@ use crate::execution::func::FuncInst;
 use crate::execution::global::GlobalAddr;
 use crate::execution::mem::MemAddr;
 use crate::execution::module::ModuleInst;
-use crate::execution::state::{Frame, Stacks};
+use crate::execution::state::{Stacks, VmState};
 use crate::execution::value::Val;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
@@ -53,20 +53,71 @@ pub fn check_checkpoint_flag() -> bool {
     CHECKPOINT_TRIGGERED.load(Ordering::Relaxed)
 }
 
-/// Checks for checkpoint trigger via WASI file existence.
+/// Polls for a checkpoint request from the dispatcher hot path.
 ///
-/// Fallback for `wasm32-wasip1` target without thread support.
-pub fn check_checkpoint_trigger(frame: &Frame) -> Result<bool, RuntimeError> {
-    if let Some(module) = frame.module.upgrade() {
-        if let Some(ref wasi) = module.wasi_impl {
-            if wasi.check_file_exists(CHECKPOINT_TRIGGER_FILE) {
-                let _ = std::fs::remove_file(CHECKPOINT_TRIGGER_FILE);
-                return Ok(true);
+/// Returns `true` if a checkpoint should be taken. Designed to be called per
+/// instruction from the v2 dispatcher (`advance!` macro in TCO mode, loop
+/// header in legacy mode).
+///
+/// # Granularity
+/// - **atomics target** (`wasm32-wasip1-threads`): every call hits a cheap
+///   atomic load. The flag is set asynchronously by the monitor thread.
+/// - **non-atomics target** (`wasm32-wasip1`): an internal counter throttles
+///   the WASI file-existence syscall to once every `CHECKPOINT_POLL_INTERVAL`
+///   instructions. This balances responsiveness with overhead.
+///
+/// Per-instruction polling is the design intent: checkpoints can fire at
+/// any execution point, not just function/loop boundaries.
+///
+/// Hot path (checkpoint disabled) is inlined to a single branch; the slow
+/// path is `#[inline(never)]` so the dispatcher's tail-call to the next
+/// handler is not displaced by inlined syscall code.
+#[inline(always)]
+pub fn poll_checkpoint(state: &mut VmState) -> bool {
+    if !state.enable_checkpoint {
+        return false;
+    }
+    do_poll_checkpoint(state)
+}
+
+#[inline(never)]
+fn do_poll_checkpoint(state: &mut VmState) -> bool {
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_os = "wasi",
+        target_env = "p1",
+        target_feature = "atomics"
+    ))]
+    {
+        let _ = state;
+        check_checkpoint_flag()
+    }
+
+    #[cfg(not(all(
+        target_arch = "wasm32",
+        target_os = "wasi",
+        target_env = "p1",
+        target_feature = "atomics"
+    )))]
+    {
+        state.checkpoint_poll_counter = state.checkpoint_poll_counter.wrapping_add(1);
+        if state.checkpoint_poll_counter & CHECKPOINT_POLL_MASK != 0 {
+            return false;
+        }
+        unsafe {
+            if let Some(ref wasi) = (*state.module).wasi_impl {
+                if wasi.check_file_exists(CHECKPOINT_TRIGGER_FILE) {
+                    let _ = std::fs::remove_file(CHECKPOINT_TRIGGER_FILE);
+                    return true;
+                }
             }
         }
+        false
     }
-    Ok(false)
 }
+
+/// Throttle interval for non-atomics file polling (= every 1024 instructions).
+const CHECKPOINT_POLL_MASK: u32 = 0x3FF;
 
 /// Complete runtime state for checkpoint serialization.
 ///
@@ -259,7 +310,7 @@ pub fn restore<P: AsRef<Path>>(
         frame_stack.frame.module = Rc::downgrade(&module_inst);
         frame_stack.primary_mem = primary_mem.clone();
 
-        // Reconstruct processed_instrs from module function body
+        // Reconstruct skipped fields from module function body
         let func_addr = &module_inst.func_addrs[func_idx as usize];
         let func_inst = func_addr.read_lock();
         if let FuncInst::RuntimeFunc { code, .. } = func_inst {
@@ -267,7 +318,12 @@ pub fn restore<P: AsRef<Path>>(
             for label_stack in frame_stack.label_stack.iter_mut() {
                 label_stack.processed_instrs = body.clone();
             }
+            // v2 dispatcher: handler array (function pointers) — Rc<Vec<Handler>>
+            frame_stack.handlers = code.handlers.clone();
         }
+
+        // v2 dispatcher: cached raw pointer to memory data
+        frame_stack.cached_mem_ptr = primary_mem.as_ref().map(|m| m.data_ptr());
     }
     println!("Frame module references and processed instructions restored.");
 

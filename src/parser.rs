@@ -860,7 +860,6 @@ fn decode_func_section(
             locals: Vec::new(),
             body: Rc::new(Vec::new()),
             reg_allocation: None,
-            result_reg: None,
             handlers: Rc::new(Vec::new()),
         });
     }
@@ -1208,7 +1207,6 @@ fn decode_code_section(
         if_else_map,
         block_type_map,
         reg_allocation,
-        result_reg,
         block_result_regs_map,
     ) = decode_processed_instrs_and_fixups(
         ops_iter,
@@ -1256,7 +1254,6 @@ fn decode_code_section(
         func.body = body_rc;
         // Store register mode metadata (None for stack mode)
         func.reg_allocation = reg_allocation.clone();
-        func.result_reg = result_reg;
         func.handlers = handlers_rc;
     } else {
         return Err(Box::new(RuntimeError::InvalidWasm(
@@ -1879,7 +1876,6 @@ fn decode_processed_instrs_and_fixups<'a>(
         FxHashMap<usize, usize>,
         FxHashMap<usize, wasmparser::BlockType>,
         Option<crate::execution::regs::RegAllocation>,
-        Option<crate::execution::regs::Reg>,
         FxHashMap<usize, (Vec<Reg>, bool)>,
     ),
     Box<dyn std::error::Error>,
@@ -7302,17 +7298,6 @@ fn decode_processed_instrs_and_fixups<'a>(
         )) as Box<dyn std::error::Error>);
     }
 
-    // Get result register before finalizing (the top of stack after all instructions)
-    // Use the function's result type to peek at the correct register type
-    let result_reg = reg_allocator.as_ref().and_then(|alloc| {
-        if let Some(result_type) = result_types.first() {
-            // Peek at the current stack top for the result type
-            alloc.peek(result_type)
-        } else {
-            None
-        }
-    });
-
     // Finalize register allocation if in register mode
     let reg_allocation = reg_allocator.map(|alloc| alloc.finalize());
 
@@ -7323,7 +7308,6 @@ fn decode_processed_instrs_and_fixups<'a>(
         if_else_map,
         block_type_map,
         reg_allocation,
-        result_reg,
         block_result_regs_map,
     ))
 }

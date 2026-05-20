@@ -295,7 +295,11 @@ pub const HANDLER_IDX_CALL_WASI: usize = 0x103;
 #[cfg(feature = "tco")]
 macro_rules! advance {
     ($state:expr) => {{
-        let h = unsafe { *$state.handlers.add($state.pc) };
+        // Single tail-call site. The next handler is selected by `next_handler`,
+        // which either returns the dispatched handler at `pc` or the
+        // checkpoint-trap sentinel. Keeping h(state) as the only return path
+        // preserves LLVM's `return_call_indirect` emission.
+        let h = unsafe { crate::execution::handlers::next_handler($state) };
         h($state)
     }};
 }
@@ -315,6 +319,29 @@ macro_rules! advance {
 #[inline(never)]
 pub fn h_trap(_state: &mut VmState) -> Outcome {
     Outcome::Trap
+}
+
+/// Sentinel handler for checkpoint-requested traps. Tail-called from
+/// `next_handler` when `poll_checkpoint` returns `true`, so the dispatcher's
+/// per-instruction tail-call structure is preserved.
+#[inline(never)]
+pub fn h_checkpoint_trap(state: &mut VmState) -> Outcome {
+    state.trap = Some(crate::error::RuntimeError::CheckpointRequested);
+    Outcome::Trap
+}
+
+/// Picks the next handler to dispatch. Returns the checkpoint-trap sentinel
+/// when `poll_checkpoint` signals a request, otherwise the indexed handler
+/// at `state.pc`. The returned function pointer is then tail-called from
+/// the `advance!` macro, so this helper itself must not break tail-call
+/// optimization at its call site.
+#[inline(always)]
+pub unsafe fn next_handler(state: &mut VmState) -> Handler {
+    if crate::execution::migration::poll_checkpoint(state) {
+        h_checkpoint_trap
+    } else {
+        *state.handlers.add(state.pc)
+    }
 }
 
 #[inline(never)]
@@ -1557,26 +1584,16 @@ pub fn h_br_table(state: &mut VmState) -> Outcome {
 pub fn h_block(state: &mut VmState) -> Outcome {
     unsafe {
         let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::BlockReg {
-            arity,
-            param_count,
-            is_loop,
-        } = instr
-        else {
+        let ProcessedInstr::BlockReg { is_loop, .. } = instr else {
             std::hint::unreachable_unchecked()
         };
-        let arity = *arity;
-        let param_count = *param_count;
         let is_loop = *is_loop;
         let next_ip = state.pc + 1;
         let pi_rc = (*state.label_stack)[state.current_label_idx]
             .processed_instrs
             .clone();
         let new_label = Label {
-            locals_num: param_count,
-            arity,
             is_loop,
-            stack_height: 0,
             return_ip: next_ip,
         };
         (*state.label_stack).push(LabelStack {
@@ -1594,15 +1611,14 @@ pub fn h_if(state: &mut VmState) -> Outcome {
     unsafe {
         let instr = &*state.instrs.add(state.pc);
         let ProcessedInstr::IfReg {
-            arity,
             cond_reg,
             else_target_ip,
             has_else,
+            ..
         } = instr
         else {
             std::hint::unreachable_unchecked()
         };
-        let arity = *arity;
         let cond_reg = *cond_reg;
         let else_target_ip = *else_target_ip;
         let has_else = *has_else;
@@ -1616,10 +1632,7 @@ pub fn h_if(state: &mut VmState) -> Outcome {
                 .clone();
             (*state.label_stack).push(LabelStack {
                 label: Label {
-                    locals_num: 0,
-                    arity,
                     is_loop: false,
-                    stack_height: 0,
                     return_ip: else_target_ip,
                 },
                 processed_instrs: pi_rc,
@@ -1633,10 +1646,7 @@ pub fn h_if(state: &mut VmState) -> Outcome {
                 .clone();
             (*state.label_stack).push(LabelStack {
                 label: Label {
-                    locals_num: 0,
-                    arity,
                     is_loop: false,
-                    stack_height: 0,
                     return_ip: else_target_ip,
                 },
                 processed_instrs: pi_rc,

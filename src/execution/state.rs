@@ -21,11 +21,6 @@ use std::rc::{Rc, Weak};
 
 /// Per-call dispatcher state. Constructed at the entry of each
 /// `dispatch::run` call from the active `FrameStack`.
-///
-/// # Safety
-/// All raw pointers must outlive the dispatch call. The runtime constructs
-/// VmState from a `&mut FrameStack`, runs dispatch, and discards VmState
-/// before the FrameStack is dropped or borrowed elsewhere.
 pub struct VmState {
     // Register / locals
     pub reg_file: *mut RegFile,
@@ -56,6 +51,10 @@ pub struct VmState {
 
     // Per-frame flags
     pub enable_checkpoint: bool,
+
+    /// Counter for non-atomics-target checkpoint poll throttling.
+    /// Incremented by `migration::poll_checkpoint`
+    pub checkpoint_poll_counter: u32,
 }
 
 /// Module-level instructions that require runtime handling outside the DTC loop.
@@ -124,21 +123,15 @@ impl VMState {
                         locals,
                         module: module.clone(),
                         n: type_.results.len(),
-                        result_reg: code.result_reg,
                     },
                     label_stack: vec![LabelStack {
                         label: Label {
-                            locals_num: type_.results.len(),
-                            arity: type_.results.len(),
                             is_loop: false,
-                            stack_height: 0,
                             return_ip: 0,
                         },
                         processed_instrs: code.body.clone(),
                         ip: 0,
                     }],
-                    void: type_.results.is_empty(),
-                    instruction_count: 0,
                     enable_checkpoint: false,
                     result_regs: ArrayVec::new(),
                     return_result_regs: ArrayVec::new(),
@@ -169,7 +162,6 @@ pub struct Frame {
     #[serde(skip)]
     pub module: Weak<ModuleInst>,
     pub n: usize,
-    pub result_reg: Option<Reg>,
 }
 
 /// Activation frame stack with label stacks and execution state.
@@ -177,8 +169,6 @@ pub struct Frame {
 pub struct FrameStack {
     pub frame: Frame,
     pub label_stack: Vec<LabelStack>,
-    pub void: bool,
-    pub instruction_count: u64,
     #[serde(skip)]
     pub enable_checkpoint: bool,
     pub result_regs: ArrayVec<Reg, 8>,
@@ -191,13 +181,9 @@ pub struct FrameStack {
     pub handlers: Rc<Vec<Handler>>,
 }
 
-/// Block/loop label with arity and return information.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Label {
-    pub locals_num: usize,
-    pub arity: usize,
     pub is_loop: bool,
-    pub stack_height: usize,
     pub return_ip: usize,
 }
 

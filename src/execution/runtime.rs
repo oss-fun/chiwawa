@@ -170,6 +170,7 @@ impl Runtime {
             yielded: None,
             return_result_regs: return_result_regs_ptr,
             enable_checkpoint,
+            checkpoint_poll_counter: 0,
         };
 
         let outcome = dispatch::run(&mut state);
@@ -334,21 +335,15 @@ impl Runtime {
                                             locals,
                                             module: func_module_weak.clone(),
                                             n: type_.results.len(),
-                                            result_reg: code.result_reg,
                                         },
                                         label_stack: vec![LabelStack {
                                             label: Label {
-                                                locals_num: type_.results.len(),
-                                                arity: type_.results.len(),
                                                 is_loop: false,
-                                                stack_height: 0,
                                                 return_ip: 0,
                                             },
                                             processed_instrs: code.body.clone(),
                                             ip: 0,
                                         }],
-                                        void: type_.results.is_empty(),
-                                        instruction_count: 0,
                                         enable_checkpoint: self.enable_checkpoint,
                                         result_regs: ArrayVec::new(),
                                         return_result_regs: ArrayVec::new(),
