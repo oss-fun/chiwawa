@@ -6,42 +6,67 @@ U^ｪ^U
 
 ## Build and Run
 
+Pick a build alias based on the host Wasm runtime's tail-call support
+(see [Dispatcher Modes](#dispatcher-modes) below):
+
 ```bash
-cargo build --target wasm32-wasip1 --release
+# Tail-call dispatcher (Wasmtime v28+, WasmEdge 0.14+)
+cargo build-tco           # → target/tco/wasm32-wasip1/release/chiwawa.wasm
+# Loop dispatcher (works on any modern Wasm runtime, incl. WAMR)
+cargo build-legacy        # → target/legacy/wasm32-wasip1/release/chiwawa.wasm
 
 # Call function with Wasm parameters (I32, I64, F32, F64)
-somethingWasmRuntime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --params "I64(100)"
+somethingWasmRuntime target/<combo>/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --params "I64(100)"
 
 # Pass command-line arguments to WASI-compiled program
-somethingWasmRuntime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --app-args "--version"
+somethingWasmRuntime target/<combo>/wasm32-wasip1/release/chiwawa.wasm test.wasm --app-args "--version"
 ```
+
+## Dispatcher Modes
+
+Chiwawa ships two dispatcher implementations selected at build time via the
+`tco` Cargo feature:
+
+| Mode | Cargo feature | Build alias | Requirement |
+|---|---|---|---|
+| Loop dispatch | (none) | `cargo build-legacy` | Any modern Wasm runtime (incl. WAMR) |
+| Tail-call dispatch | `tco` | `cargo build-tco` | Wasm tail-call proposal (Wasmtime v28+, WasmEdge 0.14+) |
+
+With `tco`, each handler tail-calls (`return_call_indirect`) the next handler,
+removing the dispatch loop overhead. Use the loop dispatcher when the host
+runtime does not implement the tail-call proposal.
 
 ## Checkpoint and Restore
 
 **Note**: The checkpoint trigger mechanism differs between build targets:
 - `wasm32-wasip1-threads`: Uses a background thread to monitor `checkpoint.trigger` file (recommended for better performance)
-- `wasm32-wasip1`: Checks file existence via WASI at each instruction (use if host runtime does not support WASI threads)
+- `wasm32-wasip1`: Checks file existence via WASI every 1024 instructions (use if host runtime does not support WASI threads)
 
 ```bash
-cargo build --target wasm32-wasip1-threads --release
+# Build for wasm32-wasip1-threads (atomic monitor thread).
+# Use cargo build-legacy-threads instead if the host runtime lacks tail-call support.
+cargo build-tco-threads
 
 # Run with checkpoint enabled
-somethingWasmRuntime target/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm --invoke func-name --params "I64(100)" --cr
+somethingWasmRuntime target/tco-threads/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm --invoke func-name --params "I64(100)" --cr
 touch ./checkpoint.trigger # Trigger of Checkpointing
 # Restore from checkpoint
-somethingWasmRuntime target/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm --restore checkpoint.bin
+somethingWasmRuntime target/tco-threads/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm --restore checkpoint.bin
 ```
 ## Tracing
 
-Tracing requires the `trace` feature to be enabled at compile time:
+Tracing requires the `trace` feature to be enabled at compile time. Stack the
+feature onto a build alias to keep the per-dispatch-mode output directory:
 
 ```bash
-# Build with trace feature
-cargo build --target wasm32-wasip1 --release --features trace
+# Build with trace feature on top of the loop dispatcher
+cargo build-legacy --features trace
+# Or with the tail-call dispatcher
+cargo build-tco --features trace
 
 # TRACE_EVENTS = (all,store,load,call,branch)
 # TRACE_RESOURCE = (regs,memory,locals,globals,pc)
-somethingWasmRuntime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --trace --trace-events [<TRACE_EVENTS>...] --trace-resource [<TRACE_RESOURCE>...]
+somethingWasmRuntime target/legacy/wasm32-wasip1/release/chiwawa.wasm test.wasm --trace --trace-events [<TRACE_EVENTS>...] --trace-resource [<TRACE_RESOURCE>...]
 ```
 
 If `--trace` is used without the feature enabled, a warning is displayed and the flag is ignored.
@@ -51,11 +76,13 @@ If `--trace` is used without the feature enabled, a warning is displayed and the
 Statistics output requires the `stats` feature to be enabled at compile time:
 
 ```bash
-# Build with stats feature
-cargo build --target wasm32-wasip1 --release --features stats
+# Build with stats feature on top of a build alias
+cargo build-legacy --features stats
+# Or with the tail-call dispatcher
+cargo build-tco --features stats
 
 # Run with statistics output
-somethingWasmRuntime target/wasm32-wasip1/release/chiwawa.wasm test.wasm --stats
+somethingWasmRuntime target/legacy/wasm32-wasip1/release/chiwawa.wasm test.wasm --stats
 ```
 
 If `--stats` is used without the feature enabled, a warning is displayed and the flag is ignored.

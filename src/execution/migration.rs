@@ -6,14 +6,35 @@
 //! ## Serializable State
 //!
 //! The checkpoint captures:
-//! - Execution stacks (call frames and register state)
-//! - Linear memory contents
+//! - Activation frame stack with register file and per-frame locals
+//! - Linear memory contents (LZ4 compressed)
 //! - Global variable values
+//! - Per-frame function indices (used to rebuild skipped `Rc` fields on restore)
+//!
+//! `FrameStack` fields that are derived from the module instance
+//! (`handlers`, `processed_instrs`, `primary_mem`, `cached_mem_ptr`) are
+//! `#[serde(skip)]` and reconstructed during `restore`. Tables are excluded:
+//! they are deterministically initialized from element segments during
+//! module instantiation.
 //!
 //! ## Trigger Mechanisms
 //!
-//! - **wasm32-wasip1-threads**: Background thread monitors `checkpoint.trigger` file
-//! - **wasm32-wasip1**: WASI-based file existence check at instruction boundaries
+//! `poll_checkpoint` is invoked per instruction by the v2 dispatcher
+//! (`dispatch_loop` at the loop head, `dispatch_tco` via the `next_handler`
+//! shim in the `advance!` macro). The check resolves to one of two paths at
+//! compile time:
+//!
+//! - **wasm32-wasip1-threads** (`target_feature = "atomics"`): background
+//!   thread set up by `setup_checkpoint_monitor` watches the
+//!   `checkpoint.trigger` file and toggles an atomic flag. `poll_checkpoint`
+//!   only does a cheap relaxed atomic load on the hot path.
+//! - **wasm32-wasip1** (no atomics): `poll_checkpoint` throttles itself with
+//!   `VmState.checkpoint_poll_counter` and only issues the WASI file-existence
+//!   syscall every `CHECKPOINT_POLL_MASK + 1` (= 1024) instructions to keep
+//!   the dispatcher overhead bounded.
+//!
+//! Either path triggers `Outcome::Trap(CheckpointRequested)`, which
+//! `runtime.rs` translates into a `checkpoint` call.
 
 use crate::error::RuntimeError;
 use crate::execution::func::FuncInst;

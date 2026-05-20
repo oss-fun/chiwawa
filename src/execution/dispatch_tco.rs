@@ -1,7 +1,7 @@
 //! TCO (tail-call) dispatcher.
 //!
 //! Active when the `tco` feature is set. Requires runtime support for the
-//! Wasm `tail-call` proposal (Wasmtime v28+). Each handler tail-calls the
+//! Wasm `tail-call` proposal.  Each handler tail-calls the
 //! next handler; LLVM with `+tail-call` emits `return_call_indirect`.
 
 #![cfg(feature = "tco")]

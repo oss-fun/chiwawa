@@ -1,19 +1,24 @@
-//! v2 dispatcher handlers — single source of truth for both `dispatch_loop`
-//! and `dispatch_tco` modes.
-//!
 //! Each handler reads operands from the active `ProcessedInstr`, performs
 //! its operation via `ops::*`, writes the result, advances `state.pc`, and
 //! invokes the `advance!` macro to continue dispatch. The macro expansion
 //! depends on `cfg(feature = "tco")`:
 //!
 //! - **non-tco**: returns `Outcome::Continue` so the outer loop fetches the
-//!   next instruction.
-//! - **tco**: tail-calls the next handler via `state.handlers[state.pc]`,
-//!   which LLVM with `+tail-call` emits as `return_call_indirect`.
+//!   next instruction (and runs `migration::poll_checkpoint` itself).
+//! - **tco**: tail-calls `next_handler(state)`, which inlines
+//!   `migration::poll_checkpoint` and selects either the next normal handler
+//!   from `state.handlers[state.pc]` or the `h_checkpoint_trap` sentinel.
+//!   The single tail-call site lets LLVM emit `return_call_indirect`, so
+//!   per-instruction checkpoint polling does not break tail-call
+//!   optimization.
 //!
-//! Trap conditions tail-call the `h_trap` sentinel, function-end uses
-//! `h_halt`, runtime yields use `h_yield`. All sentinels just return
-//! their respective `Outcome`, terminating the chain cleanly.
+//! Sentinel handlers terminate the chain:
+//! - `h_halt`: function body reached the end (Outcome::Halt).
+//! - `h_trap`: generic trap, error already stored in `state.trap`.
+//! - `h_checkpoint_trap`: stores `RuntimeError::CheckpointRequested` and
+//!   returns Outcome::Trap (selected by `next_handler` when polling fires).
+//! - `h_yield`: runtime yield (call / wasi / return), payload in
+//!   `state.yielded`.
 
 #![allow(unused_unsafe)]
 
