@@ -1,5 +1,3 @@
-#![feature(asm_experimental_arch)]
-
 pub mod error;
 pub mod execution;
 pub mod parser;
