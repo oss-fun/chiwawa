@@ -1594,7 +1594,7 @@ pub fn h_block(state: &mut VmState) -> Outcome {
         };
         let is_loop = *is_loop;
         let next_ip = state.pc + 1;
-        let pi_rc = (*state.label_stack)[state.current_label_idx]
+        let pi_rc = (&*state.label_stack)[state.current_label_idx]
             .processed_instrs
             .clone();
         let new_label = Label {
@@ -1632,7 +1632,7 @@ pub fn h_if(state: &mut VmState) -> Outcome {
         // Only clone pi_rc inside branches that need it, so the no-else path
         // has zero `Rc` destructors at the tail call.
         if cond != 0 {
-            let pi_rc = (*state.label_stack)[state.current_label_idx]
+            let pi_rc = (&*state.label_stack)[state.current_label_idx]
                 .processed_instrs
                 .clone();
             (*state.label_stack).push(LabelStack {
@@ -1646,7 +1646,7 @@ pub fn h_if(state: &mut VmState) -> Outcome {
             state.current_label_idx = (*state.label_stack).len() - 1;
             state.pc += 1;
         } else if has_else {
-            let pi_rc = (*state.label_stack)[state.current_label_idx]
+            let pi_rc = (&*state.label_stack)[state.current_label_idx]
                 .processed_instrs
                 .clone();
             (*state.label_stack).push(LabelStack {

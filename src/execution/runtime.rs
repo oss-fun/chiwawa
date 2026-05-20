@@ -177,7 +177,7 @@ impl Runtime {
 
         unsafe {
             if state.current_label_idx < (*state.label_stack).len() {
-                (*state.label_stack)[state.current_label_idx].ip = state.pc;
+                (&mut *state.label_stack)[state.current_label_idx].ip = state.pc;
             }
         }
         frame_stack.cached_mem_ptr = if state.mem_ptr.is_null() {
