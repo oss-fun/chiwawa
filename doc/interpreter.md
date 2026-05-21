@@ -77,3 +77,20 @@ The handler table approach eliminates the switch dispatch overhead. Each handler
 4. Returns control to the main loop
 
 Branch instructions are optimized by pre-resolving targets during preprocessing. Instead of computing `current_pc + offset` at runtime, branch handlers jump directly to absolute positions.
+
+## Dispatch Modes
+
+Chiwawa ships two interchangeable dispatcher implementations, selected at
+build time by the `tco` Cargo feature:
+
+- **Loop dispatcher** (default, `cargo build-legacy`): the classic threaded
+  code loop sketched above. Works on every modern Wasm runtime, including
+  WAMR.
+- **Tail-call dispatcher** (`cargo build-tco`): each handler tail-calls the
+  next via `return_call_indirect`, removing the fetch / call / return
+  cycle. Requires a host runtime that implements the Wasm tail-call
+  proposal.
+
+Both modes share the same handler bodies, operand layout, and checkpoint
+protocol — only the inter-handler control transfer differs. See
+`doc/tco.md` for the design details.

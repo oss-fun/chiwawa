@@ -32,6 +32,12 @@ Transforms WebAssembly binary modules into an internal representation optimized 
 
 Implements a register-based threaded code interpreter. Instructions are dispatched through a handler table where each instruction type maps to a specialized handler function.
 
+Two dispatcher implementations are available, picked at build time by the
+`tco` Cargo feature: a portable loop-style dispatcher (default,
+`cargo build-legacy`) and a tail-call dispatcher (`cargo build-tco`) that
+uses the Wasm tail-call proposal to eliminate per-instruction loop
+overhead. See `doc/tco.md`.
+
 ### Module Instance
 
 Runtime representation of an instantiated WebAssembly module, containing:
@@ -42,11 +48,14 @@ Runtime representation of an instantiated WebAssembly module, containing:
 
 ### Checkpoint/Restore Mechanism
 
-Enables live migration by serializing complete runtime state:
+Enables live migration by serializing runtime state:
 - Execution stacks and program counters
 - Memory contents
 - Global values
-- Table entries
+
+Tables are not included in the checkpoint: they are deterministically
+re-initialized from the module's element segments during instantiation, so
+storing them would be redundant.
 
 ## Execution Flow
 

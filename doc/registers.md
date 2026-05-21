@@ -85,15 +85,57 @@ On function return:
 
 ## Instruction Format
 
-Each preprocessed instruction includes its operand and result registers:
+`ProcessedInstr` is an enum where each variant carries operand layout that is
+specialized for the instruction it represents. Type-specialized variants
+(`I32Reg`, `I64Reg`, `F32Reg`, `F64Reg`) hold a `handler_index` and three
+operand slots; variants that touch a different shape (memory, select,
+global, etc.) have their own field layout.
 
 ```rust
-ProcessedInstr {
-    instr: I32Add,
-    operand_regs: [I32(0), I32(1)],  // input registers
-    result_regs: [I32(0)],           // output register
-    ...
+pub enum ProcessedInstr {
+    I32Reg {
+        handler_index: usize,
+        dst: I32RegOperand,
+        src1: I32RegOperand,
+        src2: Option<I32RegOperand>,  // None for unary ops
+    },
+    MemoryLoadReg {
+        handler_index: usize,
+        dst: RegOrLocal,
+        addr: I32RegOperand,
+        offset: u64,
+    },
+    BrReg {
+        relative_depth: u32,
+        target_ip: usize,
+        source_regs: RegSlice,
+        target_result_regs: RegSlice,
+    },
+    // ...one variant per logical instruction shape
 }
 ```
 
-At execution time, handlers read from operand registers and write to result registers without any stack manipulation.
+### Operand kinds
+
+The operand slots are themselves small enums, so a single field can encode a
+register, a folded constant, or a folded local/parameter:
+
+```rust
+pub enum I32RegOperand {
+    Reg(u16),    // read/write a register
+    Const(i32),  // folded immediate constant
+    Param(u16),  // read/write a local (function parameter or local var)
+}
+// I64RegOperand / F32RegOperand / F64RegOperand share the same shape.
+
+pub enum RegOrLocal {
+    Reg(u16),    // destination is a register
+    Local(u16),  // destination is folded into a local slot
+}
+```
+
+This lets the parser embed both **source folding** (constants and
+`local.get`s) and **destination folding** (`local.set`) directly in the IR
+without introducing extra instructions — see `doc/folding.md`. At execution
+time, each handler reads its `src*` operands, performs the operation, and
+writes to `dst`, without any stack manipulation.
