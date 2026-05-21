@@ -25,7 +25,6 @@ pub struct VmState {
     // Register / locals
     pub reg_file: *mut RegFile,
     pub locals: *mut Val,
-    pub locals_len: usize,
 
     // Active label's instruction stream + cached handler array
     // (invariant within a frame because all label stacks share the same Rc)

@@ -1962,10 +1962,9 @@ pub fn h_ref_local_get(state: &mut VmState) -> Outcome {
         };
         let dst = *dst;
         let local_idx = *local_idx as usize;
-        if local_idx >= state.locals_len {
-            state.trap = Some(RuntimeError::LocalIndexOutOfBounds);
-            return h_trap(state);
-        }
+        // local index is validated at parse time; trust validation here for
+        // consistency with the numeric local handlers and to keep the hot
+        // path branch-free.
         let val = (&*state.locals.add(local_idx)).clone();
         if let Val::Ref(r) = val {
             (*state.reg_file).set_ref(dst, r);
@@ -1984,9 +1983,7 @@ pub fn h_ref_local_set(state: &mut VmState) -> Outcome {
         let src = *src;
         let local_idx = *local_idx as usize;
         let ref_val = (*state.reg_file).get_ref(src);
-        if local_idx < state.locals_len {
-            *state.locals.add(local_idx) = Val::Ref(ref_val);
-        }
+        *state.locals.add(local_idx) = Val::Ref(ref_val);
         state.pc += 1;
         advance!(state)
     }

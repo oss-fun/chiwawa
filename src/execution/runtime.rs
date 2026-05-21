@@ -147,7 +147,6 @@ impl Runtime {
         let handlers_ptr = frame_stack.handlers.as_ptr();
         let mem_ptr = frame_stack.cached_mem_ptr.unwrap_or(std::ptr::null_mut());
         let locals_ptr = frame_stack.frame.locals.as_mut_ptr();
-        let locals_len = frame_stack.frame.locals.len();
         let label_stack_ptr: *mut Vec<LabelStack> =
             &mut frame_stack.label_stack as *mut Vec<LabelStack>;
         let return_result_regs_ptr: *mut ArrayVec<Reg, 8> =
@@ -157,7 +156,6 @@ impl Runtime {
         let mut state = VmState {
             reg_file: reg_file_ptr,
             locals: locals_ptr,
-            locals_len,
             pc,
             instrs: instrs_ptr,
             instrs_len,
