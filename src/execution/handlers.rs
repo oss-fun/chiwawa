@@ -372,20 +372,18 @@ pub fn h_invalid(state: &mut VmState) -> Outcome {
 macro_rules! i32_binop {
     ($name:ident, $op:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            unsafe {
-                let instr = &*state.instrs.add(state.pc);
-                let ProcessedInstr::I32Reg {
+            // SAFETY: parser guarantees this is an I32Reg with src2 = Some.
+            let (dst, src1, src2) = match state.current_instr() {
+                ProcessedInstr::I32Reg {
                     dst, src1, src2, ..
-                } = instr
-                else {
-                    std::hint::unreachable_unchecked()
-                };
-                let a = operand::read_i32(state, src1);
-                let b = operand::read_i32(state, src2.as_ref().unwrap_unchecked());
-                operand::write_i32(state, dst, $op(a, b));
-                state.pc += 1;
-                advance!(state)
-            }
+                } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let a = operand::read_i32(state, &src1);
+            let b = operand::read_i32(state, &src2);
+            operand::write_i32(state, &dst, $op(a, b));
+            state.pc += 1;
+            advance!(state)
         }
     };
 }
@@ -393,16 +391,14 @@ macro_rules! i32_binop {
 macro_rules! i32_unop {
     ($name:ident, $op:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            unsafe {
-                let instr = &*state.instrs.add(state.pc);
-                let ProcessedInstr::I32Reg { dst, src1, .. } = instr else {
-                    std::hint::unreachable_unchecked()
-                };
-                let a = operand::read_i32(state, src1);
-                operand::write_i32(state, dst, $op(a));
-                state.pc += 1;
-                advance!(state)
-            }
+            let (dst, src1) = match state.current_instr() {
+                ProcessedInstr::I32Reg { dst, src1, .. } => (*dst, *src1),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let a = operand::read_i32(state, &src1);
+            operand::write_i32(state, &dst, $op(a));
+            state.pc += 1;
+            advance!(state)
         }
     };
 }
@@ -449,87 +445,75 @@ i32_unop!(h_i32_extend16_s, ops::i32_extend16_s);
 // the success path is preserved as a tail call (LLVM still emits
 // return_call_indirect for it).
 pub fn h_i32_div_s(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::I32Reg {
+    let (dst, src1, src2) = match state.current_instr() {
+        ProcessedInstr::I32Reg {
             dst, src1, src2, ..
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
-        let a = operand::read_i32(state, src1);
-        let b = operand::read_i32(state, src2.as_ref().unwrap_unchecked());
-        if b == 0 {
-            state.trap = Some(RuntimeError::ZeroDivideError);
-            return h_trap(state);
-        }
-        operand::write_i32(state, dst, a.wrapping_div(b));
-        state.pc += 1;
-        advance!(state)
+        } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let a = operand::read_i32(state, &src1);
+    let b = operand::read_i32(state, &src2);
+    if b == 0 {
+        state.trap = Some(RuntimeError::ZeroDivideError);
+        return h_trap(state);
     }
+    operand::write_i32(state, &dst, a.wrapping_div(b));
+    state.pc += 1;
+    advance!(state)
 }
 
 pub fn h_i32_div_u(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::I32Reg {
+    let (dst, src1, src2) = match state.current_instr() {
+        ProcessedInstr::I32Reg {
             dst, src1, src2, ..
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
-        let a = operand::read_i32(state, src1);
-        let b = operand::read_i32(state, src2.as_ref().unwrap_unchecked()) as u32;
-        if b == 0 {
-            state.trap = Some(RuntimeError::ZeroDivideError);
-            return h_trap(state);
-        }
-        operand::write_i32(state, dst, ((a as u32) / b) as i32);
-        state.pc += 1;
-        advance!(state)
+        } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let a = operand::read_i32(state, &src1);
+    let b = operand::read_i32(state, &src2) as u32;
+    if b == 0 {
+        state.trap = Some(RuntimeError::ZeroDivideError);
+        return h_trap(state);
     }
+    operand::write_i32(state, &dst, ((a as u32) / b) as i32);
+    state.pc += 1;
+    advance!(state)
 }
 
 pub fn h_i32_rem_s(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::I32Reg {
+    let (dst, src1, src2) = match state.current_instr() {
+        ProcessedInstr::I32Reg {
             dst, src1, src2, ..
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
-        let a = operand::read_i32(state, src1);
-        let b = operand::read_i32(state, src2.as_ref().unwrap_unchecked());
-        if b == 0 {
-            state.trap = Some(RuntimeError::ZeroDivideError);
-            return h_trap(state);
-        }
-        operand::write_i32(state, dst, a.wrapping_rem(b));
-        state.pc += 1;
-        advance!(state)
+        } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let a = operand::read_i32(state, &src1);
+    let b = operand::read_i32(state, &src2);
+    if b == 0 {
+        state.trap = Some(RuntimeError::ZeroDivideError);
+        return h_trap(state);
     }
+    operand::write_i32(state, &dst, a.wrapping_rem(b));
+    state.pc += 1;
+    advance!(state)
 }
 
 pub fn h_i32_rem_u(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::I32Reg {
+    let (dst, src1, src2) = match state.current_instr() {
+        ProcessedInstr::I32Reg {
             dst, src1, src2, ..
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
-        let a = operand::read_i32(state, src1);
-        let b = operand::read_i32(state, src2.as_ref().unwrap_unchecked()) as u32;
-        if b == 0 {
-            state.trap = Some(RuntimeError::ZeroDivideError);
-            return h_trap(state);
-        }
-        operand::write_i32(state, dst, ((a as u32) % b) as i32);
-        state.pc += 1;
-        advance!(state)
+        } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let a = operand::read_i32(state, &src1);
+    let b = operand::read_i32(state, &src2) as u32;
+    if b == 0 {
+        state.trap = Some(RuntimeError::ZeroDivideError);
+        return h_trap(state);
     }
+    operand::write_i32(state, &dst, ((a as u32) % b) as i32);
+    state.pc += 1;
+    advance!(state)
 }
 
 // ============================================================================
@@ -539,20 +523,17 @@ pub fn h_i32_rem_u(state: &mut VmState) -> Outcome {
 macro_rules! i64_binop {
     ($name:ident, $op:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            unsafe {
-                let instr = &*state.instrs.add(state.pc);
-                let ProcessedInstr::I64Reg {
+            let (dst, src1, src2) = match state.current_instr() {
+                ProcessedInstr::I64Reg {
                     dst, src1, src2, ..
-                } = instr
-                else {
-                    std::hint::unreachable_unchecked()
-                };
-                let a = operand::read_i64(state, src1);
-                let b = operand::read_i64(state, src2.as_ref().unwrap_unchecked());
-                operand::write_i64(state, dst, $op(a, b));
-                state.pc += 1;
-                advance!(state)
-            }
+                } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let a = operand::read_i64(state, &src1);
+            let b = operand::read_i64(state, &src2);
+            operand::write_i64(state, &dst, $op(a, b));
+            state.pc += 1;
+            advance!(state)
         }
     };
 }
@@ -561,20 +542,17 @@ macro_rules! i64_binop {
 macro_rules! i64_cmp {
     ($name:ident, $op:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            unsafe {
-                let instr = &*state.instrs.add(state.pc);
-                let ProcessedInstr::I64Reg {
+            let (dst, src1, src2) = match state.current_instr() {
+                ProcessedInstr::I64Reg {
                     dst, src1, src2, ..
-                } = instr
-                else {
-                    std::hint::unreachable_unchecked()
-                };
-                let a = operand::read_i64(state, src1);
-                let b = operand::read_i64(state, src2.as_ref().unwrap_unchecked());
-                operand::write_i64dst_i32(state, dst, $op(a, b));
-                state.pc += 1;
-                advance!(state)
-            }
+                } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let a = operand::read_i64(state, &src1);
+            let b = operand::read_i64(state, &src2);
+            operand::write_i64dst_i32(state, &dst, $op(a, b));
+            state.pc += 1;
+            advance!(state)
         }
     };
 }
@@ -582,16 +560,14 @@ macro_rules! i64_cmp {
 macro_rules! i64_unop {
     ($name:ident, $op:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            unsafe {
-                let instr = &*state.instrs.add(state.pc);
-                let ProcessedInstr::I64Reg { dst, src1, .. } = instr else {
-                    std::hint::unreachable_unchecked()
-                };
-                let a = operand::read_i64(state, src1);
-                operand::write_i64(state, dst, $op(a));
-                state.pc += 1;
-                advance!(state)
-            }
+            let (dst, src1) = match state.current_instr() {
+                ProcessedInstr::I64Reg { dst, src1, .. } => (*dst, *src1),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let a = operand::read_i64(state, &src1);
+            operand::write_i64(state, &dst, $op(a));
+            state.pc += 1;
+            advance!(state)
         }
     };
 }
@@ -635,105 +611,91 @@ i64_unop!(h_i64_extend32_s, ops::i64_extend32_s);
 
 // i64.eqz: i64 input, i32 result (custom path because of mismatched types)
 pub fn h_i64_eqz(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::I64Reg { dst, src1, .. } = instr else {
-            std::hint::unreachable_unchecked()
-        };
-        let a = operand::read_i64(state, src1);
-        operand::write_i64dst_i32(state, dst, ops::i64_eqz(a));
-        state.pc += 1;
-        advance!(state)
-    }
+    let (dst, src1) = match state.current_instr() {
+        ProcessedInstr::I64Reg { dst, src1, .. } => (*dst, *src1),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let a = operand::read_i64(state, &src1);
+    operand::write_i64dst_i32(state, &dst, ops::i64_eqz(a));
+    state.pc += 1;
+    advance!(state)
 }
 
 // I64 division / remainder with trap (overflow check on div_s)
 pub fn h_i64_div_s(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::I64Reg {
+    let (dst, src1, src2) = match state.current_instr() {
+        ProcessedInstr::I64Reg {
             dst, src1, src2, ..
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
-        let a = operand::read_i64(state, src1);
-        let b = operand::read_i64(state, src2.as_ref().unwrap_unchecked());
-        if b == 0 {
-            state.trap = Some(RuntimeError::ZeroDivideError);
-            return h_trap(state);
-        }
-        if a == i64::MIN && b == -1 {
-            state.trap = Some(RuntimeError::IntegerOverflow);
-            return h_trap(state);
-        }
-        operand::write_i64(state, dst, a.wrapping_div(b));
-        state.pc += 1;
-        advance!(state)
+        } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let a = operand::read_i64(state, &src1);
+    let b = operand::read_i64(state, &src2);
+    if b == 0 {
+        state.trap = Some(RuntimeError::ZeroDivideError);
+        return h_trap(state);
     }
+    if a == i64::MIN && b == -1 {
+        state.trap = Some(RuntimeError::IntegerOverflow);
+        return h_trap(state);
+    }
+    operand::write_i64(state, &dst, a.wrapping_div(b));
+    state.pc += 1;
+    advance!(state)
 }
 
 pub fn h_i64_div_u(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::I64Reg {
+    let (dst, src1, src2) = match state.current_instr() {
+        ProcessedInstr::I64Reg {
             dst, src1, src2, ..
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
-        let a = operand::read_i64(state, src1);
-        let b = operand::read_i64(state, src2.as_ref().unwrap_unchecked()) as u64;
-        if b == 0 {
-            state.trap = Some(RuntimeError::ZeroDivideError);
-            return h_trap(state);
-        }
-        operand::write_i64(state, dst, ((a as u64) / b) as i64);
-        state.pc += 1;
-        advance!(state)
+        } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let a = operand::read_i64(state, &src1);
+    let b = operand::read_i64(state, &src2) as u64;
+    if b == 0 {
+        state.trap = Some(RuntimeError::ZeroDivideError);
+        return h_trap(state);
     }
+    operand::write_i64(state, &dst, ((a as u64) / b) as i64);
+    state.pc += 1;
+    advance!(state)
 }
 
 pub fn h_i64_rem_s(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::I64Reg {
+    let (dst, src1, src2) = match state.current_instr() {
+        ProcessedInstr::I64Reg {
             dst, src1, src2, ..
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
-        let a = operand::read_i64(state, src1);
-        let b = operand::read_i64(state, src2.as_ref().unwrap_unchecked());
-        if b == 0 {
-            state.trap = Some(RuntimeError::ZeroDivideError);
-            return h_trap(state);
-        }
-        operand::write_i64(state, dst, a.wrapping_rem(b));
-        state.pc += 1;
-        advance!(state)
+        } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let a = operand::read_i64(state, &src1);
+    let b = operand::read_i64(state, &src2);
+    if b == 0 {
+        state.trap = Some(RuntimeError::ZeroDivideError);
+        return h_trap(state);
     }
+    operand::write_i64(state, &dst, a.wrapping_rem(b));
+    state.pc += 1;
+    advance!(state)
 }
 
 pub fn h_i64_rem_u(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::I64Reg {
+    let (dst, src1, src2) = match state.current_instr() {
+        ProcessedInstr::I64Reg {
             dst, src1, src2, ..
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
-        let a = operand::read_i64(state, src1);
-        let b = operand::read_i64(state, src2.as_ref().unwrap_unchecked()) as u64;
-        if b == 0 {
-            state.trap = Some(RuntimeError::ZeroDivideError);
-            return h_trap(state);
-        }
-        operand::write_i64(state, dst, ((a as u64) % b) as i64);
-        state.pc += 1;
-        advance!(state)
+        } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let a = operand::read_i64(state, &src1);
+    let b = operand::read_i64(state, &src2) as u64;
+    if b == 0 {
+        state.trap = Some(RuntimeError::ZeroDivideError);
+        return h_trap(state);
     }
+    operand::write_i64(state, &dst, ((a as u64) % b) as i64);
+    state.pc += 1;
+    advance!(state)
 }
 
 // ============================================================================
@@ -743,20 +705,17 @@ pub fn h_i64_rem_u(state: &mut VmState) -> Outcome {
 macro_rules! f32_binop {
     ($name:ident, $op:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            unsafe {
-                let instr = &*state.instrs.add(state.pc);
-                let ProcessedInstr::F32Reg {
+            let (dst, src1, src2) = match state.current_instr() {
+                ProcessedInstr::F32Reg {
                     dst, src1, src2, ..
-                } = instr
-                else {
-                    std::hint::unreachable_unchecked()
-                };
-                let a = operand::read_f32(state, src1);
-                let b = operand::read_f32(state, src2.as_ref().unwrap_unchecked());
-                operand::write_f32(state, dst, $op(a, b));
-                state.pc += 1;
-                advance!(state)
-            }
+                } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let a = operand::read_f32(state, &src1);
+            let b = operand::read_f32(state, &src2);
+            operand::write_f32(state, &dst, $op(a, b));
+            state.pc += 1;
+            advance!(state)
         }
     };
 }
@@ -764,20 +723,17 @@ macro_rules! f32_binop {
 macro_rules! f32_cmp {
     ($name:ident, $op:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            unsafe {
-                let instr = &*state.instrs.add(state.pc);
-                let ProcessedInstr::F32Reg {
+            let (dst, src1, src2) = match state.current_instr() {
+                ProcessedInstr::F32Reg {
                     dst, src1, src2, ..
-                } = instr
-                else {
-                    std::hint::unreachable_unchecked()
-                };
-                let a = operand::read_f32(state, src1);
-                let b = operand::read_f32(state, src2.as_ref().unwrap_unchecked());
-                operand::write_f32dst_i32(state, dst, $op(a, b));
-                state.pc += 1;
-                advance!(state)
-            }
+                } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let a = operand::read_f32(state, &src1);
+            let b = operand::read_f32(state, &src2);
+            operand::write_f32dst_i32(state, &dst, $op(a, b));
+            state.pc += 1;
+            advance!(state)
         }
     };
 }
@@ -785,16 +741,14 @@ macro_rules! f32_cmp {
 macro_rules! f32_unop {
     ($name:ident, $op:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            unsafe {
-                let instr = &*state.instrs.add(state.pc);
-                let ProcessedInstr::F32Reg { dst, src1, .. } = instr else {
-                    std::hint::unreachable_unchecked()
-                };
-                let a = operand::read_f32(state, src1);
-                operand::write_f32(state, dst, $op(a));
-                state.pc += 1;
-                advance!(state)
-            }
+            let (dst, src1) = match state.current_instr() {
+                ProcessedInstr::F32Reg { dst, src1, .. } => (*dst, *src1),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let a = operand::read_f32(state, &src1);
+            operand::write_f32(state, &dst, $op(a));
+            state.pc += 1;
+            advance!(state)
         }
     };
 }
@@ -836,20 +790,17 @@ f32_cmp!(h_f32_ge, ops::f32_ge);
 macro_rules! f64_binop {
     ($name:ident, $op:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            unsafe {
-                let instr = &*state.instrs.add(state.pc);
-                let ProcessedInstr::F64Reg {
+            let (dst, src1, src2) = match state.current_instr() {
+                ProcessedInstr::F64Reg {
                     dst, src1, src2, ..
-                } = instr
-                else {
-                    std::hint::unreachable_unchecked()
-                };
-                let a = operand::read_f64(state, src1);
-                let b = operand::read_f64(state, src2.as_ref().unwrap_unchecked());
-                operand::write_f64(state, dst, $op(a, b));
-                state.pc += 1;
-                advance!(state)
-            }
+                } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let a = operand::read_f64(state, &src1);
+            let b = operand::read_f64(state, &src2);
+            operand::write_f64(state, &dst, $op(a, b));
+            state.pc += 1;
+            advance!(state)
         }
     };
 }
@@ -857,20 +808,17 @@ macro_rules! f64_binop {
 macro_rules! f64_cmp {
     ($name:ident, $op:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            unsafe {
-                let instr = &*state.instrs.add(state.pc);
-                let ProcessedInstr::F64Reg {
+            let (dst, src1, src2) = match state.current_instr() {
+                ProcessedInstr::F64Reg {
                     dst, src1, src2, ..
-                } = instr
-                else {
-                    std::hint::unreachable_unchecked()
-                };
-                let a = operand::read_f64(state, src1);
-                let b = operand::read_f64(state, src2.as_ref().unwrap_unchecked());
-                operand::write_f64dst_i32(state, dst, $op(a, b));
-                state.pc += 1;
-                advance!(state)
-            }
+                } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let a = operand::read_f64(state, &src1);
+            let b = operand::read_f64(state, &src2);
+            operand::write_f64dst_i32(state, &dst, $op(a, b));
+            state.pc += 1;
+            advance!(state)
         }
     };
 }
@@ -878,16 +826,14 @@ macro_rules! f64_cmp {
 macro_rules! f64_unop {
     ($name:ident, $op:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            unsafe {
-                let instr = &*state.instrs.add(state.pc);
-                let ProcessedInstr::F64Reg { dst, src1, .. } = instr else {
-                    std::hint::unreachable_unchecked()
-                };
-                let a = operand::read_f64(state, src1);
-                operand::write_f64(state, dst, $op(a));
-                state.pc += 1;
-                advance!(state)
-            }
+            let (dst, src1) = match state.current_instr() {
+                ProcessedInstr::F64Reg { dst, src1, .. } => (*dst, *src1),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let a = operand::read_f64(state, &src1);
+            operand::write_f64(state, &dst, $op(a));
+            state.pc += 1;
+            advance!(state)
         }
     };
 }
@@ -930,16 +876,14 @@ f64_cmp!(h_f64_ge, ops::f64_ge);
 macro_rules! conv {
     ($name:ident, $read:ident, $write:ident, $body:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            unsafe {
-                let instr = &*state.instrs.add(state.pc);
-                let ProcessedInstr::ConversionReg { src, dst, .. } = instr else {
-                    std::hint::unreachable_unchecked()
-                };
-                let v = operand::$read(state, src);
-                operand::$write(state, dst, $body(v));
-                state.pc += 1;
-                advance!(state)
-            }
+            let (src, dst) = match state.current_instr() {
+                ProcessedInstr::ConversionReg { src, dst, .. } => (*src, *dst),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let v = operand::$read(state, &src);
+            operand::$write(state, &dst, $body(v));
+            state.pc += 1;
+            advance!(state)
         }
     };
 }
@@ -1180,25 +1124,23 @@ conv!(
 macro_rules! conv_trap {
     ($name:ident, $read:ident, $write:ident, $ty:ty, $min:expr, $max:expr, $cast:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            unsafe {
-                let instr = &*state.instrs.add(state.pc);
-                let ProcessedInstr::ConversionReg { src, dst, .. } = instr else {
-                    std::hint::unreachable_unchecked()
-                };
-                let v = operand::$read(state, src);
-                if v.is_nan() {
-                    state.trap = Some(RuntimeError::InvalidConversionToInt);
-                    return h_trap(state);
-                }
-                let t = v.trunc();
-                if t < $min || t > $max {
-                    state.trap = Some(RuntimeError::IntegerOverflow);
-                    return h_trap(state);
-                }
-                operand::$write(state, dst, $cast(t));
-                state.pc += 1;
-                advance!(state)
+            let (src, dst) = match state.current_instr() {
+                ProcessedInstr::ConversionReg { src, dst, .. } => (*src, *dst),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let v = operand::$read(state, &src);
+            if v.is_nan() {
+                state.trap = Some(RuntimeError::InvalidConversionToInt);
+                return h_trap(state);
             }
+            let t = v.trunc();
+            if t < $min || t > $max {
+                state.trap = Some(RuntimeError::IntegerOverflow);
+                return h_trap(state);
+            }
+            operand::$write(state, &dst, $cast(t));
+            state.pc += 1;
+            advance!(state)
         }
     };
 }
@@ -1242,88 +1184,80 @@ conv_trap!(
 
 // i64 trunc has different bound check (>= for max), so write explicit functions
 pub fn h_conv_i64_trunc_f32_s(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::ConversionReg { src, dst, .. } = instr else {
-            std::hint::unreachable_unchecked()
-        };
-        let v = operand::read_reg_f32(state, src);
-        if v.is_nan() {
-            state.trap = Some(RuntimeError::InvalidConversionToInt);
-            return h_trap(state);
-        }
-        let t = v.trunc();
-        if t < (i64::MIN as f32) || t >= (i64::MAX as f32) {
-            state.trap = Some(RuntimeError::IntegerOverflow);
-            return h_trap(state);
-        }
-        operand::write_dst_i64(state, dst, t as i64);
-        state.pc += 1;
-        advance!(state)
+    let (src, dst) = match state.current_instr() {
+        ProcessedInstr::ConversionReg { src, dst, .. } => (*src, *dst),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let v = operand::read_reg_f32(state, &src);
+    if v.is_nan() {
+        state.trap = Some(RuntimeError::InvalidConversionToInt);
+        return h_trap(state);
     }
+    let t = v.trunc();
+    if t < (i64::MIN as f32) || t >= (i64::MAX as f32) {
+        state.trap = Some(RuntimeError::IntegerOverflow);
+        return h_trap(state);
+    }
+    operand::write_dst_i64(state, &dst, t as i64);
+    state.pc += 1;
+    advance!(state)
 }
 pub fn h_conv_i64_trunc_f32_u(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::ConversionReg { src, dst, .. } = instr else {
-            std::hint::unreachable_unchecked()
-        };
-        let v = operand::read_reg_f32(state, src);
-        if v.is_nan() {
-            state.trap = Some(RuntimeError::InvalidConversionToInt);
-            return h_trap(state);
-        }
-        let t = v.trunc();
-        if t < 0.0 || t >= (u64::MAX as f32) {
-            state.trap = Some(RuntimeError::IntegerOverflow);
-            return h_trap(state);
-        }
-        operand::write_dst_i64(state, dst, (t as u64) as i64);
-        state.pc += 1;
-        advance!(state)
+    let (src, dst) = match state.current_instr() {
+        ProcessedInstr::ConversionReg { src, dst, .. } => (*src, *dst),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let v = operand::read_reg_f32(state, &src);
+    if v.is_nan() {
+        state.trap = Some(RuntimeError::InvalidConversionToInt);
+        return h_trap(state);
     }
+    let t = v.trunc();
+    if t < 0.0 || t >= (u64::MAX as f32) {
+        state.trap = Some(RuntimeError::IntegerOverflow);
+        return h_trap(state);
+    }
+    operand::write_dst_i64(state, &dst, (t as u64) as i64);
+    state.pc += 1;
+    advance!(state)
 }
 pub fn h_conv_i64_trunc_f64_s(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::ConversionReg { src, dst, .. } = instr else {
-            std::hint::unreachable_unchecked()
-        };
-        let v = operand::read_reg_f64(state, src);
-        if v.is_nan() {
-            state.trap = Some(RuntimeError::InvalidConversionToInt);
-            return h_trap(state);
-        }
-        let t = v.trunc();
-        if t < (i64::MIN as f64) || t >= (i64::MAX as f64) {
-            state.trap = Some(RuntimeError::IntegerOverflow);
-            return h_trap(state);
-        }
-        operand::write_dst_i64(state, dst, t as i64);
-        state.pc += 1;
-        advance!(state)
+    let (src, dst) = match state.current_instr() {
+        ProcessedInstr::ConversionReg { src, dst, .. } => (*src, *dst),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let v = operand::read_reg_f64(state, &src);
+    if v.is_nan() {
+        state.trap = Some(RuntimeError::InvalidConversionToInt);
+        return h_trap(state);
     }
+    let t = v.trunc();
+    if t < (i64::MIN as f64) || t >= (i64::MAX as f64) {
+        state.trap = Some(RuntimeError::IntegerOverflow);
+        return h_trap(state);
+    }
+    operand::write_dst_i64(state, &dst, t as i64);
+    state.pc += 1;
+    advance!(state)
 }
 pub fn h_conv_i64_trunc_f64_u(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::ConversionReg { src, dst, .. } = instr else {
-            std::hint::unreachable_unchecked()
-        };
-        let v = operand::read_reg_f64(state, src);
-        if v.is_nan() {
-            state.trap = Some(RuntimeError::InvalidConversionToInt);
-            return h_trap(state);
-        }
-        let t = v.trunc();
-        if t < 0.0 || t >= (u64::MAX as f64) {
-            state.trap = Some(RuntimeError::IntegerOverflow);
-            return h_trap(state);
-        }
-        operand::write_dst_i64(state, dst, (t as u64) as i64);
-        state.pc += 1;
-        advance!(state)
+    let (src, dst) = match state.current_instr() {
+        ProcessedInstr::ConversionReg { src, dst, .. } => (*src, *dst),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let v = operand::read_reg_f64(state, &src);
+    if v.is_nan() {
+        state.trap = Some(RuntimeError::InvalidConversionToInt);
+        return h_trap(state);
     }
+    let t = v.trunc();
+    if t < 0.0 || t >= (u64::MAX as f64) {
+        state.trap = Some(RuntimeError::IntegerOverflow);
+        return h_trap(state);
+    }
+    operand::write_dst_i64(state, &dst, (t as u64) as i64);
+    state.pc += 1;
+    advance!(state)
 }
 
 // ============================================================================
@@ -1335,22 +1269,21 @@ pub fn h_conv_i64_trunc_f64_u(state: &mut VmState) -> Outcome {
 macro_rules! mem_load {
     ($name:ident, $ty:ty, $cast_to:ty, $write:ident, $convert:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            unsafe {
-                let instr = &*state.instrs.add(state.pc);
-                let ProcessedInstr::MemoryLoadReg {
+            let (addr, dst, offset) = match state.current_instr() {
+                ProcessedInstr::MemoryLoadReg {
                     addr, dst, offset, ..
-                } = instr
-                else {
-                    std::hint::unreachable_unchecked()
-                };
-                let p = operand::read_i32(state, addr);
-                let raw_ptr = state.mem_ptr.add((p as usize) + (*offset as usize)) as *const $ty;
-                let v: $ty = std::ptr::read_unaligned(raw_ptr);
-                let result: $cast_to = $convert(v);
-                operand::$write(state, dst, result);
-                state.pc += 1;
-                advance!(state)
-            }
+                } => (*addr, *dst, *offset),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let p = operand::read_i32(state, &addr);
+            let v: $ty = unsafe {
+                let raw_ptr = state.mem_ptr.add((p as usize) + (offset as usize)) as *const $ty;
+                std::ptr::read_unaligned(raw_ptr)
+            };
+            let result: $cast_to = $convert(v);
+            operand::$write(state, &dst, result);
+            state.pc += 1;
+            advance!(state)
         }
     };
 }
@@ -1383,25 +1316,23 @@ mem_load!(h_mem_load_i64_32u, u32, i64, write_dst_i64, |v: u32| v
 macro_rules! mem_store {
     ($name:ident, $read:ident, $store_ty:ty, $cast:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            unsafe {
-                let instr = &*state.instrs.add(state.pc);
-                let ProcessedInstr::MemoryStoreReg {
+            let (addr, value, offset) = match state.current_instr() {
+                ProcessedInstr::MemoryStoreReg {
                     addr,
                     value,
                     offset,
                     ..
-                } = instr
-                else {
-                    std::hint::unreachable_unchecked()
-                };
-                let p = operand::read_i32(state, addr);
-                let v = operand::$read(state, value);
-                let raw_ptr =
-                    state.mem_ptr.add((p as usize) + (*offset as usize)) as *mut $store_ty;
+                } => (*addr, *value, *offset),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let p = operand::read_i32(state, &addr);
+            let v = operand::$read(state, &value);
+            unsafe {
+                let raw_ptr = state.mem_ptr.add((p as usize) + (offset as usize)) as *mut $store_ty;
                 std::ptr::write_unaligned(raw_ptr, $cast(v));
-                state.pc += 1;
-                advance!(state)
             }
+            state.pc += 1;
+            advance!(state)
         }
     };
 }
@@ -1423,29 +1354,26 @@ mem_store!(h_mem_store_i64_32, read_reg_i64, u32, |v: i64| v as u32);
 macro_rules! select {
     ($name:ident, $get:ident, $set:ident) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            unsafe {
-                let instr = &*state.instrs.add(state.pc);
-                let ProcessedInstr::SelectReg {
+            let (dst, val1, val2, cond) = match state.current_instr() {
+                ProcessedInstr::SelectReg {
                     dst,
                     val1,
                     val2,
                     cond,
                     ..
-                } = instr
-                else {
-                    std::hint::unreachable_unchecked()
-                };
-                let regs = &mut *state.reg_file;
-                let c = regs.get_i32(cond.index());
-                let r = if c != 0 {
-                    regs.$get(val1.index())
-                } else {
-                    regs.$get(val2.index())
-                };
-                regs.$set(dst.index(), r);
-                state.pc += 1;
-                advance!(state)
-            }
+                } => (*dst, *val1, *val2, *cond),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let regs = state.reg_file_mut();
+            let c = regs.get_i32(cond.index());
+            let r = if c != 0 {
+                regs.$get(val1.index())
+            } else {
+                regs.$get(val2.index())
+            };
+            regs.$set(dst.index(), r);
+            state.pc += 1;
+            advance!(state)
         }
     };
 }
@@ -1485,244 +1413,223 @@ pub fn h_unreachable(state: &mut VmState) -> Outcome {
 //   current_label_idx) return `Outcome::Halt` (matches legacy `break`).
 
 pub fn h_br(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::BrReg {
-            relative_depth,
-            target_ip,
-            source_regs,
-            target_result_regs,
-            ..
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
-        let depth = *relative_depth as usize;
-        let target_ip = *target_ip;
-        if !source_regs.is_empty() && !target_result_regs.is_empty() {
-            (*state.reg_file).copy_regs(source_regs, target_result_regs);
-        }
-        // For valid Wasm `relative_depth <= current_label_idx` is guaranteed by
-        // the parser/validator. saturating_sub keeps the function safe without
-        // the early-return path that blocks tail-call optimization.
-        let target_level = state.current_label_idx.saturating_sub(depth);
-        let keep_count = target_level.max(1);
-        (*state.label_stack).truncate(keep_count);
-        state.current_label_idx = (*state.label_stack).len() - 1;
-        state.pc = target_ip;
-        advance!(state)
+    let instr = unsafe { &*state.instrs.add(state.pc) };
+    let ProcessedInstr::BrReg {
+        relative_depth,
+        target_ip,
+        source_regs,
+        target_result_regs,
+        ..
+    } = instr
+    else {
+        unsafe { std::hint::unreachable_unchecked() }
+    };
+    let depth = *relative_depth as usize;
+    let target_ip = *target_ip;
+    if !source_regs.is_empty() && !target_result_regs.is_empty() {
+        state
+            .reg_file_mut()
+            .copy_regs(source_regs, target_result_regs);
     }
+    let target_level = state.current_label_idx.saturating_sub(depth);
+    let keep_count = target_level.max(1);
+    let label_stack = state.label_stack_mut();
+    label_stack.truncate(keep_count);
+    state.current_label_idx = state.label_stack().len() - 1;
+    state.pc = target_ip;
+    advance!(state)
 }
 
 pub fn h_br_if(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::BrIfReg {
-            relative_depth,
-            target_ip,
-            cond_reg,
-            source_regs,
-            target_result_regs,
-            ..
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
-        let depth = *relative_depth as usize;
-        let target_ip = *target_ip;
-        let cond_reg = *cond_reg;
-        let cond = (*state.reg_file).get_i32(cond_reg.index());
-        // Fall-through branch: condition false → just advance pc and tail-call.
-        if cond == 0 {
-            state.pc += 1;
-            return advance!(state);
-        }
-        // Taken: copy result regs via slice (no ArrayVec) then truncate label stack.
-        if !source_regs.is_empty() && !target_result_regs.is_empty() {
-            (*state.reg_file).copy_regs(source_regs, target_result_regs);
-        }
-        let target_level = state.current_label_idx.saturating_sub(depth);
-        let keep_count = target_level.max(1);
-        (*state.label_stack).truncate(keep_count);
-        state.current_label_idx = (*state.label_stack).len() - 1;
-        state.pc = target_ip;
-        advance!(state)
+    let instr = unsafe { &*state.instrs.add(state.pc) };
+    let ProcessedInstr::BrIfReg {
+        relative_depth,
+        target_ip,
+        cond_reg,
+        source_regs,
+        target_result_regs,
+        ..
+    } = instr
+    else {
+        unsafe { std::hint::unreachable_unchecked() }
+    };
+    let depth = *relative_depth as usize;
+    let target_ip = *target_ip;
+    let cond_reg = *cond_reg;
+    let cond = state.reg_file().get_i32(cond_reg.index());
+    if cond == 0 {
+        state.pc += 1;
+        return advance!(state);
     }
+    if !source_regs.is_empty() && !target_result_regs.is_empty() {
+        state
+            .reg_file_mut()
+            .copy_regs(source_regs, target_result_regs);
+    }
+    let target_level = state.current_label_idx.saturating_sub(depth);
+    let keep_count = target_level.max(1);
+    state.label_stack_mut().truncate(keep_count);
+    state.current_label_idx = state.label_stack().len() - 1;
+    state.pc = target_ip;
+    advance!(state)
 }
 
 pub fn h_br_table(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::BrTableReg {
-            targets,
-            default_target,
-            index_reg,
-            source_regs,
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
+    let instr = unsafe { &*state.instrs.add(state.pc) };
+    let ProcessedInstr::BrTableReg {
+        targets,
+        default_target,
+        index_reg,
+        source_regs,
+    } = instr
+    else {
+        unsafe { std::hint::unreachable_unchecked() }
+    };
+    let index_reg = *index_reg;
+    let idx = state.reg_file().get_i32(index_reg.index()) as usize;
+
+    let (depth, target_ip, target_result_regs_slice): (usize, usize, &[Reg]) =
+        if idx < targets.len() {
+            let (d, ip, rs) = &targets[idx];
+            (*d as usize, *ip, &rs[..])
+        } else {
+            let (d, ip, rs) = default_target;
+            (*d as usize, *ip, &rs[..])
         };
-        let index_reg = *index_reg;
-        let idx = (*state.reg_file).get_i32(index_reg.index()) as usize;
 
-        let (depth, target_ip, target_result_regs_slice): (usize, usize, &[Reg]) =
-            if idx < targets.len() {
-                let (d, ip, rs) = &targets[idx];
-                (*d as usize, *ip, &rs[..])
-            } else {
-                let (d, ip, rs) = default_target;
-                (*d as usize, *ip, &rs[..])
-            };
-
-        if !source_regs.is_empty() && !target_result_regs_slice.is_empty() {
-            (*state.reg_file).copy_regs(source_regs, target_result_regs_slice);
-        }
-        let target_level = state.current_label_idx.saturating_sub(depth);
-        let keep_count = target_level.max(1);
-        (*state.label_stack).truncate(keep_count);
-        state.current_label_idx = (*state.label_stack).len() - 1;
-        state.pc = target_ip;
-        advance!(state)
+    if !source_regs.is_empty() && !target_result_regs_slice.is_empty() {
+        state
+            .reg_file_mut()
+            .copy_regs(source_regs, target_result_regs_slice);
     }
+    let target_level = state.current_label_idx.saturating_sub(depth);
+    let keep_count = target_level.max(1);
+    state.label_stack_mut().truncate(keep_count);
+    state.current_label_idx = state.label_stack().len() - 1;
+    state.pc = target_ip;
+    advance!(state)
 }
 
 pub fn h_block(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::BlockReg { is_loop, .. } = instr else {
-            std::hint::unreachable_unchecked()
-        };
-        let is_loop = *is_loop;
-        let next_ip = state.pc + 1;
-        let pi_rc = (&*state.label_stack)[state.current_label_idx]
-            .processed_instrs
-            .clone();
-        let new_label = Label {
+    let is_loop = match state.current_instr() {
+        ProcessedInstr::BlockReg { is_loop, .. } => *is_loop,
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let next_ip = state.pc + 1;
+    let cur_idx = state.current_label_idx;
+    let label_stack = state.label_stack_mut();
+    let pi_rc = label_stack[cur_idx].processed_instrs.clone();
+    label_stack.push(LabelStack {
+        label: Label {
             is_loop,
             return_ip: next_ip,
-        };
-        (*state.label_stack).push(LabelStack {
-            label: new_label,
-            processed_instrs: pi_rc,
-            ip: next_ip,
-        });
-        state.current_label_idx = (*state.label_stack).len() - 1;
-        state.pc = next_ip;
-        advance!(state)
-    }
+        },
+        processed_instrs: pi_rc,
+        ip: next_ip,
+    });
+    state.current_label_idx = state.label_stack().len() - 1;
+    state.pc = next_ip;
+    advance!(state)
 }
 
 pub fn h_if(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::IfReg {
+    let (cond_reg, else_target_ip, has_else) = match state.current_instr() {
+        ProcessedInstr::IfReg {
             cond_reg,
             else_target_ip,
             has_else,
             ..
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
-        let cond_reg = *cond_reg;
-        let else_target_ip = *else_target_ip;
-        let has_else = *has_else;
+        } => (*cond_reg, *else_target_ip, *has_else),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
 
-        let cond = (*state.reg_file).get_i32(cond_reg.index());
-        // Only clone pi_rc inside branches that need it, so the no-else path
-        // has zero `Rc` destructors at the tail call.
-        if cond != 0 {
-            let pi_rc = (&*state.label_stack)[state.current_label_idx]
-                .processed_instrs
-                .clone();
-            (*state.label_stack).push(LabelStack {
-                label: Label {
-                    is_loop: false,
-                    return_ip: else_target_ip,
-                },
-                processed_instrs: pi_rc,
-                ip: state.pc + 1,
-            });
-            state.current_label_idx = (*state.label_stack).len() - 1;
-            state.pc += 1;
-        } else if has_else {
-            let pi_rc = (&*state.label_stack)[state.current_label_idx]
-                .processed_instrs
-                .clone();
-            (*state.label_stack).push(LabelStack {
-                label: Label {
-                    is_loop: false,
-                    return_ip: else_target_ip,
-                },
-                processed_instrs: pi_rc,
-                ip: else_target_ip,
-            });
-            state.current_label_idx = (*state.label_stack).len() - 1;
-            state.pc = else_target_ip;
-        } else {
-            state.pc = else_target_ip;
-        }
-        advance!(state)
+    let cond = state.reg_file().get_i32(cond_reg.index());
+    // Only clone pi_rc inside branches that need it, so the no-else path
+    // has zero `Rc` destructors at the tail call.
+    if cond != 0 {
+        let next_ip = state.pc + 1;
+        let cur_idx = state.current_label_idx;
+        let label_stack = state.label_stack_mut();
+        let pi_rc = label_stack[cur_idx].processed_instrs.clone();
+        label_stack.push(LabelStack {
+            label: Label {
+                is_loop: false,
+                return_ip: else_target_ip,
+            },
+            processed_instrs: pi_rc,
+            ip: next_ip,
+        });
+        state.current_label_idx = state.label_stack().len() - 1;
+        state.pc = next_ip;
+    } else if has_else {
+        let cur_idx = state.current_label_idx;
+        let label_stack = state.label_stack_mut();
+        let pi_rc = label_stack[cur_idx].processed_instrs.clone();
+        label_stack.push(LabelStack {
+            label: Label {
+                is_loop: false,
+                return_ip: else_target_ip,
+            },
+            processed_instrs: pi_rc,
+            ip: else_target_ip,
+        });
+        state.current_label_idx = state.label_stack().len() - 1;
+        state.pc = else_target_ip;
+    } else {
+        state.pc = else_target_ip;
     }
+    advance!(state)
 }
 
 pub fn h_end(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::EndReg {
-            source_regs,
-            target_result_regs,
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
+    let instr = unsafe { &*state.instrs.add(state.pc) };
+    let ProcessedInstr::EndReg {
+        source_regs,
+        target_result_regs,
+    } = instr
+    else {
+        unsafe { std::hint::unreachable_unchecked() }
+    };
 
-        // Decide whether this end is a function-level halt or a nested block pop.
-        // To preserve tail-call optimization, we have a SINGLE call site at the
-        // bottom (`advance!`). The halt path directs `state.pc` to the
-        // `h_halt` sentinel (parser appends it at index `instrs_len`).
-        let mut halt = false;
-        if (*state.label_stack).len() <= 1 {
+    let mut halt = false;
+    if state.label_stack().len() <= 1 {
+        halt = true;
+    } else {
+        state
+            .reg_file_mut()
+            .copy_regs(source_regs, target_result_regs);
+        let label_stack = state.label_stack_mut();
+        label_stack.pop();
+        state.current_label_idx = state.label_stack().len() - 1;
+        let next_ip = state.pc + 1;
+        if next_ip >= state.instrs_len && state.current_label_idx == 0 {
             halt = true;
         } else {
-            (*state.reg_file).copy_regs(source_regs, target_result_regs);
-            (*state.label_stack).pop();
-            state.current_label_idx = (*state.label_stack).len() - 1;
-            let next_ip = state.pc + 1;
-            if next_ip >= state.instrs_len && state.current_label_idx == 0 {
-                halt = true;
-            } else {
-                state.pc = next_ip;
-            }
+            state.pc = next_ip;
         }
-        if halt {
-            // Write source_regs directly to return_result_regs (no temp).
-            let dst = &mut *state.return_result_regs;
-            dst.clear();
-            for r in source_regs.iter() {
-                dst.push(*r);
-            }
-            // Dispatch to h_halt sentinel at handlers[instrs_len].
-            state.pc = state.instrs_len;
-        }
-        advance!(state)
     }
+    if halt {
+        let dst = state.return_result_regs_mut();
+        dst.clear();
+        for r in source_regs.iter() {
+            dst.push(*r);
+        }
+        state.pc = state.instrs_len;
+    }
+    advance!(state)
 }
 
 pub fn h_jump(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::JumpReg { target_ip } = instr else {
-            std::hint::unreachable_unchecked()
-        };
-        let target_ip = *target_ip;
-        if (*state.label_stack).len() > 1 {
-            (*state.label_stack).pop();
-            state.current_label_idx = (*state.label_stack).len() - 1;
-        }
-        state.pc = target_ip;
-        advance!(state)
+    let target_ip = match state.current_instr() {
+        ProcessedInstr::JumpReg { target_ip } => *target_ip,
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    if state.label_stack().len() > 1 {
+        state.label_stack_mut().pop();
+        state.current_label_idx = state.label_stack().len() - 1;
     }
+    state.pc = target_ip;
+    advance!(state)
 }
 
 // ============================================================================
@@ -1735,125 +1642,116 @@ pub fn h_jump(state: &mut VmState) -> Outcome {
 // continues correctly.
 
 pub fn h_call(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::CallReg {
-            func_idx,
-            param_regs,
-            result_regs,
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
-        let func_idx = *func_idx;
-        let module_inst = &*state.module;
-        let func_addr = match module_inst.func_addrs.get(func_idx.0 as usize) {
-            Some(fa) => fa.clone(),
-            None => {
-                state.trap = Some(RuntimeError::ExportFuncNotFound);
-                return h_trap(state);
-            }
-        };
-        let regs = &*state.reg_file;
-        let params: Vec<Val> = param_regs.iter().map(|r| regs.get_val(r)).collect();
-        let result_regs_vec: ArrayVec<Reg, 8> = result_regs.iter().copied().collect();
-        state.pc += 1;
-        state.yielded = Some(ModuleLevelInstr::InvokeReg {
-            func_addr,
-            params,
-            result_regs: result_regs_vec,
-        });
-        Outcome::Yield
-    }
+    let instr = unsafe { &*state.instrs.add(state.pc) };
+    let ProcessedInstr::CallReg {
+        func_idx,
+        param_regs,
+        result_regs,
+    } = instr
+    else {
+        unsafe { std::hint::unreachable_unchecked() }
+    };
+    let func_idx = *func_idx;
+    let func_addr = match state.module().func_addrs.get(func_idx.0 as usize) {
+        Some(fa) => fa.clone(),
+        None => {
+            state.trap = Some(RuntimeError::ExportFuncNotFound);
+            return h_trap(state);
+        }
+    };
+    let regs = state.reg_file();
+    let params: Vec<Val> = param_regs.iter().map(|r| regs.get_val(r)).collect();
+    let result_regs_vec: ArrayVec<Reg, 8> = result_regs.iter().copied().collect();
+    state.pc += 1;
+    state.yielded = Some(ModuleLevelInstr::InvokeReg {
+        func_addr,
+        params,
+        result_regs: result_regs_vec,
+    });
+    Outcome::Yield
 }
 
 pub fn h_call_indirect(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::CallIndirectReg {
-            type_idx,
-            table_idx,
-            index_reg,
-            param_regs,
-            result_regs,
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
-        let type_idx = *type_idx;
-        let table_idx = *table_idx;
-        let index_reg = *index_reg;
-        let module_inst = &*state.module;
-        let i = (*state.reg_file).get_i32(index_reg.index());
-        let table_addr = match module_inst.table_addrs.get(table_idx.0 as usize) {
-            Some(t) => t,
-            None => {
-                state.trap = Some(RuntimeError::TableNotFound);
-                return h_trap(state);
-            }
-        };
-        let func_addr = match table_addr.get_func_addr(i as usize) {
-            Some(fa) => fa,
-            None => {
-                state.trap = Some(RuntimeError::UninitializedElement);
-                return h_trap(state);
-            }
-        };
-        let actual_type = func_addr.func_type();
-        let expected_type = &module_inst.types[type_idx.0 as usize];
-        if *actual_type != *expected_type {
-            state.trap = Some(RuntimeError::IndirectCallTypeMismatch);
+    let instr = unsafe { &*state.instrs.add(state.pc) };
+    let ProcessedInstr::CallIndirectReg {
+        type_idx,
+        table_idx,
+        index_reg,
+        param_regs,
+        result_regs,
+    } = instr
+    else {
+        unsafe { std::hint::unreachable_unchecked() }
+    };
+    let type_idx = *type_idx;
+    let table_idx = *table_idx;
+    let index_reg = *index_reg;
+    let module_inst = state.module();
+    let i = state.reg_file().get_i32(index_reg.index());
+    let table_addr = match module_inst.table_addrs.get(table_idx.0 as usize) {
+        Some(t) => t.clone(),
+        None => {
+            state.trap = Some(RuntimeError::TableNotFound);
             return h_trap(state);
         }
-        let regs = &*state.reg_file;
-        let params: Vec<Val> = param_regs.iter().map(|r| regs.get_val(r)).collect();
-        let result_regs_vec: ArrayVec<Reg, 8> = result_regs.iter().copied().collect();
-        state.pc += 1;
-        state.yielded = Some(ModuleLevelInstr::InvokeReg {
-            func_addr,
-            params,
-            result_regs: result_regs_vec,
-        });
-        Outcome::Yield
+    };
+    let func_addr = match table_addr.get_func_addr(i as usize) {
+        Some(fa) => fa,
+        None => {
+            state.trap = Some(RuntimeError::UninitializedElement);
+            return h_trap(state);
+        }
+    };
+    let actual_type = func_addr.func_type();
+    let expected_type = &state.module().types[type_idx.0 as usize];
+    if *actual_type != *expected_type {
+        state.trap = Some(RuntimeError::IndirectCallTypeMismatch);
+        return h_trap(state);
     }
+    let regs = state.reg_file();
+    let params: Vec<Val> = param_regs.iter().map(|r| regs.get_val(r)).collect();
+    let result_regs_vec: ArrayVec<Reg, 8> = result_regs.iter().copied().collect();
+    state.pc += 1;
+    state.yielded = Some(ModuleLevelInstr::InvokeReg {
+        func_addr,
+        params,
+        result_regs: result_regs_vec,
+    });
+    Outcome::Yield
 }
 
 pub fn h_call_wasi(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::CallWasiReg {
-            wasi_func_type,
-            param_regs,
-            result_reg,
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
-        let wasi_func_type = *wasi_func_type;
-        let result_reg = *result_reg;
-        let regs = &*state.reg_file;
-        let params: Vec<Val> = param_regs.iter().map(|r| regs.get_val(r)).collect();
-        state.pc += 1;
-        state.yielded = Some(ModuleLevelInstr::InvokeWasiReg {
-            wasi_func_type,
-            params,
-            result_reg,
-        });
-        Outcome::Yield
-    }
+    let instr = unsafe { &*state.instrs.add(state.pc) };
+    let ProcessedInstr::CallWasiReg {
+        wasi_func_type,
+        param_regs,
+        result_reg,
+    } = instr
+    else {
+        unsafe { std::hint::unreachable_unchecked() }
+    };
+    let wasi_func_type = *wasi_func_type;
+    let result_reg = *result_reg;
+    let regs = state.reg_file();
+    let params: Vec<Val> = param_regs.iter().map(|r| regs.get_val(r)).collect();
+    state.pc += 1;
+    state.yielded = Some(ModuleLevelInstr::InvokeWasiReg {
+        wasi_func_type,
+        params,
+        result_reg,
+    });
+    Outcome::Yield
 }
 
 pub fn h_return(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::ReturnReg { result_regs } = instr else {
-            std::hint::unreachable_unchecked()
-        };
-        let rrr: ArrayVec<Reg, 8> = result_regs.iter().copied().collect();
-        *state.return_result_regs = rrr;
-        state.yielded = Some(ModuleLevelInstr::Return);
-        Outcome::Yield
-    }
+    let instr = unsafe { &*state.instrs.add(state.pc) };
+    let ProcessedInstr::ReturnReg { result_regs } = instr else {
+        unsafe { std::hint::unreachable_unchecked() }
+    };
+    let rrr: ArrayVec<Reg, 8> = result_regs.iter().copied().collect();
+    *state.return_result_regs_mut() = rrr;
+    state.yielded = Some(ModuleLevelInstr::Return);
+    Outcome::Yield
 }
 
 // ============================================================================
@@ -1863,25 +1761,22 @@ pub fn h_return(state: &mut VmState) -> Outcome {
 macro_rules! global_get {
     ($name:ident, $to:ident, $write:ident, $variant:ident) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            unsafe {
-                let instr = &*state.instrs.add(state.pc);
-                let ProcessedInstr::GlobalGetReg {
+            let (dst, global_index) = match state.current_instr() {
+                ProcessedInstr::GlobalGetReg {
                     dst, global_index, ..
-                } = instr
-                else {
-                    std::hint::unreachable_unchecked()
-                };
-                let module_inst = &*state.module;
-                let global_addr = module_inst
-                    .global_addrs
-                    .get_by_idx(crate::structure::types::GlobalIdx(*global_index))
-                    .clone();
-                let val = global_addr.get();
-                let v = val.$to().unwrap_or(Default::default());
-                operand::$write(state, dst, v);
-                state.pc += 1;
-                advance!(state)
-            }
+                } => (*dst, *global_index),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let global_addr = state
+                .module()
+                .global_addrs
+                .get_by_idx(crate::structure::types::GlobalIdx(global_index))
+                .clone();
+            let val = global_addr.get();
+            let v = val.$to().unwrap_or(Default::default());
+            operand::$write(state, &dst, v);
+            state.pc += 1;
+            advance!(state)
         }
     };
 }
@@ -1894,34 +1789,30 @@ global_get!(h_global_get_f64, to_f64, write_dst_f64, F64);
 macro_rules! global_set {
     ($name:ident, $get:ident, $variant:ident) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            unsafe {
-                let instr = &*state.instrs.add(state.pc);
-                let ProcessedInstr::GlobalSetReg {
+            let (src, global_index) = match state.current_instr() {
+                ProcessedInstr::GlobalSetReg {
                     src, global_index, ..
-                } = instr
-                else {
-                    std::hint::unreachable_unchecked()
-                };
-                let v = match src {
-                    RegOrLocal::Reg(idx) => (*state.reg_file).$get(*idx),
-                    RegOrLocal::Local(idx) => match &*state.locals.add(*idx as usize) {
-                        Val::Num(crate::execution::value::Num::$variant(v)) => *v,
-                        _ => Default::default(),
-                    },
-                };
-                let module_inst = &*state.module;
-                let global_addr = module_inst
-                    .global_addrs
-                    .get_by_idx(crate::structure::types::GlobalIdx(*global_index))
-                    .clone();
-                if let Err(e) = global_addr.set(Val::Num(crate::execution::value::Num::$variant(v)))
-                {
-                    state.trap = Some(e);
-                    return h_trap(state);
-                }
-                state.pc += 1;
-                advance!(state)
+                } => (*src, *global_index),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let v = match src {
+                RegOrLocal::Reg(idx) => state.reg_file().$get(idx),
+                RegOrLocal::Local(idx) => match state.local(idx as usize) {
+                    Val::Num(crate::execution::value::Num::$variant(v)) => *v,
+                    _ => Default::default(),
+                },
+            };
+            let global_addr = state
+                .module()
+                .global_addrs
+                .get_by_idx(crate::structure::types::GlobalIdx(global_index))
+                .clone();
+            if let Err(e) = global_addr.set(Val::Num(crate::execution::value::Num::$variant(v))) {
+                state.trap = Some(e);
+                return h_trap(state);
             }
+            state.pc += 1;
+            advance!(state)
         }
     };
 }
@@ -1936,18 +1827,16 @@ global_set!(h_global_set_f64, get_f64, F64);
 // ============================================================================
 
 pub fn h_data_drop(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::DataDropReg { data_index } = instr else {
-            std::hint::unreachable_unchecked()
-        };
-        let module_inst = &*state.module;
-        if (*data_index as usize) < module_inst.data_addrs.len() {
-            module_inst.data_addrs[*data_index as usize].drop_data();
-        }
-        state.pc += 1;
-        advance!(state)
+    let data_index = match state.current_instr() {
+        ProcessedInstr::DataDropReg { data_index } => *data_index,
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let module_inst = state.module();
+    if (data_index as usize) < module_inst.data_addrs.len() {
+        module_inst.data_addrs[data_index as usize].drop_data();
     }
+    state.pc += 1;
+    advance!(state)
 }
 
 // ============================================================================
@@ -1955,38 +1844,30 @@ pub fn h_data_drop(state: &mut VmState) -> Outcome {
 // ============================================================================
 
 pub fn h_ref_local_get(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::RefLocalReg { dst, local_idx, .. } = instr else {
-            std::hint::unreachable_unchecked()
-        };
-        let dst = *dst;
-        let local_idx = *local_idx as usize;
-        // local index is validated at parse time; trust validation here for
-        // consistency with the numeric local handlers and to keep the hot
-        // path branch-free.
-        let val = (&*state.locals.add(local_idx)).clone();
-        if let Val::Ref(r) = val {
-            (*state.reg_file).set_ref(dst, r);
-        }
-        state.pc += 1;
-        advance!(state)
+    let (dst, local_idx) = match state.current_instr() {
+        ProcessedInstr::RefLocalReg { dst, local_idx, .. } => (*dst, *local_idx as usize),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    // local index is validated at parse time; trust validation here for
+    // consistency with the numeric local handlers and to keep the hot
+    // path branch-free.
+    let val = state.local(local_idx).clone();
+    if let Val::Ref(r) = val {
+        state.reg_file_mut().set_ref(dst, r);
     }
+    state.pc += 1;
+    advance!(state)
 }
 
 pub fn h_ref_local_set(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::RefLocalReg { src, local_idx, .. } = instr else {
-            std::hint::unreachable_unchecked()
-        };
-        let src = *src;
-        let local_idx = *local_idx as usize;
-        let ref_val = (*state.reg_file).get_ref(src);
-        *state.locals.add(local_idx) = Val::Ref(ref_val);
-        state.pc += 1;
-        advance!(state)
-    }
+    let (src, local_idx) = match state.current_instr() {
+        ProcessedInstr::RefLocalReg { src, local_idx, .. } => (*src, *local_idx as usize),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let ref_val = state.reg_file().get_ref(src);
+    *state.local_mut(local_idx) = Val::Ref(ref_val);
+    state.pc += 1;
+    advance!(state)
 }
 
 // ============================================================================
@@ -1994,119 +1875,108 @@ pub fn h_ref_local_set(state: &mut VmState) -> Outcome {
 // ============================================================================
 
 pub fn h_ref_null(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::TableRefReg { regs, .. } = instr else {
-            std::hint::unreachable_unchecked()
-        };
-        (*state.reg_file).set_ref(regs[0], crate::execution::value::Ref::RefNull);
-        state.pc += 1;
-        advance!(state)
-    }
+    let regs = match state.current_instr() {
+        ProcessedInstr::TableRefReg { regs, .. } => *regs,
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    state
+        .reg_file_mut()
+        .set_ref(regs[0], crate::execution::value::Ref::RefNull);
+    state.pc += 1;
+    advance!(state)
 }
 
 pub fn h_ref_is_null(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::TableRefReg { regs, .. } = instr else {
-            std::hint::unreachable_unchecked()
-        };
-        let ref_val = (*state.reg_file).get_ref(regs[1]);
-        let is_null = matches!(ref_val, crate::execution::value::Ref::RefNull) as i32;
-        (*state.reg_file).set_i32(regs[0], is_null);
-        state.pc += 1;
-        advance!(state)
-    }
+    let regs = match state.current_instr() {
+        ProcessedInstr::TableRefReg { regs, .. } => *regs,
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let rf = state.reg_file_mut();
+    let ref_val = rf.get_ref(regs[1]);
+    let is_null = matches!(ref_val, crate::execution::value::Ref::RefNull) as i32;
+    rf.set_i32(regs[0], is_null);
+    state.pc += 1;
+    advance!(state)
 }
 
 pub fn h_table_get(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::TableRefReg {
+    let (table_idx, regs) = match state.current_instr() {
+        ProcessedInstr::TableRefReg {
             table_idx, regs, ..
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
-        let module_inst = &*state.module;
-        let table_addr = match module_inst.table_addrs.get(*table_idx as usize) {
-            Some(t) => t,
-            None => {
-                state.trap = Some(RuntimeError::TableNotFound);
-                return h_trap(state);
-            }
-        };
-        let index = (*state.reg_file).get_i32(regs[1]) as usize;
-        let val = table_addr.get(index);
-        match val {
-            Val::Ref(r) => {
-                (*state.reg_file).set_ref(regs[0], r);
-                state.pc += 1;
-                advance!(state)
-            }
-            _ => {
-                state.trap = Some(RuntimeError::TypeMismatch);
-                h_trap(state)
-            }
+        } => (*table_idx, *regs),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let table_addr = match state.module().table_addrs.get(table_idx as usize) {
+        Some(t) => t.clone(),
+        None => {
+            state.trap = Some(RuntimeError::TableNotFound);
+            return h_trap(state);
+        }
+    };
+    let index = state.reg_file().get_i32(regs[1]) as usize;
+    let val = table_addr.get(index);
+    match val {
+        Val::Ref(r) => {
+            state.reg_file_mut().set_ref(regs[0], r);
+            state.pc += 1;
+            advance!(state)
+        }
+        _ => {
+            state.trap = Some(RuntimeError::TypeMismatch);
+            h_trap(state)
         }
     }
 }
 
 pub fn h_table_set(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::TableRefReg {
+    let (table_idx, regs) = match state.current_instr() {
+        ProcessedInstr::TableRefReg {
             table_idx, regs, ..
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
-        let module_inst = &*state.module;
-        let table_addr = match module_inst.table_addrs.get(*table_idx as usize) {
-            Some(t) => t,
-            None => {
-                state.trap = Some(RuntimeError::TableNotFound);
-                return h_trap(state);
-            }
-        };
-        let index = (*state.reg_file).get_i32(regs[0]) as usize;
-        let ref_val = (*state.reg_file).get_ref(regs[1]);
-        if let Err(e) = table_addr.set(index, Val::Ref(ref_val)) {
-            state.trap = Some(e);
+        } => (*table_idx, *regs),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let table_addr = match state.module().table_addrs.get(table_idx as usize) {
+        Some(t) => t.clone(),
+        None => {
+            state.trap = Some(RuntimeError::TableNotFound);
             return h_trap(state);
         }
-        state.pc += 1;
-        advance!(state)
+    };
+    let rf = state.reg_file();
+    let index = rf.get_i32(regs[0]) as usize;
+    let ref_val = rf.get_ref(regs[1]);
+    if let Err(e) = table_addr.set(index, Val::Ref(ref_val)) {
+        state.trap = Some(e);
+        return h_trap(state);
     }
+    state.pc += 1;
+    advance!(state)
 }
 
 pub fn h_table_fill(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::TableRefReg {
+    let (table_idx, regs) = match state.current_instr() {
+        ProcessedInstr::TableRefReg {
             table_idx, regs, ..
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
-        let module_inst = &*state.module;
-        let table_addr = match module_inst.table_addrs.get(*table_idx as usize) {
-            Some(t) => t,
-            None => {
-                state.trap = Some(RuntimeError::TableNotFound);
-                return h_trap(state);
-            }
-        };
-        let i = (*state.reg_file).get_i32(regs[0]) as usize;
-        let ref_val = (*state.reg_file).get_ref(regs[1]);
-        let n = (*state.reg_file).get_i32(regs[2]) as usize;
-        if let Err(e) = table_addr.fill(i, Val::Ref(ref_val), n) {
-            state.trap = Some(e);
+        } => (*table_idx, *regs),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let table_addr = match state.module().table_addrs.get(table_idx as usize) {
+        Some(t) => t.clone(),
+        None => {
+            state.trap = Some(RuntimeError::TableNotFound);
             return h_trap(state);
         }
-        state.pc += 1;
-        advance!(state)
+    };
+    let rf = state.reg_file();
+    let i = rf.get_i32(regs[0]) as usize;
+    let ref_val = rf.get_ref(regs[1]);
+    let n = rf.get_i32(regs[2]) as usize;
+    if let Err(e) = table_addr.fill(i, Val::Ref(ref_val), n) {
+        state.trap = Some(e);
+        return h_trap(state);
     }
+    state.pc += 1;
+    advance!(state)
 }
 
 // ============================================================================
@@ -2114,142 +1984,126 @@ pub fn h_table_fill(state: &mut VmState) -> Outcome {
 // ============================================================================
 
 pub fn h_mem_size(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::MemoryOpsReg { dst, .. } = instr else {
-            std::hint::unreachable_unchecked()
-        };
-        let module_inst = &*state.module;
-        let mem_addr = match module_inst.mem_addrs.first() {
-            Some(m) => m,
-            None => {
-                state.trap = Some(RuntimeError::MemoryNotFound);
-                return h_trap(state);
-            }
-        };
-        let size = mem_addr.mem_size();
-        if let Some(d) = dst {
-            (*state.reg_file).set_i32(d.index(), size);
+    let dst = match state.current_instr() {
+        ProcessedInstr::MemoryOpsReg { dst, .. } => *dst,
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let mem_addr = match state.module().mem_addrs.first() {
+        Some(m) => m.clone(),
+        None => {
+            state.trap = Some(RuntimeError::MemoryNotFound);
+            return h_trap(state);
         }
-        state.pc += 1;
-        advance!(state)
+    };
+    let size = mem_addr.mem_size();
+    if let Some(d) = dst {
+        state.reg_file_mut().set_i32(d.index(), size);
     }
+    state.pc += 1;
+    advance!(state)
 }
 
 pub fn h_mem_grow(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::MemoryOpsReg { dst, args, .. } = instr else {
-            std::hint::unreachable_unchecked()
-        };
-        let module_inst = &*state.module;
-        let mem_addr = match module_inst.mem_addrs.first() {
-            Some(m) => m,
-            None => {
-                state.trap = Some(RuntimeError::MemoryNotFound);
-                return h_trap(state);
-            }
-        };
-        let delta = (*state.reg_file).get_i32(args[0].index());
-        let delta_u32: u32 = match delta.try_into() {
-            Ok(v) => v,
-            Err(_) => {
-                state.trap = Some(RuntimeError::InvalidParameterCount);
-                return h_trap(state);
-            }
-        };
-        let prev_size = mem_addr.mem_grow(delta_u32 as i32);
-        if let Some(d) = dst {
-            (*state.reg_file).set_i32(d.index(), prev_size);
+    let instr = unsafe { &*state.instrs.add(state.pc) };
+    let ProcessedInstr::MemoryOpsReg { dst, args, .. } = instr else {
+        unsafe { std::hint::unreachable_unchecked() }
+    };
+    let mem_addr = match state.module().mem_addrs.first() {
+        Some(m) => m.clone(),
+        None => {
+            state.trap = Some(RuntimeError::MemoryNotFound);
+            return h_trap(state);
         }
-        // Refresh cached memory pointer (Vec may have reallocated)
-        state.mem_ptr = mem_addr.data_ptr();
-        state.pc += 1;
-        advance!(state)
+    };
+    let delta = state.reg_file().get_i32(args[0].index());
+    let delta_u32: u32 = match delta.try_into() {
+        Ok(v) => v,
+        Err(_) => {
+            state.trap = Some(RuntimeError::InvalidParameterCount);
+            return h_trap(state);
+        }
+    };
+    let prev_size = mem_addr.mem_grow(delta_u32 as i32);
+    if let Some(d) = dst {
+        state.reg_file_mut().set_i32(d.index(), prev_size);
     }
+    state.mem_ptr = mem_addr.data_ptr();
+    state.pc += 1;
+    advance!(state)
 }
 
 pub fn h_mem_copy(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::MemoryOpsReg { args, .. } = instr else {
-            std::hint::unreachable_unchecked()
-        };
-        let module_inst = &*state.module;
-        let mem_addr = match module_inst.mem_addrs.first() {
-            Some(m) => m,
-            None => {
-                state.trap = Some(RuntimeError::MemoryNotFound);
-                return h_trap(state);
-            }
-        };
-        let regs = &*state.reg_file;
-        let dest = regs.get_i32(args[0].index());
-        let src = regs.get_i32(args[1].index());
-        let len = regs.get_i32(args[2].index());
-        mem_addr.memory_copy(dest, src, len);
-        state.pc += 1;
-        advance!(state)
-    }
+    let instr = unsafe { &*state.instrs.add(state.pc) };
+    let ProcessedInstr::MemoryOpsReg { args, .. } = instr else {
+        unsafe { std::hint::unreachable_unchecked() }
+    };
+    let mem_addr = match state.module().mem_addrs.first() {
+        Some(m) => m.clone(),
+        None => {
+            state.trap = Some(RuntimeError::MemoryNotFound);
+            return h_trap(state);
+        }
+    };
+    let regs = state.reg_file();
+    let dest = regs.get_i32(args[0].index());
+    let src = regs.get_i32(args[1].index());
+    let len = regs.get_i32(args[2].index());
+    mem_addr.memory_copy(dest, src, len);
+    state.pc += 1;
+    advance!(state)
 }
 
 pub fn h_mem_init(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::MemoryOpsReg {
-            args, data_index, ..
-        } = instr
-        else {
-            std::hint::unreachable_unchecked()
-        };
-        let module_inst = &*state.module;
-        let mem_addr = match module_inst.mem_addrs.first() {
-            Some(m) => m,
-            None => {
-                state.trap = Some(RuntimeError::MemoryNotFound);
-                return h_trap(state);
-            }
-        };
-        let regs = &*state.reg_file;
-        let dest = regs.get_i32(args[0].index()) as usize;
-        let offset = regs.get_i32(args[1].index()) as usize;
-        let len = regs.get_i32(args[2].index()) as usize;
-        if (*data_index as usize) >= module_inst.data_addrs.len() {
-            state.trap = Some(RuntimeError::InvalidDataSegmentIndex);
+    let instr = unsafe { &*state.instrs.add(state.pc) };
+    let ProcessedInstr::MemoryOpsReg {
+        args, data_index, ..
+    } = instr
+    else {
+        unsafe { std::hint::unreachable_unchecked() }
+    };
+    let module_inst = state.module();
+    let mem_addr = match module_inst.mem_addrs.first() {
+        Some(m) => m.clone(),
+        None => {
+            state.trap = Some(RuntimeError::MemoryNotFound);
             return h_trap(state);
         }
-        let data_addr = &module_inst.data_addrs[*data_index as usize];
-        let data_bytes = data_addr.get_data();
-        if len > 0 {
-            mem_addr.init(dest, &data_bytes[offset..offset + len]);
-        }
-        state.pc += 1;
-        advance!(state)
+    };
+    if (*data_index as usize) >= module_inst.data_addrs.len() {
+        state.trap = Some(RuntimeError::InvalidDataSegmentIndex);
+        return h_trap(state);
     }
+    let data_bytes = module_inst.data_addrs[*data_index as usize].get_data();
+    let regs = state.reg_file();
+    let dest = regs.get_i32(args[0].index()) as usize;
+    let offset = regs.get_i32(args[1].index()) as usize;
+    let len = regs.get_i32(args[2].index()) as usize;
+    if len > 0 {
+        mem_addr.init(dest, &data_bytes[offset..offset + len]);
+    }
+    state.pc += 1;
+    advance!(state)
 }
 
 pub fn h_mem_fill(state: &mut VmState) -> Outcome {
-    unsafe {
-        let instr = &*state.instrs.add(state.pc);
-        let ProcessedInstr::MemoryOpsReg { args, .. } = instr else {
-            std::hint::unreachable_unchecked()
-        };
-        let module_inst = &*state.module;
-        let mem_addr = match module_inst.mem_addrs.first() {
-            Some(m) => m,
-            None => {
-                state.trap = Some(RuntimeError::MemoryNotFound);
-                return h_trap(state);
-            }
-        };
-        let regs = &*state.reg_file;
-        let dest = regs.get_i32(args[0].index());
-        let val = regs.get_i32(args[1].index()) as u8;
-        let size = regs.get_i32(args[2].index());
-        mem_addr.memory_fill(dest, val, size);
-        state.pc += 1;
-        advance!(state)
-    }
+    let instr = unsafe { &*state.instrs.add(state.pc) };
+    let ProcessedInstr::MemoryOpsReg { args, .. } = instr else {
+        unsafe { std::hint::unreachable_unchecked() }
+    };
+    let mem_addr = match state.module().mem_addrs.first() {
+        Some(m) => m.clone(),
+        None => {
+            state.trap = Some(RuntimeError::MemoryNotFound);
+            return h_trap(state);
+        }
+    };
+    let regs = state.reg_file();
+    let dest = regs.get_i32(args[0].index());
+    let val = regs.get_i32(args[1].index()) as u8;
+    let size = regs.get_i32(args[2].index());
+    mem_addr.memory_fill(dest, val, size);
+    state.pc += 1;
+    advance!(state)
 }
 
 // ============================================================================

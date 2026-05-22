@@ -56,6 +56,68 @@ pub struct VmState {
     pub checkpoint_poll_counter: u32,
 }
 
+impl VmState {
+    /// Reference to the instruction at the current `pc`.
+    #[inline(always)]
+    pub fn current_instr(&self) -> &ProcessedInstr {
+        unsafe { &*self.instrs.add(self.pc) }
+    }
+
+    /// Handler function pointer at the given `pc`.
+    #[inline(always)]
+    pub fn handler_at(&self, pc: usize) -> Handler {
+        unsafe { *self.handlers.add(pc) }
+    }
+
+    /// Shared reference to the register file.
+    #[inline(always)]
+    pub fn reg_file(&self) -> &RegFile {
+        unsafe { &*self.reg_file }
+    }
+
+    /// Mutable reference to the register file.
+    #[inline(always)]
+    pub fn reg_file_mut(&mut self) -> &mut RegFile {
+        unsafe { &mut *self.reg_file }
+    }
+
+    /// Shared reference to the local at `idx`.
+    #[inline(always)]
+    pub fn local(&self, idx: usize) -> &Val {
+        unsafe { &*self.locals.add(idx) }
+    }
+
+    /// Mutable reference to the local at `idx`.
+    #[inline(always)]
+    pub fn local_mut(&mut self, idx: usize) -> &mut Val {
+        unsafe { &mut *self.locals.add(idx) }
+    }
+
+    /// Shared reference to the label stack.
+    #[inline(always)]
+    pub fn label_stack(&self) -> &Vec<LabelStack> {
+        unsafe { &*self.label_stack }
+    }
+
+    /// Mutable reference to the label stack.
+    #[inline(always)]
+    pub fn label_stack_mut(&mut self) -> &mut Vec<LabelStack> {
+        unsafe { &mut *self.label_stack }
+    }
+
+    /// Reference to the module instance.
+    #[inline(always)]
+    pub fn module(&self) -> &ModuleInst {
+        unsafe { &*self.module }
+    }
+
+    /// Mutable reference to the return-value register slot.
+    #[inline(always)]
+    pub fn return_result_regs_mut(&mut self) -> &mut ArrayVec<Reg, 8> {
+        unsafe { &mut *self.return_result_regs }
+    }
+}
+
 /// Module-level instructions that require runtime handling outside the DTC loop.
 #[derive(Clone)]
 pub enum ModuleLevelInstr {
