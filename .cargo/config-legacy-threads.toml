@@ -1,0 +1,5 @@
+[build]
+target-dir = "target/legacy-threads"
+rustflags = [
+  "-C", "target-feature=+atomics",
+]

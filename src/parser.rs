@@ -45,8 +45,9 @@ use wasmparser::{
 };
 
 use crate::error::{ParserError, RuntimeError};
+use crate::execution::handlers::*;
+use crate::execution::ir::*;
 use crate::execution::regs::{Reg, RegAllocator};
-use crate::execution::vm::*;
 use crate::structure::{instructions::*, module::*, types::*};
 use itertools::Itertools;
 use rustc_hash::FxHashMap;
@@ -859,7 +860,7 @@ fn decode_func_section(
             locals: Vec::new(),
             body: Rc::new(Vec::new()),
             reg_allocation: None,
-            result_reg: None,
+            handlers: Rc::new(Vec::new()),
         });
     }
 
@@ -1172,7 +1173,6 @@ fn decode_code_section(
     body: FunctionBody<'_>,
     module: &mut Module,
     func_index: usize,
-    enable_superinstructions: bool,
     cache: &mut BlockArityCache,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut locals: Vec<(u32, ValueType)> = Vec::new();
@@ -1206,16 +1206,8 @@ fn decode_code_section(
         if_else_map,
         block_type_map,
         reg_allocation,
-        result_reg,
         block_result_regs_map,
-    ) = decode_processed_instrs_and_fixups(
-        ops_iter,
-        module,
-        enable_superinstructions,
-        &locals,
-        &param_types,
-        &result_types,
-    )?;
+    ) = decode_processed_instrs_and_fixups(ops_iter, module, &locals, &param_types, &result_types)?;
 
     let relative_func_index = func_index - module.num_imported_funcs;
     if let Some(func) = module.funcs.get_mut(relative_func_index) {
@@ -1240,12 +1232,21 @@ fn decode_code_section(
 
     let body_rc = Rc::new(processed_instrs);
 
+    // v2 dispatcher handler array: parallel to body + h_halt sentinel at end
+    // for safe out-of-range dispatch in TCO mode.
+    let mut handlers_vec: Vec<crate::execution::ir::Handler> = body_rc
+        .iter()
+        .map(crate::execution::handlers::select_handler)
+        .collect();
+    handlers_vec.push(crate::execution::handlers::h_halt);
+    let handlers_rc = Rc::new(handlers_vec);
+
     // Store function body and metadata in module
     if let Some(func) = module.funcs.get_mut(relative_func_index) {
         func.body = body_rc;
         // Store register mode metadata (None for stack mode)
         func.reg_allocation = reg_allocation.clone();
-        func.result_reg = result_reg;
+        func.handlers = handlers_rc;
     } else {
         return Err(Box::new(RuntimeError::InvalidWasm(
             "Invalid function index when storing body",
@@ -1703,36 +1704,32 @@ fn preprocess_instructions(
                     {
                         // Extract target_ip and target_result_regs from resolved_targets (Operand::LabelIdx)
                         for (i, operand) in resolved_targets.iter().enumerate() {
-                            if let Operand::LabelIdx {
+                            let Operand::LabelIdx {
                                 target_ip,
                                 original_wasm_depth,
                                 target_result_regs,
                                 ..
-                            } = operand
-                            {
-                                if i < reg_targets.len() {
-                                    reg_targets[i] = (
-                                        *original_wasm_depth as u32,
-                                        *target_ip,
-                                        target_result_regs.clone().into_boxed_slice(),
-                                    );
-                                }
+                            } = operand;
+                            if i < reg_targets.len() {
+                                reg_targets[i] = (
+                                    *original_wasm_depth as u32,
+                                    *target_ip,
+                                    target_result_regs.clone().into_boxed_slice(),
+                                );
                             }
                         }
                         // Set default target
-                        if let Operand::LabelIdx {
+                        let Operand::LabelIdx {
                             target_ip,
                             original_wasm_depth,
                             target_result_regs,
                             ..
-                        } = &default_target_operand
-                        {
-                            *reg_default = (
-                                *original_wasm_depth as u32,
-                                *target_ip,
-                                target_result_regs.clone().into_boxed_slice(),
-                            );
-                        }
+                        } = &default_target_operand;
+                        *reg_default = (
+                            *original_wasm_depth as u32,
+                            *target_ip,
+                            target_result_regs.clone().into_boxed_slice(),
+                        );
                     }
                 } else {
                     return Err(RuntimeError::InvalidWasm(
@@ -1859,7 +1856,6 @@ fn get_table_element_type(module: &Module, table_index: u32) -> ValueType {
 fn decode_processed_instrs_and_fixups<'a>(
     ops_iter: wasmparser::OperatorsIteratorWithOffsets<'a>,
     module: &Module,
-    _enable_superinstructions: bool,
     locals: &[(u32, ValueType)],
     param_types: &[ValueType],
     result_types: &[ValueType],
@@ -1871,7 +1867,6 @@ fn decode_processed_instrs_and_fixups<'a>(
         FxHashMap<usize, usize>,
         FxHashMap<usize, wasmparser::BlockType>,
         Option<crate::execution::regs::RegAllocation>,
-        Option<crate::execution::regs::Reg>,
         FxHashMap<usize, (Vec<Reg>, bool)>,
     ),
     Box<dyn std::error::Error>,
@@ -2031,7 +2026,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                             let dst = allocator.push(local_type);
                             (
                                 Some(ProcessedInstr::RefLocalReg {
-                                    handler_index: HANDLER_IDX_REF_LOCAL_GET_REG,
+                                    handler_index: HANDLER_IDX_REF_LOCAL_GET,
                                     dst: dst.index(),
                                     src: 0, // unused for get
                                     local_idx: *local_index as u16,
@@ -2084,7 +2079,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::RefType(_) => {
                             (
                                 Some(ProcessedInstr::RefLocalReg {
-                                    handler_index: HANDLER_IDX_REF_LOCAL_SET_REG,
+                                    handler_index: HANDLER_IDX_REF_LOCAL_SET,
                                     dst: 0, // unused for set
                                     src: src_idx,
                                     local_idx,
@@ -2107,7 +2102,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ($instr:ident, $operand:ident) => {
                             (
                                 Some(ProcessedInstr::$instr {
-                                    handler_index: HANDLER_IDX_LOCAL_SET, // Reuse local.set handler
+                                    handler_index: HANDLER_IDX_LOCAL_TEE, // Same runtime as local.set, distinct label
                                     dst: $operand::Param(local_idx),
                                     src1: $operand::Reg(src_idx),
                                     src2: None,
@@ -2138,7 +2133,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         ValueType::RefType(_) => {
                             (
                                 Some(ProcessedInstr::RefLocalReg {
-                                    handler_index: HANDLER_IDX_REF_LOCAL_SET_REG,
+                                    handler_index: HANDLER_IDX_REF_LOCAL_SET,
                                     dst: 0, // unused for set
                                     src: src_idx,
                                     local_idx,
@@ -7103,7 +7098,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::RefType(ref_type));
                     (
                         Some(ProcessedInstr::TableRefReg {
-                            handler_index: HANDLER_IDX_REF_NULL_REG,
+                            handler_index: HANDLER_IDX_REF_NULL,
                             table_idx: 0,
                             regs: [dst.index(), 0, 0],
                             ref_type,
@@ -7118,7 +7113,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (
                         Some(ProcessedInstr::TableRefReg {
-                            handler_index: HANDLER_IDX_REF_IS_NULL_REG,
+                            handler_index: HANDLER_IDX_REF_IS_NULL,
                             table_idx: 0,
                             regs: [dst.index(), src.index(), 0],
                             ref_type: RefType::FuncRef, // Not used for RefIsNull
@@ -7138,7 +7133,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     };
                     (
                         Some(ProcessedInstr::TableRefReg {
-                            handler_index: HANDLER_IDX_TABLE_GET_REG,
+                            handler_index: HANDLER_IDX_TABLE_GET,
                             table_idx: *table,
                             regs: [dst.index(), idx.index(), 0],
                             ref_type,
@@ -7154,7 +7149,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let idx = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
                         Some(ProcessedInstr::TableRefReg {
-                            handler_index: HANDLER_IDX_TABLE_SET_REG,
+                            handler_index: HANDLER_IDX_TABLE_SET,
                             table_idx: *table,
                             regs: [idx.index(), val.index(), 0],
                             ref_type: RefType::FuncRef, // Not used for TableSet
@@ -7171,7 +7166,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let i = allocator.pop(&ValueType::NumType(NumType::I32));
                     (
                         Some(ProcessedInstr::TableRefReg {
-                            handler_index: HANDLER_IDX_TABLE_FILL_REG,
+                            handler_index: HANDLER_IDX_TABLE_FILL,
                             table_idx: *table,
                             regs: [i.index(), val.index(), n.index()],
                             ref_type: RefType::FuncRef, // Not used for TableFill
@@ -7294,17 +7289,6 @@ fn decode_processed_instrs_and_fixups<'a>(
         )) as Box<dyn std::error::Error>);
     }
 
-    // Get result register before finalizing (the top of stack after all instructions)
-    // Use the function's result type to peek at the correct register type
-    let result_reg = reg_allocator.as_ref().and_then(|alloc| {
-        if let Some(result_type) = result_types.first() {
-            // Peek at the current stack top for the result type
-            alloc.peek(result_type)
-        } else {
-            None
-        }
-    });
-
     // Finalize register allocation if in register mode
     let reg_allocation = reg_allocator.map(|alloc| alloc.finalize());
 
@@ -7315,7 +7299,6 @@ fn decode_processed_instrs_and_fixups<'a>(
         if_else_map,
         block_type_map,
         reg_allocation,
-        result_reg,
         block_result_regs_map,
     ))
 }
@@ -7404,11 +7387,9 @@ fn compute_branch_regs(
 ///
 /// * `module` - The module structure to populate
 /// * `path` - Path to the WebAssembly binary file
-/// * `enable_superinstructions` - Deprecated, no longer used
 pub fn parse_bytecode(
     mut module: &mut Module,
     path: &str,
-    enable_superinstructions: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut current_func_index = module.num_imported_funcs;
     let mut arity_cache = BlockArityCache::new();
@@ -7479,13 +7460,8 @@ pub fn parse_bytecode(
 
             CodeSectionStart { .. } => { /* ... */ }
             CodeSectionEntry(body) => {
-                let result = decode_code_section(
-                    body,
-                    &mut module,
-                    current_func_index,
-                    enable_superinstructions,
-                    &mut arity_cache,
-                );
+                let result =
+                    decode_code_section(body, &mut module, current_func_index, &mut arity_cache);
                 result?;
                 current_func_index += 1;
             }

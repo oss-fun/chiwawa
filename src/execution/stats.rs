@@ -3,7 +3,7 @@
 use rustc_hash::FxHashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::vm::*;
+use super::handlers::*;
 
 /// Collects per-instruction execution counts.
 #[derive(Debug)]
@@ -49,15 +49,23 @@ impl ExecutionStats {
             HANDLER_IDX_CALL_INDIRECT => "call_indirect",
 
             // Parametric Instructions
-            HANDLER_IDX_DROP => "drop",
-            HANDLER_IDX_SELECT => "select",
+            HANDLER_IDX_SELECT_I32
+            | HANDLER_IDX_SELECT_I64
+            | HANDLER_IDX_SELECT_F32
+            | HANDLER_IDX_SELECT_F64 => "select",
 
             // Variable Instructions
             HANDLER_IDX_LOCAL_GET => "local.get",
             HANDLER_IDX_LOCAL_SET => "local.set",
             HANDLER_IDX_LOCAL_TEE => "local.tee",
-            HANDLER_IDX_GLOBAL_GET => "global.get",
-            HANDLER_IDX_GLOBAL_SET => "global.set",
+            HANDLER_IDX_GLOBAL_GET_I32
+            | HANDLER_IDX_GLOBAL_GET_I64
+            | HANDLER_IDX_GLOBAL_GET_F32
+            | HANDLER_IDX_GLOBAL_GET_F64 => "global.get",
+            HANDLER_IDX_GLOBAL_SET_I32
+            | HANDLER_IDX_GLOBAL_SET_I64
+            | HANDLER_IDX_GLOBAL_SET_F32
+            | HANDLER_IDX_GLOBAL_SET_F64 => "global.set",
 
             // Memory Instructions
             HANDLER_IDX_I32_LOAD => "i32.load",
@@ -254,16 +262,20 @@ impl ExecutionStats {
             HANDLER_IDX_TABLE_SET => "table.set",
             HANDLER_IDX_TABLE_FILL => "table.fill",
 
+            // Ref Local Instructions
+            HANDLER_IDX_REF_LOCAL_GET => "local.get",
+            HANDLER_IDX_REF_LOCAL_SET => "local.set",
+
+            // WASI Call
+            HANDLER_IDX_CALL_WASI => "call_wasi",
+
             // Reserved/Unsupported ranges
             0x06..=0x0A => "reserved", // Exception handling (unsupported)
             0x12..=0x19 => "reserved", // Reserved opcodes
             0x1D..=0x1F => "reserved", // Reserved opcodes
             0x25..=0x27 => "reserved", // Old table ops/reserved
             0xD2..=0xDF => "reserved", // Reserved range (includes unsupported ref.func)
-            0xE3..=0xFB => "reserved", // Reserved range
-            0xFD => "simd",            // SIMD prefix (unsupported)
-            0xFE => "threads",         // Thread operations (unsupported)
-            0xFF => "reserved",        // Reserved prefix
+            0xE3..=0xEF => "reserved", // Reserved range
             _ => "invalid_handler",
         }
     }

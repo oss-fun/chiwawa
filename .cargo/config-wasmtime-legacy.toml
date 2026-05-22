@@ -1,0 +1,5 @@
+[target.wasm32-wasip1]
+runner = ["wasmtime", "--dir", ".", "--dir", "tests/testdir"]
+
+[build]
+target-dir = "target/wasmtime-legacy"

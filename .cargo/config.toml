@@ -1,11 +1,14 @@
-[target.wasm32-wasip1]
-runner = ["wasmtime", "--dir", ".", "--dir", "tests/testdir"]
-
-[target.wasm32-wasip1-threads]
-runner = ["wasmtime", "--wasm", "threads=y", "--wasi", "threads=y", "--dir", ".", "--dir", "tests/testdir"]
-
 [build]
 rustflags = [
   "-C", "target-feature=+bulk-memory,+mutable-globals,+nontrapping-fptoint,+reference-types,+sign-ext",
-  "-C", "link-arg=-s",
 ]
+
+[alias]
+build-tco             = ["build", "--target", "wasm32-wasip1",         "--release", "--features", "tco", "--config", ".cargo/config-tco.toml"]
+build-legacy          = ["build", "--target", "wasm32-wasip1",         "--release",                      "--config", ".cargo/config-legacy.toml"]
+build-tco-threads     = ["build", "--target", "wasm32-wasip1-threads", "--release", "--features", "tco", "--config", ".cargo/config-tco-threads.toml"]
+build-legacy-threads  = ["build", "--target", "wasm32-wasip1-threads", "--release",                      "--config", ".cargo/config-legacy-threads.toml"]
+test-wasmtime-tco     = ["test",  "--target", "wasm32-wasip1",         "--release", "--features", "wasmtime,tco", "--config", ".cargo/config-wasmtime-tco.toml"]
+test-wasmtime-legacy  = ["test",  "--target", "wasm32-wasip1",         "--release", "--features", "wasmtime",     "--config", ".cargo/config-wasmtime-legacy.toml"]
+test-wasmedge-tco     = ["test",  "--target", "wasm32-wasip1",         "--release", "--features", "wasmedge,tco", "--config", ".cargo/config-wasmedge-tco.toml"]
+test-wasmedge-legacy  = ["test",  "--target", "wasm32-wasip1",         "--release", "--features", "wasmedge",     "--config", ".cargo/config-wasmedge-legacy.toml"]

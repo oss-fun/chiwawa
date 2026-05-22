@@ -2,7 +2,8 @@
 runner = ["wasmtime", "--dir", ".", "--dir", "tests/testdir"]
 
 [build]
+target-dir = "target/wasmtime-tco"
 rustflags = [
-  "-C", "target-feature=+bulk-memory,+mutable-globals,+nontrapping-fptoint,+reference-types,+sign-ext",
+  "-C", "target-feature=+multivalue,+tail-call",
   "-C", "link-arg=-s",
 ]

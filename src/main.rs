@@ -5,7 +5,7 @@ use chiwawa::{
     execution::module::*,
     execution::runtime::Runtime,
     execution::value::*,
-    execution::{migration, vm::Stacks},
+    execution::{migration, state::Stacks},
     parser,
     structure::module::Module,
 };
@@ -29,9 +29,6 @@ struct Cli {
     /// Example: --app-args "--database test.db --iterations 1000"
     #[arg(long, allow_hyphen_values = true)]
     app_args: Option<String>,
-    /// Enable superinstructions optimizations (const + local.set)
-    #[arg(long = "superinstructions", default_value = "false")]
-    enable_superinstructions: bool,
     /// Enable statistics output
     #[arg(long = "stats", default_value = "false")]
     enable_stats: bool,
@@ -149,7 +146,7 @@ fn main() -> Result<()> {
     }
 
     let mut module = Module::new("test");
-    let _ = parser::parse_bytecode(&mut module, &cli.wasm_file, cli.enable_superinstructions);
+    let _ = parser::parse_bytecode(&mut module, &cli.wasm_file);
     let imports: ImportObjects = FxHashMap::default();
 
     let mut wasm_argv = vec![cli.wasm_file.clone()];

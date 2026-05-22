@@ -27,14 +27,30 @@ A checkpoint captures:
 - **Execution State**: Call stack, program counters, register values
 - **Memory**: Complete linear memory contents
 - **Globals**: All global variable values
-- **Tables**: Function reference tables
+
+Tables are intentionally excluded. They are deterministically initialized
+from the module's element segments at instantiation time, so the original
+contents can always be reproduced from the (immutable) module bytes —
+serializing them would only bloat the checkpoint.
 
 ### Restore Process
 
 1. **Load**: Read checkpoint file
 2. **Deserialize**: Reconstruct state structures
-3. **Apply**: Restore memory, globals, tables to module instance
-4. **Resume**: Continue execution from saved program counter
+3. **Apply**: Restore memory and globals to the module instance
+4. **Rebuild derived state**: Re-attach fields that the checkpoint deliberately
+   skipped (they can be re-derived from the module):
+   - `processed_instrs` — refilled from each frame's function body
+   - `handlers` — per-frame handler function-pointer array, refilled from
+     `Func.handlers`
+   - `primary_mem` / `cached_mem_ptr` — re-cached from the freshly restored
+     memory instance
+   - `Frame.module` — re-linked to the live `ModuleInst`
+5. **Resume**: Continue execution from the saved program counter
+
+This split (serialize raw state vs. re-derive what depends on `Rc`/raw
+pointers) keeps the checkpoint small and avoids leaking host pointers into
+the file.
 
 ## Trigger Mechanisms
 
@@ -43,10 +59,19 @@ Traditional checkpoint systems use signals (e.g., SIGUSR1) to trigger checkpoint
 Chiwawa supports two detection mechanisms:
 
 ### Thread-based (wasm32-wasip1-threads)
-A background thread monitors for a trigger file, enabling non-blocking checkpoint detection with minimal performance impact.
+A background thread polls for the trigger file and toggles an atomic flag
+(`CHECKPOINT_TRIGGERED`). The dispatcher's per-instruction
+`poll_checkpoint` hook then only needs a cheap relaxed atomic load to detect
+the request, so checkpointing introduces virtually no per-instruction overhead.
 
 ### Polling-based (wasm32-wasip1)
-For hosts without thread support, WASI file operations check for the trigger at instruction boundaries.
+On hosts without thread support, the dispatcher itself does the trigger
+check. Issuing a WASI `path_exists` syscall on every instruction would be
+too expensive, so `poll_checkpoint` keeps a counter
+(`VmState.checkpoint_poll_counter`) and only fires the syscall once every
+`CHECKPOINT_POLL_MASK + 1` (= 1024) instructions. The throttle keeps the
+hot dispatcher path tight while still bounding checkpoint latency to a
+small, fixed number of instructions.
 
 ## Runtime Neutrality
 

@@ -1,0 +1,6 @@
+[build]
+target-dir = "target/tco-threads"
+rustflags = [
+  "-C", "target-feature=+atomics,+multivalue,+tail-call",
+  "-C", "link-arg=-s",
+]

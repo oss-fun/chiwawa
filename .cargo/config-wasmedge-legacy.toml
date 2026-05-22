@@ -1,0 +1,5 @@
+[target.wasm32-wasip1]
+runner = ["wasmedge", "--dir", ".", "--dir", "tests/testdir:tests/testdir"]
+
+[build]
+target-dir = "target/wasmedge-legacy"
