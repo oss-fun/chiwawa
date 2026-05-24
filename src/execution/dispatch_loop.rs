@@ -34,9 +34,7 @@ pub fn run(state: &mut VmState) -> Outcome {
                 if return_ip <= cur_ip && !is_loop {
                     return Outcome::Halt;
                 }
-                unsafe {
-                    (*state.label_stack).pop();
-                }
+                state.label_stack_mut().pop();
                 state.current_label_idx -= 1;
                 state.pc = if is_loop { cur_ip + 1 } else { return_ip };
                 continue;
