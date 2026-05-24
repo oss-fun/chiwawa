@@ -30,7 +30,7 @@ pub struct Func {
     pub body: Rc<Vec<ProcessedInstr>>,
     pub reg_allocation: Option<crate::execution::regs::RegAllocation>,
     /// v2 dispatcher handler array. Built once at parse time, length =
-    /// body.len() + 1 (last entry is `h_halt` sentinel).
+    /// body.len() + 1 (last entry is `halt` sentinel).
     pub handlers: Rc<Vec<ir::Handler>>,
 }
 
