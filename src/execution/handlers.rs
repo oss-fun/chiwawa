@@ -1496,8 +1496,7 @@ pub fn h_br(state: &mut VmState) -> Outcome {
     }
     let target_level = state.current_label_idx.saturating_sub(depth);
     let keep_count = target_level.max(1);
-    let label_stack = state.label_stack_mut();
-    label_stack.truncate(keep_count);
+    state.label_stack_mut().truncate(keep_count);
     state.current_label_idx = state.label_stack().len() - 1;
     state.pc = target_ip;
     advance!(state)
@@ -1661,8 +1660,7 @@ pub fn h_end(state: &mut VmState) -> Outcome {
         state
             .reg_file_mut()
             .copy_regs(source_regs, target_result_regs);
-        let label_stack = state.label_stack_mut();
-        label_stack.pop();
+        state.label_stack_mut().pop();
         state.current_label_idx = state.label_stack().len() - 1;
         let next_ip = state.pc + 1;
         if next_ip >= state.instrs_len && state.current_label_idx == 0 {
