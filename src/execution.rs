@@ -14,7 +14,6 @@ pub mod mem;
 pub mod migration;
 pub mod module;
 pub mod operand;
-pub mod ops;
 pub mod regs;
 pub mod runtime;
 pub mod state;
