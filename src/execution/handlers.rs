@@ -1,6 +1,7 @@
 //! Each handler reads operands from the active `ProcessedInstr`, performs
-//! its operation via `ops::*`, writes the result, advances `state.pc`, and
-//! invokes the `advance!` macro to continue dispatch. The macro expansion
+//! its operation (inlined as a closure per handler), writes the result,
+//! advances `state.pc`, and invokes the `advance!` macro to continue
+//! dispatch. The macro expansion
 //! depends on `cfg(feature = "tco")`:
 //!
 //! - **non-tco**: returns `Outcome::Continue` so the outer loop fetches the
@@ -26,7 +27,6 @@ use crate::error::RuntimeError;
 use crate::execution::ir::{Handler, Outcome, ProcessedInstr, RegOrLocal};
 use crate::execution::module::GetInstanceByIdx;
 use crate::execution::operand;
-use crate::execution::ops;
 use crate::execution::regs::Reg;
 use crate::execution::state::{Label, LabelStack, ModuleLevelInstr, VmState};
 use crate::execution::value::Val;
@@ -409,37 +409,44 @@ i32_unop!(h_i32_local_set, |a: i32| a);
 i32_unop!(h_i32_const, |a: i32| a);
 
 // Binary
-i32_binop!(h_i32_add, ops::i32_add);
-i32_binop!(h_i32_sub, ops::i32_sub);
-i32_binop!(h_i32_mul, ops::i32_mul);
-i32_binop!(h_i32_and, ops::i32_and);
-i32_binop!(h_i32_or, ops::i32_or);
-i32_binop!(h_i32_xor, ops::i32_xor);
-i32_binop!(h_i32_shl, ops::i32_shl);
-i32_binop!(h_i32_shr_s, ops::i32_shr_s);
-i32_binop!(h_i32_shr_u, ops::i32_shr_u);
-i32_binop!(h_i32_rotl, ops::i32_rotl);
-i32_binop!(h_i32_rotr, ops::i32_rotr);
+i32_binop!(h_i32_add, |a: i32, b: i32| a.wrapping_add(b));
+i32_binop!(h_i32_sub, |a: i32, b: i32| a.wrapping_sub(b));
+i32_binop!(h_i32_mul, |a: i32, b: i32| a.wrapping_mul(b));
+i32_binop!(h_i32_and, |a: i32, b: i32| a & b);
+i32_binop!(h_i32_or, |a: i32, b: i32| a | b);
+i32_binop!(h_i32_xor, |a: i32, b: i32| a ^ b);
+i32_binop!(h_i32_shl, |a: i32, b: i32| a.wrapping_shl(b as u32));
+i32_binop!(h_i32_shr_s, |a: i32, b: i32| a.wrapping_shr(b as u32));
+i32_binop!(
+    h_i32_shr_u,
+    |a: i32, b: i32| ((a as u32).wrapping_shr(b as u32)) as i32
+);
+i32_binop!(h_i32_rotl, |a: i32, b: i32| a.rotate_left(b as u32));
+i32_binop!(h_i32_rotr, |a: i32, b: i32| a.rotate_right(b as u32));
 
-// Comparisons (already return i32 from ops::*)
-i32_binop!(h_i32_eq, ops::i32_eq);
-i32_binop!(h_i32_ne, ops::i32_ne);
-i32_binop!(h_i32_lt_s, ops::i32_lt_s);
-i32_binop!(h_i32_lt_u, ops::i32_lt_u);
-i32_binop!(h_i32_le_s, ops::i32_le_s);
-i32_binop!(h_i32_le_u, ops::i32_le_u);
-i32_binop!(h_i32_gt_s, ops::i32_gt_s);
-i32_binop!(h_i32_gt_u, ops::i32_gt_u);
-i32_binop!(h_i32_ge_s, ops::i32_ge_s);
-i32_binop!(h_i32_ge_u, ops::i32_ge_u);
+// Comparisons (closure returns i32 0 or 1)
+i32_binop!(h_i32_eq, |a: i32, b: i32| (a == b) as i32);
+i32_binop!(h_i32_ne, |a: i32, b: i32| (a != b) as i32);
+i32_binop!(h_i32_lt_s, |a: i32, b: i32| (a < b) as i32);
+i32_binop!(h_i32_lt_u, |a: i32, b: i32| ((a as u32) < (b as u32))
+    as i32);
+i32_binop!(h_i32_le_s, |a: i32, b: i32| (a <= b) as i32);
+i32_binop!(h_i32_le_u, |a: i32, b: i32| ((a as u32) <= (b as u32))
+    as i32);
+i32_binop!(h_i32_gt_s, |a: i32, b: i32| (a > b) as i32);
+i32_binop!(h_i32_gt_u, |a: i32, b: i32| ((a as u32) > (b as u32))
+    as i32);
+i32_binop!(h_i32_ge_s, |a: i32, b: i32| (a >= b) as i32);
+i32_binop!(h_i32_ge_u, |a: i32, b: i32| ((a as u32) >= (b as u32))
+    as i32);
 
 // Unary
-i32_unop!(h_i32_clz, ops::i32_clz);
-i32_unop!(h_i32_ctz, ops::i32_ctz);
-i32_unop!(h_i32_popcnt, ops::i32_popcnt);
-i32_unop!(h_i32_eqz, ops::i32_eqz);
-i32_unop!(h_i32_extend8_s, ops::i32_extend8_s);
-i32_unop!(h_i32_extend16_s, ops::i32_extend16_s);
+i32_unop!(h_i32_clz, |a: i32| a.leading_zeros() as i32);
+i32_unop!(h_i32_ctz, |a: i32| a.trailing_zeros() as i32);
+i32_unop!(h_i32_popcnt, |a: i32| a.count_ones() as i32);
+i32_unop!(h_i32_eqz, |a: i32| (a == 0) as i32);
+i32_unop!(h_i32_extend8_s, |a: i32| (a as i8) as i32);
+i32_unop!(h_i32_extend16_s, |a: i32| (a as i16) as i32);
 
 // Division / remainder need trap handling. Tail-call h_trap on error so
 // the success path is preserved as a tail call (LLVM still emits
@@ -577,37 +584,44 @@ i64_unop!(h_i64_local_set, |a: i64| a);
 i64_unop!(h_i64_const, |a: i64| a);
 
 // Binary
-i64_binop!(h_i64_add, ops::i64_add);
-i64_binop!(h_i64_sub, ops::i64_sub);
-i64_binop!(h_i64_mul, ops::i64_mul);
-i64_binop!(h_i64_and, ops::i64_and);
-i64_binop!(h_i64_or, ops::i64_or);
-i64_binop!(h_i64_xor, ops::i64_xor);
-i64_binop!(h_i64_shl, ops::i64_shl);
-i64_binop!(h_i64_shr_s, ops::i64_shr_s);
-i64_binop!(h_i64_shr_u, ops::i64_shr_u);
-i64_binop!(h_i64_rotl, ops::i64_rotl);
-i64_binop!(h_i64_rotr, ops::i64_rotr);
+i64_binop!(h_i64_add, |a: i64, b: i64| a.wrapping_add(b));
+i64_binop!(h_i64_sub, |a: i64, b: i64| a.wrapping_sub(b));
+i64_binop!(h_i64_mul, |a: i64, b: i64| a.wrapping_mul(b));
+i64_binop!(h_i64_and, |a: i64, b: i64| a & b);
+i64_binop!(h_i64_or, |a: i64, b: i64| a | b);
+i64_binop!(h_i64_xor, |a: i64, b: i64| a ^ b);
+i64_binop!(h_i64_shl, |a: i64, b: i64| a.wrapping_shl(b as u32));
+i64_binop!(h_i64_shr_s, |a: i64, b: i64| a.wrapping_shr(b as u32));
+i64_binop!(
+    h_i64_shr_u,
+    |a: i64, b: i64| ((a as u64).wrapping_shr(b as u32)) as i64
+);
+i64_binop!(h_i64_rotl, |a: i64, b: i64| a.rotate_left(b as u32));
+i64_binop!(h_i64_rotr, |a: i64, b: i64| a.rotate_right(b as u32));
 
 // Comparison (i32 result)
-i64_cmp!(h_i64_eq, ops::i64_eq);
-i64_cmp!(h_i64_ne, ops::i64_ne);
-i64_cmp!(h_i64_lt_s, ops::i64_lt_s);
-i64_cmp!(h_i64_lt_u, ops::i64_lt_u);
-i64_cmp!(h_i64_le_s, ops::i64_le_s);
-i64_cmp!(h_i64_le_u, ops::i64_le_u);
-i64_cmp!(h_i64_gt_s, ops::i64_gt_s);
-i64_cmp!(h_i64_gt_u, ops::i64_gt_u);
-i64_cmp!(h_i64_ge_s, ops::i64_ge_s);
-i64_cmp!(h_i64_ge_u, ops::i64_ge_u);
+i64_cmp!(h_i64_eq, |a: i64, b: i64| (a == b) as i32);
+i64_cmp!(h_i64_ne, |a: i64, b: i64| (a != b) as i32);
+i64_cmp!(h_i64_lt_s, |a: i64, b: i64| (a < b) as i32);
+i64_cmp!(h_i64_lt_u, |a: i64, b: i64| ((a as u64) < (b as u64))
+    as i32);
+i64_cmp!(h_i64_le_s, |a: i64, b: i64| (a <= b) as i32);
+i64_cmp!(h_i64_le_u, |a: i64, b: i64| ((a as u64) <= (b as u64))
+    as i32);
+i64_cmp!(h_i64_gt_s, |a: i64, b: i64| (a > b) as i32);
+i64_cmp!(h_i64_gt_u, |a: i64, b: i64| ((a as u64) > (b as u64))
+    as i32);
+i64_cmp!(h_i64_ge_s, |a: i64, b: i64| (a >= b) as i32);
+i64_cmp!(h_i64_ge_u, |a: i64, b: i64| ((a as u64) >= (b as u64))
+    as i32);
 
 // Unary
-i64_unop!(h_i64_clz, ops::i64_clz);
-i64_unop!(h_i64_ctz, ops::i64_ctz);
-i64_unop!(h_i64_popcnt, ops::i64_popcnt);
-i64_unop!(h_i64_extend8_s, ops::i64_extend8_s);
-i64_unop!(h_i64_extend16_s, ops::i64_extend16_s);
-i64_unop!(h_i64_extend32_s, ops::i64_extend32_s);
+i64_unop!(h_i64_clz, |a: i64| a.leading_zeros() as i64);
+i64_unop!(h_i64_ctz, |a: i64| a.trailing_zeros() as i64);
+i64_unop!(h_i64_popcnt, |a: i64| a.count_ones() as i64);
+i64_unop!(h_i64_extend8_s, |a: i64| (a as i8) as i64);
+i64_unop!(h_i64_extend16_s, |a: i64| (a as i16) as i64);
+i64_unop!(h_i64_extend32_s, |a: i64| (a as i32) as i64);
 
 // i64.eqz: i64 input, i32 result (custom path because of mismatched types)
 pub fn h_i64_eqz(state: &mut VmState) -> Outcome {
@@ -616,7 +630,7 @@ pub fn h_i64_eqz(state: &mut VmState) -> Outcome {
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
     let a = operand::read_i64(state, &src1);
-    operand::write_i64dst_i32(state, &dst, ops::i64_eqz(a));
+    operand::write_i64dst_i32(state, &dst, (a == 0) as i32);
     state.pc += 1;
     advance!(state)
 }
@@ -758,30 +772,55 @@ f32_unop!(h_f32_local_set, |a: f32| a);
 f32_unop!(h_f32_const, |a: f32| a);
 
 // Binary
-f32_binop!(h_f32_add, ops::f32_add);
-f32_binop!(h_f32_sub, ops::f32_sub);
-f32_binop!(h_f32_mul, ops::f32_mul);
-f32_binop!(h_f32_div, ops::f32_div);
-f32_binop!(h_f32_min, ops::f32_min);
-f32_binop!(h_f32_max, ops::f32_max);
-f32_binop!(h_f32_copysign, ops::f32_copysign);
+f32_binop!(h_f32_add, |a: f32, b: f32| a + b);
+f32_binop!(h_f32_sub, |a: f32, b: f32| a - b);
+f32_binop!(h_f32_mul, |a: f32, b: f32| a * b);
+f32_binop!(h_f32_div, |a: f32, b: f32| a / b);
+// Wasm-spec f32.min: NaN propagates, signed-zero preserves negative.
+f32_binop!(h_f32_min, |a: f32, b: f32| {
+    if a.is_nan() || b.is_nan() {
+        f32::NAN
+    } else if a == 0.0 && b == 0.0 {
+        if a.is_sign_negative() || b.is_sign_negative() {
+            -0.0
+        } else {
+            0.0
+        }
+    } else {
+        a.min(b)
+    }
+});
+f32_binop!(h_f32_max, |a: f32, b: f32| {
+    if a.is_nan() || b.is_nan() {
+        f32::NAN
+    } else if a == 0.0 && b == 0.0 {
+        if a.is_sign_positive() || b.is_sign_positive() {
+            0.0
+        } else {
+            -0.0
+        }
+    } else {
+        a.max(b)
+    }
+});
+f32_binop!(h_f32_copysign, |a: f32, b: f32| a.copysign(b));
 
 // Unary
-f32_unop!(h_f32_abs, ops::f32_abs);
-f32_unop!(h_f32_neg, ops::f32_neg);
-f32_unop!(h_f32_ceil, ops::f32_ceil);
-f32_unop!(h_f32_floor, ops::f32_floor);
-f32_unop!(h_f32_trunc, ops::f32_trunc);
-f32_unop!(h_f32_nearest, ops::f32_nearest);
-f32_unop!(h_f32_sqrt, ops::f32_sqrt);
+f32_unop!(h_f32_abs, |a: f32| a.abs());
+f32_unop!(h_f32_neg, |a: f32| -a);
+f32_unop!(h_f32_ceil, |a: f32| a.ceil());
+f32_unop!(h_f32_floor, |a: f32| a.floor());
+f32_unop!(h_f32_trunc, |a: f32| a.trunc());
+f32_unop!(h_f32_nearest, |a: f32| a.round_ties_even());
+f32_unop!(h_f32_sqrt, |a: f32| a.sqrt());
 
 // Comparison (i32 result)
-f32_cmp!(h_f32_eq, ops::f32_eq);
-f32_cmp!(h_f32_ne, ops::f32_ne);
-f32_cmp!(h_f32_lt, ops::f32_lt);
-f32_cmp!(h_f32_gt, ops::f32_gt);
-f32_cmp!(h_f32_le, ops::f32_le);
-f32_cmp!(h_f32_ge, ops::f32_ge);
+f32_cmp!(h_f32_eq, |a: f32, b: f32| (a == b) as i32);
+f32_cmp!(h_f32_ne, |a: f32, b: f32| (a != b) as i32);
+f32_cmp!(h_f32_lt, |a: f32, b: f32| (a < b) as i32);
+f32_cmp!(h_f32_gt, |a: f32, b: f32| (a > b) as i32);
+f32_cmp!(h_f32_le, |a: f32, b: f32| (a <= b) as i32);
+f32_cmp!(h_f32_ge, |a: f32, b: f32| (a >= b) as i32);
 
 // ============================================================================
 // F64 handlers
@@ -843,30 +882,54 @@ f64_unop!(h_f64_local_set, |a: f64| a);
 f64_unop!(h_f64_const, |a: f64| a);
 
 // Binary
-f64_binop!(h_f64_add, ops::f64_add);
-f64_binop!(h_f64_sub, ops::f64_sub);
-f64_binop!(h_f64_mul, ops::f64_mul);
-f64_binop!(h_f64_div, ops::f64_div);
-f64_binop!(h_f64_min, ops::f64_min);
-f64_binop!(h_f64_max, ops::f64_max);
-f64_binop!(h_f64_copysign, ops::f64_copysign);
+f64_binop!(h_f64_add, |a: f64, b: f64| a + b);
+f64_binop!(h_f64_sub, |a: f64, b: f64| a - b);
+f64_binop!(h_f64_mul, |a: f64, b: f64| a * b);
+f64_binop!(h_f64_div, |a: f64, b: f64| a / b);
+f64_binop!(h_f64_min, |a: f64, b: f64| {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else if a == 0.0 && b == 0.0 {
+        if a.is_sign_negative() || b.is_sign_negative() {
+            -0.0
+        } else {
+            0.0
+        }
+    } else {
+        a.min(b)
+    }
+});
+f64_binop!(h_f64_max, |a: f64, b: f64| {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else if a == 0.0 && b == 0.0 {
+        if a.is_sign_positive() || b.is_sign_positive() {
+            0.0
+        } else {
+            -0.0
+        }
+    } else {
+        a.max(b)
+    }
+});
+f64_binop!(h_f64_copysign, |a: f64, b: f64| a.copysign(b));
 
 // Unary
-f64_unop!(h_f64_abs, ops::f64_abs);
-f64_unop!(h_f64_neg, ops::f64_neg);
-f64_unop!(h_f64_ceil, ops::f64_ceil);
-f64_unop!(h_f64_floor, ops::f64_floor);
-f64_unop!(h_f64_trunc, ops::f64_trunc);
-f64_unop!(h_f64_nearest, ops::f64_nearest);
-f64_unop!(h_f64_sqrt, ops::f64_sqrt);
+f64_unop!(h_f64_abs, |a: f64| a.abs());
+f64_unop!(h_f64_neg, |a: f64| -a);
+f64_unop!(h_f64_ceil, |a: f64| a.ceil());
+f64_unop!(h_f64_floor, |a: f64| a.floor());
+f64_unop!(h_f64_trunc, |a: f64| a.trunc());
+f64_unop!(h_f64_nearest, |a: f64| a.round_ties_even());
+f64_unop!(h_f64_sqrt, |a: f64| a.sqrt());
 
 // Comparison (i32 result)
-f64_cmp!(h_f64_eq, ops::f64_eq);
-f64_cmp!(h_f64_ne, ops::f64_ne);
-f64_cmp!(h_f64_lt, ops::f64_lt);
-f64_cmp!(h_f64_gt, ops::f64_gt);
-f64_cmp!(h_f64_le, ops::f64_le);
-f64_cmp!(h_f64_ge, ops::f64_ge);
+f64_cmp!(h_f64_eq, |a: f64, b: f64| (a == b) as i32);
+f64_cmp!(h_f64_ne, |a: f64, b: f64| (a != b) as i32);
+f64_cmp!(h_f64_lt, |a: f64, b: f64| (a < b) as i32);
+f64_cmp!(h_f64_gt, |a: f64, b: f64| (a > b) as i32);
+f64_cmp!(h_f64_le, |a: f64, b: f64| (a <= b) as i32);
+f64_cmp!(h_f64_ge, |a: f64, b: f64| (a >= b) as i32);
 
 // ============================================================================
 // Conversion handlers
