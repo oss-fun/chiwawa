@@ -15,7 +15,7 @@ use crate::execution::state::VmState;
 ///
 /// # Safety
 /// `state` must have all pointer fields valid for the duration of the call.
-pub fn run(state: &mut VmState) -> Outcome {
+pub fn execute_instructions(state: &mut VmState) -> Outcome {
     loop {
         // Per-instruction checkpoint poll (atomic flag or throttled file syscall).
         if migration::poll_checkpoint(state) {

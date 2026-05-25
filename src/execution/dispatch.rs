@@ -2,7 +2,7 @@
 //! or tail-call dispatcher.
 
 #[cfg(feature = "tco")]
-pub use crate::execution::dispatch_tco::run;
+pub use crate::execution::dispatch_tco::execute_instructions;
 
 #[cfg(not(feature = "tco"))]
-pub use crate::execution::dispatch_loop::run;
+pub use crate::execution::dispatch_loop::execute_instructions;

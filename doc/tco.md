@@ -43,25 +43,26 @@ The two dispatcher modules are cfg-gated so the build picks exactly one:
 
 ```rust
 // execution/dispatch.rs
-#[cfg(not(feature = "tco"))] pub use crate::execution::dispatch_loop::run;
-#[cfg(feature = "tco")]      pub use crate::execution::dispatch_tco::run;
+#[cfg(not(feature = "tco"))] pub use crate::execution::dispatch_loop::execute_instructions;
+#[cfg(feature = "tco")]      pub use crate::execution::dispatch_tco::execute_instructions;
 ```
 
 ## Dispatch Structure
 
 ### Loop dispatcher (default)
 
-`dispatch_loop::run` is a straight threaded-code loop. Each iteration polls
-the checkpoint trigger, fetches a handler function pointer from the
-function-local `handlers: Rc<Vec<Handler>>` array, calls it, and inspects
-the returned `Outcome`.
+`dispatch_loop::execute_instructions` is a straight threaded-code loop. Each
+iteration polls the checkpoint trigger, fetches a handler function pointer
+from the function-local `handlers: Rc<Vec<Handler>>` array, calls it, and
+inspects the returned `Outcome`.
 
 ### TCO dispatcher
 
-`dispatch_tco::run` only fires the *initial* call into the handler chain.
-Once entered, control flows handler-to-handler via tail calls and never
-returns to `run` until a sentinel (`Halt` / `Trap` / `Yield`) terminates
-the chain. The mechanism that wires this up is the `advance!` macro.
+`dispatch_tco::execute_instructions` only fires the *initial* call into the
+handler chain. Once entered, control flows handler-to-handler via tail calls
+and never returns to `execute_instructions` until a sentinel (`Halt` / `Trap`
+/ `Yield`) terminates the chain. The mechanism that wires this up is the
+`advance!` macro.
 
 ## The `advance!` Macro and the `next_handler` Shim
 

@@ -1442,21 +1442,6 @@ pub fn unreachable(state: &mut VmState) -> Outcome {
     trap(state)
 }
 
-// ============================================================================
-// Control flow: Br / BrIf / BrTable / Block / Loop / If / End / Jump
-// ============================================================================
-//
-// Semantics ported 1:1 from the legacy `run_dtc_loop` match arms in
-// vm.rs:1511-1753 (see Phase 1 exploration findings). Key invariants:
-//
-// - All label stacks within a frame share the same `processed_instrs` Rc, so
-//   `state.instrs` / `state.instrs_len` are invariant across push/pop.
-// - `state.pc` is the source of truth for the active label's ip during
-//   dispatch. `label_stack[*].ip` is stale and is only refreshed at
-//   yield-to-runtime time (writeback handled by the dispatcher driver).
-// - Br/BrIf/BrTable that escape the current function (relative_depth >
-//   current_label_idx) return `Outcome::Halt` (matches legacy `break`).
-
 pub fn br(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::BrReg {

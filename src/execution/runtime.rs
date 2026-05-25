@@ -124,9 +124,10 @@ impl Runtime {
     }
 
     /// Executes interpreter loop for a specific frame stack via the v2
-    /// dispatcher (`dispatch::run`). Constructs a `VmState`, runs dispatch,
-    /// writes back state, and translates `Outcome` into the legacy result.
-    fn run_dtc(
+    /// dispatcher (`dispatch::execute_instructions`). Constructs a `VmState`,
+    /// runs dispatch, writes back state, and translates `Outcome` into the
+    /// legacy result.
+    fn execute_frame(
         &mut self,
         frame_stack_idx: usize,
         _called_func_addr: &mut Option<FuncAddr>,
@@ -171,7 +172,7 @@ impl Runtime {
             checkpoint_poll_counter: 0,
         };
 
-        let outcome = dispatch::run(&mut state);
+        let outcome = dispatch::execute_instructions(&mut state);
 
         let idx = state.current_label_idx;
         if idx < state.label_stack().len() {
@@ -225,7 +226,8 @@ impl Runtime {
             let frame_stack_idx = self.stacks.activation_frame_stack.len() - 1;
             let mut called_func_addr: Option<FuncAddr> = None;
 
-            let module_level_instr_result = self.run_dtc(frame_stack_idx, &mut called_func_addr)?;
+            let module_level_instr_result =
+                self.execute_frame(frame_stack_idx, &mut called_func_addr)?;
 
             match module_level_instr_result {
                 Err(RuntimeError::CheckpointRequested) => {
