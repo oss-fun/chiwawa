@@ -88,16 +88,16 @@ macro_rules! advance {
 Sentinels are tiny handlers that terminate the tail-call chain by returning
 an `Outcome` instead of calling `advance!`:
 
-- `h_halt` — function body ended naturally (`Outcome::Halt`).
-- `h_trap` — generic trap; `state.trap` already holds the `RuntimeError`.
-- `h_checkpoint_trap` — selected by `next_handler` when `poll_checkpoint`
+- `halt` — function body ended naturally (`Outcome::Halt`).
+- `trap` — generic trap; `state.trap` already holds the `RuntimeError`.
+- `checkpoint_trap` — selected by `next_handler` when `poll_checkpoint`
   signals a request; writes `RuntimeError::CheckpointRequested` to
   `state.trap` and returns `Outcome::Trap`. Keeping this on the trap side
   preserves the single tail-call site in `advance!`.
-- `h_yield` — runtime yield (call / call_wasi / return); the
+- `r#yield` — runtime yield (call / call_wasi / return); the
   `ModuleLevelInstr` is in `state.yielded`.
 
 The per-function `handlers: Rc<Vec<Handler>>` array is sized
-`body.len() + 1`, with `h_halt` planted at the final position so any
-out-of-range dispatch in TCO mode lands on `h_halt` and terminates cleanly.
+`body.len() + 1`, with `halt` planted at the final position so any
+out-of-range dispatch in TCO mode lands on `halt` and terminates cleanly.
 

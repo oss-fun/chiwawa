@@ -17,7 +17,7 @@ use crate::execution::state::VmState;
 /// # Safety
 /// `state` must have all pointer fields valid for the duration of the call.
 /// `state.handlers` must be at least `state.instrs_len + 1` long, with the
-/// last entry set to a sentinel handler (e.g., `h_halt`) so out-of-range
+/// last entry set to a sentinel handler (e.g., `halt`) so out-of-range
 /// dispatch terminates safely.
 pub fn run(state: &mut VmState) -> Outcome {
     if migration::poll_checkpoint(state) {

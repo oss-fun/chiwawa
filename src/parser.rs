@@ -1232,13 +1232,13 @@ fn decode_code_section(
 
     let body_rc = Rc::new(processed_instrs);
 
-    // v2 dispatcher handler array: parallel to body + h_halt sentinel at end
+    // v2 dispatcher handler array: parallel to body + halt sentinel at end
     // for safe out-of-range dispatch in TCO mode.
     let mut handlers_vec: Vec<crate::execution::ir::Handler> = body_rc
         .iter()
         .map(crate::execution::handlers::select_handler)
         .collect();
-    handlers_vec.push(crate::execution::handlers::h_halt);
+    handlers_vec.push(crate::execution::handlers::halt);
     let handlers_rc = Rc::new(handlers_vec);
 
     // Store function body and metadata in module

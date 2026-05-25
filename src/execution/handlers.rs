@@ -8,17 +8,17 @@
 //!   next instruction (and runs `migration::poll_checkpoint` itself).
 //! - **tco**: tail-calls `next_handler(state)`, which inlines
 //!   `migration::poll_checkpoint` and selects either the next normal handler
-//!   from `state.handlers[state.pc]` or the `h_checkpoint_trap` sentinel.
+//!   from `state.handlers[state.pc]` or the `checkpoint_trap` sentinel.
 //!   The single tail-call site lets LLVM emit `return_call_indirect`, so
 //!   per-instruction checkpoint polling does not break tail-call
 //!   optimization.
 //!
 //! Sentinel handlers terminate the chain:
-//! - `h_halt`: function body reached the end (Outcome::Halt).
-//! - `h_trap`: generic trap, error already stored in `state.trap`.
-//! - `h_checkpoint_trap`: stores `RuntimeError::CheckpointRequested` and
+//! - `halt`: function body reached the end (Outcome::Halt).
+//! - `trap`: generic trap, error already stored in `state.trap`.
+//! - `checkpoint_trap`: stores `RuntimeError::CheckpointRequested` and
 //!   returns Outcome::Trap (selected by `next_handler` when polling fires).
-//! - `h_yield`: runtime yield (call / wasi / return), payload in
+//! - `r#yield`: runtime yield (call / wasi / return), payload in
 //!   `state.yielded`.
 
 #![allow(unused_unsafe)]
@@ -322,7 +322,7 @@ macro_rules! advance {
 // ============================================================================
 
 #[inline(never)]
-pub fn h_trap(_state: &mut VmState) -> Outcome {
+pub fn trap(_state: &mut VmState) -> Outcome {
     Outcome::Trap
 }
 
@@ -330,7 +330,7 @@ pub fn h_trap(_state: &mut VmState) -> Outcome {
 /// `next_handler` when `poll_checkpoint` returns `true`, so the dispatcher's
 /// per-instruction tail-call structure is preserved.
 #[inline(never)]
-pub fn h_checkpoint_trap(state: &mut VmState) -> Outcome {
+pub fn checkpoint_trap(state: &mut VmState) -> Outcome {
     state.trap = Some(crate::error::RuntimeError::CheckpointRequested);
     Outcome::Trap
 }
@@ -343,26 +343,26 @@ pub fn h_checkpoint_trap(state: &mut VmState) -> Outcome {
 #[inline(always)]
 pub unsafe fn next_handler(state: &mut VmState) -> Handler {
     if crate::execution::migration::poll_checkpoint(state) {
-        h_checkpoint_trap
+        checkpoint_trap
     } else {
         *state.handlers.add(state.pc)
     }
 }
 
 #[inline(never)]
-pub fn h_halt(_state: &mut VmState) -> Outcome {
+pub fn halt(_state: &mut VmState) -> Outcome {
     Outcome::Halt
 }
 
 #[inline(never)]
-pub fn h_yield(_state: &mut VmState) -> Outcome {
+pub fn r#yield(_state: &mut VmState) -> Outcome {
     Outcome::Yield
 }
 
 /// Default handler for unknown handler_index — returns Trap with InvalidHandlerIndex.
-pub fn h_invalid(state: &mut VmState) -> Outcome {
+pub fn invalid(state: &mut VmState) -> Outcome {
     state.trap = Some(RuntimeError::InvalidHandlerIndex);
-    h_trap(state)
+    trap(state)
 }
 
 // ============================================================================
@@ -404,54 +404,50 @@ macro_rules! i32_unop {
 }
 
 // local.get / local.set / i32.const all reduce to "read src1, write dst" (identity copy).
-i32_unop!(h_i32_local_get, |a: i32| a);
-i32_unop!(h_i32_local_set, |a: i32| a);
-i32_unop!(h_i32_const, |a: i32| a);
+i32_unop!(i32_local_get, |a: i32| a);
+i32_unop!(i32_local_set, |a: i32| a);
+i32_unop!(i32_const, |a: i32| a);
 
 // Binary
-i32_binop!(h_i32_add, |a: i32, b: i32| a.wrapping_add(b));
-i32_binop!(h_i32_sub, |a: i32, b: i32| a.wrapping_sub(b));
-i32_binop!(h_i32_mul, |a: i32, b: i32| a.wrapping_mul(b));
-i32_binop!(h_i32_and, |a: i32, b: i32| a & b);
-i32_binop!(h_i32_or, |a: i32, b: i32| a | b);
-i32_binop!(h_i32_xor, |a: i32, b: i32| a ^ b);
-i32_binop!(h_i32_shl, |a: i32, b: i32| a.wrapping_shl(b as u32));
-i32_binop!(h_i32_shr_s, |a: i32, b: i32| a.wrapping_shr(b as u32));
+i32_binop!(i32_add, |a: i32, b: i32| a.wrapping_add(b));
+i32_binop!(i32_sub, |a: i32, b: i32| a.wrapping_sub(b));
+i32_binop!(i32_mul, |a: i32, b: i32| a.wrapping_mul(b));
+i32_binop!(i32_and, |a: i32, b: i32| a & b);
+i32_binop!(i32_or, |a: i32, b: i32| a | b);
+i32_binop!(i32_xor, |a: i32, b: i32| a ^ b);
+i32_binop!(i32_shl, |a: i32, b: i32| a.wrapping_shl(b as u32));
+i32_binop!(i32_shr_s, |a: i32, b: i32| a.wrapping_shr(b as u32));
 i32_binop!(
-    h_i32_shr_u,
+    i32_shr_u,
     |a: i32, b: i32| ((a as u32).wrapping_shr(b as u32)) as i32
 );
-i32_binop!(h_i32_rotl, |a: i32, b: i32| a.rotate_left(b as u32));
-i32_binop!(h_i32_rotr, |a: i32, b: i32| a.rotate_right(b as u32));
+i32_binop!(i32_rotl, |a: i32, b: i32| a.rotate_left(b as u32));
+i32_binop!(i32_rotr, |a: i32, b: i32| a.rotate_right(b as u32));
 
 // Comparisons (closure returns i32 0 or 1)
-i32_binop!(h_i32_eq, |a: i32, b: i32| (a == b) as i32);
-i32_binop!(h_i32_ne, |a: i32, b: i32| (a != b) as i32);
-i32_binop!(h_i32_lt_s, |a: i32, b: i32| (a < b) as i32);
-i32_binop!(h_i32_lt_u, |a: i32, b: i32| ((a as u32) < (b as u32))
-    as i32);
-i32_binop!(h_i32_le_s, |a: i32, b: i32| (a <= b) as i32);
-i32_binop!(h_i32_le_u, |a: i32, b: i32| ((a as u32) <= (b as u32))
-    as i32);
-i32_binop!(h_i32_gt_s, |a: i32, b: i32| (a > b) as i32);
-i32_binop!(h_i32_gt_u, |a: i32, b: i32| ((a as u32) > (b as u32))
-    as i32);
-i32_binop!(h_i32_ge_s, |a: i32, b: i32| (a >= b) as i32);
-i32_binop!(h_i32_ge_u, |a: i32, b: i32| ((a as u32) >= (b as u32))
-    as i32);
+i32_binop!(i32_eq, |a: i32, b: i32| (a == b) as i32);
+i32_binop!(i32_ne, |a: i32, b: i32| (a != b) as i32);
+i32_binop!(i32_lt_s, |a: i32, b: i32| (a < b) as i32);
+i32_binop!(i32_lt_u, |a: i32, b: i32| ((a as u32) < (b as u32)) as i32);
+i32_binop!(i32_le_s, |a: i32, b: i32| (a <= b) as i32);
+i32_binop!(i32_le_u, |a: i32, b: i32| ((a as u32) <= (b as u32)) as i32);
+i32_binop!(i32_gt_s, |a: i32, b: i32| (a > b) as i32);
+i32_binop!(i32_gt_u, |a: i32, b: i32| ((a as u32) > (b as u32)) as i32);
+i32_binop!(i32_ge_s, |a: i32, b: i32| (a >= b) as i32);
+i32_binop!(i32_ge_u, |a: i32, b: i32| ((a as u32) >= (b as u32)) as i32);
 
 // Unary
-i32_unop!(h_i32_clz, |a: i32| a.leading_zeros() as i32);
-i32_unop!(h_i32_ctz, |a: i32| a.trailing_zeros() as i32);
-i32_unop!(h_i32_popcnt, |a: i32| a.count_ones() as i32);
-i32_unop!(h_i32_eqz, |a: i32| (a == 0) as i32);
-i32_unop!(h_i32_extend8_s, |a: i32| (a as i8) as i32);
-i32_unop!(h_i32_extend16_s, |a: i32| (a as i16) as i32);
+i32_unop!(i32_clz, |a: i32| a.leading_zeros() as i32);
+i32_unop!(i32_ctz, |a: i32| a.trailing_zeros() as i32);
+i32_unop!(i32_popcnt, |a: i32| a.count_ones() as i32);
+i32_unop!(i32_eqz, |a: i32| (a == 0) as i32);
+i32_unop!(i32_extend8_s, |a: i32| (a as i8) as i32);
+i32_unop!(i32_extend16_s, |a: i32| (a as i16) as i32);
 
-// Division / remainder need trap handling. Tail-call h_trap on error so
+// Division / remainder need trap handling. Tail-call trap on error so
 // the success path is preserved as a tail call (LLVM still emits
 // return_call_indirect for it).
-pub fn h_i32_div_s(state: &mut VmState) -> Outcome {
+pub fn i32_div_s(state: &mut VmState) -> Outcome {
     let (dst, src1, src2) = match state.current_instr() {
         ProcessedInstr::I32Reg {
             dst, src1, src2, ..
@@ -462,14 +458,14 @@ pub fn h_i32_div_s(state: &mut VmState) -> Outcome {
     let b = operand::read_i32(state, &src2);
     if b == 0 {
         state.trap = Some(RuntimeError::ZeroDivideError);
-        return h_trap(state);
+        return trap(state);
     }
     operand::write_i32(state, &dst, a.wrapping_div(b));
     state.pc += 1;
     advance!(state)
 }
 
-pub fn h_i32_div_u(state: &mut VmState) -> Outcome {
+pub fn i32_div_u(state: &mut VmState) -> Outcome {
     let (dst, src1, src2) = match state.current_instr() {
         ProcessedInstr::I32Reg {
             dst, src1, src2, ..
@@ -480,14 +476,14 @@ pub fn h_i32_div_u(state: &mut VmState) -> Outcome {
     let b = operand::read_i32(state, &src2) as u32;
     if b == 0 {
         state.trap = Some(RuntimeError::ZeroDivideError);
-        return h_trap(state);
+        return trap(state);
     }
     operand::write_i32(state, &dst, ((a as u32) / b) as i32);
     state.pc += 1;
     advance!(state)
 }
 
-pub fn h_i32_rem_s(state: &mut VmState) -> Outcome {
+pub fn i32_rem_s(state: &mut VmState) -> Outcome {
     let (dst, src1, src2) = match state.current_instr() {
         ProcessedInstr::I32Reg {
             dst, src1, src2, ..
@@ -498,14 +494,14 @@ pub fn h_i32_rem_s(state: &mut VmState) -> Outcome {
     let b = operand::read_i32(state, &src2);
     if b == 0 {
         state.trap = Some(RuntimeError::ZeroDivideError);
-        return h_trap(state);
+        return trap(state);
     }
     operand::write_i32(state, &dst, a.wrapping_rem(b));
     state.pc += 1;
     advance!(state)
 }
 
-pub fn h_i32_rem_u(state: &mut VmState) -> Outcome {
+pub fn i32_rem_u(state: &mut VmState) -> Outcome {
     let (dst, src1, src2) = match state.current_instr() {
         ProcessedInstr::I32Reg {
             dst, src1, src2, ..
@@ -516,7 +512,7 @@ pub fn h_i32_rem_u(state: &mut VmState) -> Outcome {
     let b = operand::read_i32(state, &src2) as u32;
     if b == 0 {
         state.trap = Some(RuntimeError::ZeroDivideError);
-        return h_trap(state);
+        return trap(state);
     }
     operand::write_i32(state, &dst, ((a as u32) % b) as i32);
     state.pc += 1;
@@ -579,52 +575,48 @@ macro_rules! i64_unop {
     };
 }
 
-i64_unop!(h_i64_local_get, |a: i64| a);
-i64_unop!(h_i64_local_set, |a: i64| a);
-i64_unop!(h_i64_const, |a: i64| a);
+i64_unop!(i64_local_get, |a: i64| a);
+i64_unop!(i64_local_set, |a: i64| a);
+i64_unop!(i64_const, |a: i64| a);
 
 // Binary
-i64_binop!(h_i64_add, |a: i64, b: i64| a.wrapping_add(b));
-i64_binop!(h_i64_sub, |a: i64, b: i64| a.wrapping_sub(b));
-i64_binop!(h_i64_mul, |a: i64, b: i64| a.wrapping_mul(b));
-i64_binop!(h_i64_and, |a: i64, b: i64| a & b);
-i64_binop!(h_i64_or, |a: i64, b: i64| a | b);
-i64_binop!(h_i64_xor, |a: i64, b: i64| a ^ b);
-i64_binop!(h_i64_shl, |a: i64, b: i64| a.wrapping_shl(b as u32));
-i64_binop!(h_i64_shr_s, |a: i64, b: i64| a.wrapping_shr(b as u32));
+i64_binop!(i64_add, |a: i64, b: i64| a.wrapping_add(b));
+i64_binop!(i64_sub, |a: i64, b: i64| a.wrapping_sub(b));
+i64_binop!(i64_mul, |a: i64, b: i64| a.wrapping_mul(b));
+i64_binop!(i64_and, |a: i64, b: i64| a & b);
+i64_binop!(i64_or, |a: i64, b: i64| a | b);
+i64_binop!(i64_xor, |a: i64, b: i64| a ^ b);
+i64_binop!(i64_shl, |a: i64, b: i64| a.wrapping_shl(b as u32));
+i64_binop!(i64_shr_s, |a: i64, b: i64| a.wrapping_shr(b as u32));
 i64_binop!(
-    h_i64_shr_u,
+    i64_shr_u,
     |a: i64, b: i64| ((a as u64).wrapping_shr(b as u32)) as i64
 );
-i64_binop!(h_i64_rotl, |a: i64, b: i64| a.rotate_left(b as u32));
-i64_binop!(h_i64_rotr, |a: i64, b: i64| a.rotate_right(b as u32));
+i64_binop!(i64_rotl, |a: i64, b: i64| a.rotate_left(b as u32));
+i64_binop!(i64_rotr, |a: i64, b: i64| a.rotate_right(b as u32));
 
 // Comparison (i32 result)
-i64_cmp!(h_i64_eq, |a: i64, b: i64| (a == b) as i32);
-i64_cmp!(h_i64_ne, |a: i64, b: i64| (a != b) as i32);
-i64_cmp!(h_i64_lt_s, |a: i64, b: i64| (a < b) as i32);
-i64_cmp!(h_i64_lt_u, |a: i64, b: i64| ((a as u64) < (b as u64))
-    as i32);
-i64_cmp!(h_i64_le_s, |a: i64, b: i64| (a <= b) as i32);
-i64_cmp!(h_i64_le_u, |a: i64, b: i64| ((a as u64) <= (b as u64))
-    as i32);
-i64_cmp!(h_i64_gt_s, |a: i64, b: i64| (a > b) as i32);
-i64_cmp!(h_i64_gt_u, |a: i64, b: i64| ((a as u64) > (b as u64))
-    as i32);
-i64_cmp!(h_i64_ge_s, |a: i64, b: i64| (a >= b) as i32);
-i64_cmp!(h_i64_ge_u, |a: i64, b: i64| ((a as u64) >= (b as u64))
-    as i32);
+i64_cmp!(i64_eq, |a: i64, b: i64| (a == b) as i32);
+i64_cmp!(i64_ne, |a: i64, b: i64| (a != b) as i32);
+i64_cmp!(i64_lt_s, |a: i64, b: i64| (a < b) as i32);
+i64_cmp!(i64_lt_u, |a: i64, b: i64| ((a as u64) < (b as u64)) as i32);
+i64_cmp!(i64_le_s, |a: i64, b: i64| (a <= b) as i32);
+i64_cmp!(i64_le_u, |a: i64, b: i64| ((a as u64) <= (b as u64)) as i32);
+i64_cmp!(i64_gt_s, |a: i64, b: i64| (a > b) as i32);
+i64_cmp!(i64_gt_u, |a: i64, b: i64| ((a as u64) > (b as u64)) as i32);
+i64_cmp!(i64_ge_s, |a: i64, b: i64| (a >= b) as i32);
+i64_cmp!(i64_ge_u, |a: i64, b: i64| ((a as u64) >= (b as u64)) as i32);
 
 // Unary
-i64_unop!(h_i64_clz, |a: i64| a.leading_zeros() as i64);
-i64_unop!(h_i64_ctz, |a: i64| a.trailing_zeros() as i64);
-i64_unop!(h_i64_popcnt, |a: i64| a.count_ones() as i64);
-i64_unop!(h_i64_extend8_s, |a: i64| (a as i8) as i64);
-i64_unop!(h_i64_extend16_s, |a: i64| (a as i16) as i64);
-i64_unop!(h_i64_extend32_s, |a: i64| (a as i32) as i64);
+i64_unop!(i64_clz, |a: i64| a.leading_zeros() as i64);
+i64_unop!(i64_ctz, |a: i64| a.trailing_zeros() as i64);
+i64_unop!(i64_popcnt, |a: i64| a.count_ones() as i64);
+i64_unop!(i64_extend8_s, |a: i64| (a as i8) as i64);
+i64_unop!(i64_extend16_s, |a: i64| (a as i16) as i64);
+i64_unop!(i64_extend32_s, |a: i64| (a as i32) as i64);
 
 // i64.eqz: i64 input, i32 result (custom path because of mismatched types)
-pub fn h_i64_eqz(state: &mut VmState) -> Outcome {
+pub fn i64_eqz(state: &mut VmState) -> Outcome {
     let (dst, src1) = match state.current_instr() {
         ProcessedInstr::I64Reg { dst, src1, .. } => (*dst, *src1),
         _ => unsafe { std::hint::unreachable_unchecked() },
@@ -636,7 +628,7 @@ pub fn h_i64_eqz(state: &mut VmState) -> Outcome {
 }
 
 // I64 division / remainder with trap (overflow check on div_s)
-pub fn h_i64_div_s(state: &mut VmState) -> Outcome {
+pub fn i64_div_s(state: &mut VmState) -> Outcome {
     let (dst, src1, src2) = match state.current_instr() {
         ProcessedInstr::I64Reg {
             dst, src1, src2, ..
@@ -647,18 +639,18 @@ pub fn h_i64_div_s(state: &mut VmState) -> Outcome {
     let b = operand::read_i64(state, &src2);
     if b == 0 {
         state.trap = Some(RuntimeError::ZeroDivideError);
-        return h_trap(state);
+        return trap(state);
     }
     if a == i64::MIN && b == -1 {
         state.trap = Some(RuntimeError::IntegerOverflow);
-        return h_trap(state);
+        return trap(state);
     }
     operand::write_i64(state, &dst, a.wrapping_div(b));
     state.pc += 1;
     advance!(state)
 }
 
-pub fn h_i64_div_u(state: &mut VmState) -> Outcome {
+pub fn i64_div_u(state: &mut VmState) -> Outcome {
     let (dst, src1, src2) = match state.current_instr() {
         ProcessedInstr::I64Reg {
             dst, src1, src2, ..
@@ -669,14 +661,14 @@ pub fn h_i64_div_u(state: &mut VmState) -> Outcome {
     let b = operand::read_i64(state, &src2) as u64;
     if b == 0 {
         state.trap = Some(RuntimeError::ZeroDivideError);
-        return h_trap(state);
+        return trap(state);
     }
     operand::write_i64(state, &dst, ((a as u64) / b) as i64);
     state.pc += 1;
     advance!(state)
 }
 
-pub fn h_i64_rem_s(state: &mut VmState) -> Outcome {
+pub fn i64_rem_s(state: &mut VmState) -> Outcome {
     let (dst, src1, src2) = match state.current_instr() {
         ProcessedInstr::I64Reg {
             dst, src1, src2, ..
@@ -687,14 +679,14 @@ pub fn h_i64_rem_s(state: &mut VmState) -> Outcome {
     let b = operand::read_i64(state, &src2);
     if b == 0 {
         state.trap = Some(RuntimeError::ZeroDivideError);
-        return h_trap(state);
+        return trap(state);
     }
     operand::write_i64(state, &dst, a.wrapping_rem(b));
     state.pc += 1;
     advance!(state)
 }
 
-pub fn h_i64_rem_u(state: &mut VmState) -> Outcome {
+pub fn i64_rem_u(state: &mut VmState) -> Outcome {
     let (dst, src1, src2) = match state.current_instr() {
         ProcessedInstr::I64Reg {
             dst, src1, src2, ..
@@ -705,7 +697,7 @@ pub fn h_i64_rem_u(state: &mut VmState) -> Outcome {
     let b = operand::read_i64(state, &src2) as u64;
     if b == 0 {
         state.trap = Some(RuntimeError::ZeroDivideError);
-        return h_trap(state);
+        return trap(state);
     }
     operand::write_i64(state, &dst, ((a as u64) % b) as i64);
     state.pc += 1;
@@ -767,17 +759,17 @@ macro_rules! f32_unop {
     };
 }
 
-f32_unop!(h_f32_local_get, |a: f32| a);
-f32_unop!(h_f32_local_set, |a: f32| a);
-f32_unop!(h_f32_const, |a: f32| a);
+f32_unop!(f32_local_get, |a: f32| a);
+f32_unop!(f32_local_set, |a: f32| a);
+f32_unop!(f32_const, |a: f32| a);
 
 // Binary
-f32_binop!(h_f32_add, |a: f32, b: f32| a + b);
-f32_binop!(h_f32_sub, |a: f32, b: f32| a - b);
-f32_binop!(h_f32_mul, |a: f32, b: f32| a * b);
-f32_binop!(h_f32_div, |a: f32, b: f32| a / b);
+f32_binop!(f32_add, |a: f32, b: f32| a + b);
+f32_binop!(f32_sub, |a: f32, b: f32| a - b);
+f32_binop!(f32_mul, |a: f32, b: f32| a * b);
+f32_binop!(f32_div, |a: f32, b: f32| a / b);
 // Wasm-spec f32.min: NaN propagates, signed-zero preserves negative.
-f32_binop!(h_f32_min, |a: f32, b: f32| {
+f32_binop!(f32_min, |a: f32, b: f32| {
     if a.is_nan() || b.is_nan() {
         f32::NAN
     } else if a == 0.0 && b == 0.0 {
@@ -790,7 +782,7 @@ f32_binop!(h_f32_min, |a: f32, b: f32| {
         a.min(b)
     }
 });
-f32_binop!(h_f32_max, |a: f32, b: f32| {
+f32_binop!(f32_max, |a: f32, b: f32| {
     if a.is_nan() || b.is_nan() {
         f32::NAN
     } else if a == 0.0 && b == 0.0 {
@@ -803,24 +795,24 @@ f32_binop!(h_f32_max, |a: f32, b: f32| {
         a.max(b)
     }
 });
-f32_binop!(h_f32_copysign, |a: f32, b: f32| a.copysign(b));
+f32_binop!(f32_copysign, |a: f32, b: f32| a.copysign(b));
 
 // Unary
-f32_unop!(h_f32_abs, |a: f32| a.abs());
-f32_unop!(h_f32_neg, |a: f32| -a);
-f32_unop!(h_f32_ceil, |a: f32| a.ceil());
-f32_unop!(h_f32_floor, |a: f32| a.floor());
-f32_unop!(h_f32_trunc, |a: f32| a.trunc());
-f32_unop!(h_f32_nearest, |a: f32| a.round_ties_even());
-f32_unop!(h_f32_sqrt, |a: f32| a.sqrt());
+f32_unop!(f32_abs, |a: f32| a.abs());
+f32_unop!(f32_neg, |a: f32| -a);
+f32_unop!(f32_ceil, |a: f32| a.ceil());
+f32_unop!(f32_floor, |a: f32| a.floor());
+f32_unop!(f32_trunc, |a: f32| a.trunc());
+f32_unop!(f32_nearest, |a: f32| a.round_ties_even());
+f32_unop!(f32_sqrt, |a: f32| a.sqrt());
 
 // Comparison (i32 result)
-f32_cmp!(h_f32_eq, |a: f32, b: f32| (a == b) as i32);
-f32_cmp!(h_f32_ne, |a: f32, b: f32| (a != b) as i32);
-f32_cmp!(h_f32_lt, |a: f32, b: f32| (a < b) as i32);
-f32_cmp!(h_f32_gt, |a: f32, b: f32| (a > b) as i32);
-f32_cmp!(h_f32_le, |a: f32, b: f32| (a <= b) as i32);
-f32_cmp!(h_f32_ge, |a: f32, b: f32| (a >= b) as i32);
+f32_cmp!(f32_eq, |a: f32, b: f32| (a == b) as i32);
+f32_cmp!(f32_ne, |a: f32, b: f32| (a != b) as i32);
+f32_cmp!(f32_lt, |a: f32, b: f32| (a < b) as i32);
+f32_cmp!(f32_gt, |a: f32, b: f32| (a > b) as i32);
+f32_cmp!(f32_le, |a: f32, b: f32| (a <= b) as i32);
+f32_cmp!(f32_ge, |a: f32, b: f32| (a >= b) as i32);
 
 // ============================================================================
 // F64 handlers
@@ -877,16 +869,16 @@ macro_rules! f64_unop {
     };
 }
 
-f64_unop!(h_f64_local_get, |a: f64| a);
-f64_unop!(h_f64_local_set, |a: f64| a);
-f64_unop!(h_f64_const, |a: f64| a);
+f64_unop!(f64_local_get, |a: f64| a);
+f64_unop!(f64_local_set, |a: f64| a);
+f64_unop!(f64_const, |a: f64| a);
 
 // Binary
-f64_binop!(h_f64_add, |a: f64, b: f64| a + b);
-f64_binop!(h_f64_sub, |a: f64, b: f64| a - b);
-f64_binop!(h_f64_mul, |a: f64, b: f64| a * b);
-f64_binop!(h_f64_div, |a: f64, b: f64| a / b);
-f64_binop!(h_f64_min, |a: f64, b: f64| {
+f64_binop!(f64_add, |a: f64, b: f64| a + b);
+f64_binop!(f64_sub, |a: f64, b: f64| a - b);
+f64_binop!(f64_mul, |a: f64, b: f64| a * b);
+f64_binop!(f64_div, |a: f64, b: f64| a / b);
+f64_binop!(f64_min, |a: f64, b: f64| {
     if a.is_nan() || b.is_nan() {
         f64::NAN
     } else if a == 0.0 && b == 0.0 {
@@ -899,7 +891,7 @@ f64_binop!(h_f64_min, |a: f64, b: f64| {
         a.min(b)
     }
 });
-f64_binop!(h_f64_max, |a: f64, b: f64| {
+f64_binop!(f64_max, |a: f64, b: f64| {
     if a.is_nan() || b.is_nan() {
         f64::NAN
     } else if a == 0.0 && b == 0.0 {
@@ -912,24 +904,24 @@ f64_binop!(h_f64_max, |a: f64, b: f64| {
         a.max(b)
     }
 });
-f64_binop!(h_f64_copysign, |a: f64, b: f64| a.copysign(b));
+f64_binop!(f64_copysign, |a: f64, b: f64| a.copysign(b));
 
 // Unary
-f64_unop!(h_f64_abs, |a: f64| a.abs());
-f64_unop!(h_f64_neg, |a: f64| -a);
-f64_unop!(h_f64_ceil, |a: f64| a.ceil());
-f64_unop!(h_f64_floor, |a: f64| a.floor());
-f64_unop!(h_f64_trunc, |a: f64| a.trunc());
-f64_unop!(h_f64_nearest, |a: f64| a.round_ties_even());
-f64_unop!(h_f64_sqrt, |a: f64| a.sqrt());
+f64_unop!(f64_abs, |a: f64| a.abs());
+f64_unop!(f64_neg, |a: f64| -a);
+f64_unop!(f64_ceil, |a: f64| a.ceil());
+f64_unop!(f64_floor, |a: f64| a.floor());
+f64_unop!(f64_trunc, |a: f64| a.trunc());
+f64_unop!(f64_nearest, |a: f64| a.round_ties_even());
+f64_unop!(f64_sqrt, |a: f64| a.sqrt());
 
 // Comparison (i32 result)
-f64_cmp!(h_f64_eq, |a: f64, b: f64| (a == b) as i32);
-f64_cmp!(h_f64_ne, |a: f64, b: f64| (a != b) as i32);
-f64_cmp!(h_f64_lt, |a: f64, b: f64| (a < b) as i32);
-f64_cmp!(h_f64_gt, |a: f64, b: f64| (a > b) as i32);
-f64_cmp!(h_f64_le, |a: f64, b: f64| (a <= b) as i32);
-f64_cmp!(h_f64_ge, |a: f64, b: f64| (a >= b) as i32);
+f64_cmp!(f64_eq, |a: f64, b: f64| (a == b) as i32);
+f64_cmp!(f64_ne, |a: f64, b: f64| (a != b) as i32);
+f64_cmp!(f64_lt, |a: f64, b: f64| (a < b) as i32);
+f64_cmp!(f64_gt, |a: f64, b: f64| (a > b) as i32);
+f64_cmp!(f64_le, |a: f64, b: f64| (a <= b) as i32);
+f64_cmp!(f64_ge, |a: f64, b: f64| (a >= b) as i32);
 
 // ============================================================================
 // Conversion handlers
@@ -953,27 +945,23 @@ macro_rules! conv {
 
 // i32 ↔ i64
 conv!(
-    h_conv_i64_extend_i32_s,
+    conv_i64_extend_i32_s,
     read_reg_i32,
     write_dst_i64,
     |v: i32| v as i64
 );
 conv!(
-    h_conv_i64_extend_i32_u,
+    conv_i64_extend_i32_u,
     read_reg_i32,
     write_dst_i64,
     |v: i32| (v as u32) as i64
 );
-conv!(
-    h_conv_i32_wrap_i64,
-    read_reg_i64,
-    write_dst_i32,
-    |v: i64| v as i32
-);
+conv!(conv_i32_wrap_i64, read_reg_i64, write_dst_i32, |v: i64| v
+    as i32);
 
 // Saturating float→int (no traps)
 conv!(
-    h_conv_i32_trunc_sat_f32_s,
+    conv_i32_trunc_sat_f32_s,
     read_reg_f32,
     write_dst_i32,
     |v: f32| {
@@ -989,7 +977,7 @@ conv!(
     }
 );
 conv!(
-    h_conv_i32_trunc_sat_f32_u,
+    conv_i32_trunc_sat_f32_u,
     read_reg_f32,
     write_dst_i32,
     |v: f32| {
@@ -1003,7 +991,7 @@ conv!(
     }
 );
 conv!(
-    h_conv_i32_trunc_sat_f64_s,
+    conv_i32_trunc_sat_f64_s,
     read_reg_f64,
     write_dst_i32,
     |v: f64| {
@@ -1019,7 +1007,7 @@ conv!(
     }
 );
 conv!(
-    h_conv_i32_trunc_sat_f64_u,
+    conv_i32_trunc_sat_f64_u,
     read_reg_f64,
     write_dst_i32,
     |v: f64| {
@@ -1033,7 +1021,7 @@ conv!(
     }
 );
 conv!(
-    h_conv_i64_trunc_sat_f32_s,
+    conv_i64_trunc_sat_f32_s,
     read_reg_f32,
     write_dst_i64,
     |v: f32| {
@@ -1049,7 +1037,7 @@ conv!(
     }
 );
 conv!(
-    h_conv_i64_trunc_sat_f32_u,
+    conv_i64_trunc_sat_f32_u,
     read_reg_f32,
     write_dst_i64,
     |v: f32| {
@@ -1063,7 +1051,7 @@ conv!(
     }
 );
 conv!(
-    h_conv_i64_trunc_sat_f64_s,
+    conv_i64_trunc_sat_f64_s,
     read_reg_f64,
     write_dst_i64,
     |v: f64| {
@@ -1079,7 +1067,7 @@ conv!(
     }
 );
 conv!(
-    h_conv_i64_trunc_sat_f64_u,
+    conv_i64_trunc_sat_f64_u,
     read_reg_f64,
     write_dst_i64,
     |v: f64| {
@@ -1095,49 +1083,49 @@ conv!(
 
 // Int → float
 conv!(
-    h_conv_f32_convert_i32_s,
+    conv_f32_convert_i32_s,
     read_reg_i32,
     write_dst_f32,
     |v: i32| v as f32
 );
 conv!(
-    h_conv_f32_convert_i32_u,
+    conv_f32_convert_i32_u,
     read_reg_i32,
     write_dst_f32,
     |v: i32| (v as u32) as f32
 );
 conv!(
-    h_conv_f32_convert_i64_s,
+    conv_f32_convert_i64_s,
     read_reg_i64,
     write_dst_f32,
     |v: i64| v as f32
 );
 conv!(
-    h_conv_f32_convert_i64_u,
+    conv_f32_convert_i64_u,
     read_reg_i64,
     write_dst_f32,
     |v: i64| (v as u64) as f32
 );
 conv!(
-    h_conv_f64_convert_i32_s,
+    conv_f64_convert_i32_s,
     read_reg_i32,
     write_dst_f64,
     |v: i32| v as f64
 );
 conv!(
-    h_conv_f64_convert_i32_u,
+    conv_f64_convert_i32_u,
     read_reg_i32,
     write_dst_f64,
     |v: i32| (v as u32) as f64
 );
 conv!(
-    h_conv_f64_convert_i64_s,
+    conv_f64_convert_i64_s,
     read_reg_i64,
     write_dst_f64,
     |v: i64| v as f64
 );
 conv!(
-    h_conv_f64_convert_i64_u,
+    conv_f64_convert_i64_u,
     read_reg_i64,
     write_dst_f64,
     |v: i64| (v as u64) as f64
@@ -1145,13 +1133,13 @@ conv!(
 
 // Float ↔ float
 conv!(
-    h_conv_f32_demote_f64,
+    conv_f32_demote_f64,
     read_reg_f64,
     write_dst_f32,
     |v: f64| v as f32
 );
 conv!(
-    h_conv_f64_promote_f32,
+    conv_f64_promote_f32,
     read_reg_f32,
     write_dst_f64,
     |v: f32| v as f64
@@ -1159,25 +1147,25 @@ conv!(
 
 // Reinterpret (bitwise)
 conv!(
-    h_conv_i32_reinterpret_f32,
+    conv_i32_reinterpret_f32,
     read_reg_f32,
     write_dst_i32,
     |v: f32| v.to_bits() as i32
 );
 conv!(
-    h_conv_f32_reinterpret_i32,
+    conv_f32_reinterpret_i32,
     read_reg_i32,
     write_dst_f32,
     |v: i32| f32::from_bits(v as u32)
 );
 conv!(
-    h_conv_i64_reinterpret_f64,
+    conv_i64_reinterpret_f64,
     read_reg_f64,
     write_dst_i64,
     |v: f64| v.to_bits() as i64
 );
 conv!(
-    h_conv_f64_reinterpret_i64,
+    conv_f64_reinterpret_i64,
     read_reg_i64,
     write_dst_f64,
     |v: i64| f64::from_bits(v as u64)
@@ -1194,12 +1182,12 @@ macro_rules! conv_trap {
             let v = operand::$read(state, &src);
             if v.is_nan() {
                 state.trap = Some(RuntimeError::InvalidConversionToInt);
-                return h_trap(state);
+                return trap(state);
             }
             let t = v.trunc();
             if t < $min || t > $max {
                 state.trap = Some(RuntimeError::IntegerOverflow);
-                return h_trap(state);
+                return trap(state);
             }
             operand::$write(state, &dst, $cast(t));
             state.pc += 1;
@@ -1209,7 +1197,7 @@ macro_rules! conv_trap {
 }
 
 conv_trap!(
-    h_conv_i32_trunc_f32_s,
+    conv_i32_trunc_f32_s,
     read_reg_f32,
     write_dst_i32,
     f32,
@@ -1218,7 +1206,7 @@ conv_trap!(
     |t: f32| t as i32
 );
 conv_trap!(
-    h_conv_i32_trunc_f32_u,
+    conv_i32_trunc_f32_u,
     read_reg_f32,
     write_dst_i32,
     f32,
@@ -1227,7 +1215,7 @@ conv_trap!(
     |t: f32| (t as u32) as i32
 );
 conv_trap!(
-    h_conv_i32_trunc_f64_s,
+    conv_i32_trunc_f64_s,
     read_reg_f64,
     write_dst_i32,
     f64,
@@ -1236,7 +1224,7 @@ conv_trap!(
     |t: f64| t as i32
 );
 conv_trap!(
-    h_conv_i32_trunc_f64_u,
+    conv_i32_trunc_f64_u,
     read_reg_f64,
     write_dst_i32,
     f64,
@@ -1246,7 +1234,7 @@ conv_trap!(
 );
 
 // i64 trunc has different bound check (>= for max), so write explicit functions
-pub fn h_conv_i64_trunc_f32_s(state: &mut VmState) -> Outcome {
+pub fn conv_i64_trunc_f32_s(state: &mut VmState) -> Outcome {
     let (src, dst) = match state.current_instr() {
         ProcessedInstr::ConversionReg { src, dst, .. } => (*src, *dst),
         _ => unsafe { std::hint::unreachable_unchecked() },
@@ -1254,18 +1242,18 @@ pub fn h_conv_i64_trunc_f32_s(state: &mut VmState) -> Outcome {
     let v = operand::read_reg_f32(state, &src);
     if v.is_nan() {
         state.trap = Some(RuntimeError::InvalidConversionToInt);
-        return h_trap(state);
+        return trap(state);
     }
     let t = v.trunc();
     if t < (i64::MIN as f32) || t >= (i64::MAX as f32) {
         state.trap = Some(RuntimeError::IntegerOverflow);
-        return h_trap(state);
+        return trap(state);
     }
     operand::write_dst_i64(state, &dst, t as i64);
     state.pc += 1;
     advance!(state)
 }
-pub fn h_conv_i64_trunc_f32_u(state: &mut VmState) -> Outcome {
+pub fn conv_i64_trunc_f32_u(state: &mut VmState) -> Outcome {
     let (src, dst) = match state.current_instr() {
         ProcessedInstr::ConversionReg { src, dst, .. } => (*src, *dst),
         _ => unsafe { std::hint::unreachable_unchecked() },
@@ -1273,18 +1261,18 @@ pub fn h_conv_i64_trunc_f32_u(state: &mut VmState) -> Outcome {
     let v = operand::read_reg_f32(state, &src);
     if v.is_nan() {
         state.trap = Some(RuntimeError::InvalidConversionToInt);
-        return h_trap(state);
+        return trap(state);
     }
     let t = v.trunc();
     if t < 0.0 || t >= (u64::MAX as f32) {
         state.trap = Some(RuntimeError::IntegerOverflow);
-        return h_trap(state);
+        return trap(state);
     }
     operand::write_dst_i64(state, &dst, (t as u64) as i64);
     state.pc += 1;
     advance!(state)
 }
-pub fn h_conv_i64_trunc_f64_s(state: &mut VmState) -> Outcome {
+pub fn conv_i64_trunc_f64_s(state: &mut VmState) -> Outcome {
     let (src, dst) = match state.current_instr() {
         ProcessedInstr::ConversionReg { src, dst, .. } => (*src, *dst),
         _ => unsafe { std::hint::unreachable_unchecked() },
@@ -1292,18 +1280,18 @@ pub fn h_conv_i64_trunc_f64_s(state: &mut VmState) -> Outcome {
     let v = operand::read_reg_f64(state, &src);
     if v.is_nan() {
         state.trap = Some(RuntimeError::InvalidConversionToInt);
-        return h_trap(state);
+        return trap(state);
     }
     let t = v.trunc();
     if t < (i64::MIN as f64) || t >= (i64::MAX as f64) {
         state.trap = Some(RuntimeError::IntegerOverflow);
-        return h_trap(state);
+        return trap(state);
     }
     operand::write_dst_i64(state, &dst, t as i64);
     state.pc += 1;
     advance!(state)
 }
-pub fn h_conv_i64_trunc_f64_u(state: &mut VmState) -> Outcome {
+pub fn conv_i64_trunc_f64_u(state: &mut VmState) -> Outcome {
     let (src, dst) = match state.current_instr() {
         ProcessedInstr::ConversionReg { src, dst, .. } => (*src, *dst),
         _ => unsafe { std::hint::unreachable_unchecked() },
@@ -1311,12 +1299,12 @@ pub fn h_conv_i64_trunc_f64_u(state: &mut VmState) -> Outcome {
     let v = operand::read_reg_f64(state, &src);
     if v.is_nan() {
         state.trap = Some(RuntimeError::InvalidConversionToInt);
-        return h_trap(state);
+        return trap(state);
     }
     let t = v.trunc();
     if t < 0.0 || t >= (u64::MAX as f64) {
         state.trap = Some(RuntimeError::IntegerOverflow);
-        return h_trap(state);
+        return trap(state);
     }
     operand::write_dst_i64(state, &dst, (t as u64) as i64);
     state.pc += 1;
@@ -1351,26 +1339,20 @@ macro_rules! mem_load {
     };
 }
 
-mem_load!(h_mem_load_i32, i32, i32, write_dst_i32, |v: i32| v);
-mem_load!(h_mem_load_i64, i64, i64, write_dst_i64, |v: i64| v);
-mem_load!(h_mem_load_f32, f32, f32, write_dst_f32, |v: f32| v);
-mem_load!(h_mem_load_f64, f64, f64, write_dst_f64, |v: f64| v);
-mem_load!(h_mem_load_i32_8s, i8, i32, write_dst_i32, |v: i8| v as i32);
-mem_load!(h_mem_load_i32_8u, u8, i32, write_dst_i32, |v: u8| v as i32);
-mem_load!(h_mem_load_i32_16s, i16, i32, write_dst_i32, |v: i16| v
-    as i32);
-mem_load!(h_mem_load_i32_16u, u16, i32, write_dst_i32, |v: u16| v
-    as i32);
-mem_load!(h_mem_load_i64_8s, i8, i64, write_dst_i64, |v: i8| v as i64);
-mem_load!(h_mem_load_i64_8u, u8, i64, write_dst_i64, |v: u8| v as i64);
-mem_load!(h_mem_load_i64_16s, i16, i64, write_dst_i64, |v: i16| v
-    as i64);
-mem_load!(h_mem_load_i64_16u, u16, i64, write_dst_i64, |v: u16| v
-    as i64);
-mem_load!(h_mem_load_i64_32s, i32, i64, write_dst_i64, |v: i32| v
-    as i64);
-mem_load!(h_mem_load_i64_32u, u32, i64, write_dst_i64, |v: u32| v
-    as i64);
+mem_load!(mem_load_i32, i32, i32, write_dst_i32, |v: i32| v);
+mem_load!(mem_load_i64, i64, i64, write_dst_i64, |v: i64| v);
+mem_load!(mem_load_f32, f32, f32, write_dst_f32, |v: f32| v);
+mem_load!(mem_load_f64, f64, f64, write_dst_f64, |v: f64| v);
+mem_load!(mem_load_i32_8s, i8, i32, write_dst_i32, |v: i8| v as i32);
+mem_load!(mem_load_i32_8u, u8, i32, write_dst_i32, |v: u8| v as i32);
+mem_load!(mem_load_i32_16s, i16, i32, write_dst_i32, |v: i16| v as i32);
+mem_load!(mem_load_i32_16u, u16, i32, write_dst_i32, |v: u16| v as i32);
+mem_load!(mem_load_i64_8s, i8, i64, write_dst_i64, |v: i8| v as i64);
+mem_load!(mem_load_i64_8u, u8, i64, write_dst_i64, |v: u8| v as i64);
+mem_load!(mem_load_i64_16s, i16, i64, write_dst_i64, |v: i16| v as i64);
+mem_load!(mem_load_i64_16u, u16, i64, write_dst_i64, |v: u16| v as i64);
+mem_load!(mem_load_i64_32s, i32, i64, write_dst_i64, |v: i32| v as i64);
+mem_load!(mem_load_i64_32u, u32, i64, write_dst_i64, |v: u32| v as i64);
 
 // ============================================================================
 // Memory store handlers
@@ -1400,15 +1382,15 @@ macro_rules! mem_store {
     };
 }
 
-mem_store!(h_mem_store_i32, read_reg_i32, i32, |v: i32| v);
-mem_store!(h_mem_store_i64, read_reg_i64, i64, |v: i64| v);
-mem_store!(h_mem_store_f32, read_reg_f32, f32, |v: f32| v);
-mem_store!(h_mem_store_f64, read_reg_f64, f64, |v: f64| v);
-mem_store!(h_mem_store_i32_8, read_reg_i32, u8, |v: i32| v as u8);
-mem_store!(h_mem_store_i32_16, read_reg_i32, u16, |v: i32| v as u16);
-mem_store!(h_mem_store_i64_8, read_reg_i64, u8, |v: i64| v as u8);
-mem_store!(h_mem_store_i64_16, read_reg_i64, u16, |v: i64| v as u16);
-mem_store!(h_mem_store_i64_32, read_reg_i64, u32, |v: i64| v as u32);
+mem_store!(mem_store_i32, read_reg_i32, i32, |v: i32| v);
+mem_store!(mem_store_i64, read_reg_i64, i64, |v: i64| v);
+mem_store!(mem_store_f32, read_reg_f32, f32, |v: f32| v);
+mem_store!(mem_store_f64, read_reg_f64, f64, |v: f64| v);
+mem_store!(mem_store_i32_8, read_reg_i32, u8, |v: i32| v as u8);
+mem_store!(mem_store_i32_16, read_reg_i32, u16, |v: i32| v as u16);
+mem_store!(mem_store_i64_8, read_reg_i64, u8, |v: i64| v as u8);
+mem_store!(mem_store_i64_16, read_reg_i64, u16, |v: i64| v as u16);
+mem_store!(mem_store_i64_32, read_reg_i64, u32, |v: i64| v as u32);
 
 // ============================================================================
 // Select handlers
@@ -1441,23 +1423,23 @@ macro_rules! select {
     };
 }
 
-select!(h_select_i32, get_i32, set_i32);
-select!(h_select_i64, get_i64, set_i64);
-select!(h_select_f32, get_f32, set_f32);
-select!(h_select_f64, get_f64, set_f64);
+select!(select_i32, get_i32, set_i32);
+select!(select_i64, get_i64, set_i64);
+select!(select_f32, get_f32, set_f32);
+select!(select_f64, get_f64, set_f64);
 
 // ============================================================================
 // Nop / Unreachable
 // ============================================================================
 
-pub fn h_nop(state: &mut VmState) -> Outcome {
+pub fn nop(state: &mut VmState) -> Outcome {
     state.pc += 1;
     advance!(state)
 }
 
-pub fn h_unreachable(state: &mut VmState) -> Outcome {
+pub fn unreachable(state: &mut VmState) -> Outcome {
     state.trap = Some(RuntimeError::Unreachable);
-    h_trap(state)
+    trap(state)
 }
 
 // ============================================================================
@@ -1475,7 +1457,7 @@ pub fn h_unreachable(state: &mut VmState) -> Outcome {
 // - Br/BrIf/BrTable that escape the current function (relative_depth >
 //   current_label_idx) return `Outcome::Halt` (matches legacy `break`).
 
-pub fn h_br(state: &mut VmState) -> Outcome {
+pub fn br(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::BrReg {
         relative_depth,
@@ -1496,14 +1478,13 @@ pub fn h_br(state: &mut VmState) -> Outcome {
     }
     let target_level = state.current_label_idx.saturating_sub(depth);
     let keep_count = target_level.max(1);
-    let label_stack = state.label_stack_mut();
-    label_stack.truncate(keep_count);
+    state.label_stack_mut().truncate(keep_count);
     state.current_label_idx = state.label_stack().len() - 1;
     state.pc = target_ip;
     advance!(state)
 }
 
-pub fn h_br_if(state: &mut VmState) -> Outcome {
+pub fn br_if(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::BrIfReg {
         relative_depth,
@@ -1537,7 +1518,7 @@ pub fn h_br_if(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
-pub fn h_br_table(state: &mut VmState) -> Outcome {
+pub fn br_table(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::BrTableReg {
         targets,
@@ -1573,7 +1554,7 @@ pub fn h_br_table(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
-pub fn h_block(state: &mut VmState) -> Outcome {
+pub fn block(state: &mut VmState) -> Outcome {
     let is_loop = match state.current_instr() {
         ProcessedInstr::BlockReg { is_loop, .. } => *is_loop,
         _ => unsafe { std::hint::unreachable_unchecked() },
@@ -1595,7 +1576,7 @@ pub fn h_block(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
-pub fn h_if(state: &mut VmState) -> Outcome {
+pub fn r#if(state: &mut VmState) -> Outcome {
     let (cond_reg, else_target_ip, has_else) = match state.current_instr() {
         ProcessedInstr::IfReg {
             cond_reg,
@@ -1644,7 +1625,7 @@ pub fn h_if(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
-pub fn h_end(state: &mut VmState) -> Outcome {
+pub fn end(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::EndReg {
         source_regs,
@@ -1661,8 +1642,7 @@ pub fn h_end(state: &mut VmState) -> Outcome {
         state
             .reg_file_mut()
             .copy_regs(source_regs, target_result_regs);
-        let label_stack = state.label_stack_mut();
-        label_stack.pop();
+        state.label_stack_mut().pop();
         state.current_label_idx = state.label_stack().len() - 1;
         let next_ip = state.pc + 1;
         if next_ip >= state.instrs_len && state.current_label_idx == 0 {
@@ -1682,7 +1662,7 @@ pub fn h_end(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
-pub fn h_jump(state: &mut VmState) -> Outcome {
+pub fn jump(state: &mut VmState) -> Outcome {
     let target_ip = match state.current_instr() {
         ProcessedInstr::JumpReg { target_ip } => *target_ip,
         _ => unsafe { std::hint::unreachable_unchecked() },
@@ -1704,7 +1684,7 @@ pub fn h_jump(state: &mut VmState) -> Outcome {
 // transitions. State.pc is advanced to the post-call position so resume
 // continues correctly.
 
-pub fn h_call(state: &mut VmState) -> Outcome {
+pub fn call(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::CallReg {
         func_idx,
@@ -1719,7 +1699,7 @@ pub fn h_call(state: &mut VmState) -> Outcome {
         Some(fa) => fa.clone(),
         None => {
             state.trap = Some(RuntimeError::ExportFuncNotFound);
-            return h_trap(state);
+            return trap(state);
         }
     };
     let regs = state.reg_file();
@@ -1734,7 +1714,7 @@ pub fn h_call(state: &mut VmState) -> Outcome {
     Outcome::Yield
 }
 
-pub fn h_call_indirect(state: &mut VmState) -> Outcome {
+pub fn call_indirect(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::CallIndirectReg {
         type_idx,
@@ -1755,21 +1735,21 @@ pub fn h_call_indirect(state: &mut VmState) -> Outcome {
         Some(t) => t.clone(),
         None => {
             state.trap = Some(RuntimeError::TableNotFound);
-            return h_trap(state);
+            return trap(state);
         }
     };
     let func_addr = match table_addr.get_func_addr(i as usize) {
         Some(fa) => fa,
         None => {
             state.trap = Some(RuntimeError::UninitializedElement);
-            return h_trap(state);
+            return trap(state);
         }
     };
     let actual_type = func_addr.func_type();
     let expected_type = &state.module().types[type_idx.0 as usize];
     if *actual_type != *expected_type {
         state.trap = Some(RuntimeError::IndirectCallTypeMismatch);
-        return h_trap(state);
+        return trap(state);
     }
     let regs = state.reg_file();
     let params: Vec<Val> = param_regs.iter().map(|r| regs.get_val(r)).collect();
@@ -1783,7 +1763,7 @@ pub fn h_call_indirect(state: &mut VmState) -> Outcome {
     Outcome::Yield
 }
 
-pub fn h_call_wasi(state: &mut VmState) -> Outcome {
+pub fn call_wasi(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::CallWasiReg {
         wasi_func_type,
@@ -1806,7 +1786,7 @@ pub fn h_call_wasi(state: &mut VmState) -> Outcome {
     Outcome::Yield
 }
 
-pub fn h_return(state: &mut VmState) -> Outcome {
+pub fn r#return(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::ReturnReg { result_regs } = instr else {
         unsafe { std::hint::unreachable_unchecked() }
@@ -1844,10 +1824,10 @@ macro_rules! global_get {
     };
 }
 
-global_get!(h_global_get_i32, to_i32, write_dst_i32, I32);
-global_get!(h_global_get_i64, to_i64, write_dst_i64, I64);
-global_get!(h_global_get_f32, to_f32, write_dst_f32, F32);
-global_get!(h_global_get_f64, to_f64, write_dst_f64, F64);
+global_get!(global_get_i32, to_i32, write_dst_i32, I32);
+global_get!(global_get_i64, to_i64, write_dst_i64, I64);
+global_get!(global_get_f32, to_f32, write_dst_f32, F32);
+global_get!(global_get_f64, to_f64, write_dst_f64, F64);
 
 macro_rules! global_set {
     ($name:ident, $get:ident, $variant:ident) => {
@@ -1872,7 +1852,7 @@ macro_rules! global_set {
                 .clone();
             if let Err(e) = global_addr.set(Val::Num(crate::execution::value::Num::$variant(v))) {
                 state.trap = Some(e);
-                return h_trap(state);
+                return trap(state);
             }
             state.pc += 1;
             advance!(state)
@@ -1880,16 +1860,16 @@ macro_rules! global_set {
     };
 }
 
-global_set!(h_global_set_i32, get_i32, I32);
-global_set!(h_global_set_i64, get_i64, I64);
-global_set!(h_global_set_f32, get_f32, F32);
-global_set!(h_global_set_f64, get_f64, F64);
+global_set!(global_set_i32, get_i32, I32);
+global_set!(global_set_i64, get_i64, I64);
+global_set!(global_set_f32, get_f32, F32);
+global_set!(global_set_f64, get_f64, F64);
 
 // ============================================================================
 // DataDrop
 // ============================================================================
 
-pub fn h_data_drop(state: &mut VmState) -> Outcome {
+pub fn data_drop(state: &mut VmState) -> Outcome {
     let data_index = match state.current_instr() {
         ProcessedInstr::DataDropReg { data_index } => *data_index,
         _ => unsafe { std::hint::unreachable_unchecked() },
@@ -1906,7 +1886,7 @@ pub fn h_data_drop(state: &mut VmState) -> Outcome {
 // Ref local.get / local.set
 // ============================================================================
 
-pub fn h_ref_local_get(state: &mut VmState) -> Outcome {
+pub fn ref_local_get(state: &mut VmState) -> Outcome {
     let (dst, local_idx) = match state.current_instr() {
         ProcessedInstr::RefLocalReg { dst, local_idx, .. } => (*dst, *local_idx as usize),
         _ => unsafe { std::hint::unreachable_unchecked() },
@@ -1922,7 +1902,7 @@ pub fn h_ref_local_get(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
-pub fn h_ref_local_set(state: &mut VmState) -> Outcome {
+pub fn ref_local_set(state: &mut VmState) -> Outcome {
     let (src, local_idx) = match state.current_instr() {
         ProcessedInstr::RefLocalReg { src, local_idx, .. } => (*src, *local_idx as usize),
         _ => unsafe { std::hint::unreachable_unchecked() },
@@ -1937,7 +1917,7 @@ pub fn h_ref_local_set(state: &mut VmState) -> Outcome {
 // Table / ref ops (ref.null / ref.is_null / table.get / table.set / table.fill)
 // ============================================================================
 
-pub fn h_ref_null(state: &mut VmState) -> Outcome {
+pub fn ref_null(state: &mut VmState) -> Outcome {
     let regs = match state.current_instr() {
         ProcessedInstr::TableRefReg { regs, .. } => *regs,
         _ => unsafe { std::hint::unreachable_unchecked() },
@@ -1949,7 +1929,7 @@ pub fn h_ref_null(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
-pub fn h_ref_is_null(state: &mut VmState) -> Outcome {
+pub fn ref_is_null(state: &mut VmState) -> Outcome {
     let regs = match state.current_instr() {
         ProcessedInstr::TableRefReg { regs, .. } => *regs,
         _ => unsafe { std::hint::unreachable_unchecked() },
@@ -1962,7 +1942,7 @@ pub fn h_ref_is_null(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
-pub fn h_table_get(state: &mut VmState) -> Outcome {
+pub fn table_get(state: &mut VmState) -> Outcome {
     let (table_idx, regs) = match state.current_instr() {
         ProcessedInstr::TableRefReg {
             table_idx, regs, ..
@@ -1973,7 +1953,7 @@ pub fn h_table_get(state: &mut VmState) -> Outcome {
         Some(t) => t.clone(),
         None => {
             state.trap = Some(RuntimeError::TableNotFound);
-            return h_trap(state);
+            return trap(state);
         }
     };
     let index = state.reg_file().get_i32(regs[1]) as usize;
@@ -1986,12 +1966,12 @@ pub fn h_table_get(state: &mut VmState) -> Outcome {
         }
         _ => {
             state.trap = Some(RuntimeError::TypeMismatch);
-            h_trap(state)
+            trap(state)
         }
     }
 }
 
-pub fn h_table_set(state: &mut VmState) -> Outcome {
+pub fn table_set(state: &mut VmState) -> Outcome {
     let (table_idx, regs) = match state.current_instr() {
         ProcessedInstr::TableRefReg {
             table_idx, regs, ..
@@ -2002,7 +1982,7 @@ pub fn h_table_set(state: &mut VmState) -> Outcome {
         Some(t) => t.clone(),
         None => {
             state.trap = Some(RuntimeError::TableNotFound);
-            return h_trap(state);
+            return trap(state);
         }
     };
     let rf = state.reg_file();
@@ -2010,13 +1990,13 @@ pub fn h_table_set(state: &mut VmState) -> Outcome {
     let ref_val = rf.get_ref(regs[1]);
     if let Err(e) = table_addr.set(index, Val::Ref(ref_val)) {
         state.trap = Some(e);
-        return h_trap(state);
+        return trap(state);
     }
     state.pc += 1;
     advance!(state)
 }
 
-pub fn h_table_fill(state: &mut VmState) -> Outcome {
+pub fn table_fill(state: &mut VmState) -> Outcome {
     let (table_idx, regs) = match state.current_instr() {
         ProcessedInstr::TableRefReg {
             table_idx, regs, ..
@@ -2027,7 +2007,7 @@ pub fn h_table_fill(state: &mut VmState) -> Outcome {
         Some(t) => t.clone(),
         None => {
             state.trap = Some(RuntimeError::TableNotFound);
-            return h_trap(state);
+            return trap(state);
         }
     };
     let rf = state.reg_file();
@@ -2036,7 +2016,7 @@ pub fn h_table_fill(state: &mut VmState) -> Outcome {
     let n = rf.get_i32(regs[2]) as usize;
     if let Err(e) = table_addr.fill(i, Val::Ref(ref_val), n) {
         state.trap = Some(e);
-        return h_trap(state);
+        return trap(state);
     }
     state.pc += 1;
     advance!(state)
@@ -2046,7 +2026,7 @@ pub fn h_table_fill(state: &mut VmState) -> Outcome {
 // Memory ops (memory.size / grow / copy / init / fill)
 // ============================================================================
 
-pub fn h_mem_size(state: &mut VmState) -> Outcome {
+pub fn mem_size(state: &mut VmState) -> Outcome {
     let dst = match state.current_instr() {
         ProcessedInstr::MemoryOpsReg { dst, .. } => *dst,
         _ => unsafe { std::hint::unreachable_unchecked() },
@@ -2055,7 +2035,7 @@ pub fn h_mem_size(state: &mut VmState) -> Outcome {
         Some(m) => m.clone(),
         None => {
             state.trap = Some(RuntimeError::MemoryNotFound);
-            return h_trap(state);
+            return trap(state);
         }
     };
     let size = mem_addr.mem_size();
@@ -2066,7 +2046,7 @@ pub fn h_mem_size(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
-pub fn h_mem_grow(state: &mut VmState) -> Outcome {
+pub fn mem_grow(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::MemoryOpsReg { dst, args, .. } = instr else {
         unsafe { std::hint::unreachable_unchecked() }
@@ -2075,7 +2055,7 @@ pub fn h_mem_grow(state: &mut VmState) -> Outcome {
         Some(m) => m.clone(),
         None => {
             state.trap = Some(RuntimeError::MemoryNotFound);
-            return h_trap(state);
+            return trap(state);
         }
     };
     let delta = state.reg_file().get_i32(args[0].index());
@@ -2083,7 +2063,7 @@ pub fn h_mem_grow(state: &mut VmState) -> Outcome {
         Ok(v) => v,
         Err(_) => {
             state.trap = Some(RuntimeError::InvalidParameterCount);
-            return h_trap(state);
+            return trap(state);
         }
     };
     let prev_size = mem_addr.mem_grow(delta_u32 as i32);
@@ -2095,7 +2075,7 @@ pub fn h_mem_grow(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
-pub fn h_mem_copy(state: &mut VmState) -> Outcome {
+pub fn mem_copy(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::MemoryOpsReg { args, .. } = instr else {
         unsafe { std::hint::unreachable_unchecked() }
@@ -2104,7 +2084,7 @@ pub fn h_mem_copy(state: &mut VmState) -> Outcome {
         Some(m) => m.clone(),
         None => {
             state.trap = Some(RuntimeError::MemoryNotFound);
-            return h_trap(state);
+            return trap(state);
         }
     };
     let regs = state.reg_file();
@@ -2116,7 +2096,7 @@ pub fn h_mem_copy(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
-pub fn h_mem_init(state: &mut VmState) -> Outcome {
+pub fn mem_init(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::MemoryOpsReg {
         args, data_index, ..
@@ -2129,12 +2109,12 @@ pub fn h_mem_init(state: &mut VmState) -> Outcome {
         Some(m) => m.clone(),
         None => {
             state.trap = Some(RuntimeError::MemoryNotFound);
-            return h_trap(state);
+            return trap(state);
         }
     };
     if (*data_index as usize) >= module_inst.data_addrs.len() {
         state.trap = Some(RuntimeError::InvalidDataSegmentIndex);
-        return h_trap(state);
+        return trap(state);
     }
     let data_bytes = module_inst.data_addrs[*data_index as usize].get_data();
     let regs = state.reg_file();
@@ -2148,7 +2128,7 @@ pub fn h_mem_init(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
-pub fn h_mem_fill(state: &mut VmState) -> Outcome {
+pub fn mem_fill(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::MemoryOpsReg { args, .. } = instr else {
         unsafe { std::hint::unreachable_unchecked() }
@@ -2157,7 +2137,7 @@ pub fn h_mem_fill(state: &mut VmState) -> Outcome {
         Some(m) => m.clone(),
         None => {
             state.trap = Some(RuntimeError::MemoryNotFound);
-            return h_trap(state);
+            return trap(state);
         }
     };
     let regs = state.reg_file();
@@ -2176,253 +2156,253 @@ pub fn h_mem_fill(state: &mut VmState) -> Outcome {
 pub fn select_handler(instr: &ProcessedInstr) -> Handler {
     match instr {
         ProcessedInstr::I32Reg { handler_index, .. } => match *handler_index {
-            HANDLER_IDX_LOCAL_GET => h_i32_local_get,
-            HANDLER_IDX_LOCAL_SET | HANDLER_IDX_LOCAL_TEE => h_i32_local_set,
-            HANDLER_IDX_I32_CONST => h_i32_const,
-            HANDLER_IDX_I32_ADD => h_i32_add,
-            HANDLER_IDX_I32_SUB => h_i32_sub,
-            HANDLER_IDX_I32_MUL => h_i32_mul,
-            HANDLER_IDX_I32_DIV_S => h_i32_div_s,
-            HANDLER_IDX_I32_DIV_U => h_i32_div_u,
-            HANDLER_IDX_I32_REM_S => h_i32_rem_s,
-            HANDLER_IDX_I32_REM_U => h_i32_rem_u,
-            HANDLER_IDX_I32_AND => h_i32_and,
-            HANDLER_IDX_I32_OR => h_i32_or,
-            HANDLER_IDX_I32_XOR => h_i32_xor,
-            HANDLER_IDX_I32_SHL => h_i32_shl,
-            HANDLER_IDX_I32_SHR_S => h_i32_shr_s,
-            HANDLER_IDX_I32_SHR_U => h_i32_shr_u,
-            HANDLER_IDX_I32_ROTL => h_i32_rotl,
-            HANDLER_IDX_I32_ROTR => h_i32_rotr,
-            HANDLER_IDX_I32_EQ => h_i32_eq,
-            HANDLER_IDX_I32_NE => h_i32_ne,
-            HANDLER_IDX_I32_LT_S => h_i32_lt_s,
-            HANDLER_IDX_I32_LT_U => h_i32_lt_u,
-            HANDLER_IDX_I32_LE_S => h_i32_le_s,
-            HANDLER_IDX_I32_LE_U => h_i32_le_u,
-            HANDLER_IDX_I32_GT_S => h_i32_gt_s,
-            HANDLER_IDX_I32_GT_U => h_i32_gt_u,
-            HANDLER_IDX_I32_GE_S => h_i32_ge_s,
-            HANDLER_IDX_I32_GE_U => h_i32_ge_u,
-            HANDLER_IDX_I32_CLZ => h_i32_clz,
-            HANDLER_IDX_I32_CTZ => h_i32_ctz,
-            HANDLER_IDX_I32_POPCNT => h_i32_popcnt,
-            HANDLER_IDX_I32_EQZ => h_i32_eqz,
-            HANDLER_IDX_I32_EXTEND8_S => h_i32_extend8_s,
-            HANDLER_IDX_I32_EXTEND16_S => h_i32_extend16_s,
-            _ => h_invalid,
+            HANDLER_IDX_LOCAL_GET => i32_local_get,
+            HANDLER_IDX_LOCAL_SET | HANDLER_IDX_LOCAL_TEE => i32_local_set,
+            HANDLER_IDX_I32_CONST => i32_const,
+            HANDLER_IDX_I32_ADD => i32_add,
+            HANDLER_IDX_I32_SUB => i32_sub,
+            HANDLER_IDX_I32_MUL => i32_mul,
+            HANDLER_IDX_I32_DIV_S => i32_div_s,
+            HANDLER_IDX_I32_DIV_U => i32_div_u,
+            HANDLER_IDX_I32_REM_S => i32_rem_s,
+            HANDLER_IDX_I32_REM_U => i32_rem_u,
+            HANDLER_IDX_I32_AND => i32_and,
+            HANDLER_IDX_I32_OR => i32_or,
+            HANDLER_IDX_I32_XOR => i32_xor,
+            HANDLER_IDX_I32_SHL => i32_shl,
+            HANDLER_IDX_I32_SHR_S => i32_shr_s,
+            HANDLER_IDX_I32_SHR_U => i32_shr_u,
+            HANDLER_IDX_I32_ROTL => i32_rotl,
+            HANDLER_IDX_I32_ROTR => i32_rotr,
+            HANDLER_IDX_I32_EQ => i32_eq,
+            HANDLER_IDX_I32_NE => i32_ne,
+            HANDLER_IDX_I32_LT_S => i32_lt_s,
+            HANDLER_IDX_I32_LT_U => i32_lt_u,
+            HANDLER_IDX_I32_LE_S => i32_le_s,
+            HANDLER_IDX_I32_LE_U => i32_le_u,
+            HANDLER_IDX_I32_GT_S => i32_gt_s,
+            HANDLER_IDX_I32_GT_U => i32_gt_u,
+            HANDLER_IDX_I32_GE_S => i32_ge_s,
+            HANDLER_IDX_I32_GE_U => i32_ge_u,
+            HANDLER_IDX_I32_CLZ => i32_clz,
+            HANDLER_IDX_I32_CTZ => i32_ctz,
+            HANDLER_IDX_I32_POPCNT => i32_popcnt,
+            HANDLER_IDX_I32_EQZ => i32_eqz,
+            HANDLER_IDX_I32_EXTEND8_S => i32_extend8_s,
+            HANDLER_IDX_I32_EXTEND16_S => i32_extend16_s,
+            _ => invalid,
         },
         ProcessedInstr::I64Reg { handler_index, .. } => match *handler_index {
-            HANDLER_IDX_LOCAL_GET => h_i64_local_get,
-            HANDLER_IDX_LOCAL_SET | HANDLER_IDX_LOCAL_TEE => h_i64_local_set,
-            HANDLER_IDX_I64_CONST => h_i64_const,
-            HANDLER_IDX_I64_ADD => h_i64_add,
-            HANDLER_IDX_I64_SUB => h_i64_sub,
-            HANDLER_IDX_I64_MUL => h_i64_mul,
-            HANDLER_IDX_I64_DIV_S => h_i64_div_s,
-            HANDLER_IDX_I64_DIV_U => h_i64_div_u,
-            HANDLER_IDX_I64_REM_S => h_i64_rem_s,
-            HANDLER_IDX_I64_REM_U => h_i64_rem_u,
-            HANDLER_IDX_I64_AND => h_i64_and,
-            HANDLER_IDX_I64_OR => h_i64_or,
-            HANDLER_IDX_I64_XOR => h_i64_xor,
-            HANDLER_IDX_I64_SHL => h_i64_shl,
-            HANDLER_IDX_I64_SHR_S => h_i64_shr_s,
-            HANDLER_IDX_I64_SHR_U => h_i64_shr_u,
-            HANDLER_IDX_I64_ROTL => h_i64_rotl,
-            HANDLER_IDX_I64_ROTR => h_i64_rotr,
-            HANDLER_IDX_I64_EQ => h_i64_eq,
-            HANDLER_IDX_I64_NE => h_i64_ne,
-            HANDLER_IDX_I64_LT_S => h_i64_lt_s,
-            HANDLER_IDX_I64_LT_U => h_i64_lt_u,
-            HANDLER_IDX_I64_LE_S => h_i64_le_s,
-            HANDLER_IDX_I64_LE_U => h_i64_le_u,
-            HANDLER_IDX_I64_GT_S => h_i64_gt_s,
-            HANDLER_IDX_I64_GT_U => h_i64_gt_u,
-            HANDLER_IDX_I64_GE_S => h_i64_ge_s,
-            HANDLER_IDX_I64_GE_U => h_i64_ge_u,
-            HANDLER_IDX_I64_CLZ => h_i64_clz,
-            HANDLER_IDX_I64_CTZ => h_i64_ctz,
-            HANDLER_IDX_I64_POPCNT => h_i64_popcnt,
-            HANDLER_IDX_I64_EQZ => h_i64_eqz,
-            HANDLER_IDX_I64_EXTEND8_S => h_i64_extend8_s,
-            HANDLER_IDX_I64_EXTEND16_S => h_i64_extend16_s,
-            HANDLER_IDX_I64_EXTEND32_S => h_i64_extend32_s,
-            _ => h_invalid,
+            HANDLER_IDX_LOCAL_GET => i64_local_get,
+            HANDLER_IDX_LOCAL_SET | HANDLER_IDX_LOCAL_TEE => i64_local_set,
+            HANDLER_IDX_I64_CONST => i64_const,
+            HANDLER_IDX_I64_ADD => i64_add,
+            HANDLER_IDX_I64_SUB => i64_sub,
+            HANDLER_IDX_I64_MUL => i64_mul,
+            HANDLER_IDX_I64_DIV_S => i64_div_s,
+            HANDLER_IDX_I64_DIV_U => i64_div_u,
+            HANDLER_IDX_I64_REM_S => i64_rem_s,
+            HANDLER_IDX_I64_REM_U => i64_rem_u,
+            HANDLER_IDX_I64_AND => i64_and,
+            HANDLER_IDX_I64_OR => i64_or,
+            HANDLER_IDX_I64_XOR => i64_xor,
+            HANDLER_IDX_I64_SHL => i64_shl,
+            HANDLER_IDX_I64_SHR_S => i64_shr_s,
+            HANDLER_IDX_I64_SHR_U => i64_shr_u,
+            HANDLER_IDX_I64_ROTL => i64_rotl,
+            HANDLER_IDX_I64_ROTR => i64_rotr,
+            HANDLER_IDX_I64_EQ => i64_eq,
+            HANDLER_IDX_I64_NE => i64_ne,
+            HANDLER_IDX_I64_LT_S => i64_lt_s,
+            HANDLER_IDX_I64_LT_U => i64_lt_u,
+            HANDLER_IDX_I64_LE_S => i64_le_s,
+            HANDLER_IDX_I64_LE_U => i64_le_u,
+            HANDLER_IDX_I64_GT_S => i64_gt_s,
+            HANDLER_IDX_I64_GT_U => i64_gt_u,
+            HANDLER_IDX_I64_GE_S => i64_ge_s,
+            HANDLER_IDX_I64_GE_U => i64_ge_u,
+            HANDLER_IDX_I64_CLZ => i64_clz,
+            HANDLER_IDX_I64_CTZ => i64_ctz,
+            HANDLER_IDX_I64_POPCNT => i64_popcnt,
+            HANDLER_IDX_I64_EQZ => i64_eqz,
+            HANDLER_IDX_I64_EXTEND8_S => i64_extend8_s,
+            HANDLER_IDX_I64_EXTEND16_S => i64_extend16_s,
+            HANDLER_IDX_I64_EXTEND32_S => i64_extend32_s,
+            _ => invalid,
         },
         ProcessedInstr::F32Reg { handler_index, .. } => match *handler_index {
-            HANDLER_IDX_LOCAL_GET => h_f32_local_get,
-            HANDLER_IDX_LOCAL_SET | HANDLER_IDX_LOCAL_TEE => h_f32_local_set,
-            HANDLER_IDX_F32_CONST => h_f32_const,
-            HANDLER_IDX_F32_ADD => h_f32_add,
-            HANDLER_IDX_F32_SUB => h_f32_sub,
-            HANDLER_IDX_F32_MUL => h_f32_mul,
-            HANDLER_IDX_F32_DIV => h_f32_div,
-            HANDLER_IDX_F32_MIN => h_f32_min,
-            HANDLER_IDX_F32_MAX => h_f32_max,
-            HANDLER_IDX_F32_COPYSIGN => h_f32_copysign,
-            HANDLER_IDX_F32_ABS => h_f32_abs,
-            HANDLER_IDX_F32_NEG => h_f32_neg,
-            HANDLER_IDX_F32_CEIL => h_f32_ceil,
-            HANDLER_IDX_F32_FLOOR => h_f32_floor,
-            HANDLER_IDX_F32_TRUNC => h_f32_trunc,
-            HANDLER_IDX_F32_NEAREST => h_f32_nearest,
-            HANDLER_IDX_F32_SQRT => h_f32_sqrt,
-            HANDLER_IDX_F32_EQ => h_f32_eq,
-            HANDLER_IDX_F32_NE => h_f32_ne,
-            HANDLER_IDX_F32_LT => h_f32_lt,
-            HANDLER_IDX_F32_GT => h_f32_gt,
-            HANDLER_IDX_F32_LE => h_f32_le,
-            HANDLER_IDX_F32_GE => h_f32_ge,
-            _ => h_invalid,
+            HANDLER_IDX_LOCAL_GET => f32_local_get,
+            HANDLER_IDX_LOCAL_SET | HANDLER_IDX_LOCAL_TEE => f32_local_set,
+            HANDLER_IDX_F32_CONST => f32_const,
+            HANDLER_IDX_F32_ADD => f32_add,
+            HANDLER_IDX_F32_SUB => f32_sub,
+            HANDLER_IDX_F32_MUL => f32_mul,
+            HANDLER_IDX_F32_DIV => f32_div,
+            HANDLER_IDX_F32_MIN => f32_min,
+            HANDLER_IDX_F32_MAX => f32_max,
+            HANDLER_IDX_F32_COPYSIGN => f32_copysign,
+            HANDLER_IDX_F32_ABS => f32_abs,
+            HANDLER_IDX_F32_NEG => f32_neg,
+            HANDLER_IDX_F32_CEIL => f32_ceil,
+            HANDLER_IDX_F32_FLOOR => f32_floor,
+            HANDLER_IDX_F32_TRUNC => f32_trunc,
+            HANDLER_IDX_F32_NEAREST => f32_nearest,
+            HANDLER_IDX_F32_SQRT => f32_sqrt,
+            HANDLER_IDX_F32_EQ => f32_eq,
+            HANDLER_IDX_F32_NE => f32_ne,
+            HANDLER_IDX_F32_LT => f32_lt,
+            HANDLER_IDX_F32_GT => f32_gt,
+            HANDLER_IDX_F32_LE => f32_le,
+            HANDLER_IDX_F32_GE => f32_ge,
+            _ => invalid,
         },
         ProcessedInstr::F64Reg { handler_index, .. } => match *handler_index {
-            HANDLER_IDX_LOCAL_GET => h_f64_local_get,
-            HANDLER_IDX_LOCAL_SET | HANDLER_IDX_LOCAL_TEE => h_f64_local_set,
-            HANDLER_IDX_F64_CONST => h_f64_const,
-            HANDLER_IDX_F64_ADD => h_f64_add,
-            HANDLER_IDX_F64_SUB => h_f64_sub,
-            HANDLER_IDX_F64_MUL => h_f64_mul,
-            HANDLER_IDX_F64_DIV => h_f64_div,
-            HANDLER_IDX_F64_MIN => h_f64_min,
-            HANDLER_IDX_F64_MAX => h_f64_max,
-            HANDLER_IDX_F64_COPYSIGN => h_f64_copysign,
-            HANDLER_IDX_F64_ABS => h_f64_abs,
-            HANDLER_IDX_F64_NEG => h_f64_neg,
-            HANDLER_IDX_F64_CEIL => h_f64_ceil,
-            HANDLER_IDX_F64_FLOOR => h_f64_floor,
-            HANDLER_IDX_F64_TRUNC => h_f64_trunc,
-            HANDLER_IDX_F64_NEAREST => h_f64_nearest,
-            HANDLER_IDX_F64_SQRT => h_f64_sqrt,
-            HANDLER_IDX_F64_EQ => h_f64_eq,
-            HANDLER_IDX_F64_NE => h_f64_ne,
-            HANDLER_IDX_F64_LT => h_f64_lt,
-            HANDLER_IDX_F64_GT => h_f64_gt,
-            HANDLER_IDX_F64_LE => h_f64_le,
-            HANDLER_IDX_F64_GE => h_f64_ge,
-            _ => h_invalid,
+            HANDLER_IDX_LOCAL_GET => f64_local_get,
+            HANDLER_IDX_LOCAL_SET | HANDLER_IDX_LOCAL_TEE => f64_local_set,
+            HANDLER_IDX_F64_CONST => f64_const,
+            HANDLER_IDX_F64_ADD => f64_add,
+            HANDLER_IDX_F64_SUB => f64_sub,
+            HANDLER_IDX_F64_MUL => f64_mul,
+            HANDLER_IDX_F64_DIV => f64_div,
+            HANDLER_IDX_F64_MIN => f64_min,
+            HANDLER_IDX_F64_MAX => f64_max,
+            HANDLER_IDX_F64_COPYSIGN => f64_copysign,
+            HANDLER_IDX_F64_ABS => f64_abs,
+            HANDLER_IDX_F64_NEG => f64_neg,
+            HANDLER_IDX_F64_CEIL => f64_ceil,
+            HANDLER_IDX_F64_FLOOR => f64_floor,
+            HANDLER_IDX_F64_TRUNC => f64_trunc,
+            HANDLER_IDX_F64_NEAREST => f64_nearest,
+            HANDLER_IDX_F64_SQRT => f64_sqrt,
+            HANDLER_IDX_F64_EQ => f64_eq,
+            HANDLER_IDX_F64_NE => f64_ne,
+            HANDLER_IDX_F64_LT => f64_lt,
+            HANDLER_IDX_F64_GT => f64_gt,
+            HANDLER_IDX_F64_LE => f64_le,
+            HANDLER_IDX_F64_GE => f64_ge,
+            _ => invalid,
         },
         ProcessedInstr::ConversionReg { handler_index, .. } => match *handler_index {
-            HANDLER_IDX_I64_EXTEND_I32_S => h_conv_i64_extend_i32_s,
-            HANDLER_IDX_I64_EXTEND_I32_U => h_conv_i64_extend_i32_u,
-            HANDLER_IDX_I32_WRAP_I64 => h_conv_i32_wrap_i64,
-            HANDLER_IDX_I32_TRUNC_F32_S => h_conv_i32_trunc_f32_s,
-            HANDLER_IDX_I32_TRUNC_F32_U => h_conv_i32_trunc_f32_u,
-            HANDLER_IDX_I32_TRUNC_F64_S => h_conv_i32_trunc_f64_s,
-            HANDLER_IDX_I32_TRUNC_F64_U => h_conv_i32_trunc_f64_u,
-            HANDLER_IDX_I64_TRUNC_F32_S => h_conv_i64_trunc_f32_s,
-            HANDLER_IDX_I64_TRUNC_F32_U => h_conv_i64_trunc_f32_u,
-            HANDLER_IDX_I64_TRUNC_F64_S => h_conv_i64_trunc_f64_s,
-            HANDLER_IDX_I64_TRUNC_F64_U => h_conv_i64_trunc_f64_u,
-            HANDLER_IDX_I32_TRUNC_SAT_F32_S => h_conv_i32_trunc_sat_f32_s,
-            HANDLER_IDX_I32_TRUNC_SAT_F32_U => h_conv_i32_trunc_sat_f32_u,
-            HANDLER_IDX_I32_TRUNC_SAT_F64_S => h_conv_i32_trunc_sat_f64_s,
-            HANDLER_IDX_I32_TRUNC_SAT_F64_U => h_conv_i32_trunc_sat_f64_u,
-            HANDLER_IDX_I64_TRUNC_SAT_F32_S => h_conv_i64_trunc_sat_f32_s,
-            HANDLER_IDX_I64_TRUNC_SAT_F32_U => h_conv_i64_trunc_sat_f32_u,
-            HANDLER_IDX_I64_TRUNC_SAT_F64_S => h_conv_i64_trunc_sat_f64_s,
-            HANDLER_IDX_I64_TRUNC_SAT_F64_U => h_conv_i64_trunc_sat_f64_u,
-            HANDLER_IDX_F32_CONVERT_I32_S => h_conv_f32_convert_i32_s,
-            HANDLER_IDX_F32_CONVERT_I32_U => h_conv_f32_convert_i32_u,
-            HANDLER_IDX_F32_CONVERT_I64_S => h_conv_f32_convert_i64_s,
-            HANDLER_IDX_F32_CONVERT_I64_U => h_conv_f32_convert_i64_u,
-            HANDLER_IDX_F64_CONVERT_I32_S => h_conv_f64_convert_i32_s,
-            HANDLER_IDX_F64_CONVERT_I32_U => h_conv_f64_convert_i32_u,
-            HANDLER_IDX_F64_CONVERT_I64_S => h_conv_f64_convert_i64_s,
-            HANDLER_IDX_F64_CONVERT_I64_U => h_conv_f64_convert_i64_u,
-            HANDLER_IDX_F32_DEMOTE_F64 => h_conv_f32_demote_f64,
-            HANDLER_IDX_F64_PROMOTE_F32 => h_conv_f64_promote_f32,
-            HANDLER_IDX_I32_REINTERPRET_F32 => h_conv_i32_reinterpret_f32,
-            HANDLER_IDX_F32_REINTERPRET_I32 => h_conv_f32_reinterpret_i32,
-            HANDLER_IDX_I64_REINTERPRET_F64 => h_conv_i64_reinterpret_f64,
-            HANDLER_IDX_F64_REINTERPRET_I64 => h_conv_f64_reinterpret_i64,
-            _ => h_invalid,
+            HANDLER_IDX_I64_EXTEND_I32_S => conv_i64_extend_i32_s,
+            HANDLER_IDX_I64_EXTEND_I32_U => conv_i64_extend_i32_u,
+            HANDLER_IDX_I32_WRAP_I64 => conv_i32_wrap_i64,
+            HANDLER_IDX_I32_TRUNC_F32_S => conv_i32_trunc_f32_s,
+            HANDLER_IDX_I32_TRUNC_F32_U => conv_i32_trunc_f32_u,
+            HANDLER_IDX_I32_TRUNC_F64_S => conv_i32_trunc_f64_s,
+            HANDLER_IDX_I32_TRUNC_F64_U => conv_i32_trunc_f64_u,
+            HANDLER_IDX_I64_TRUNC_F32_S => conv_i64_trunc_f32_s,
+            HANDLER_IDX_I64_TRUNC_F32_U => conv_i64_trunc_f32_u,
+            HANDLER_IDX_I64_TRUNC_F64_S => conv_i64_trunc_f64_s,
+            HANDLER_IDX_I64_TRUNC_F64_U => conv_i64_trunc_f64_u,
+            HANDLER_IDX_I32_TRUNC_SAT_F32_S => conv_i32_trunc_sat_f32_s,
+            HANDLER_IDX_I32_TRUNC_SAT_F32_U => conv_i32_trunc_sat_f32_u,
+            HANDLER_IDX_I32_TRUNC_SAT_F64_S => conv_i32_trunc_sat_f64_s,
+            HANDLER_IDX_I32_TRUNC_SAT_F64_U => conv_i32_trunc_sat_f64_u,
+            HANDLER_IDX_I64_TRUNC_SAT_F32_S => conv_i64_trunc_sat_f32_s,
+            HANDLER_IDX_I64_TRUNC_SAT_F32_U => conv_i64_trunc_sat_f32_u,
+            HANDLER_IDX_I64_TRUNC_SAT_F64_S => conv_i64_trunc_sat_f64_s,
+            HANDLER_IDX_I64_TRUNC_SAT_F64_U => conv_i64_trunc_sat_f64_u,
+            HANDLER_IDX_F32_CONVERT_I32_S => conv_f32_convert_i32_s,
+            HANDLER_IDX_F32_CONVERT_I32_U => conv_f32_convert_i32_u,
+            HANDLER_IDX_F32_CONVERT_I64_S => conv_f32_convert_i64_s,
+            HANDLER_IDX_F32_CONVERT_I64_U => conv_f32_convert_i64_u,
+            HANDLER_IDX_F64_CONVERT_I32_S => conv_f64_convert_i32_s,
+            HANDLER_IDX_F64_CONVERT_I32_U => conv_f64_convert_i32_u,
+            HANDLER_IDX_F64_CONVERT_I64_S => conv_f64_convert_i64_s,
+            HANDLER_IDX_F64_CONVERT_I64_U => conv_f64_convert_i64_u,
+            HANDLER_IDX_F32_DEMOTE_F64 => conv_f32_demote_f64,
+            HANDLER_IDX_F64_PROMOTE_F32 => conv_f64_promote_f32,
+            HANDLER_IDX_I32_REINTERPRET_F32 => conv_i32_reinterpret_f32,
+            HANDLER_IDX_F32_REINTERPRET_I32 => conv_f32_reinterpret_i32,
+            HANDLER_IDX_I64_REINTERPRET_F64 => conv_i64_reinterpret_f64,
+            HANDLER_IDX_F64_REINTERPRET_I64 => conv_f64_reinterpret_i64,
+            _ => invalid,
         },
         ProcessedInstr::MemoryLoadReg { handler_index, .. } => match *handler_index {
-            HANDLER_IDX_I32_LOAD => h_mem_load_i32,
-            HANDLER_IDX_I64_LOAD => h_mem_load_i64,
-            HANDLER_IDX_F32_LOAD => h_mem_load_f32,
-            HANDLER_IDX_F64_LOAD => h_mem_load_f64,
-            HANDLER_IDX_I32_LOAD8_S => h_mem_load_i32_8s,
-            HANDLER_IDX_I32_LOAD8_U => h_mem_load_i32_8u,
-            HANDLER_IDX_I32_LOAD16_S => h_mem_load_i32_16s,
-            HANDLER_IDX_I32_LOAD16_U => h_mem_load_i32_16u,
-            HANDLER_IDX_I64_LOAD8_S => h_mem_load_i64_8s,
-            HANDLER_IDX_I64_LOAD8_U => h_mem_load_i64_8u,
-            HANDLER_IDX_I64_LOAD16_S => h_mem_load_i64_16s,
-            HANDLER_IDX_I64_LOAD16_U => h_mem_load_i64_16u,
-            HANDLER_IDX_I64_LOAD32_S => h_mem_load_i64_32s,
-            HANDLER_IDX_I64_LOAD32_U => h_mem_load_i64_32u,
-            _ => h_invalid,
+            HANDLER_IDX_I32_LOAD => mem_load_i32,
+            HANDLER_IDX_I64_LOAD => mem_load_i64,
+            HANDLER_IDX_F32_LOAD => mem_load_f32,
+            HANDLER_IDX_F64_LOAD => mem_load_f64,
+            HANDLER_IDX_I32_LOAD8_S => mem_load_i32_8s,
+            HANDLER_IDX_I32_LOAD8_U => mem_load_i32_8u,
+            HANDLER_IDX_I32_LOAD16_S => mem_load_i32_16s,
+            HANDLER_IDX_I32_LOAD16_U => mem_load_i32_16u,
+            HANDLER_IDX_I64_LOAD8_S => mem_load_i64_8s,
+            HANDLER_IDX_I64_LOAD8_U => mem_load_i64_8u,
+            HANDLER_IDX_I64_LOAD16_S => mem_load_i64_16s,
+            HANDLER_IDX_I64_LOAD16_U => mem_load_i64_16u,
+            HANDLER_IDX_I64_LOAD32_S => mem_load_i64_32s,
+            HANDLER_IDX_I64_LOAD32_U => mem_load_i64_32u,
+            _ => invalid,
         },
         ProcessedInstr::MemoryStoreReg { handler_index, .. } => match *handler_index {
-            HANDLER_IDX_I32_STORE => h_mem_store_i32,
-            HANDLER_IDX_I64_STORE => h_mem_store_i64,
-            HANDLER_IDX_F32_STORE => h_mem_store_f32,
-            HANDLER_IDX_F64_STORE => h_mem_store_f64,
-            HANDLER_IDX_I32_STORE8 => h_mem_store_i32_8,
-            HANDLER_IDX_I32_STORE16 => h_mem_store_i32_16,
-            HANDLER_IDX_I64_STORE8 => h_mem_store_i64_8,
-            HANDLER_IDX_I64_STORE16 => h_mem_store_i64_16,
-            HANDLER_IDX_I64_STORE32 => h_mem_store_i64_32,
-            _ => h_invalid,
+            HANDLER_IDX_I32_STORE => mem_store_i32,
+            HANDLER_IDX_I64_STORE => mem_store_i64,
+            HANDLER_IDX_F32_STORE => mem_store_f32,
+            HANDLER_IDX_F64_STORE => mem_store_f64,
+            HANDLER_IDX_I32_STORE8 => mem_store_i32_8,
+            HANDLER_IDX_I32_STORE16 => mem_store_i32_16,
+            HANDLER_IDX_I64_STORE8 => mem_store_i64_8,
+            HANDLER_IDX_I64_STORE16 => mem_store_i64_16,
+            HANDLER_IDX_I64_STORE32 => mem_store_i64_32,
+            _ => invalid,
         },
         ProcessedInstr::MemoryOpsReg { handler_index, .. } => match *handler_index {
-            HANDLER_IDX_MEMORY_SIZE => h_mem_size,
-            HANDLER_IDX_MEMORY_GROW => h_mem_grow,
-            HANDLER_IDX_MEMORY_COPY => h_mem_copy,
-            HANDLER_IDX_MEMORY_INIT => h_mem_init,
-            HANDLER_IDX_MEMORY_FILL => h_mem_fill,
-            _ => h_invalid,
+            HANDLER_IDX_MEMORY_SIZE => mem_size,
+            HANDLER_IDX_MEMORY_GROW => mem_grow,
+            HANDLER_IDX_MEMORY_COPY => mem_copy,
+            HANDLER_IDX_MEMORY_INIT => mem_init,
+            HANDLER_IDX_MEMORY_FILL => mem_fill,
+            _ => invalid,
         },
         ProcessedInstr::SelectReg { handler_index, .. } => match *handler_index {
-            HANDLER_IDX_SELECT_I32 => h_select_i32,
-            HANDLER_IDX_SELECT_I64 => h_select_i64,
-            HANDLER_IDX_SELECT_F32 => h_select_f32,
-            HANDLER_IDX_SELECT_F64 => h_select_f64,
-            _ => h_invalid,
+            HANDLER_IDX_SELECT_I32 => select_i32,
+            HANDLER_IDX_SELECT_I64 => select_i64,
+            HANDLER_IDX_SELECT_F32 => select_f32,
+            HANDLER_IDX_SELECT_F64 => select_f64,
+            _ => invalid,
         },
         ProcessedInstr::GlobalGetReg { handler_index, .. } => match *handler_index {
-            HANDLER_IDX_GLOBAL_GET_I32 => h_global_get_i32,
-            HANDLER_IDX_GLOBAL_GET_I64 => h_global_get_i64,
-            HANDLER_IDX_GLOBAL_GET_F32 => h_global_get_f32,
-            HANDLER_IDX_GLOBAL_GET_F64 => h_global_get_f64,
-            _ => h_invalid,
+            HANDLER_IDX_GLOBAL_GET_I32 => global_get_i32,
+            HANDLER_IDX_GLOBAL_GET_I64 => global_get_i64,
+            HANDLER_IDX_GLOBAL_GET_F32 => global_get_f32,
+            HANDLER_IDX_GLOBAL_GET_F64 => global_get_f64,
+            _ => invalid,
         },
         ProcessedInstr::GlobalSetReg { handler_index, .. } => match *handler_index {
-            HANDLER_IDX_GLOBAL_SET_I32 => h_global_set_i32,
-            HANDLER_IDX_GLOBAL_SET_I64 => h_global_set_i64,
-            HANDLER_IDX_GLOBAL_SET_F32 => h_global_set_f32,
-            HANDLER_IDX_GLOBAL_SET_F64 => h_global_set_f64,
-            _ => h_invalid,
+            HANDLER_IDX_GLOBAL_SET_I32 => global_set_i32,
+            HANDLER_IDX_GLOBAL_SET_I64 => global_set_i64,
+            HANDLER_IDX_GLOBAL_SET_F32 => global_set_f32,
+            HANDLER_IDX_GLOBAL_SET_F64 => global_set_f64,
+            _ => invalid,
         },
         ProcessedInstr::RefLocalReg { handler_index, .. } => match *handler_index {
-            HANDLER_IDX_REF_LOCAL_GET => h_ref_local_get,
-            HANDLER_IDX_REF_LOCAL_SET => h_ref_local_set,
-            _ => h_invalid,
+            HANDLER_IDX_REF_LOCAL_GET => ref_local_get,
+            HANDLER_IDX_REF_LOCAL_SET => ref_local_set,
+            _ => invalid,
         },
         ProcessedInstr::TableRefReg { handler_index, .. } => match *handler_index {
-            HANDLER_IDX_REF_NULL => h_ref_null,
-            HANDLER_IDX_REF_IS_NULL => h_ref_is_null,
-            HANDLER_IDX_TABLE_GET => h_table_get,
-            HANDLER_IDX_TABLE_SET => h_table_set,
-            HANDLER_IDX_TABLE_FILL => h_table_fill,
-            _ => h_invalid,
+            HANDLER_IDX_REF_NULL => ref_null,
+            HANDLER_IDX_REF_IS_NULL => ref_is_null,
+            HANDLER_IDX_TABLE_GET => table_get,
+            HANDLER_IDX_TABLE_SET => table_set,
+            HANDLER_IDX_TABLE_FILL => table_fill,
+            _ => invalid,
         },
-        ProcessedInstr::DataDropReg { .. } => h_data_drop,
-        ProcessedInstr::CallReg { .. } => h_call,
-        ProcessedInstr::CallIndirectReg { .. } => h_call_indirect,
-        ProcessedInstr::CallWasiReg { .. } => h_call_wasi,
-        ProcessedInstr::ReturnReg { .. } => h_return,
-        ProcessedInstr::JumpReg { .. } => h_jump,
-        ProcessedInstr::BlockReg { .. } => h_block,
-        ProcessedInstr::IfReg { .. } => h_if,
-        ProcessedInstr::EndReg { .. } => h_end,
-        ProcessedInstr::BrReg { .. } => h_br,
-        ProcessedInstr::BrIfReg { .. } => h_br_if,
-        ProcessedInstr::BrTableReg { .. } => h_br_table,
-        ProcessedInstr::NopReg => h_nop,
-        ProcessedInstr::UnreachableReg => h_unreachable,
+        ProcessedInstr::DataDropReg { .. } => data_drop,
+        ProcessedInstr::CallReg { .. } => call,
+        ProcessedInstr::CallIndirectReg { .. } => call_indirect,
+        ProcessedInstr::CallWasiReg { .. } => call_wasi,
+        ProcessedInstr::ReturnReg { .. } => r#return,
+        ProcessedInstr::JumpReg { .. } => jump,
+        ProcessedInstr::BlockReg { .. } => block,
+        ProcessedInstr::IfReg { .. } => r#if,
+        ProcessedInstr::EndReg { .. } => end,
+        ProcessedInstr::BrReg { .. } => br,
+        ProcessedInstr::BrIfReg { .. } => br_if,
+        ProcessedInstr::BrTableReg { .. } => br_table,
+        ProcessedInstr::NopReg => nop,
+        ProcessedInstr::UnreachableReg => unreachable,
     }
 }
 

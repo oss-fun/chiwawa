@@ -26,17 +26,15 @@ pub fn run(state: &mut VmState) -> Outcome {
         // Natural pc-overflow handling: pop nested label or halt at function level.
         if state.pc >= state.instrs_len {
             if state.current_label_idx > 0 {
-                let (return_ip, is_loop) = unsafe {
-                    let ls = &(*state.label_stack)[state.current_label_idx];
+                let (return_ip, is_loop) = {
+                    let ls = &state.label_stack()[state.current_label_idx];
                     (ls.label.return_ip, ls.label.is_loop)
                 };
                 let cur_ip = state.pc;
                 if return_ip <= cur_ip && !is_loop {
                     return Outcome::Halt;
                 }
-                unsafe {
-                    (*state.label_stack).pop();
-                }
+                state.label_stack_mut().pop();
                 state.current_label_idx -= 1;
                 state.pc = if is_loop { cur_ip + 1 } else { return_ip };
                 continue;

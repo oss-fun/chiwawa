@@ -125,12 +125,10 @@ fn do_poll_checkpoint(state: &mut VmState) -> bool {
         if state.checkpoint_poll_counter & CHECKPOINT_POLL_MASK != 0 {
             return false;
         }
-        unsafe {
-            if let Some(ref wasi) = (*state.module).wasi_impl {
-                if wasi.check_file_exists(CHECKPOINT_TRIGGER_FILE) {
-                    let _ = std::fs::remove_file(CHECKPOINT_TRIGGER_FILE);
-                    return true;
-                }
+        if let Some(ref wasi) = state.module().wasi_impl {
+            if wasi.check_file_exists(CHECKPOINT_TRIGGER_FILE) {
+                let _ = std::fs::remove_file(CHECKPOINT_TRIGGER_FILE);
+                return true;
             }
         }
         false
