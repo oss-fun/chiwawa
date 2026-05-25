@@ -20,7 +20,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::rc::{Rc, Weak};
 
 /// Per-call dispatcher state. Constructed at the entry of each
-/// `dispatch::run` call from the active `FrameStack`.
+/// `dispatch::execute_instructions` call from the active `FrameStack`.
 pub struct VmState {
     // Register / locals
     pub reg_file: *mut RegFile,
