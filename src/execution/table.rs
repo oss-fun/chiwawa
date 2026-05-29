@@ -43,50 +43,33 @@ impl TableAddr {
             ));
         }
     }
-    /// Gets element at index, returns RefNull if out of bounds.
+    /// Gets element at index. Out-of-bounds panics; host runtime traps.
     pub fn get(&self, i: usize) -> Val {
-        let inst = self.0.borrow();
-        if i < inst.elem.len() as usize {
-            inst.elem[i].clone()
-        } else {
-            Val::Ref(value::Ref::RefNull)
-        }
+        self.0.borrow().elem[i].clone()
     }
 
-    /// Sets element at index.
-    pub fn set(&self, i: usize, val: Val) -> Result<(), RuntimeError> {
-        let mut inst = self.0.borrow_mut();
-        if i < inst.elem.len() as usize {
-            inst.elem[i] = val;
-            Ok(())
-        } else {
-            Err(RuntimeError::InvalidTableIndex)
-        }
+    /// Sets element at index. Out-of-bounds panics; host runtime traps.
+    pub fn set(&self, i: usize, val: Val) {
+        self.0.borrow_mut().elem[i] = val;
     }
 
     /// Fills n elements starting at index with the given value.
-    pub fn fill(&self, i: usize, val: Val, n: usize) -> Result<(), RuntimeError> {
+    /// Out-of-bounds panics; host runtime traps.
+    pub fn fill(&self, i: usize, val: Val, n: usize) {
         let mut inst = self.0.borrow_mut();
-        let len = inst.elem.len();
-        if i.saturating_add(n) > len {
-            return Err(RuntimeError::InvalidTableIndex);
-        }
         for idx in i..i + n {
             inst.elem[idx] = val.clone();
         }
-        Ok(())
     }
 
     /// Gets function address at index for call_indirect.
+    /// Out-of-bounds panics; returns None for non-FuncAddr references (e.g. RefNull),
+    /// caller is expected to delegate the null-reference trap to the host via panic.
     pub fn get_func_addr(&self, i: usize) -> Option<FuncAddr> {
         let inst = self.0.borrow();
-        if i < inst.elem.len() as usize {
-            match &inst.elem[i] {
-                Val::Ref(value::Ref::FuncAddr(func_addr)) => Some(func_addr.clone()),
-                _ => None,
-            }
-        } else {
-            None
+        match &inst.elem[i] {
+            Val::Ref(value::Ref::FuncAddr(func_addr)) => Some(func_addr.clone()),
+            _ => None,
         }
     }
 

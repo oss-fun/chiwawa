@@ -444,9 +444,9 @@ i32_unop!(i32_eqz, |a: i32| (a == 0) as i32);
 i32_unop!(i32_extend8_s, |a: i32| (a as i8) as i32);
 i32_unop!(i32_extend16_s, |a: i32| (a as i16) as i32);
 
-// Division / remainder need trap handling. Tail-call trap on error so
-// the success path is preserved as a tail call (LLVM still emits
-// return_call_indirect for it).
+// Division / remainder: delegate divide-by-zero and signed overflow traps to
+// the host runtime. On wasm32, plain `/` and `%` emit `i32.div_s` / `i32.rem_s`
+// which trap on host; `wrapping_rem` preserves Wasm-spec `MIN % -1 = 0`.
 pub fn i32_div_s(state: &mut VmState) -> Outcome {
     let (dst, src1, src2) = match state.current_instr() {
         ProcessedInstr::I32Reg {
@@ -456,11 +456,7 @@ pub fn i32_div_s(state: &mut VmState) -> Outcome {
     };
     let a = operand::read_i32(state, &src1);
     let b = operand::read_i32(state, &src2);
-    if b == 0 {
-        state.trap = Some(RuntimeError::ZeroDivideError);
-        return trap(state);
-    }
-    operand::write_i32(state, &dst, a.wrapping_div(b));
+    operand::write_i32(state, &dst, a / b);
     state.pc += 1;
     advance!(state)
 }
@@ -474,10 +470,6 @@ pub fn i32_div_u(state: &mut VmState) -> Outcome {
     };
     let a = operand::read_i32(state, &src1);
     let b = operand::read_i32(state, &src2) as u32;
-    if b == 0 {
-        state.trap = Some(RuntimeError::ZeroDivideError);
-        return trap(state);
-    }
     operand::write_i32(state, &dst, ((a as u32) / b) as i32);
     state.pc += 1;
     advance!(state)
@@ -492,10 +484,6 @@ pub fn i32_rem_s(state: &mut VmState) -> Outcome {
     };
     let a = operand::read_i32(state, &src1);
     let b = operand::read_i32(state, &src2);
-    if b == 0 {
-        state.trap = Some(RuntimeError::ZeroDivideError);
-        return trap(state);
-    }
     operand::write_i32(state, &dst, a.wrapping_rem(b));
     state.pc += 1;
     advance!(state)
@@ -510,10 +498,6 @@ pub fn i32_rem_u(state: &mut VmState) -> Outcome {
     };
     let a = operand::read_i32(state, &src1);
     let b = operand::read_i32(state, &src2) as u32;
-    if b == 0 {
-        state.trap = Some(RuntimeError::ZeroDivideError);
-        return trap(state);
-    }
     operand::write_i32(state, &dst, ((a as u32) % b) as i32);
     state.pc += 1;
     advance!(state)
@@ -627,7 +611,7 @@ pub fn i64_eqz(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
-// I64 division / remainder with trap (overflow check on div_s)
+// I64 division / remainder: host runtime traps divide-by-zero and div_s overflow.
 pub fn i64_div_s(state: &mut VmState) -> Outcome {
     let (dst, src1, src2) = match state.current_instr() {
         ProcessedInstr::I64Reg {
@@ -637,15 +621,7 @@ pub fn i64_div_s(state: &mut VmState) -> Outcome {
     };
     let a = operand::read_i64(state, &src1);
     let b = operand::read_i64(state, &src2);
-    if b == 0 {
-        state.trap = Some(RuntimeError::ZeroDivideError);
-        return trap(state);
-    }
-    if a == i64::MIN && b == -1 {
-        state.trap = Some(RuntimeError::IntegerOverflow);
-        return trap(state);
-    }
-    operand::write_i64(state, &dst, a.wrapping_div(b));
+    operand::write_i64(state, &dst, a / b);
     state.pc += 1;
     advance!(state)
 }
@@ -659,10 +635,6 @@ pub fn i64_div_u(state: &mut VmState) -> Outcome {
     };
     let a = operand::read_i64(state, &src1);
     let b = operand::read_i64(state, &src2) as u64;
-    if b == 0 {
-        state.trap = Some(RuntimeError::ZeroDivideError);
-        return trap(state);
-    }
     operand::write_i64(state, &dst, ((a as u64) / b) as i64);
     state.pc += 1;
     advance!(state)
@@ -677,10 +649,6 @@ pub fn i64_rem_s(state: &mut VmState) -> Outcome {
     };
     let a = operand::read_i64(state, &src1);
     let b = operand::read_i64(state, &src2);
-    if b == 0 {
-        state.trap = Some(RuntimeError::ZeroDivideError);
-        return trap(state);
-    }
     operand::write_i64(state, &dst, a.wrapping_rem(b));
     state.pc += 1;
     advance!(state)
@@ -695,10 +663,6 @@ pub fn i64_rem_u(state: &mut VmState) -> Outcome {
     };
     let a = operand::read_i64(state, &src1);
     let b = operand::read_i64(state, &src2) as u64;
-    if b == 0 {
-        state.trap = Some(RuntimeError::ZeroDivideError);
-        return trap(state);
-    }
     operand::write_i64(state, &dst, ((a as u64) % b) as i64);
     state.pc += 1;
     advance!(state)
@@ -1437,9 +1401,9 @@ pub fn nop(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
-pub fn unreachable(state: &mut VmState) -> Outcome {
-    state.trap = Some(RuntimeError::Unreachable);
-    trap(state)
+pub fn unreachable(_state: &mut VmState) -> Outcome {
+    // Wasm `unreachable`: delegate to host. panic! on wasm32 produces a host trap.
+    panic!("wasm unreachable executed")
 }
 
 pub fn br(state: &mut VmState) -> Outcome {
@@ -1723,13 +1687,8 @@ pub fn call_indirect(state: &mut VmState) -> Outcome {
             return trap(state);
         }
     };
-    let func_addr = match table_addr.get_func_addr(i as usize) {
-        Some(fa) => fa,
-        None => {
-            state.trap = Some(RuntimeError::UninitializedElement);
-            return trap(state);
-        }
-    };
+    // Out-of-bounds index / null reference: delegate to host via Rust panic.
+    let func_addr = table_addr.get_func_addr(i as usize).unwrap();
     let actual_type = func_addr.func_type();
     let expected_type = &state.module().types[type_idx.0 as usize];
     if *actual_type != *expected_type {
@@ -1973,10 +1932,7 @@ pub fn table_set(state: &mut VmState) -> Outcome {
     let rf = state.reg_file();
     let index = rf.get_i32(regs[0]) as usize;
     let ref_val = rf.get_ref(regs[1]);
-    if let Err(e) = table_addr.set(index, Val::Ref(ref_val)) {
-        state.trap = Some(e);
-        return trap(state);
-    }
+    table_addr.set(index, Val::Ref(ref_val));
     state.pc += 1;
     advance!(state)
 }
@@ -1999,10 +1955,7 @@ pub fn table_fill(state: &mut VmState) -> Outcome {
     let i = rf.get_i32(regs[0]) as usize;
     let ref_val = rf.get_ref(regs[1]);
     let n = rf.get_i32(regs[2]) as usize;
-    if let Err(e) = table_addr.fill(i, Val::Ref(ref_val), n) {
-        state.trap = Some(e);
-        return trap(state);
-    }
+    table_addr.fill(i, Val::Ref(ref_val), n);
     state.pc += 1;
     advance!(state)
 }
