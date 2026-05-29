@@ -188,7 +188,9 @@ impl Runtime {
             Outcome::Halt => Ok(Ok(None)),
             Outcome::Yield => Ok(Ok(state.yielded)),
             Outcome::Trap => {
-                let err = state.trap.unwrap_or(RuntimeError::Unreachable);
+                let err = state
+                    .trap
+                    .expect("Outcome::Trap returned without state.trap set");
                 if matches!(err, RuntimeError::CheckpointRequested) {
                     Ok(Err(err))
                 } else {

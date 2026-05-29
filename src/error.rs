@@ -10,38 +10,18 @@ pub enum RuntimeError {
     ExportFuncNotFound,
     #[error("Instruction Failed")]
     InstructionFailed,
-    #[error("Divide by Zero")]
-    ZeroDivideError,
     #[error("Invalid Conversion to Integer")]
     InvalidConversionToInt,
     #[error("Integer Overflow")]
     IntegerOverflow,
     #[error("Link Failed")]
     LinkError,
-    #[error("Unreachable Code Reached")]
-    Unreachable,
     #[error("Stack Error: {0}")]
     StackError(&'static str),
-    #[error("Value Stack Underflow")]
-    ValueStackUnderflow,
-    #[error("Invalid Operand for Instruction")]
-    InvalidOperand,
     #[error("Invalid Handler Index")]
     InvalidHandlerIndex,
-    #[error("Unimplemented Instruction Reached")]
-    UnimplementedInstruction,
-    #[error("Unimplemented")]
-    Unimplemented,
-    #[error("Module Instance Reference Lost")]
-    ModuleInstanceGone,
     #[error("Memory Instance Not Found")]
     MemoryNotFound,
-    #[error("Memory Access Out Of Bounds")]
-    MemoryOutOfBounds,
-    #[error("Local Variable Index Out Of Bounds")]
-    LocalIndexOutOfBounds,
-    #[error("Global Variable Index Out Of Bounds")]
-    GlobalIndexOutOfBounds,
     #[error("Invalid Wasm Binary: {0}")]
     InvalidWasm(&'static str),
     #[error("Type Mismatch")]
@@ -52,22 +32,12 @@ pub enum RuntimeError {
     UnimplementedHostFunction,
     #[error("Table Instance Not Found")]
     TableNotFound,
-    #[error("Invalid Table Index")]
-    InvalidTableIndex,
-    #[error("Type Not Found in Module")]
-    TypeNotFound,
     #[error("Indirect Call Type Mismatch")]
     IndirectCallTypeMismatch,
-    #[error("Uninitialized Element in Table")]
-    UninitializedElement,
     #[error("Invalid Constant Expression")]
     InvalidConstantExpression,
     #[error("Invalid Data Segment Index")]
     InvalidDataSegmentIndex,
-    #[error("Trap")]
-    Trap,
-    #[error("Invalid Branch Target")]
-    InvalidBranchTarget,
 
     // Migration Errors
     #[error("Serialization Error: {0}")]
@@ -80,8 +50,6 @@ pub enum RuntimeError {
     CheckpointLoadError(String),
     #[error("Checkpoint Requested")]
     CheckpointRequested,
-    #[error("Restore Error: {0}")]
-    RestoreError(String),
 }
 
 #[derive(Debug, Error, Clone, PartialEq)]
