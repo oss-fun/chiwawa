@@ -48,95 +48,135 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::time::Duration;
 
-static CHECKPOINT_TRIGGERED: AtomicBool = AtomicBool::new(false);
 const CHECKPOINT_TRIGGER_FILE: &str = "./checkpoint.trigger";
 
-/// Starts background thread to monitor checkpoint trigger file.
-///
-/// Used on `wasm32-wasip1-threads` target for non-blocking checkpoint detection.
-pub fn setup_checkpoint_monitor() {
-    thread::spawn(|| loop {
-        if std::path::Path::new(CHECKPOINT_TRIGGER_FILE).exists() {
-            CHECKPOINT_TRIGGERED.store(true, Ordering::Relaxed);
-            let _ = std::fs::remove_file(CHECKPOINT_TRIGGER_FILE);
-        }
-        thread::sleep(Duration::from_millis(10));
-    });
-}
-
-/// Checks if checkpoint has been triggered via atomic flag.
-#[inline(always)]
-pub fn check_checkpoint_flag() -> bool {
-    CHECKPOINT_TRIGGERED.load(Ordering::Relaxed)
-}
-
-/// Polls for a checkpoint request from the dispatcher hot path.
-///
-/// Returns `true` if a checkpoint should be taken. Designed to be called per
-/// instruction from the v2 dispatcher (`advance!` macro in TCO mode, loop
-/// header in legacy mode).
-///
-/// # Granularity
-/// - **atomics target** (`wasm32-wasip1-threads`): every call hits a cheap
-///   atomic load. The flag is set asynchronously by the monitor thread.
-/// - **non-atomics target** (`wasm32-wasip1`): an internal counter throttles
-///   the WASI file-existence syscall to once every `CHECKPOINT_POLL_INTERVAL`
-///   instructions. This balances responsiveness with overhead.
-///
-/// Per-instruction polling is the design intent: checkpoints can fire at
-/// any execution point, not just function/loop boundaries.
-///
-/// Hot path (checkpoint disabled) is inlined to a single branch; the slow
-/// path is `#[inline(never)]` so the dispatcher's tail-call to the next
-/// handler is not displaced by inlined syscall code.
-#[inline(always)]
-pub fn poll_checkpoint(state: &mut VmState) -> bool {
-    if !state.enable_checkpoint {
-        return false;
-    }
-    do_poll_checkpoint(state)
-}
-
-#[inline(never)]
-fn do_poll_checkpoint(state: &mut VmState) -> bool {
-    #[cfg(all(
+cfg_if::cfg_if! {
+    if #[cfg(all(
         target_arch = "wasm32",
         target_os = "wasi",
         target_env = "p1",
         target_feature = "atomics"
-    ))]
-    {
-        let _ = state;
-        check_checkpoint_flag()
-    }
+    ))] {
+        use crate::execution::ir::Handler;
+        use std::cell::UnsafeCell;
+        use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+        use std::sync::{Arc, Mutex, Weak};
+        use std::thread;
+        use std::time::Duration;
 
-    #[cfg(not(all(
-        target_arch = "wasm32",
-        target_os = "wasi",
-        target_env = "p1",
-        target_feature = "atomics"
-    )))]
-    {
-        state.checkpoint_poll_counter = state.checkpoint_poll_counter.wrapping_add(1);
-        if state.checkpoint_poll_counter & CHECKPOINT_POLL_MASK != 0 {
-            return false;
+        static CHECKPOINT_TRIGGERED: AtomicBool = AtomicBool::new(false);
+
+        /// Per-frame mutable handler array. The monitor thread patches entries
+        /// with `checkpoint_trap` via atomic stores; the dispatcher reads via
+        /// non-atomic raw pointer.
+        pub struct HandlerControl {
+            pub handlers: UnsafeCell<Vec<Handler>>,
         }
-        if let Some(ref wasi) = state.module().wasi_impl {
-            if wasi.check_file_exists(CHECKPOINT_TRIGGER_FILE) {
-                let _ = std::fs::remove_file(CHECKPOINT_TRIGGER_FILE);
-                return true;
+
+        impl std::fmt::Debug for HandlerControl {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct("HandlerControl").finish_non_exhaustive()
             }
         }
-        false
+
+        unsafe impl Send for HandlerControl {}
+        unsafe impl Sync for HandlerControl {}
+
+        impl HandlerControl {
+            pub fn new(source: &[Handler]) -> Arc<Self> {
+                let ctrl = Arc::new(Self {
+                    handlers: UnsafeCell::new(source.to_vec()),
+                });
+                register_handler_control(&ctrl);
+                // Catch a trigger that arrived since the monitor's last sweep.
+                if CHECKPOINT_TRIGGERED.load(Ordering::Relaxed) {
+                    ctrl.patch();
+                }
+                ctrl
+            }
+
+            /// Raw pointer fed into `VmState::handlers` at frame entry.
+            #[inline]
+            pub fn handlers_ptr(&self) -> *const Handler {
+                unsafe { (*self.handlers.get()).as_ptr() }
+            }
+
+            /// Overwrite every entry with `checkpoint_trap`.
+            pub fn patch(&self) {
+                let vec = unsafe { &mut *self.handlers.get() };
+                let len = vec.len();
+                let base = vec.as_mut_ptr() as *mut AtomicPtr<()>;
+                let target = crate::execution::handlers::checkpoint_trap as *mut ();
+                for i in 0..len {
+                    unsafe { (&*base.add(i)).store(target, Ordering::Relaxed) };
+                }
+            }
+        }
+
+        static HANDLER_REGISTRY: Mutex<Vec<Weak<HandlerControl>>> = Mutex::new(Vec::new());
+
+        fn register_handler_control(ctrl: &Arc<HandlerControl>) {
+            let mut reg = HANDLER_REGISTRY.lock().unwrap();
+            reg.retain(|w| w.strong_count() > 0);
+            reg.push(Arc::downgrade(ctrl));
+        }
+
+        /// Spawns a background thread that watches the trigger file and patches
+        /// every live `HandlerControl`, sparing the dispatcher any per-instruction poll.
+        pub fn setup_checkpoint_monitor() {
+            thread::spawn(|| loop {
+                if std::path::Path::new(CHECKPOINT_TRIGGER_FILE).exists() {
+                    CHECKPOINT_TRIGGERED.store(true, Ordering::Relaxed);
+                    let reg = HANDLER_REGISTRY.lock().unwrap();
+                    for weak in reg.iter() {
+                        if let Some(ctrl) = weak.upgrade() {
+                            ctrl.patch();
+                        }
+                    }
+                    drop(reg);
+                    let _ = std::fs::remove_file(CHECKPOINT_TRIGGER_FILE);
+                }
+                thread::sleep(Duration::from_millis(100));
+            });
+        }
+
+        /// No-op on atomics — monitor patches handlers ([`HandlerControl::patch`]).
+        /// `#[inline(always)]` lets LLVM erase the call-site branches.
+        #[inline(always)]
+        pub fn poll_checkpoint(_state: &mut VmState) -> bool {
+            false
+        }
+    } else {
+        /// Counter-throttled file poll: actual syscall only once every
+        /// `CHECKPOINT_POLL_MASK + 1` instructions.
+        #[inline(always)]
+        pub fn poll_checkpoint(state: &mut VmState) -> bool {
+            if !state.enable_checkpoint {
+                return false;
+            }
+            do_poll_checkpoint(state)
+        }
+
+        #[inline(never)]
+        fn do_poll_checkpoint(state: &mut VmState) -> bool {
+            state.checkpoint_poll_counter = state.checkpoint_poll_counter.wrapping_add(1);
+            if state.checkpoint_poll_counter & CHECKPOINT_POLL_MASK != 0 {
+                return false;
+            }
+            if let Some(ref wasi) = state.module().wasi_impl {
+                if wasi.check_file_exists(CHECKPOINT_TRIGGER_FILE) {
+                    let _ = std::fs::remove_file(CHECKPOINT_TRIGGER_FILE);
+                    return true;
+                }
+            }
+            false
+        }
+
+        /// Throttle interval for non-atomics file polling (= every 1024 instructions).
+        const CHECKPOINT_POLL_MASK: u32 = 0x3FF;
     }
 }
-
-/// Throttle interval for non-atomics file polling (= every 1024 instructions).
-const CHECKPOINT_POLL_MASK: u32 = 0x3FF;
 
 /// Complete runtime state for checkpoint serialization.
 ///
@@ -339,6 +379,18 @@ pub fn restore<P: AsRef<Path>>(
             }
             // v2 dispatcher: handler array (function pointers) — Rc<Vec<Handler>>
             frame_stack.handlers = code.handlers.clone();
+            // Restored frames default to enable_checkpoint=false (Runtime::run
+            // sets it true on the topmost frame later); HandlerControl will be
+            // re-created at run() time if needed.
+            #[cfg(all(
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p1",
+                target_feature = "atomics"
+            ))]
+            {
+                frame_stack.handler_ctrl = None;
+            }
         }
 
         // v2 dispatcher: cached raw pointer to memory data

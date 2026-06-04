@@ -145,7 +145,23 @@ impl Runtime {
                 ls.ip,
             )
         };
-        let handlers_ptr = frame_stack.handlers.as_ptr();
+        let handlers_ptr = {
+            cfg_if::cfg_if! {
+                if #[cfg(all(
+                    target_arch = "wasm32",
+                    target_os = "wasi",
+                    target_env = "p1",
+                    target_feature = "atomics"
+                ))] {
+                    match &frame_stack.handler_ctrl {
+                        Some(ctrl) => ctrl.handlers_ptr(),
+                        None => frame_stack.handlers.as_ptr(),
+                    }
+                } else {
+                    frame_stack.handlers.as_ptr()
+                }
+            }
+        };
         let mem_ptr = frame_stack.cached_mem_ptr.unwrap_or(std::ptr::null_mut());
         let locals_ptr = frame_stack.frame.locals.as_mut_ptr();
         let label_stack_ptr: *mut Vec<LabelStack> =
@@ -222,6 +238,16 @@ impl Runtime {
         // Set checkpoint enabled flag for initial frame stack
         if let Some(frame_stack) = self.stacks.activation_frame_stack.first_mut() {
             frame_stack.enable_checkpoint = self.enable_checkpoint;
+            #[cfg(all(
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p1",
+                target_feature = "atomics"
+            ))]
+            if self.enable_checkpoint && frame_stack.handler_ctrl.is_none() {
+                frame_stack.handler_ctrl =
+                    Some(migration::HandlerControl::new(&frame_stack.handlers));
+            }
         }
 
         while !self.stacks.activation_frame_stack.is_empty() {
@@ -307,6 +333,13 @@ impl Runtime {
                                     type_,
                                     module: func_module_weak,
                                     code,
+                                    #[cfg(all(
+                                        target_arch = "wasm32",
+                                        target_os = "wasi",
+                                        target_env = "p1",
+                                        target_feature = "atomics"
+                                    ))]
+                                        handler_ctrl: cached_ctrl,
                                 } => {
                                     let mut locals = params;
                                     for v in code.locals.iter() {
@@ -351,6 +384,21 @@ impl Runtime {
                                         primary_mem,
                                         cached_mem_ptr,
                                         handlers: code.handlers.clone(),
+                                        #[cfg(all(
+                                            target_arch = "wasm32",
+                                            target_os = "wasi",
+                                            target_env = "p1",
+                                            target_feature = "atomics"
+                                        ))]
+                                        handler_ctrl: if self.enable_checkpoint {
+                                            // Reuse this function's cached HandlerControl
+                                            // (created once on its first call with --cr on).
+                                            Some(std::sync::Arc::clone(cached_ctrl.get_or_init(
+                                                || migration::HandlerControl::new(&code.handlers),
+                                            )))
+                                        } else {
+                                            None
+                                        },
                                     };
                                     self.stacks.activation_frame_stack.push(new_frame);
                                 }
