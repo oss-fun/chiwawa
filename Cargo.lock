@@ -149,6 +149,7 @@ dependencies = [
  "arrayvec",
  "bincode",
  "byteorder",
+ "cfg-if",
  "clap",
  "fancy-regex",
  "getrandom",
