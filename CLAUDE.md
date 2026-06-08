@@ -57,7 +57,6 @@ Options:
   --app-args <ARGS>        Additional arguments to pass to WASM application
                            These become argv[1], argv[2], ... in the guest
   --cr                     Enable checkpoint/restore functionality
-  --superinstructions      Enable superinstructions optimizations (const + local.set)
   --stats                  Enable statistics output
   -h, --help               Print help
   -v, --version            Print version
@@ -79,9 +78,9 @@ wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm \
 wasmtime target/wasm32-wasip1/release/chiwawa.wasm sqlite-bench.wasm \
   --app-args "--database test.db --iterations 1000"
 
-# Execute with optimization options
+# Execute with statistics output
 wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm \
-  --superinstructions --stats
+  --stats
 
 # Checkpoint/Restore execution
 # 1. Execute with checkpoint enabled
@@ -138,7 +137,6 @@ wasmtime target/wasm32-wasip1/release/chiwawa.wasm test.wasm \
 3. DTC preprocessing
    - Convert WebAssembly instructions to DTC format (ProcessedInstr)
    - Pre-calculate absolute jump targets for branch instructions (Fixup process)
-   - Superinstruction optimization (when `--superinstructions` enabled)
 4. Create module instance (memory, tables, global variables, etc.)
 5. Initialize Runtime
    - Normal execution: Start from entry point function
@@ -240,33 +238,26 @@ Tests are located in the `tests/` directory and are based on WebAssembly and WAS
 - `tests/wasm/`: WebAssembly core test binaries (.wasm and .wat pairs)
 - `tests/wasi/`: WASI test binaries
 
-## Optimization Features
-
-Chiwawa provides the following optimization features:
-
-### Superinstructions
-Enable with `--superinstructions` flag.
-
-**Overview:**
-Fuses frequently occurring instruction patterns (e.g., `i32.const` + `local.set`) into a single superinstruction, reducing instruction dispatch overhead.
-
-**Benefits:**
-- Reduced instruction fetch and dispatch count
-- Improved cache locality
-- Particularly effective for code with many constant assignments
+## Instrumentation Features
 
 ### Statistics Output
-Enable with `--stats` flag.
+Enable at runtime with the `--stats` flag. Requires building with the `stats`
+cargo feature (`cargo build --features stats`); without it, `--stats` is ignored
+with a warning.
 
-**Output Information:**
-- Instruction execution count
-- Superinstruction execution count (when used with `--superinstructions`)
-- Execution time statistics
+**Scope:**
+- Collected only by the non-TCO (loop) dispatcher. When the `tco` feature is
+  enabled, `--stats` is ignored with a warning, because the tail-call dispatcher
+  has no central loop to hook.
+
+**Output Information (printed to stderr on exit):**
+- Total instructions executed
+- Top instructions by execution count, with per-instruction counts and
+  percentage of total
 
 **Use Cases:**
 - Performance analysis
-- Measuring optimization effectiveness
-- Identifying bottlenecks
+- Identifying hot instructions / bottlenecks
 
 ## Development Guidelines
 
