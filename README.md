@@ -10,9 +10,9 @@ Pick a build alias based on the host Wasm runtime's tail-call support
 (see [Dispatcher Modes](#dispatcher-modes) below):
 
 ```bash
-# Tail-call dispatcher (Wasmtime v28+, WasmEdge 0.14+)
+# Tail-call dispatcher
 cargo build-tco           # → target/tco/wasm32-wasip1/release/chiwawa.wasm
-# Loop dispatcher (works on any modern Wasm runtime, incl. WAMR)
+# Loop dispatcher
 cargo build-legacy        # → target/legacy/wasm32-wasip1/release/chiwawa.wasm
 
 # Call function with Wasm parameters (I32, I64, F32, F64)
