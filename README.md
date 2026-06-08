@@ -73,13 +73,13 @@ If `--trace` is used without the feature enabled, a warning is displayed and the
 
 ## Statistics
 
-Statistics output requires the `stats` feature to be enabled at compile time:
+Statistics output requires the `stats` feature to be enabled at compile time.
+It is collected only by the loop dispatcher (non-`tco`).
+The tail-call dispatcher has no central loop to hook, so `--stats` is ignored under `tco`.
 
 ```bash
-# Build with stats feature on top of a build alias
+# Build with stats feature on top of the loop dispatcher
 cargo build-legacy --features stats
-# Or with the tail-call dispatcher
-cargo build-tco --features stats
 
 # Run with statistics output
 somethingWasmRuntime target/legacy/wasm32-wasip1/release/chiwawa.wasm test.wasm --stats
