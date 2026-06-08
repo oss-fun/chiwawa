@@ -55,21 +55,23 @@ somethingWasmRuntime target/tco-threads/wasm32-wasip1-threads/release/chiwawa.wa
 ```
 ## Tracing
 
-Tracing requires the `trace` feature to be enabled at compile time. Stack the
-feature onto a build alias to keep the per-dispatch-mode output directory:
+Tracing requires the `trace` feature to be enabled at compile time. It is
+performed only by the loop dispatcher (non-`tco`), the same as statistics: the
+tail-call dispatcher has no central loop to hook, so `--trace` is ignored with a
+warning under `tco`.
 
 ```bash
 # Build with trace feature on top of the loop dispatcher
 cargo build-legacy --features trace
-# Or with the tail-call dispatcher
-cargo build-tco --features trace
 
 # TRACE_EVENTS = (all,store,load,call,branch)
-# TRACE_RESOURCE = (regs,memory,locals,globals,pc)
+# TRACE_RESOURCE = (regs,locals,globals,pc)
 somethingWasmRuntime target/legacy/wasm32-wasip1/release/chiwawa.wasm test.wasm --trace --trace-events [<TRACE_EVENTS>...] --trace-resource [<TRACE_RESOURCE>...]
 ```
 
-If `--trace` is used without the feature enabled, a warning is displayed and the flag is ignored.
+If `--trace` is used without the feature enabled, a warning is displayed and the
+flag is ignored. The same applies when `--trace` is combined with the `tco`
+feature.
 
 ## Statistics
 
