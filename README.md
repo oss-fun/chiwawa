@@ -29,8 +29,8 @@ Chiwawa ships two dispatcher implementations selected at build time via the
 
 | Mode | Cargo feature | Build alias | Requirement |
 |---|---|---|---|
-| Loop dispatch | (none) | `cargo build-legacy` | Any modern Wasm runtime (incl. WAMR) |
-| Tail-call dispatch | `tco` | `cargo build-tco` | Wasm tail-call proposal (Wasmtime v28+, WasmEdge 0.14+) |
+| Loop dispatch | (none) | `cargo build-legacy` | Any Wasm runtime|
+| Tail-call dispatch | `tco` | `cargo build-tco` | Wasm tail-call proposal|
 
 With `tco`, each handler tail-calls (`return_call_indirect`) the next handler,
 removing the dispatch loop overhead. Use the loop dispatcher when the host
