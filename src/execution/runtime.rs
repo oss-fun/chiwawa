@@ -26,6 +26,7 @@ use std::sync::Once;
 pub struct Runtime {
     module_inst: Rc<ModuleInst>,
     stacks: Stacks,
+    #[cfg_attr(not(feature = "stats"), allow(dead_code))]
     execution_stats: Option<ExecutionStats>,
     #[cfg(feature = "trace")]
     tracer: Option<Tracer>,
@@ -170,6 +171,12 @@ impl Runtime {
             &mut frame_stack.return_result_regs as *mut ArrayVec<Reg, 8>;
         let enable_checkpoint = frame_stack.enable_checkpoint;
 
+        #[cfg(feature = "stats")]
+        let stats_ptr = self
+            .execution_stats
+            .as_mut()
+            .map_or(std::ptr::null_mut(), |s| s as *mut ExecutionStats);
+
         let mut state = VmState {
             reg_file: reg_file_ptr,
             locals: locals_ptr,
@@ -186,6 +193,8 @@ impl Runtime {
             return_result_regs: return_result_regs_ptr,
             enable_checkpoint,
             checkpoint_poll_counter: 0,
+            #[cfg(feature = "stats")]
+            stats: stats_ptr,
         };
 
         let outcome = dispatch::execute_instructions(&mut state);

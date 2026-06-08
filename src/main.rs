@@ -138,6 +138,14 @@ fn main() -> Result<()> {
         eprintln!("         Rebuild with: cargo build --features stats");
     }
 
+    // Warn if --stats is combined with the tco feature: the tail-call
+    // dispatcher has no central loop to hook, so stats is unsupported there.
+    #[cfg(all(feature = "stats", feature = "tco"))]
+    if cli.enable_stats {
+        eprintln!("Warning: --stats is ignored because the 'tco' feature is enabled.");
+        eprintln!("         Statistics are only collected by the non-tco dispatcher.");
+    }
+
     // Warn if --trace is used but trace feature is not enabled
     #[cfg(not(feature = "trace"))]
     if cli.enable_trace {
