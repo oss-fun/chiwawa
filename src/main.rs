@@ -153,6 +153,14 @@ fn main() -> Result<()> {
         eprintln!("         Rebuild with: cargo build --features trace");
     }
 
+    // Warn if --trace is combined with the tco feature: the tail-call
+    // dispatcher has no central loop to hook, so tracing is unsupported there.
+    #[cfg(all(feature = "trace", feature = "tco"))]
+    if cli.enable_trace {
+        eprintln!("Warning: --trace is ignored because the 'tco' feature is enabled.");
+        eprintln!("         Tracing is only performed by the non-tco dispatcher.");
+    }
+
     let mut module = Module::new("test");
     let _ = parser::parse_bytecode(&mut module, &cli.wasm_file);
     let imports: ImportObjects = FxHashMap::default();

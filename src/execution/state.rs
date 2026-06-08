@@ -67,9 +67,18 @@ pub struct VmState {
     /// Incremented by `migration::poll_checkpoint`
     pub checkpoint_poll_counter: u32,
 
-    /// Execution statistics sink (loop dispatcher only)
+    /// Execution statistics (loop dispatcher only)
     #[cfg(feature = "stats")]
     pub stats: *mut crate::execution::stats::ExecutionStats,
+
+    /// Execution tracer (loop dispatcher only)
+    #[cfg(feature = "trace")]
+    pub tracer: *mut crate::execution::trace::Tracer,
+
+    /// Number of locals in the current frame.
+    /// Needed because `locals` is a raw pointer with no length;
+    #[cfg(feature = "trace")]
+    pub locals_len: usize,
 }
 
 impl VmState {

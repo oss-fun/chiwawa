@@ -177,6 +177,14 @@ impl Runtime {
             .as_mut()
             .map_or(std::ptr::null_mut(), |s| s as *mut ExecutionStats);
 
+        #[cfg(feature = "trace")]
+        let tracer_ptr = self
+            .tracer
+            .as_mut()
+            .map_or(std::ptr::null_mut(), |t| t as *mut Tracer);
+        #[cfg(feature = "trace")]
+        let locals_len = frame_stack.frame.locals.len();
+
         let mut state = VmState {
             reg_file: reg_file_ptr,
             locals: locals_ptr,
@@ -195,6 +203,10 @@ impl Runtime {
             checkpoint_poll_counter: 0,
             #[cfg(feature = "stats")]
             stats: stats_ptr,
+            #[cfg(feature = "trace")]
+            tracer: tracer_ptr,
+            #[cfg(feature = "trace")]
+            locals_len,
         };
 
         let outcome = dispatch::execute_instructions(&mut state);
