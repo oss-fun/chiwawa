@@ -43,6 +43,12 @@ pub fn execute_instructions(state: &mut VmState) -> Outcome {
             }
         }
 
+        #[cfg(feature = "stats")]
+        if !state.stats.is_null() {
+            let idx = state.current_instr().handler_index();
+            unsafe { (*state.stats).record_instruction(idx) };
+        }
+
         let h = unsafe { *state.handlers.add(state.pc) };
         match h(state) {
             Outcome::Continue => continue,

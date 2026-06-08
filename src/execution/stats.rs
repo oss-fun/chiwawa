@@ -1,33 +1,32 @@
 //! Instruction execution statistics collection.
 
-use rustc_hash::FxHashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use super::handlers::*;
+
+/// Number of handler-index slots. Must exceed the largest `HANDLER_IDX_*`
+/// (currently 0x103); 0x104 leaves the counter array indexable by every index.
+const HANDLER_SLOTS: usize = 0x104;
 
 /// Collects per-instruction execution counts.
 #[derive(Debug)]
 pub struct ExecutionStats {
-    total_instructions: AtomicU64,
-    per_instruction: FxHashMap<usize, AtomicU64>,
+    total: u64,
+    counts: Box<[u64]>,
 }
 
 impl ExecutionStats {
     /// Creates a new statistics collector.
     pub fn new() -> Self {
         Self {
-            total_instructions: AtomicU64::new(0),
-            per_instruction: FxHashMap::default(),
+            total: 0,
+            counts: vec![0u64; HANDLER_SLOTS].into_boxed_slice(),
         }
     }
 
     /// Records execution of a single instruction by handler index.
+    #[inline]
     pub fn record_instruction(&mut self, handler_index: usize) {
-        self.total_instructions.fetch_add(1, Ordering::Relaxed);
-        self.per_instruction
-            .entry(handler_index)
-            .or_insert_with(|| AtomicU64::new(0))
-            .fetch_add(1, Ordering::Relaxed);
+        self.total += 1;
+        self.counts[handler_index] += 1;
     }
 
     /// Maps handler index to human-readable instruction name.
@@ -282,7 +281,7 @@ impl ExecutionStats {
 
     /// Prints statistics summary to stderr.
     pub fn report(&self) {
-        let total = self.total_instructions.load(Ordering::Relaxed);
+        let total = self.total;
 
         eprintln!("=== Execution Statistics ===");
         eprintln!("Total instructions executed: {}", total);
@@ -292,11 +291,13 @@ impl ExecutionStats {
             return;
         }
 
-        // Collect and sort instruction counts
+        // Collect non-zero instruction counts and sort descending
         let mut counts: Vec<(usize, u64)> = self
-            .per_instruction
+            .counts
             .iter()
-            .map(|(idx, count)| (*idx, count.load(Ordering::Relaxed)))
+            .enumerate()
+            .filter(|(_, &count)| count > 0)
+            .map(|(idx, &count)| (idx, count))
             .collect();
 
         counts.sort_by(|a, b| b.1.cmp(&a.1));

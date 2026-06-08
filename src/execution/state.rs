@@ -66,6 +66,10 @@ pub struct VmState {
     /// Counter for non-atomics-target checkpoint poll throttling.
     /// Incremented by `migration::poll_checkpoint`
     pub checkpoint_poll_counter: u32,
+
+    /// Execution statistics sink (loop dispatcher only)
+    #[cfg(feature = "stats")]
+    pub stats: *mut crate::execution::stats::ExecutionStats,
 }
 
 impl VmState {
