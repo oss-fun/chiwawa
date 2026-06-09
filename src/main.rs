@@ -41,7 +41,7 @@ struct Cli {
     /// Trace events to monitor (all,store,load,call,branch)
     #[arg(long = "trace-events", value_delimiter = ',', num_args = 0..)]
     trace_events: Option<Vec<String>>,
-    /// Resources to trace (stack,memory,locals,globals,pc)
+    /// Resources to trace (pc,regs,memory,globals)
     #[arg(long = "trace-resource", value_delimiter = ',', num_args = 0..)]
     trace_resource: Option<Vec<String>>,
     /// Trace output destination (defaults to stderr)

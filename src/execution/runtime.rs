@@ -12,9 +12,8 @@ use crate::execution::state::{Frame, FrameStack, Label, LabelStack, ModuleLevelI
 use crate::execution::stats::ExecutionStats;
 #[cfg(feature = "trace")]
 use crate::execution::trace::{TraceConfig, Tracer};
-use crate::execution::value::{Num, Val, Vec_};
+use crate::execution::value::{Num, Val};
 use crate::structure::module::WasiFuncType;
-use crate::structure::types::{NumType, ValueType, VecType};
 use crate::wasi::{WasiError, WasiResult};
 use arrayvec::ArrayVec;
 use std::path::Path;
@@ -164,7 +163,6 @@ impl Runtime {
             }
         };
         let mem_ptr = frame_stack.cached_mem_ptr.unwrap_or(std::ptr::null_mut());
-        let locals_ptr = frame_stack.frame.locals.as_mut_ptr();
         let label_stack_ptr: *mut Vec<LabelStack> =
             &mut frame_stack.label_stack as *mut Vec<LabelStack>;
         let return_result_regs_ptr: *mut ArrayVec<Reg, 8> =
@@ -182,12 +180,9 @@ impl Runtime {
             .tracer
             .as_mut()
             .map_or(std::ptr::null_mut(), |t| t as *mut Tracer);
-        #[cfg(feature = "trace")]
-        let locals_len = frame_stack.frame.locals.len();
 
         let mut state = VmState {
             reg_file: reg_file_ptr,
-            locals: locals_ptr,
             pc,
             instrs: instrs_ptr,
             instrs_len,
@@ -205,8 +200,6 @@ impl Runtime {
             stats: stats_ptr,
             #[cfg(feature = "trace")]
             tracer: tracer_ptr,
-            #[cfg(feature = "trace")]
-            locals_len,
         };
 
         let outcome = dispatch::execute_instructions(&mut state);
@@ -362,15 +355,15 @@ impl Runtime {
                                     ))]
                                         handler_ctrl: cached_ctrl,
                                 } => {
-                                    let mut locals = params;
-                                    for v in code.locals.iter() {
-                                        for _ in 0..(v.0) {
-                                            locals.push(Val::default_value(&v.1)?);
-                                        }
-                                    }
-
+                                    // Locals live in the register file: open the
+                                    // callee's register window (zero-initializing
+                                    // declared locals) and scatter the params into
+                                    // their local slots.
                                     if let Some(ref alloc) = code.reg_allocation {
                                         self.stacks.reg_file.save_offsets(alloc);
+                                        self.stacks
+                                            .reg_file
+                                            .write_params(&params, &alloc.local_regs);
                                     }
 
                                     // Store result_regs in caller frame
@@ -387,7 +380,6 @@ impl Runtime {
 
                                     let new_frame = FrameStack {
                                         frame: Frame {
-                                            locals,
                                             module: func_module_weak.clone(),
                                             n: type_.results.len(),
                                         },
@@ -1101,20 +1093,6 @@ impl Runtime {
                 Ok(Some(Val::Num(Num::I32(result))))
             }
             _ => Err(WasiError::NoSys),
-        }
-    }
-}
-
-impl Val {
-    /// Creates a default value for the given WebAssembly type.
-    fn default_value(value_type: &ValueType) -> Result<Val, RuntimeError> {
-        match value_type {
-            ValueType::NumType(NumType::I32) => Ok(Val::Num(Num::I32(0))),
-            ValueType::NumType(NumType::I64) => Ok(Val::Num(Num::I64(0))),
-            ValueType::NumType(NumType::F32) => Ok(Val::Num(Num::F32(0.0))),
-            ValueType::NumType(NumType::F64) => Ok(Val::Num(Num::F64(0.0))),
-            ValueType::VecType(VecType::V128) => Ok(Val::Vec_(Vec_::V128(0))),
-            ValueType::RefType(_) => todo!("Default value for RefType"),
         }
     }
 }

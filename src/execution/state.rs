@@ -12,9 +12,8 @@ use crate::execution::ir::{Handler, ProcessedInstr};
 use crate::execution::mem::MemAddr;
 use crate::execution::module::ModuleInst;
 use crate::execution::regs::{Reg, RegFile};
-use crate::execution::value::{Num, Ref, Val, Vec_};
+use crate::execution::value::Val;
 use crate::structure::module::WasiFuncType;
-use crate::structure::types::{NumType, ValueType, VecType};
 use arrayvec::ArrayVec;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::rc::{Rc, Weak};
@@ -34,9 +33,8 @@ cfg_if::cfg_if! {
 /// Per-call dispatcher state. Constructed at the entry of each
 /// `dispatch::execute_instructions` call from the active `FrameStack`.
 pub struct VmState {
-    // Register / locals
+    // Register file (holds operand-stack registers and locals)
     pub reg_file: *mut RegFile,
-    pub locals: *mut Val,
 
     // Active label's instruction stream + cached handler array
     // (invariant within a frame because all label stacks share the same Rc)
@@ -74,11 +72,6 @@ pub struct VmState {
     /// Execution tracer (loop dispatcher only)
     #[cfg(feature = "trace")]
     pub tracer: *mut crate::execution::trace::Tracer,
-
-    /// Number of locals in the current frame.
-    /// Needed because `locals` is a raw pointer with no length;
-    #[cfg(feature = "trace")]
-    pub locals_len: usize,
 }
 
 impl VmState {
@@ -104,18 +97,6 @@ impl VmState {
     #[inline(always)]
     pub fn reg_file_mut(&mut self) -> &mut RegFile {
         unsafe { &mut *self.reg_file }
-    }
-
-    /// Shared reference to the local at `idx`.
-    #[inline(always)]
-    pub fn local(&self, idx: usize) -> &Val {
-        unsafe { &*self.locals.add(idx) }
-    }
-
-    /// Mutable reference to the local at `idx`.
-    #[inline(always)]
-    pub fn local_mut(&mut self, idx: usize) -> &mut Val {
-        unsafe { &mut *self.locals.add(idx) }
     }
 
     /// Shared reference to the label stack.
@@ -183,23 +164,13 @@ impl VMState {
                     return Err(RuntimeError::InvalidParameterCount);
                 }
 
-                let mut locals = params;
-                for v in code.locals.iter() {
-                    for _ in 0..(v.0) {
-                        locals.push(match v.1 {
-                            ValueType::NumType(NumType::I32) => Val::Num(Num::I32(0)),
-                            ValueType::NumType(NumType::I64) => Val::Num(Num::I64(0)),
-                            ValueType::NumType(NumType::F32) => Val::Num(Num::F32(0.0)),
-                            ValueType::NumType(NumType::F64) => Val::Num(Num::F64(0.0)),
-                            ValueType::VecType(VecType::V128) => Val::Vec_(Vec_::V128(0)),
-                            ValueType::RefType(_) => Val::Ref(Ref::RefNull),
-                        });
-                    }
-                }
-
+                // Locals live in the register file. `save_offsets` opens this
+                // frame's register window and zero-initializes the declared
+                // locals; the params are then scattered into their local slots.
                 let mut reg_file = RegFile::new_global();
                 if let Some(alloc) = code.reg_allocation.as_ref() {
                     reg_file.save_offsets(alloc);
+                    reg_file.write_params(&params, &alloc.local_regs);
                 }
 
                 let primary_mem = module.upgrade().and_then(|m| m.mem_addrs.first().cloned());
@@ -207,7 +178,6 @@ impl VMState {
 
                 let initial_frame = FrameStack {
                     frame: Frame {
-                        locals,
                         module: module.clone(),
                         n: type_.results.len(),
                     },
@@ -252,7 +222,6 @@ impl VMState {
 /// Call frame containing locals and module reference.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Frame {
-    pub locals: Vec<Val>,
     #[serde(skip)]
     pub module: Weak<ModuleInst>,
     pub n: usize,

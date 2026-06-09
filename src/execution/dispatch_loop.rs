@@ -53,11 +53,10 @@ pub fn execute_instructions(state: &mut VmState) -> Outcome {
         if !state.tracer.is_null() {
             let ip = state.pc;
             let idx = state.current_instr().handler_index();
-            let locals = unsafe { std::slice::from_raw_parts(state.locals, state.locals_len) };
             let reg_file = state.reg_file();
             let globals = &state.module().global_addrs;
             unsafe {
-                (*state.tracer).trace_instruction(ip, idx, reg_file, locals, globals);
+                (*state.tracer).trace_instruction(ip, idx, reg_file, globals);
             }
         }
 

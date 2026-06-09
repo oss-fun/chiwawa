@@ -1784,10 +1784,6 @@ macro_rules! global_set {
             };
             let v = match src {
                 RegOrLocal::Reg(idx) => state.reg_file().$get(idx),
-                RegOrLocal::Local(idx) => match state.local(idx as usize) {
-                    Val::Num(crate::execution::value::Num::$variant(v)) => *v,
-                    _ => Default::default(),
-                },
             };
             let global_addr = state
                 .module()
@@ -1831,28 +1827,23 @@ pub fn data_drop(state: &mut VmState) -> Outcome {
 // ============================================================================
 
 pub fn ref_local_get(state: &mut VmState) -> Outcome {
-    let (dst, local_idx) = match state.current_instr() {
-        ProcessedInstr::RefLocalReg { dst, local_idx, .. } => (*dst, *local_idx as usize),
+    let (dst, local_reg) = match state.current_instr() {
+        ProcessedInstr::RefLocalReg { dst, local_idx, .. } => (*dst, *local_idx),
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
-    // local index is validated at parse time; trust validation here for
-    // consistency with the numeric local handlers and to keep the hot
-    // path branch-free.
-    let val = state.local(local_idx).clone();
-    if let Val::Ref(r) = val {
-        state.reg_file_mut().set_ref(dst, r);
-    }
+    let r = state.reg_file().get_ref(local_reg);
+    state.reg_file_mut().set_ref(dst, r);
     state.pc += 1;
     advance!(state)
 }
 
 pub fn ref_local_set(state: &mut VmState) -> Outcome {
-    let (src, local_idx) = match state.current_instr() {
-        ProcessedInstr::RefLocalReg { src, local_idx, .. } => (*src, *local_idx as usize),
+    let (src, local_reg) = match state.current_instr() {
+        ProcessedInstr::RefLocalReg { src, local_idx, .. } => (*src, *local_idx),
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
     let ref_val = state.reg_file().get_ref(src);
-    *state.local_mut(local_idx) = Val::Ref(ref_val);
+    state.reg_file_mut().set_ref(local_reg, ref_val);
     state.pc += 1;
     advance!(state)
 }
