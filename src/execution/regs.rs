@@ -385,7 +385,21 @@ impl RegFile {
                     self.set_ref(*idx, r.clone());
                 }
             }
-            Reg::V128(_) => {}
+            Reg::V128(idx) => {
+                if let Val::Vec_(Vec_::V128(v)) = val {
+                    self.set_v128(*idx, *v);
+                }
+            }
+        }
+    }
+
+    /// Write function parameters into their local registers for the current
+    /// frame. `local_regs[i]` is the register slot of wasm local `i`; the
+    /// first `params.len()` locals are the function parameters.
+    #[inline]
+    pub fn write_params(&mut self, params: &[Val], local_regs: &[Reg]) {
+        for (val, reg) in params.iter().zip(local_regs.iter()) {
+            self.set_val(reg, val);
         }
     }
 
@@ -414,6 +428,9 @@ pub struct RegAllocation {
     pub f64_count: usize,
     pub ref_count: usize,
     pub v128_count: usize,
+    /// Register slot for each wasm local index (params first, then declared
+    /// locals). Used to scatter call params into local registers at frame entry.
+    pub local_regs: Vec<Reg>,
 }
 
 /// Register allocator - tracks stack depth to assign virtual registers
@@ -438,6 +455,10 @@ pub struct RegAllocator {
     // Since depths are tracked per-type, we cannot determine which type is on top
     // without this. Required for drop and untyped select instructions.
     type_stack: Vec<ValueType>,
+
+    // Register slot assigned to each wasm local index (params first, then
+    // declared locals), recorded while reserving local slots in `new`.
+    local_regs: Vec<Reg>,
 }
 
 impl RegAllocator {
@@ -458,19 +479,46 @@ impl RegAllocator {
             max_ref_depth: 0,
             max_v128_depth: 0,
             type_stack: Vec::new(),
+            local_regs: Vec::new(),
         };
 
-        // Reserve registers for local variables
+        // Reserve registers for local variables, recording the slot of each
+        // wasm local index so locals can be addressed directly as registers.
         for (count, vtype) in local_types {
             for _ in 0..*count {
-                match vtype {
-                    ValueType::NumType(NumType::I32) => allocator.i32_depth += 1,
-                    ValueType::NumType(NumType::I64) => allocator.i64_depth += 1,
-                    ValueType::NumType(NumType::F32) => allocator.f32_depth += 1,
-                    ValueType::NumType(NumType::F64) => allocator.f64_depth += 1,
-                    ValueType::RefType(_) => allocator.ref_depth += 1,
-                    ValueType::VecType(_) => allocator.v128_depth += 1,
-                }
+                let reg = match vtype {
+                    ValueType::NumType(NumType::I32) => {
+                        let r = Reg::I32(allocator.i32_depth as u16);
+                        allocator.i32_depth += 1;
+                        r
+                    }
+                    ValueType::NumType(NumType::I64) => {
+                        let r = Reg::I64(allocator.i64_depth as u16);
+                        allocator.i64_depth += 1;
+                        r
+                    }
+                    ValueType::NumType(NumType::F32) => {
+                        let r = Reg::F32(allocator.f32_depth as u16);
+                        allocator.f32_depth += 1;
+                        r
+                    }
+                    ValueType::NumType(NumType::F64) => {
+                        let r = Reg::F64(allocator.f64_depth as u16);
+                        allocator.f64_depth += 1;
+                        r
+                    }
+                    ValueType::RefType(_) => {
+                        let r = Reg::Ref(allocator.ref_depth as u16);
+                        allocator.ref_depth += 1;
+                        r
+                    }
+                    ValueType::VecType(_) => {
+                        let r = Reg::V128(allocator.v128_depth as u16);
+                        allocator.v128_depth += 1;
+                        r
+                    }
+                };
+                allocator.local_regs.push(reg);
             }
         }
 
@@ -625,6 +673,11 @@ impl RegAllocator {
         }
     }
 
+    /// Register slots for each wasm local index (params first, then locals).
+    pub fn local_regs(&self) -> &[Reg] {
+        &self.local_regs
+    }
+
     /// Pop the top value from the stack (using type_stack to determine the type)
     pub fn pop_any(&mut self) -> Option<Reg> {
         let vtype = *self.type_stack.last()?;
@@ -777,6 +830,7 @@ impl RegAllocator {
             f64_count: self.max_f64_depth,
             ref_count: self.max_ref_depth,
             v128_count: self.max_v128_depth,
+            local_regs: self.local_regs,
         }
     }
 }

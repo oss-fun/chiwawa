@@ -6,7 +6,9 @@
 //! ## Serializable State
 //!
 //! The checkpoint captures:
-//! - Activation frame stack with register file and per-frame locals
+//! - The register file (`RegFile`), which holds both operand-stack values and
+//!   function locals (params + declared locals)
+//! - Activation frame stack (label stacks, result registers, frame metadata)
 //! - Linear memory contents (LZ4 compressed)
 //! - Global variable values
 //! - Per-frame function indices (used to rebuild skipped `Rc` fields on restore)
@@ -269,12 +271,6 @@ pub fn checkpoint<P: AsRef<Path>>(
     let frames_size = bincode::serialize(&state.stacks.activation_frame_stack)
         .map(|v| v.len())
         .unwrap_or(0);
-    let total_locals: usize = state
-        .stacks
-        .activation_frame_stack
-        .iter()
-        .map(|f| f.frame.locals.len())
-        .sum();
     let _stacks_size = reg_file_size + frames_size;
     let memory_size = bincode::serialize(&state.memory_data_compressed)
         .map(|v| v.len())
@@ -288,8 +284,8 @@ pub fn checkpoint<P: AsRef<Path>>(
     println!("Checkpoint component sizes:");
     println!("  reg_file:           {} bytes", reg_file_size);
     println!(
-        "  frames:             {} bytes ({} frames, {} labels, {} locals total)",
-        frames_size, frames_count, total_labels, total_locals
+        "  frames:             {} bytes ({} frames, {} labels)",
+        frames_size, frames_count, total_labels
     );
     println!(
         "  memory_data:        {} bytes (raw {} bytes, LZ4 compressed)",

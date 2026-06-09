@@ -39,7 +39,6 @@ pub enum TraceResource {
     PC,
     Regs,
     Memory,
-    Locals,
     Globals,
 }
 
@@ -50,7 +49,6 @@ impl TraceResource {
             "pc" => Some(TraceResource::PC),
             "regs" => Some(TraceResource::Regs),
             "memory" => Some(TraceResource::Memory),
-            "locals" => Some(TraceResource::Locals),
             "globals" => Some(TraceResource::Globals),
             _ => None,
         }
@@ -90,7 +88,6 @@ impl TraceConfig {
             vec![
                 TraceResource::PC,
                 TraceResource::Regs,
-                TraceResource::Locals,
                 TraceResource::Globals,
             ]
         };
@@ -168,7 +165,6 @@ impl Tracer {
         ip: usize,
         handler_index: usize,
         reg_file: &RegFile,
-        locals: &[Val],
         global_addrs: &[GlobalAddr],
     ) {
         if !self.config.should_trace_event(handler_index) {
@@ -190,12 +186,6 @@ impl Tracer {
         if self.config.resources.contains(&TraceResource::Regs) {
             let regs_str = self.format_registers(reg_file);
             parts.push(format!("Regs:{}", regs_str));
-        }
-
-        // Locals
-        if self.config.resources.contains(&TraceResource::Locals) {
-            let locals_str = self.format_locals(locals);
-            parts.push(format!("Locals:{}", locals_str));
         }
 
         // Globals
@@ -274,15 +264,6 @@ impl Tracer {
         } else {
             format!("{{{}}}", parts.join(", "))
         }
-    }
-
-    fn format_locals(&self, locals: &[Val]) -> String {
-        if locals.is_empty() {
-            return "[]".to_string();
-        }
-
-        let values: Vec<String> = locals.iter().map(|v| Self::format_val(v)).collect();
-        format!("[{}]", values.join(","))
     }
 
     fn format_val(val: &Val) -> String {

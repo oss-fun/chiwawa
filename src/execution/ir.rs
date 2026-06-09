@@ -62,12 +62,11 @@ pub enum Operand {
     },
 }
 
-/// Destination that can be either a register or a local variable.
-/// Used for instructions where dst folding is applied.
+/// Destination that is a register. Locals live in the register file, so dst
+/// folding into a local resolves to its register slot at parse time.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum RegOrLocal {
     Reg(u16),
-    Local(u16),
 }
 
 /// Register-based operand for I32 operations
@@ -75,7 +74,6 @@ pub enum RegOrLocal {
 pub enum I32RegOperand {
     Reg(u16),
     Const(i32),
-    Param(u16),
 }
 
 /// Register-based operand for I64 operations.
@@ -83,7 +81,6 @@ pub enum I32RegOperand {
 pub enum I64RegOperand {
     Reg(u16),
     Const(i64),
-    Param(u16),
 }
 
 /// Register-based operand for F32 operations.
@@ -91,7 +88,6 @@ pub enum I64RegOperand {
 pub enum F32RegOperand {
     Reg(u16),
     Const(f32),
-    Param(u16),
 }
 
 /// Register-based operand for F64 operations.
@@ -99,7 +95,6 @@ pub enum F32RegOperand {
 pub enum F64RegOperand {
     Reg(u16),
     Const(f64),
-    Param(u16),
 }
 
 /// Processed instruction for DTC execution with pre-resolved operands.
