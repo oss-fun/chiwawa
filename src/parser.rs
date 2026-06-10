@@ -153,6 +153,41 @@ fn take_f64_operand(
     }
 }
 
+/// Check if `op` is a *unary* foldable consumer (consumes exactly one operand).
+///
+/// The two-ahead fold in `can_fold_*` assumes the consumer is binary and takes
+/// both preceding values. A unary consumer (e.g. `i64.eqz`) takes only one, so
+/// folding the other leaves a phantom register later reads as garbage. Exclude
+/// them so that value stays materialized.
+#[inline]
+fn is_unary_foldable_consumer(op: &wasmparser::Operator) -> bool {
+    matches!(
+        op,
+        wasmparser::Operator::I32Clz
+            | wasmparser::Operator::I32Ctz
+            | wasmparser::Operator::I32Popcnt
+            | wasmparser::Operator::I32Eqz
+            | wasmparser::Operator::I64Clz
+            | wasmparser::Operator::I64Ctz
+            | wasmparser::Operator::I64Popcnt
+            | wasmparser::Operator::I64Eqz
+            | wasmparser::Operator::F32Abs
+            | wasmparser::Operator::F32Neg
+            | wasmparser::Operator::F32Ceil
+            | wasmparser::Operator::F32Floor
+            | wasmparser::Operator::F32Trunc
+            | wasmparser::Operator::F32Nearest
+            | wasmparser::Operator::F32Sqrt
+            | wasmparser::Operator::F64Abs
+            | wasmparser::Operator::F64Neg
+            | wasmparser::Operator::F64Ceil
+            | wasmparser::Operator::F64Floor
+            | wasmparser::Operator::F64Trunc
+            | wasmparser::Operator::F64Nearest
+            | wasmparser::Operator::F64Sqrt
+    )
+}
+
 /// Check if the next instruction(s) can fold an I32 operand.
 #[inline]
 fn can_fold_i32<'a>(
@@ -168,7 +203,7 @@ fn can_fold_i32<'a>(
             wasmparser::Operator::I32Const { .. } | wasmparser::Operator::LocalGet { .. }
         ) {
             if let Some(Ok((next_next_op, _))) = ops.peek() {
-                is_i32_foldable_consumer(next_next_op)
+                is_i32_foldable_consumer(next_next_op) && !is_unary_foldable_consumer(next_next_op)
             } else {
                 false
             }
@@ -197,7 +232,7 @@ fn can_fold_i64<'a>(
             wasmparser::Operator::I64Const { .. } | wasmparser::Operator::LocalGet { .. }
         ) {
             if let Some(Ok((next_next_op, _))) = ops.peek() {
-                is_i64_foldable_consumer(next_next_op)
+                is_i64_foldable_consumer(next_next_op) && !is_unary_foldable_consumer(next_next_op)
             } else {
                 false
             }
@@ -226,7 +261,7 @@ fn can_fold_f32<'a>(
             wasmparser::Operator::F32Const { .. } | wasmparser::Operator::LocalGet { .. }
         ) {
             if let Some(Ok((next_next_op, _))) = ops.peek() {
-                is_f32_foldable_consumer(next_next_op)
+                is_f32_foldable_consumer(next_next_op) && !is_unary_foldable_consumer(next_next_op)
             } else {
                 false
             }
@@ -255,7 +290,7 @@ fn can_fold_f64<'a>(
             wasmparser::Operator::F64Const { .. } | wasmparser::Operator::LocalGet { .. }
         ) {
             if let Some(Ok((next_next_op, _))) = ops.peek() {
-                is_f64_foldable_consumer(next_next_op)
+                is_f64_foldable_consumer(next_next_op) && !is_unary_foldable_consumer(next_next_op)
             } else {
                 false
             }
