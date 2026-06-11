@@ -230,7 +230,7 @@ pub fn checkpoint<P: AsRef<Path>>(
         .activation_frame_stack
         .iter()
         .map(|frame_stack| {
-            let frame_instrs = &frame_stack.label_stack[0].processed_instrs;
+            let frame_instrs = &frame_stack.processed_instrs;
             module_inst
                 .func_addrs
                 .iter()
@@ -369,10 +369,7 @@ pub fn restore<P: AsRef<Path>>(
         let func_addr = &module_inst.func_addrs[func_idx as usize];
         let func_inst = func_addr.read_lock();
         if let FuncInst::RuntimeFunc { code, .. } = func_inst {
-            let body = code.body.clone();
-            for label_stack in frame_stack.label_stack.iter_mut() {
-                label_stack.processed_instrs = body.clone();
-            }
+            frame_stack.processed_instrs = code.body.clone();
             // v2 dispatcher: handler array (function pointers) — Rc<Vec<Handler>>
             frame_stack.handlers = code.handlers.clone();
             // Restored frames default to enable_checkpoint=false (Runtime::run

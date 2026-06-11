@@ -137,14 +137,11 @@ impl Runtime {
         let frame_stack = &mut self.stacks.activation_frame_stack[frame_stack_idx];
 
         let current_label_idx = frame_stack.label_stack.len().saturating_sub(1);
-        let (instrs_ptr, instrs_len, pc) = {
-            let ls = &frame_stack.label_stack[current_label_idx];
-            (
-                ls.processed_instrs.as_ptr(),
-                ls.processed_instrs.len(),
-                ls.ip,
-            )
-        };
+        let (instrs_ptr, instrs_len, pc) = (
+            frame_stack.processed_instrs.as_ptr(),
+            frame_stack.processed_instrs.len(),
+            frame_stack.label_stack[current_label_idx].ip,
+        );
         let handlers_ptr = {
             cfg_if::cfg_if! {
                 if #[cfg(all(
@@ -388,9 +385,9 @@ impl Runtime {
                                                 is_loop: false,
                                                 return_ip: 0,
                                             },
-                                            processed_instrs: code.body.clone(),
                                             ip: 0,
                                         }],
+                                        processed_instrs: code.body.clone(),
                                         enable_checkpoint: self.enable_checkpoint,
                                         result_regs: ArrayVec::new(),
                                         return_result_regs: ArrayVec::new(),

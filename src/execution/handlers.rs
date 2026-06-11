@@ -1509,15 +1509,11 @@ pub fn block(state: &mut VmState) -> Outcome {
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
     let next_ip = state.pc + 1;
-    let cur_idx = state.current_label_idx;
-    let label_stack = state.label_stack_mut();
-    let pi_rc = label_stack[cur_idx].processed_instrs.clone();
-    label_stack.push(LabelStack {
+    state.label_stack_mut().push(LabelStack {
         label: Label {
             is_loop,
             return_ip: next_ip,
         },
-        processed_instrs: pi_rc,
         ip: next_ip,
     });
     state.current_label_idx = state.label_stack().len() - 1;
@@ -1537,33 +1533,23 @@ pub fn r#if(state: &mut VmState) -> Outcome {
     };
 
     let cond = state.reg_file().get_i32(cond_reg.index());
-    // Only clone pi_rc inside branches that need it, so the no-else path
-    // has zero `Rc` destructors at the tail call.
     if cond != 0 {
         let next_ip = state.pc + 1;
-        let cur_idx = state.current_label_idx;
-        let label_stack = state.label_stack_mut();
-        let pi_rc = label_stack[cur_idx].processed_instrs.clone();
-        label_stack.push(LabelStack {
+        state.label_stack_mut().push(LabelStack {
             label: Label {
                 is_loop: false,
                 return_ip: else_target_ip,
             },
-            processed_instrs: pi_rc,
             ip: next_ip,
         });
         state.current_label_idx = state.label_stack().len() - 1;
         state.pc = next_ip;
     } else if has_else {
-        let cur_idx = state.current_label_idx;
-        let label_stack = state.label_stack_mut();
-        let pi_rc = label_stack[cur_idx].processed_instrs.clone();
-        label_stack.push(LabelStack {
+        state.label_stack_mut().push(LabelStack {
             label: Label {
                 is_loop: false,
                 return_ip: else_target_ip,
             },
-            processed_instrs: pi_rc,
             ip: else_target_ip,
         });
         state.current_label_idx = state.label_stack().len() - 1;

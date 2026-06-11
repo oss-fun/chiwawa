@@ -15,7 +15,7 @@ use crate::execution::regs::{Reg, RegFile};
 use crate::execution::value::Val;
 use crate::structure::module::WasiFuncType;
 use arrayvec::ArrayVec;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use std::rc::{Rc, Weak};
 
 cfg_if::cfg_if! {
@@ -186,9 +186,9 @@ impl VMState {
                             is_loop: false,
                             return_ip: 0,
                         },
-                        processed_instrs: code.body.clone(),
                         ip: 0,
                     }],
+                    processed_instrs: code.body.clone(),
                     enable_checkpoint: false,
                     result_regs: ArrayVec::new(),
                     return_result_regs: ArrayVec::new(),
@@ -232,6 +232,9 @@ pub struct Frame {
 pub struct FrameStack {
     pub frame: Frame,
     pub label_stack: Vec<LabelStack>,
+    /// Function body shared by all labels in this frame (invariant per frame).
+    #[serde(skip)]
+    pub processed_instrs: Rc<Vec<ProcessedInstr>>,
     #[serde(skip)]
     pub enable_checkpoint: bool,
     pub result_regs: ArrayVec<Reg, 8>,
@@ -258,42 +261,9 @@ pub struct Label {
     pub return_ip: usize,
 }
 
-/// Label stack containing instructions and program counter.
-#[derive(Clone, Debug)]
+/// Label stack entry: control label metadata and program counter.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LabelStack {
     pub label: Label,
-    pub processed_instrs: Rc<Vec<ProcessedInstr>>,
     pub ip: usize,
-}
-
-impl Serialize for LabelStack {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("LabelStack", 2)?;
-        state.serialize_field("label", &self.label)?;
-        state.serialize_field("ip", &self.ip)?;
-        state.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for LabelStack {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct LabelStackData {
-            label: Label,
-            ip: usize,
-        }
-        let data = LabelStackData::deserialize(deserializer)?;
-        Ok(LabelStack {
-            label: data.label,
-            processed_instrs: Rc::new(Vec::new()),
-            ip: data.ip,
-        })
-    }
 }
