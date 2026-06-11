@@ -1281,6 +1281,10 @@ fn decode_code_section(
     )
     .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
+    // Phase 5: Strip no-op instructions (block/loop, nop, no-op inner end)
+    // and remap all branch targets to the compacted indices.
+    let processed_instrs = compact_instruction_stream(processed_instrs);
+
     let body_rc = Rc::new(processed_instrs);
 
     // v2 dispatcher handler array: parallel to body + halt sentinel at end
@@ -1305,6 +1309,79 @@ fn decode_code_section(
     }
 
     Ok(())
+}
+
+/// Returns true for instructions with no runtime effect, removable once all
+/// branch targets are resolved to absolute IPs:
+/// - `BlockReg` (block/loop): labels are fully static, the handler is a no-op.
+/// - `NopReg`: explicit nops and unreachable-code placeholders.
+/// - Inner `EndReg` whose register copy does nothing (either side empty or
+///   source == target). The function-level end is always kept: it collects
+///   the return registers and is the target of function-level branches.
+fn is_noop_instr(instr: &ProcessedInstr) -> bool {
+    match instr {
+        ProcessedInstr::BlockReg { .. } | ProcessedInstr::NopReg => true,
+        ProcessedInstr::EndReg {
+            is_function_end: false,
+            source_regs,
+            target_result_regs,
+        } => {
+            source_regs.is_empty()
+                || target_result_regs.is_empty()
+                || source_regs == target_result_regs
+        }
+        _ => false,
+    }
+}
+
+/// Phase 5: Removes no-op instructions from the stream and remaps all branch
+/// targets (`BrReg`, `BrIfReg`, `BrTableReg`, `IfReg`, `JumpReg`) to the
+/// compacted indices.
+///
+/// A jump to a removed instruction lands on the next kept instruction at or
+/// after it, which is semantically identical because removed instructions do
+/// nothing. `remap[i]` = number of kept instructions before old index `i`,
+/// which is exactly that target.
+fn compact_instruction_stream(processed: Vec<ProcessedInstr>) -> Vec<ProcessedInstr> {
+    let old_len = processed.len();
+    let mut remap: Vec<usize> = Vec::with_capacity(old_len + 1);
+    let mut kept_count = 0usize;
+    for instr in processed.iter() {
+        remap.push(kept_count);
+        if !is_noop_instr(instr) {
+            kept_count += 1;
+        }
+    }
+    // Defensive entry for targets one past the end.
+    remap.push(kept_count);
+
+    let mut kept: Vec<ProcessedInstr> = Vec::with_capacity(kept_count);
+    for mut instr in processed.into_iter() {
+        if is_noop_instr(&instr) {
+            continue;
+        }
+        match &mut instr {
+            ProcessedInstr::BrReg { target_ip, .. } => *target_ip = remap[*target_ip],
+            ProcessedInstr::BrIfReg { target_ip, .. } => *target_ip = remap[*target_ip],
+            ProcessedInstr::IfReg { else_target_ip, .. } => {
+                *else_target_ip = remap[*else_target_ip]
+            }
+            ProcessedInstr::JumpReg { target_ip } => *target_ip = remap[*target_ip],
+            ProcessedInstr::BrTableReg {
+                targets,
+                default_target,
+                ..
+            } => {
+                for (_, target_ip, _) in targets.iter_mut() {
+                    *target_ip = remap[*target_ip];
+                }
+                default_target.1 = remap[default_target.1];
+            }
+            _ => {}
+        }
+        kept.push(instr);
+    }
+    kept
 }
 
 /// Information needed to fix up a branch instruction's target address.
@@ -1344,7 +1421,7 @@ fn preprocess_instructions(
 ) -> Result<(), RuntimeError> {
     // --- Phase 2: Resolve Br, BrIf, If, Else jumps ---
 
-    // Control stack stores: (pc, is_loop, block_type, runtime_label_stack_idx)
+    // Control stack stores: (pc, is_loop, block_type)
     let mut current_control_stack_pass2: Vec<(usize, bool, wasmparser::BlockType)> = Vec::new();
 
     for fixup_index in 0..fixups.len() {
@@ -1389,22 +1466,36 @@ fn preprocess_instructions(
         }
 
         if current_control_stack_pass2.len() <= current_fixup_depth {
-            // Depth exceeds control stack - this is a branch to function level (return)
-            // Set target_ip to end of function (processed.len())
-            let function_end_ip = processed.len();
+            // Depth exceeds control stack - this is a branch to function level
+            // (return). Target the function-level EndReg (always the last
+            // instruction): `end_func` collects the return registers and
+            // halts. The branch copies its values into the end's source regs.
+            let function_end_ip = processed.len() - 1;
+            let end_source_regs: RegSlice = match processed.last() {
+                Some(ProcessedInstr::EndReg { source_regs, .. }) => source_regs.clone(),
+                _ => {
+                    return Err(RuntimeError::InvalidWasm(
+                        "Internal Error: function body does not terminate with EndReg",
+                    ))
+                }
+            };
             if let Some(instr_to_patch) = processed.get_mut(current_fixup_pc) {
                 if let ProcessedInstr::BrReg {
                     target_ip: ref mut tip,
+                    target_result_regs: ref mut trr,
                     ..
                 } = instr_to_patch
                 {
                     *tip = function_end_ip;
+                    *trr = end_source_regs;
                 } else if let ProcessedInstr::BrIfReg {
                     target_ip: ref mut tip,
+                    target_result_regs: ref mut trr,
                     ..
                 } = instr_to_patch
                 {
                     *tip = function_end_ip;
+                    *trr = end_source_regs;
                 } else if is_if_false_jump {
                     if !matches!(instr_to_patch, ProcessedInstr::IfReg { .. }) {
                         fixups[fixup_index].original_wasm_depth = usize::MAX;
@@ -1467,16 +1558,13 @@ fn preprocess_instructions(
                 // If instruction's jump-on-false
                 // Target is ElseMarker+1 or EndMarker+1
                 let else_target = *if_else_map.get(&target_start_pc).unwrap_or(&target_ip);
-                let has_else = else_target != target_ip;
 
                 if let ProcessedInstr::IfReg {
                     else_target_ip: ref mut tip,
-                    has_else: ref mut he,
                     ..
                 } = instr_to_patch
                 {
                     *tip = else_target;
-                    *he = has_else;
                 }
             } else if is_else_jump {
                 if let ProcessedInstr::JumpReg {
@@ -1558,12 +1646,30 @@ fn preprocess_instructions(
                     let default_depth = default_info.0 as usize;
                     let default_result_regs = default_info.2;
 
+                    // Function-level targets branch to the function-level
+                    // EndReg (always the last instruction), copying their
+                    // values into its source regs.
+                    let function_end_ip = processed.len() - 1;
+                    let function_end_regs: RegSlice = match processed.last() {
+                        Some(ProcessedInstr::EndReg { source_regs, .. }) => source_regs.clone(),
+                        _ => {
+                            return Err(RuntimeError::InvalidWasm(
+                                "Internal Error: function body does not terminate with EndReg",
+                            ))
+                        }
+                    };
+
                     // Compute target_ip for each target (keeping existing result_regs)
                     let mut resolved_reg_targets: Vec<(u32, usize, RegSlice)> = Vec::new();
                     for (rel_depth, _, result_regs) in targets_clone.iter() {
                         let depth = *rel_depth as usize;
                         if current_control_stack_pass3.len() <= depth {
-                            resolved_reg_targets.push((*rel_depth, 0, result_regs.clone())); // Invalid
+                            // Function-level target (acts as return)
+                            resolved_reg_targets.push((
+                                *rel_depth,
+                                function_end_ip,
+                                function_end_regs.clone(),
+                            ));
                             continue;
                         }
                         let target_stack_level = current_control_stack_pass3.len() - 1 - depth;
@@ -1578,21 +1684,24 @@ fn preprocess_instructions(
                         resolved_reg_targets.push((*rel_depth, target_ip, result_regs.clone()));
                     }
 
-                    // Compute target_ip for default target
+                    // Compute target_ip and result regs for default target
                     // Note: block_end_map already stores End + 1 position
-                    let default_target_ip = if current_control_stack_pass3.len() <= default_depth {
-                        0 // Invalid
-                    } else {
-                        let target_stack_level =
-                            current_control_stack_pass3.len() - 1 - default_depth;
-                        let (target_start_pc, is_loop, _) =
-                            current_control_stack_pass3[target_stack_level];
-                        if is_loop {
-                            target_start_pc
+                    let (default_target_ip, default_result_regs) =
+                        if current_control_stack_pass3.len() <= default_depth {
+                            // Function-level default target (acts as return)
+                            (function_end_ip, function_end_regs)
                         } else {
-                            *block_end_map.get(&target_start_pc).unwrap_or(&0)
-                        }
-                    };
+                            let target_stack_level =
+                                current_control_stack_pass3.len() - 1 - default_depth;
+                            let (target_start_pc, is_loop, _) =
+                                current_control_stack_pass3[target_stack_level];
+                            let ip = if is_loop {
+                                target_start_pc
+                            } else {
+                                *block_end_map.get(&target_start_pc).unwrap_or(&0)
+                            };
+                            (ip, default_result_regs)
+                        };
 
                     // Update BrTableReg
                     if let Some(instr_to_patch) = processed.get_mut(pc) {
@@ -5405,6 +5514,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     )
                 }
                 wasmparser::Operator::End => {
+                    // Empty control stack means this is the function-level end.
+                    let is_function_end = control_info_stack.is_empty();
                     let result_type_vec = if let Some(block_info) = control_info_stack.last() {
                         get_block_result_types(&block_info.block_type, module)
                     } else {
@@ -5445,6 +5556,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let instr = ProcessedInstr::EndReg {
                         source_regs: source_regs.into_boxed_slice(),
                         target_result_regs: target_result_regs.into_boxed_slice(),
+                        is_function_end,
                     };
                     (Some(instr), None)
                 }
@@ -5477,9 +5589,6 @@ fn decode_processed_instrs_and_fixups<'a>(
                         allocator.push(*vtype);
                     }
 
-                    let arity = result_types.len();
-                    let param_count = param_types.len();
-
                     // Push to control_info_stack for End to use
                     control_info_stack.push(ControlBlockInfo {
                         block_type: *blockty,
@@ -5488,11 +5597,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         param_regs: Vec::new(),
                     });
 
-                    let instr = ProcessedInstr::BlockReg {
-                        arity,
-                        param_count,
-                        is_loop,
-                    };
+                    let instr = ProcessedInstr::BlockReg { is_loop };
                     (Some(instr), None)
                 }
                 wasmparser::Operator::If { blockty } => {
@@ -5521,8 +5626,6 @@ fn decode_processed_instrs_and_fixups<'a>(
                         allocator.push(*vtype);
                     }
 
-                    let arity = result_types.len();
-
                     // Push to control_info_stack for End to use
                     control_info_stack.push(ControlBlockInfo {
                         block_type: *blockty,
@@ -5532,10 +5635,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     });
 
                     let instr = ProcessedInstr::IfReg {
-                        arity,
                         cond_reg,
                         else_target_ip: usize::MAX, // Will be fixed up
-                        has_else: false,            // Will be updated during fixup
                     };
                     let fixup = Some(FixupInfo {
                         pc: current_processed_pc,
@@ -5740,15 +5841,23 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
 
                 wasmparser::Operator::Br { relative_depth } => {
-                    // Compute source and target registers for branch
-                    let (source_regs, target_result_regs) = compute_branch_regs(
-                        &control_info_stack,
-                        *relative_depth as usize,
-                        reg_allocator.as_ref(),
-                    );
+                    // Compute source and target registers for branch.
+                    // A depth at/beyond the control stack targets the function
+                    // level: source regs are the top-of-stack regs matching the
+                    // function result types; target regs (the function-level
+                    // end's source regs) are patched during fixup.
+                    let (source_regs, target_result_regs) =
+                        if *relative_depth as usize >= control_info_stack.len() {
+                            (allocator.peek_regs_for_types(result_types), Vec::new())
+                        } else {
+                            compute_branch_regs(
+                                &control_info_stack,
+                                *relative_depth as usize,
+                                reg_allocator.as_ref(),
+                            )
+                        };
 
                     let instr = ProcessedInstr::BrReg {
-                        relative_depth: *relative_depth,
                         target_ip: usize::MAX, // Will be set by fixup
                         source_regs: source_regs.clone().into_boxed_slice(),
                         target_result_regs: target_result_regs.into_boxed_slice(),
@@ -5771,14 +5880,20 @@ fn decode_processed_instrs_and_fixups<'a>(
                     allocator.pop(&ValueType::NumType(NumType::I32));
 
                     // Compute source and target registers for branch
-                    let (source_regs, target_result_regs) = compute_branch_regs(
-                        &control_info_stack,
-                        *relative_depth as usize,
-                        reg_allocator.as_ref(),
-                    );
+                    // Function-level depth: source regs from the function
+                    // result types; target regs patched during fixup.
+                    let (source_regs, target_result_regs) =
+                        if *relative_depth as usize >= control_info_stack.len() {
+                            (allocator.peek_regs_for_types(result_types), Vec::new())
+                        } else {
+                            compute_branch_regs(
+                                &control_info_stack,
+                                *relative_depth as usize,
+                                reg_allocator.as_ref(),
+                            )
+                        };
 
                     let instr = ProcessedInstr::BrIfReg {
-                        relative_depth: *relative_depth,
                         target_ip: usize::MAX, // Will be set by fixup
                         cond_reg,
                         source_regs: source_regs.clone().into_boxed_slice(),
@@ -5811,7 +5926,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                         let (_, target_result_regs) = compute_branch_regs(
                             &control_info_stack,
                             *depth as usize,
-                            reg_allocator.as_ref(),
+                            Some(&*allocator),
                         );
                         table_targets.push((
                             *depth,
@@ -5821,12 +5936,19 @@ fn decode_processed_instrs_and_fixups<'a>(
                         // target_ip will be set by fixup
                     }
 
-                    // Compute source and target registers for default target
-                    let (source_regs, default_result_regs) = compute_branch_regs(
-                        &control_info_stack,
-                        targets.default() as usize,
-                        reg_allocator.as_ref(),
-                    );
+                    // Compute source and target registers for default target.
+                    // Function-level depth: source regs from the function
+                    // result types; target regs patched during fixup.
+                    let (source_regs, default_result_regs) =
+                        if targets.default() as usize >= control_info_stack.len() {
+                            (allocator.peek_regs_for_types(result_types), Vec::new())
+                        } else {
+                            compute_branch_regs(
+                                &control_info_stack,
+                                targets.default() as usize,
+                                Some(&*allocator),
+                            )
+                        };
                     let default_target = (
                         targets.default(),
                         usize::MAX,

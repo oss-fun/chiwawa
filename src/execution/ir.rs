@@ -7,8 +7,8 @@
 use crate::execution::handlers::{
     HANDLER_IDX_BLOCK, HANDLER_IDX_BR, HANDLER_IDX_BR_IF, HANDLER_IDX_BR_TABLE, HANDLER_IDX_CALL,
     HANDLER_IDX_CALL_INDIRECT, HANDLER_IDX_CALL_WASI, HANDLER_IDX_DATA_DROP, HANDLER_IDX_ELSE,
-    HANDLER_IDX_END, HANDLER_IDX_IF, HANDLER_IDX_LOOP, HANDLER_IDX_NOP, HANDLER_IDX_RETURN,
-    HANDLER_IDX_UNREACHABLE,
+    HANDLER_IDX_END, HANDLER_IDX_END_FUNC, HANDLER_IDX_IF, HANDLER_IDX_LOOP, HANDLER_IDX_NOP,
+    HANDLER_IDX_RETURN, HANDLER_IDX_UNREACHABLE,
 };
 use crate::execution::regs::Reg;
 use crate::execution::state::VmState;
@@ -202,29 +202,26 @@ pub enum ProcessedInstr {
     JumpReg {
         target_ip: usize,
     },
+    /// Parse-time structural marker for block/loop nesting (fixup passes
+    /// rebuild the control stack from it).
     BlockReg {
-        arity: usize,
-        param_count: usize,
         is_loop: bool,
     },
     IfReg {
-        arity: usize,
         cond_reg: Reg,
         else_target_ip: usize,
-        has_else: bool,
     },
     EndReg {
         source_regs: RegSlice,
         target_result_regs: RegSlice,
+        is_function_end: bool,
     },
     BrReg {
-        relative_depth: u32,
         target_ip: usize,
         source_regs: RegSlice,
         target_result_regs: RegSlice,
     },
     BrIfReg {
-        relative_depth: u32,
         target_ip: usize,
         cond_reg: Reg,
         source_regs: RegSlice,
@@ -266,7 +263,14 @@ impl ProcessedInstr {
             ProcessedInstr::BlockReg { is_loop: false, .. } => HANDLER_IDX_BLOCK,
             ProcessedInstr::BlockReg { is_loop: true, .. } => HANDLER_IDX_LOOP,
             ProcessedInstr::IfReg { .. } => HANDLER_IDX_IF,
-            ProcessedInstr::EndReg { .. } => HANDLER_IDX_END,
+            ProcessedInstr::EndReg {
+                is_function_end: false,
+                ..
+            } => HANDLER_IDX_END,
+            ProcessedInstr::EndReg {
+                is_function_end: true,
+                ..
+            } => HANDLER_IDX_END_FUNC,
             ProcessedInstr::BrReg { .. } => HANDLER_IDX_BR,
             ProcessedInstr::BrIfReg { .. } => HANDLER_IDX_BR_IF,
             ProcessedInstr::BrTableReg { .. } => HANDLER_IDX_BR_TABLE,

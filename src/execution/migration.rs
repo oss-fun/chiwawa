@@ -8,7 +8,7 @@
 //! The checkpoint captures:
 //! - The register file (`RegFile`), which holds both operand-stack values and
 //!   function locals (params + declared locals)
-//! - Activation frame stack (label stacks, result registers, frame metadata)
+//! - Activation frame stack (per-frame ip, result registers, frame metadata)
 //! - Linear memory contents (LZ4 compressed)
 //! - Global variable values
 //! - Per-frame function indices (used to rebuild skipped `Rc` fields on restore)
@@ -262,12 +262,6 @@ pub fn checkpoint<P: AsRef<Path>>(
         .map(|v| v.len())
         .unwrap_or(0);
     let frames_count = state.stacks.activation_frame_stack.len();
-    let total_labels: usize = state
-        .stacks
-        .activation_frame_stack
-        .iter()
-        .map(|f| f.label_stack.len())
-        .sum();
     let frames_size = bincode::serialize(&state.stacks.activation_frame_stack)
         .map(|v| v.len())
         .unwrap_or(0);
@@ -284,8 +278,8 @@ pub fn checkpoint<P: AsRef<Path>>(
     println!("Checkpoint component sizes:");
     println!("  reg_file:           {} bytes", reg_file_size);
     println!(
-        "  frames:             {} bytes ({} frames, {} labels)",
-        frames_size, frames_count, total_labels
+        "  frames:             {} bytes ({} frames)",
+        frames_size, frames_count
     );
     println!(
         "  memory_data:        {} bytes (raw {} bytes, LZ4 compressed)",

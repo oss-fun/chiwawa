@@ -1,7 +1,7 @@
 //! v2 dispatcher execution state.
 //!
 //! `VmState` aggregates everything a handler needs to execute one instruction:
-//! register file, locals, instruction stream, label stack, memory pointer,
+//! register file, locals, instruction stream, memory pointer,
 //! module reference, and outcome channels. Fields are raw pointers so all
 //! handlers share an identical `fn(&mut VmState) -> Outcome` signature
 //! (required for `return_call_indirect` type identity in TCO mode).
@@ -36,16 +36,11 @@ pub struct VmState {
     // Register file (holds operand-stack registers and locals)
     pub reg_file: *mut RegFile,
 
-    // Active label's instruction stream + cached handler array
-    // (invariant within a frame because all label stacks share the same Rc)
+    // Frame's instruction stream + cached handler array
     pub pc: usize,
     pub instrs: *const ProcessedInstr,
     pub instrs_len: usize,
     pub handlers: *const Handler,
-
-    // Label stack management (Br/BrIf/End/Block/If/Jump mutate these)
-    pub label_stack: *mut Vec<LabelStack>,
-    pub current_label_idx: usize,
 
     // Memory fast path (load/store)
     pub mem_ptr: *mut u8,
@@ -97,18 +92,6 @@ impl VmState {
     #[inline(always)]
     pub fn reg_file_mut(&mut self) -> &mut RegFile {
         unsafe { &mut *self.reg_file }
-    }
-
-    /// Shared reference to the label stack.
-    #[inline(always)]
-    pub fn label_stack(&self) -> &Vec<LabelStack> {
-        unsafe { &*self.label_stack }
-    }
-
-    /// Mutable reference to the label stack.
-    #[inline(always)]
-    pub fn label_stack_mut(&mut self) -> &mut Vec<LabelStack> {
-        unsafe { &mut *self.label_stack }
     }
 
     /// Reference to the module instance.
@@ -181,13 +164,7 @@ impl VMState {
                         module: module.clone(),
                         n: type_.results.len(),
                     },
-                    label_stack: vec![LabelStack {
-                        label: Label {
-                            is_loop: false,
-                            return_ip: 0,
-                        },
-                        ip: 0,
-                    }],
+                    ip: 0,
                     processed_instrs: code.body.clone(),
                     enable_checkpoint: false,
                     result_regs: ArrayVec::new(),
@@ -227,12 +204,14 @@ pub struct Frame {
     pub n: usize,
 }
 
-/// Activation frame stack with label stacks and execution state.
+/// Activation frame with execution state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FrameStack {
     pub frame: Frame,
-    pub label_stack: Vec<LabelStack>,
-    /// Function body shared by all labels in this frame (invariant per frame).
+    /// Program counter within this frame's body. Saved when the frame yields
+    /// (call/checkpoint) and used to resume execution.
+    pub ip: usize,
+    /// Function body (invariant per frame).
     #[serde(skip)]
     pub processed_instrs: Rc<Vec<ProcessedInstr>>,
     #[serde(skip)]
@@ -253,17 +232,4 @@ pub struct FrameStack {
     ))]
     #[serde(skip)]
     pub handler_ctrl: Option<Arc<HandlerControl>>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Label {
-    pub is_loop: bool,
-    pub return_ip: usize,
-}
-
-/// Label stack entry: control label metadata and program counter.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LabelStack {
-    pub label: Label,
-    pub ip: usize,
 }

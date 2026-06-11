@@ -8,7 +8,7 @@ use crate::execution::migration;
 use crate::execution::module::ModuleInst;
 use crate::execution::regs::{Reg, RegFile};
 use crate::execution::state::VmState;
-use crate::execution::state::{Frame, FrameStack, Label, LabelStack, ModuleLevelInstr, Stacks};
+use crate::execution::state::{Frame, FrameStack, ModuleLevelInstr, Stacks};
 use crate::execution::stats::ExecutionStats;
 #[cfg(feature = "trace")]
 use crate::execution::trace::{TraceConfig, Tracer};
@@ -136,11 +136,10 @@ impl Runtime {
         let reg_file_ptr: *mut RegFile = &mut self.stacks.reg_file as *mut RegFile;
         let frame_stack = &mut self.stacks.activation_frame_stack[frame_stack_idx];
 
-        let current_label_idx = frame_stack.label_stack.len().saturating_sub(1);
         let (instrs_ptr, instrs_len, pc) = (
             frame_stack.processed_instrs.as_ptr(),
             frame_stack.processed_instrs.len(),
-            frame_stack.label_stack[current_label_idx].ip,
+            frame_stack.ip,
         );
         let handlers_ptr = {
             cfg_if::cfg_if! {
@@ -160,8 +159,6 @@ impl Runtime {
             }
         };
         let mem_ptr = frame_stack.cached_mem_ptr.unwrap_or(std::ptr::null_mut());
-        let label_stack_ptr: *mut Vec<LabelStack> =
-            &mut frame_stack.label_stack as *mut Vec<LabelStack>;
         let return_result_regs_ptr: *mut ArrayVec<Reg, 8> =
             &mut frame_stack.return_result_regs as *mut ArrayVec<Reg, 8>;
         let enable_checkpoint = frame_stack.enable_checkpoint;
@@ -184,8 +181,6 @@ impl Runtime {
             instrs: instrs_ptr,
             instrs_len,
             handlers: handlers_ptr,
-            label_stack: label_stack_ptr,
-            current_label_idx,
             mem_ptr,
             module: module_ptr,
             trap: None,
@@ -201,10 +196,7 @@ impl Runtime {
 
         let outcome = dispatch::execute_instructions(&mut state);
 
-        let idx = state.current_label_idx;
-        if idx < state.label_stack().len() {
-            state.label_stack_mut()[idx].ip = state.pc;
-        }
+        frame_stack.ip = state.pc;
         frame_stack.cached_mem_ptr = if state.mem_ptr.is_null() {
             None
         } else {
@@ -297,15 +289,6 @@ impl Runtime {
                 }
 
                 Ok(instr_option) => {
-                    let current_frame_stack_mut =
-                        self.stacks.activation_frame_stack.last_mut().unwrap();
-
-                    if current_frame_stack_mut.label_stack.is_empty() {
-                        return Err(RuntimeError::StackError(
-                            "Label stack empty during frame transition",
-                        ));
-                    }
-
                     match instr_option {
                         Some(ModuleLevelInstr::InvokeWasiReg {
                             wasi_func_type,
@@ -380,13 +363,7 @@ impl Runtime {
                                             module: func_module_weak.clone(),
                                             n: type_.results.len(),
                                         },
-                                        label_stack: vec![LabelStack {
-                                            label: Label {
-                                                is_loop: false,
-                                                return_ip: 0,
-                                            },
-                                            ip: 0,
-                                        }],
+                                        ip: 0,
                                         processed_instrs: code.body.clone(),
                                         enable_checkpoint: self.enable_checkpoint,
                                         result_regs: ArrayVec::new(),
