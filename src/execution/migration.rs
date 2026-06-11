@@ -8,7 +8,7 @@
 //! The checkpoint captures:
 //! - The register file (`RegFile`), which holds both operand-stack values and
 //!   function locals (params + declared locals)
-//! - Activation frame stack (label stacks, result registers, frame metadata)
+//! - Activation frame stack (per-frame ip, result registers, frame metadata)
 //! - Linear memory contents (LZ4 compressed)
 //! - Global variable values
 //! - Per-frame function indices (used to rebuild skipped `Rc` fields on restore)
@@ -230,7 +230,7 @@ pub fn checkpoint<P: AsRef<Path>>(
         .activation_frame_stack
         .iter()
         .map(|frame_stack| {
-            let frame_instrs = &frame_stack.label_stack[0].processed_instrs;
+            let frame_instrs = &frame_stack.processed_instrs;
             module_inst
                 .func_addrs
                 .iter()
@@ -262,12 +262,6 @@ pub fn checkpoint<P: AsRef<Path>>(
         .map(|v| v.len())
         .unwrap_or(0);
     let frames_count = state.stacks.activation_frame_stack.len();
-    let total_labels: usize = state
-        .stacks
-        .activation_frame_stack
-        .iter()
-        .map(|f| f.label_stack.len())
-        .sum();
     let frames_size = bincode::serialize(&state.stacks.activation_frame_stack)
         .map(|v| v.len())
         .unwrap_or(0);
@@ -284,8 +278,8 @@ pub fn checkpoint<P: AsRef<Path>>(
     println!("Checkpoint component sizes:");
     println!("  reg_file:           {} bytes", reg_file_size);
     println!(
-        "  frames:             {} bytes ({} frames, {} labels)",
-        frames_size, frames_count, total_labels
+        "  frames:             {} bytes ({} frames)",
+        frames_size, frames_count
     );
     println!(
         "  memory_data:        {} bytes (raw {} bytes, LZ4 compressed)",
@@ -369,10 +363,7 @@ pub fn restore<P: AsRef<Path>>(
         let func_addr = &module_inst.func_addrs[func_idx as usize];
         let func_inst = func_addr.read_lock();
         if let FuncInst::RuntimeFunc { code, .. } = func_inst {
-            let body = code.body.clone();
-            for label_stack in frame_stack.label_stack.iter_mut() {
-                label_stack.processed_instrs = body.clone();
-            }
+            frame_stack.processed_instrs = code.body.clone();
             // v2 dispatcher: handler array (function pointers) — Rc<Vec<Handler>>
             frame_stack.handlers = code.handlers.clone();
             // Restored frames default to enable_checkpoint=false (Runtime::run

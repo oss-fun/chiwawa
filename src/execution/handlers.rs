@@ -28,7 +28,7 @@ use crate::execution::ir::{Handler, Outcome, ProcessedInstr, RegOrLocal};
 use crate::execution::module::GetInstanceByIdx;
 use crate::execution::operand;
 use crate::execution::regs::Reg;
-use crate::execution::state::{Label, LabelStack, ModuleLevelInstr, VmState};
+use crate::execution::state::{ModuleLevelInstr, VmState};
 use crate::execution::value::Val;
 use arrayvec::ArrayVec;
 
@@ -292,6 +292,8 @@ pub const HANDLER_IDX_REF_LOCAL_SET: usize = 0x102;
 
 // WASI call handler constant
 pub const HANDLER_IDX_CALL_WASI: usize = 0x103;
+/// Function-level `end`: writes the return registers and halts the frame.
+pub const HANDLER_IDX_END_FUNC: usize = 0x104;
 
 // ============================================================================
 // advance! macro — the difference between tco and non-tco mode
@@ -1409,7 +1411,6 @@ pub fn unreachable(_state: &mut VmState) -> Outcome {
 pub fn br(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::BrReg {
-        relative_depth,
         target_ip,
         source_regs,
         target_result_regs,
@@ -1418,17 +1419,12 @@ pub fn br(state: &mut VmState) -> Outcome {
     else {
         unsafe { std::hint::unreachable_unchecked() }
     };
-    let depth = *relative_depth as usize;
     let target_ip = *target_ip;
     if !source_regs.is_empty() && !target_result_regs.is_empty() {
         state
             .reg_file_mut()
             .copy_regs(source_regs, target_result_regs);
     }
-    let target_level = state.current_label_idx.saturating_sub(depth);
-    let keep_count = target_level.max(1);
-    state.label_stack_mut().truncate(keep_count);
-    state.current_label_idx = state.label_stack().len() - 1;
     state.pc = target_ip;
     advance!(state)
 }
@@ -1436,7 +1432,6 @@ pub fn br(state: &mut VmState) -> Outcome {
 pub fn br_if(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::BrIfReg {
-        relative_depth,
         target_ip,
         cond_reg,
         source_regs,
@@ -1446,7 +1441,6 @@ pub fn br_if(state: &mut VmState) -> Outcome {
     else {
         unsafe { std::hint::unreachable_unchecked() }
     };
-    let depth = *relative_depth as usize;
     let target_ip = *target_ip;
     let cond_reg = *cond_reg;
     let cond = state.reg_file().get_i32(cond_reg.index());
@@ -1459,10 +1453,6 @@ pub fn br_if(state: &mut VmState) -> Outcome {
             .reg_file_mut()
             .copy_regs(source_regs, target_result_regs);
     }
-    let target_level = state.current_label_idx.saturating_sub(depth);
-    let keep_count = target_level.max(1);
-    state.label_stack_mut().truncate(keep_count);
-    state.current_label_idx = state.label_stack().len() - 1;
     state.pc = target_ip;
     advance!(state)
 }
@@ -1481,134 +1471,78 @@ pub fn br_table(state: &mut VmState) -> Outcome {
     let index_reg = *index_reg;
     let idx = state.reg_file().get_i32(index_reg.index()) as usize;
 
-    let (depth, target_ip, target_result_regs_slice): (usize, usize, &[Reg]) =
-        if idx < targets.len() {
-            let (d, ip, rs) = &targets[idx];
-            (*d as usize, *ip, &rs[..])
-        } else {
-            let (d, ip, rs) = default_target;
-            (*d as usize, *ip, &rs[..])
-        };
+    let (target_ip, target_result_regs_slice): (usize, &[Reg]) = if idx < targets.len() {
+        let (_, ip, rs) = &targets[idx];
+        (*ip, &rs[..])
+    } else {
+        let (_, ip, rs) = default_target;
+        (*ip, &rs[..])
+    };
 
     if !source_regs.is_empty() && !target_result_regs_slice.is_empty() {
         state
             .reg_file_mut()
             .copy_regs(source_regs, target_result_regs_slice);
     }
-    let target_level = state.current_label_idx.saturating_sub(depth);
-    let keep_count = target_level.max(1);
-    state.label_stack_mut().truncate(keep_count);
-    state.current_label_idx = state.label_stack().len() - 1;
     state.pc = target_ip;
     advance!(state)
 }
 
-pub fn block(state: &mut VmState) -> Outcome {
-    let is_loop = match state.current_instr() {
-        ProcessedInstr::BlockReg { is_loop, .. } => *is_loop,
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let next_ip = state.pc + 1;
-    let cur_idx = state.current_label_idx;
-    let label_stack = state.label_stack_mut();
-    let pi_rc = label_stack[cur_idx].processed_instrs.clone();
-    label_stack.push(LabelStack {
-        label: Label {
-            is_loop,
-            return_ip: next_ip,
-        },
-        processed_instrs: pi_rc,
-        ip: next_ip,
-    });
-    state.current_label_idx = state.label_stack().len() - 1;
-    state.pc = next_ip;
-    advance!(state)
-}
-
 pub fn r#if(state: &mut VmState) -> Outcome {
-    let (cond_reg, else_target_ip, has_else) = match state.current_instr() {
+    let (cond_reg, else_target_ip) = match state.current_instr() {
         ProcessedInstr::IfReg {
             cond_reg,
             else_target_ip,
-            has_else,
             ..
-        } => (*cond_reg, *else_target_ip, *has_else),
+        } => (*cond_reg, *else_target_ip),
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
 
     let cond = state.reg_file().get_i32(cond_reg.index());
-    // Only clone pi_rc inside branches that need it, so the no-else path
-    // has zero `Rc` destructors at the tail call.
-    if cond != 0 {
-        let next_ip = state.pc + 1;
-        let cur_idx = state.current_label_idx;
-        let label_stack = state.label_stack_mut();
-        let pi_rc = label_stack[cur_idx].processed_instrs.clone();
-        label_stack.push(LabelStack {
-            label: Label {
-                is_loop: false,
-                return_ip: else_target_ip,
-            },
-            processed_instrs: pi_rc,
-            ip: next_ip,
-        });
-        state.current_label_idx = state.label_stack().len() - 1;
-        state.pc = next_ip;
-    } else if has_else {
-        let cur_idx = state.current_label_idx;
-        let label_stack = state.label_stack_mut();
-        let pi_rc = label_stack[cur_idx].processed_instrs.clone();
-        label_stack.push(LabelStack {
-            label: Label {
-                is_loop: false,
-                return_ip: else_target_ip,
-            },
-            processed_instrs: pi_rc,
-            ip: else_target_ip,
-        });
-        state.current_label_idx = state.label_stack().len() - 1;
-        state.pc = else_target_ip;
+    state.pc = if cond != 0 {
+        state.pc + 1
     } else {
-        state.pc = else_target_ip;
-    }
+        else_target_ip
+    };
     advance!(state)
 }
 
+/// Inner (block-level) `end`: copies block results to the block's result
+/// registers and falls through.
 pub fn end(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::EndReg {
         source_regs,
         target_result_regs,
+        ..
     } = instr
     else {
         unsafe { std::hint::unreachable_unchecked() }
     };
-
-    let mut halt = false;
-    if state.label_stack().len() <= 1 {
-        halt = true;
-    } else {
+    if !source_regs.is_empty() && !target_result_regs.is_empty() {
         state
             .reg_file_mut()
             .copy_regs(source_regs, target_result_regs);
-        state.label_stack_mut().pop();
-        state.current_label_idx = state.label_stack().len() - 1;
-        let next_ip = state.pc + 1;
-        if next_ip >= state.instrs_len && state.current_label_idx == 0 {
-            halt = true;
-        } else {
-            state.pc = next_ip;
-        }
     }
-    if halt {
-        let dst = state.return_result_regs_mut();
-        dst.clear();
-        for r in source_regs.iter() {
-            dst.push(*r);
-        }
-        state.pc = state.instrs_len;
-    }
+    state.pc += 1;
     advance!(state)
+}
+
+/// Function-level `end`: records the return-value registers and halts the
+/// frame. Also the target of function-level `br`/`br_if`/`br_table` (which
+/// copy their values into this end's source registers before jumping).
+pub fn end_func(state: &mut VmState) -> Outcome {
+    let instr = unsafe { &*state.instrs.add(state.pc) };
+    let ProcessedInstr::EndReg { source_regs, .. } = instr else {
+        unsafe { std::hint::unreachable_unchecked() }
+    };
+    let dst = state.return_result_regs_mut();
+    dst.clear();
+    for r in source_regs.iter() {
+        dst.push(*r);
+    }
+    state.pc = state.instrs_len;
+    Outcome::Halt
 }
 
 pub fn jump(state: &mut VmState) -> Outcome {
@@ -1616,10 +1550,6 @@ pub fn jump(state: &mut VmState) -> Outcome {
         ProcessedInstr::JumpReg { target_ip } => *target_ip,
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
-    if state.label_stack().len() > 1 {
-        state.label_stack_mut().pop();
-        state.current_label_idx = state.label_stack().len() - 1;
-    }
     state.pc = target_ip;
     advance!(state)
 }
@@ -2324,9 +2254,17 @@ pub fn select_handler(instr: &ProcessedInstr) -> Handler {
         ProcessedInstr::CallWasiReg { .. } => call_wasi,
         ProcessedInstr::ReturnReg { .. } => r#return,
         ProcessedInstr::JumpReg { .. } => jump,
-        ProcessedInstr::BlockReg { .. } => block,
+        // BlockReg never survives compaction (Phase 5); trap if one leaks.
+        ProcessedInstr::BlockReg { .. } => invalid,
         ProcessedInstr::IfReg { .. } => r#if,
-        ProcessedInstr::EndReg { .. } => end,
+        ProcessedInstr::EndReg {
+            is_function_end: false,
+            ..
+        } => end,
+        ProcessedInstr::EndReg {
+            is_function_end: true,
+            ..
+        } => end_func,
         ProcessedInstr::BrReg { .. } => br,
         ProcessedInstr::BrIfReg { .. } => br_if,
         ProcessedInstr::BrTableReg { .. } => br_table,

@@ -23,24 +23,10 @@ pub fn execute_instructions(state: &mut VmState) -> Outcome {
             return Outcome::Trap;
         }
 
-        // Natural pc-overflow handling: pop nested label or halt at function level.
+        // pc past the body means the frame is done (function-level `end` and
+        // function-level branches both halt through here or directly).
         if state.pc >= state.instrs_len {
-            if state.current_label_idx > 0 {
-                let (return_ip, is_loop) = {
-                    let ls = &state.label_stack()[state.current_label_idx];
-                    (ls.label.return_ip, ls.label.is_loop)
-                };
-                let cur_ip = state.pc;
-                if return_ip <= cur_ip && !is_loop {
-                    return Outcome::Halt;
-                }
-                state.label_stack_mut().pop();
-                state.current_label_idx -= 1;
-                state.pc = if is_loop { cur_ip + 1 } else { return_ip };
-                continue;
-            } else {
-                return Outcome::Halt;
-            }
+            return Outcome::Halt;
         }
 
         #[cfg(feature = "stats")]

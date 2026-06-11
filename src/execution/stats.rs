@@ -3,8 +3,8 @@
 use super::handlers::*;
 
 /// Number of handler-index slots. Must exceed the largest `HANDLER_IDX_*`
-/// (currently 0x103); 0x104 leaves the counter array indexable by every index.
-const HANDLER_SLOTS: usize = 0x104;
+/// (currently 0x104); 0x105 leaves the counter array indexable by every index.
+const HANDLER_SLOTS: usize = 0x105;
 
 /// Collects per-instruction execution counts.
 #[derive(Debug)]
@@ -40,6 +40,7 @@ impl ExecutionStats {
             HANDLER_IDX_IF => "if",
             HANDLER_IDX_ELSE => "else",
             HANDLER_IDX_END => "end",
+            HANDLER_IDX_END_FUNC => "end (function)",
             HANDLER_IDX_BR => "br",
             HANDLER_IDX_BR_IF => "br_if",
             HANDLER_IDX_BR_TABLE => "br_table",
