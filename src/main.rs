@@ -163,6 +163,13 @@ fn main() -> Result<()> {
 
     let mut module = Module::new("test");
     let _ = parser::parse_bytecode(&mut module, &cli.wasm_file);
+
+    #[cfg(feature = "call_graph")]
+    {
+        let cg = chiwawa::analysis::call_graph::CallGraph::build(&module);
+        eprintln!("call graph: {} functions", cg.num_funcs());
+    }
+
     let imports: ImportObjects = FxHashMap::default();
 
     let mut wasm_argv = vec![cli.wasm_file.clone()];
