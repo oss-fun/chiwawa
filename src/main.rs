@@ -47,6 +47,9 @@ struct Cli {
     /// Trace output destination (defaults to stderr)
     #[arg(long = "trace-output")]
     trace_output: Option<String>,
+    /// Call graph output file in DOT format
+    #[arg(long = "call-graph-output")]
+    call_graph_output: Option<String>,
 }
 
 fn parse_args_string(args: &str) -> Vec<String> {
@@ -161,13 +164,22 @@ fn main() -> Result<()> {
         eprintln!("         Tracing is only performed by the non-tco dispatcher.");
     }
 
+    // Warn if --call-graph-output is used but call_graph feature is not enabled
+    #[cfg(not(feature = "call_graph"))]
+    if cli.call_graph_output.is_some() {
+        eprintln!("Warning: --call-graph-output is ignored because the 'call_graph' feature is not enabled.");
+        eprintln!("         Rebuild with: cargo build --features call_graph");
+    }
+
     let mut module = Module::new("test");
     let _ = parser::parse_bytecode(&mut module, &cli.wasm_file);
 
     #[cfg(feature = "call_graph")]
-    {
+    if let Some(path) = &cli.call_graph_output {
         let cg = chiwawa::analysis::call_graph::CallGraph::build(&module);
-        eprintln!("call graph: {} functions", cg.num_funcs());
+        if let Err(e) = cg.report(&module, path) {
+            eprintln!("Warning: failed to write call graph: {}", e);
+        }
     }
 
     let imports: ImportObjects = FxHashMap::default();

@@ -9,9 +9,11 @@
 //! become candidate callees.
 
 use crate::execution::ir::ProcessedInstr;
-use crate::structure::module::{ImportDesc, Module};
+use crate::structure::module::{ExportDesc, ImportDesc, Module};
 use crate::structure::types::{FuncIdx, TypeIdx};
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::fs::File;
+use std::io::{BufWriter, Write};
 
 /// Static call graph over a parsed Wasm module.
 pub struct CallGraph {
@@ -85,5 +87,65 @@ impl CallGraph {
     /// Total number of functions in the module (imported + local).
     pub fn num_funcs(&self) -> usize {
         self.num_funcs
+    }
+
+    /// Write the call graph in DOT format to the given file path.
+    pub fn report(&self, module: &Module, path: &str) -> std::io::Result<()> {
+        let file = File::create(path)?;
+        let mut w = BufWriter::new(file);
+
+        // Build function name table indexed by raw FuncIdx value.
+        let mut names: Vec<String> = Vec::with_capacity(self.num_funcs);
+
+        // Imported function names: "module::name"
+        for import in &module.imports {
+            match &import.desc {
+                ImportDesc::Func(_) | ImportDesc::WasiFunc(_) => {
+                    names.push(format!("{}::{}", import.module.0, import.name.0));
+                }
+                _ => {}
+            }
+        }
+
+        // Local function names: export name if available, else "func_N"
+        let mut export_names: FxHashMap<u32, &str> = FxHashMap::default();
+        for export in &module.exports {
+            if let ExportDesc::Func(fidx) = &export.desc {
+                export_names.entry(fidx.0).or_insert(export.name.0.as_str());
+            }
+        }
+        for (local_idx, _) in module.funcs.iter().enumerate() {
+            let raw_idx = (module.num_imported_funcs + local_idx) as u32;
+            let name = export_names
+                .get(&raw_idx)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("func_{}", raw_idx));
+            names.push(name);
+        }
+
+        writeln!(w, "digraph call_graph {{")?;
+
+        // Declare import/WASI nodes with a distinct style.
+        for i in 0..module.num_imported_funcs {
+            writeln!(
+                w,
+                "  {:?} [shape=box, style=filled, fillcolor=lightgray];",
+                names[i]
+            )?;
+        }
+
+        // Output edges.
+        for caller in 0..self.num_funcs {
+            for callee in &self.callees[caller] {
+                writeln!(
+                    w,
+                    "  {:?} -> {:?};",
+                    names[caller], names[callee.0 as usize]
+                )?;
+            }
+        }
+
+        writeln!(w, "}}")?;
+        Ok(())
     }
 }
