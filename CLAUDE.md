@@ -259,6 +259,45 @@ with a warning.
 - Performance analysis
 - Identifying hot instructions / bottlenecks
 
+### Call Graph Analysis
+Enable at build time with the `call_graph` cargo feature. Without it,
+`--call-graph-output` is ignored with a warning.
+
+```bash
+# Build with call graph support (works with both tco and legacy dispatchers)
+~/.cargo/bin/cargo build --target wasm32-wasip1 --release --features call_graph
+
+# Generate call graph DOT file during execution
+wasmtime --dir . target/wasm32-wasip1/release/chiwawa.wasm your.wasm \
+  --call-graph-output out.dot
+
+# Render with Graphviz
+dot -Tpng out.dot -o call_graph.png
+xdg-open call_graph.png
+```
+
+**How the call graph is built:**
+- Constructed incrementally during bytecode parsing (no second pass over function bodies)
+- One node per function in FuncIdx order: imports first (`0..num_imported_funcs`),
+  then locally-defined functions (`num_imported_funcs..`)
+- Direct calls (`call`): exact callee recorded as an edge
+- Indirect calls (`call_indirect`): conservative type-based approximation — all
+  non-WASI functions whose type matches the `call_indirect` type index become
+  candidate callees (overapproximation; safe for reachability analysis)
+- WASI functions are excluded from `call_indirect` candidates (they have no
+  Wasm body to discard)
+
+**DOT output format:**
+- Imported/WASI nodes: box shape with gray fill
+- Local function nodes: default ellipse
+- Node labels: export name if exported, otherwise `func_N` (N = raw FuncIdx)
+- Import node labels: `module::name` (e.g., `wasi_snapshot_preview1::fd_write`)
+
+**Use Cases:**
+- Static reachability analysis for checkpoint/restore optimization
+  (identify functions unreachable from the restored call stack)
+- Visualizing module dependency structure
+
 ## Development Guidelines
 
 ### Development Approach

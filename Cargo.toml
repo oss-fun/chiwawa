@@ -28,6 +28,7 @@ wasmedge = []
 stats = []
 trace = []
 tco = []
+call_graph = []
 
 [dependencies]
 anyhow = "1.0.86"

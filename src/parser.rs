@@ -54,6 +54,9 @@ use rustc_hash::FxHashMap;
 use std::rc::Rc;
 use std::sync::LazyLock;
 
+#[cfg(feature = "call_graph")]
+use crate::analysis::call_graph::{CallGraph, CallGraphBuilder};
+
 /// Pending operand for peek-based operand folding.
 /// When a const or local.get instruction is followed by a foldable consumer,
 /// the operand is stored here and the source instruction is skipped.
@@ -902,10 +905,13 @@ fn decode_type_section(
 fn decode_func_section(
     body: SectionLimited<'_, u32>,
     module: &mut Module,
+    #[cfg(feature = "call_graph")] mut cg_builder: Option<&mut CallGraphBuilder>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for func in body {
         let index = func?;
         let typeidx = TypeIdx(index);
+        #[cfg(feature = "call_graph")]
+        let func_idx = FuncIdx((module.num_imported_funcs + module.funcs.len()) as u32);
         module.funcs.push(Func {
             type_: typeidx,
             locals: Vec::new(),
@@ -913,6 +919,10 @@ fn decode_func_section(
             reg_allocation: None,
             handlers: Rc::new(Vec::new()),
         });
+        #[cfg(feature = "call_graph")]
+        if let Some(b) = cg_builder.as_mut() {
+            b.register_local_func(func_idx, typeidx);
+        }
     }
 
     Ok(())
@@ -925,6 +935,7 @@ fn decode_func_section(
 fn decode_import_section(
     body: SectionLimited<'_, wasmparser::Import<'_>>,
     module: &mut Module,
+    #[cfg(feature = "call_graph")] mut cg_builder: Option<&mut CallGraphBuilder>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for import in body {
         let import = import?;
@@ -932,13 +943,31 @@ fn decode_import_section(
             TypeRef::Func(type_index) => {
                 if import.module == "wasi_snapshot_preview1" {
                     if let Some(wasi_func_type) = parse_wasi_function(&import.name) {
+                        #[cfg(feature = "call_graph")]
+                        if let Some(b) = cg_builder.as_mut() {
+                            b.register_wasi_func();
+                        }
                         module.num_imported_funcs += 1;
                         ImportDesc::WasiFunc(wasi_func_type)
                     } else {
+                        #[cfg(feature = "call_graph")]
+                        if let Some(b) = cg_builder.as_mut() {
+                            b.register_import_func(
+                                FuncIdx(module.num_imported_funcs as u32),
+                                TypeIdx(type_index),
+                            );
+                        }
                         module.num_imported_funcs += 1;
                         ImportDesc::Func(TypeIdx(type_index))
                     }
                 } else {
+                    #[cfg(feature = "call_graph")]
+                    if let Some(b) = cg_builder.as_mut() {
+                        b.register_import_func(
+                            FuncIdx(module.num_imported_funcs as u32),
+                            TypeIdx(type_index),
+                        );
+                    }
                     module.num_imported_funcs += 1;
                     ImportDesc::Func(TypeIdx(type_index))
                 }
@@ -1225,6 +1254,7 @@ fn decode_code_section(
     module: &mut Module,
     func_index: usize,
     cache: &mut BlockArityCache,
+    #[cfg(feature = "call_graph")] mut cg_builder: Option<&mut CallGraphBuilder>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut locals: Vec<(u32, ValueType)> = Vec::new();
     for pair in body.get_locals_reader()? {
@@ -1258,7 +1288,17 @@ fn decode_code_section(
         block_type_map,
         reg_allocation,
         block_result_regs_map,
-    ) = decode_processed_instrs_and_fixups(ops_iter, module, &locals, &param_types, &result_types)?;
+    ) = decode_processed_instrs_and_fixups(
+        ops_iter,
+        module,
+        &locals,
+        &param_types,
+        &result_types,
+        #[cfg(feature = "call_graph")]
+        cg_builder.as_mut().map(|x| &mut **x),
+        #[cfg(feature = "call_graph")]
+        func_index,
+    )?;
 
     let relative_func_index = func_index - module.num_imported_funcs;
     if let Some(func) = module.funcs.get_mut(relative_func_index) {
@@ -2019,6 +2059,8 @@ fn decode_processed_instrs_and_fixups<'a>(
     locals: &[(u32, ValueType)],
     param_types: &[ValueType],
     result_types: &[ValueType],
+    #[cfg(feature = "call_graph")] mut cg_builder: Option<&mut CallGraphBuilder>,
+    #[cfg(feature = "call_graph")] func_index: usize,
 ) -> Result<
     (
         Vec<ProcessedInstr>,
@@ -5717,6 +5759,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                             None,
                         )
                     } else {
+                        #[cfg(feature = "call_graph")]
+                        if let Some(b) = cg_builder.as_mut() {
+                            b.record_call(FuncIdx(func_index as u32), FuncIdx(*function_index));
+                        }
                         let (param_types, result_types) = if (*function_index as usize)
                             < module.num_imported_funcs
                         {
@@ -5837,6 +5883,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                         param_regs: param_regs.into_boxed_slice(),
                         result_regs: result_regs.into_boxed_slice(),
                     };
+                    #[cfg(feature = "call_graph")]
+                    if let Some(b) = cg_builder.as_mut() {
+                        b.record_call_indirect(FuncIdx(func_index as u32), TypeIdx(*type_index));
+                    }
                     (Some(instr), None)
                 }
 
@@ -7792,6 +7842,13 @@ fn compute_branch_regs(
 /// the binary file, parses all sections using wasmparser, and preprocesses
 /// instructions for efficient interpretation.
 ///
+/// Output returned by [`parse_bytecode`].
+pub struct ParseOutput {
+    /// Static call graph built during parsing (only present with the `call_graph` feature).
+    #[cfg(feature = "call_graph")]
+    pub call_graph: CallGraph,
+}
+
 /// # Arguments
 ///
 /// * `module` - The module structure to populate
@@ -7799,9 +7856,11 @@ fn compute_branch_regs(
 pub fn parse_bytecode(
     mut module: &mut Module,
     path: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<ParseOutput, Box<dyn std::error::Error>> {
     let mut current_func_index = module.num_imported_funcs;
     let mut arity_cache = BlockArityCache::new();
+    #[cfg(feature = "call_graph")]
+    let mut cg_builder = CallGraphBuilder::new();
 
     let mut buf = Vec::new();
     let parser = Parser::new(0);
@@ -7826,11 +7885,21 @@ pub fn parse_bytecode(
             }
 
             FunctionSection(body) => {
-                decode_func_section(body, &mut module)?;
+                decode_func_section(
+                    body,
+                    &mut module,
+                    #[cfg(feature = "call_graph")]
+                    Some(&mut cg_builder),
+                )?;
             }
 
             ImportSection(body) => {
-                decode_import_section(body, &mut module)?;
+                decode_import_section(
+                    body,
+                    &mut module,
+                    #[cfg(feature = "call_graph")]
+                    Some(&mut cg_builder),
+                )?;
                 current_func_index = module.num_imported_funcs;
             }
             ExportSection(body) => {
@@ -7869,8 +7938,14 @@ pub fn parse_bytecode(
 
             CodeSectionStart { .. } => { /* ... */ }
             CodeSectionEntry(body) => {
-                let result =
-                    decode_code_section(body, &mut module, current_func_index, &mut arity_cache);
+                let result = decode_code_section(
+                    body,
+                    &mut module,
+                    current_func_index,
+                    &mut arity_cache,
+                    #[cfg(feature = "call_graph")]
+                    Some(&mut cg_builder),
+                );
                 result?;
                 current_func_index += 1;
             }
@@ -7895,5 +7970,8 @@ pub fn parse_bytecode(
         }
     }
 
-    Ok(())
+    Ok(ParseOutput {
+        #[cfg(feature = "call_graph")]
+        call_graph: cg_builder.finish(),
+    })
 }
