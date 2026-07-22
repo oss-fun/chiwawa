@@ -89,6 +89,33 @@ somethingWasmRuntime target/legacy/wasm32-wasip1/release/chiwawa.wasm test.wasm 
 
 If `--stats` is used without the feature enabled, a warning is displayed and the flag is ignored.
 
+## Call Graph Analysis
+
+Call graph analysis requires the `call_graph` feature to be enabled at compile time.
+The call graph is built incrementally during bytecode parsing (no second pass over function bodies).
+
+```bash
+# Build with call graph support (works with both tco and legacy dispatchers)
+cargo build-tco --features call_graph
+
+# Generate a call graph in DOT format
+somethingWasmRuntime target/legacy/wasm32-wasip1/release/chiwawa.wasm your.wasm \
+  --call-graph-output out.dot
+
+# Render with Graphviz
+dot -Tpng out.dot -o call_graph.png
+```
+
+The DOT output contains one node per function:
+- **Imported/WASI functions**: box shape with gray fill, labeled `module::name`
+- **Local functions**: ellipse, labeled by export name or `func_N`
+
+Edges represent potential calls:
+- `call`: exact callee
+- `call_indirect`: all non-WASI functions whose type matches the instruction's type index (conservative overapproximation)
+
+If `--call-graph-output` is used without the feature enabled, a warning is displayed and the flag is ignored.
+
 ## Artifacts
 ### Academic
 - Y. Nakata and K. Matsubara, [Self-Hosted WebAssembly Runtime for Runtime-Neutral Checkpoint/Restore in Edge–Cloud Continuum](https://dl.acm.org/doi/abs/10.1145/3774898.3778040)
