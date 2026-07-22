@@ -172,13 +172,14 @@ fn main() -> Result<()> {
     }
 
     let mut module = Module::new("test");
-    let _ = parser::parse_bytecode(&mut module, &cli.wasm_file);
+    let _parse_out = parser::parse_bytecode(&mut module, &cli.wasm_file);
 
     #[cfg(feature = "call_graph")]
     if let Some(path) = &cli.call_graph_output {
-        let cg = chiwawa::analysis::call_graph::CallGraph::build(&module);
-        if let Err(e) = cg.report(&module, path) {
-            eprintln!("Warning: failed to write call graph: {}", e);
+        if let Ok(out) = &_parse_out {
+            if let Err(e) = out.call_graph.report(&module, path) {
+                eprintln!("Warning: failed to write call graph: {}", e);
+            }
         }
     }
 

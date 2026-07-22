@@ -25,63 +25,51 @@ pub struct CallGraph {
 
 impl CallGraph {
     /// Build a call graph from a fully-parsed module.
+    ///
+    /// Internally uses [`CallGraphBuilder`]. For a single-pass alternative that
+    /// avoids re-scanning function bodies, integrate `CallGraphBuilder` directly
+    /// into the parser.
     pub fn build(module: &Module) -> Self {
         let num_imported = module.num_imported_funcs;
-        let num_local = module.funcs.len();
-        let num_funcs = num_imported + num_local;
+        let mut builder = CallGraphBuilder::new();
 
-        // Step 1: TypeIdx → candidate FuncIdx list for call_indirect approximation.
-        let mut type_to_funcs: FxHashMap<TypeIdx, Vec<FuncIdx>> = FxHashMap::default();
-
+        // Register all functions in FuncIdx order.
         let mut import_func_idx: u32 = 0;
         for import in &module.imports {
             match &import.desc {
                 ImportDesc::Func(type_idx) => {
-                    type_to_funcs
-                        .entry(*type_idx)
-                        .or_default()
-                        .push(FuncIdx(import_func_idx));
+                    builder.register_import_func(FuncIdx(import_func_idx), *type_idx);
                     import_func_idx += 1;
                 }
                 ImportDesc::WasiFunc(_) => {
+                    builder.register_wasi_func();
                     import_func_idx += 1;
                 }
                 _ => {}
             }
         }
         for (local_idx, func) in module.funcs.iter().enumerate() {
-            let func_idx = FuncIdx((num_imported + local_idx) as u32);
-            type_to_funcs.entry(func.type_).or_default().push(func_idx);
+            builder.register_local_func(FuncIdx((num_imported + local_idx) as u32), func.type_);
         }
 
-        // Step 2: scan each local function body for call instructions.
-        let mut callees = vec![Vec::new(); num_funcs];
-
+        // Scan local function bodies for call instructions.
         for (local_idx, func) in module.funcs.iter().enumerate() {
-            let caller_raw = num_imported + local_idx;
-            let mut callee_set: FxHashSet<u32> = FxHashSet::default();
-
+            let caller = FuncIdx((num_imported + local_idx) as u32);
             for instr in func.body.iter() {
                 match instr {
                     ProcessedInstr::CallReg { func_idx, .. } => {
-                        callee_set.insert(func_idx.0);
+                        builder.record_call(caller, *func_idx);
                     }
                     ProcessedInstr::CallIndirectReg { type_idx, .. } => {
-                        if let Some(candidates) = type_to_funcs.get(type_idx) {
-                            for c in candidates {
-                                callee_set.insert(c.0);
-                            }
-                        }
+                        builder.record_call_indirect(caller, *type_idx);
                     }
                     ProcessedInstr::CallWasiReg { .. } => {}
                     _ => {}
                 }
             }
-
-            callees[caller_raw] = callee_set.into_iter().map(FuncIdx).collect();
         }
 
-        CallGraph { callees, num_funcs }
+        builder.finish()
     }
 
     /// Total number of functions in the module (imported + local).
@@ -147,5 +135,110 @@ impl CallGraph {
 
         writeln!(w, "}}")?;
         Ok(())
+    }
+}
+
+/// Incremental call graph builder for use during Wasm bytecode parsing.
+///
+/// Functions must be registered in FuncIdx order (imports first, then locals).
+/// Once all functions are registered and call instructions recorded, call
+/// [`finish`](CallGraphBuilder::finish) to obtain a [`CallGraph`].
+///
+/// # Parser integration
+///
+/// ```ignore
+/// let mut builder = CallGraphBuilder::new();
+///
+/// // ImportSection: for each function import
+/// builder.register_import_func(func_idx, type_idx); // non-WASI
+/// builder.register_wasi_func();                      // WASI
+///
+/// // FunctionSection: for each local function
+/// builder.register_local_func(func_idx, type_idx);
+///
+/// // CodeSection: for each call instruction
+/// builder.record_call(caller, callee);
+/// builder.record_call_indirect(caller, type_idx);
+///
+/// let call_graph = builder.finish();
+/// ```
+pub struct CallGraphBuilder {
+    type_to_funcs: FxHashMap<TypeIdx, Vec<FuncIdx>>,
+    callee_sets: Vec<FxHashSet<u32>>,
+    num_funcs: usize,
+}
+
+impl Default for CallGraphBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CallGraphBuilder {
+    pub fn new() -> Self {
+        CallGraphBuilder {
+            type_to_funcs: FxHashMap::default(),
+            callee_sets: Vec::new(),
+            num_funcs: 0,
+        }
+    }
+
+    /// Register a non-WASI imported function.
+    pub fn register_import_func(&mut self, func_idx: FuncIdx, type_idx: TypeIdx) {
+        self.callee_sets.push(FxHashSet::default());
+        self.num_funcs += 1;
+        self.type_to_funcs
+            .entry(type_idx)
+            .or_default()
+            .push(func_idx);
+    }
+
+    /// Register a WASI imported function.
+    /// WASI functions are excluded from `call_indirect` candidates because they
+    /// have no Wasm body to discard.
+    pub fn register_wasi_func(&mut self) {
+        self.callee_sets.push(FxHashSet::default());
+        self.num_funcs += 1;
+    }
+
+    /// Register a locally-defined function.
+    pub fn register_local_func(&mut self, func_idx: FuncIdx, type_idx: TypeIdx) {
+        self.callee_sets.push(FxHashSet::default());
+        self.num_funcs += 1;
+        self.type_to_funcs
+            .entry(type_idx)
+            .or_default()
+            .push(func_idx);
+    }
+
+    /// Record a direct call from `caller` to `callee`.
+    pub fn record_call(&mut self, caller: FuncIdx, callee: FuncIdx) {
+        if let Some(set) = self.callee_sets.get_mut(caller.0 as usize) {
+            set.insert(callee.0);
+        }
+    }
+
+    /// Record a `call_indirect` from `caller` with the given type signature.
+    /// Adds edges to all registered functions whose type matches `type_idx`.
+    pub fn record_call_indirect(&mut self, caller: FuncIdx, type_idx: TypeIdx) {
+        if let Some(candidates) = self.type_to_funcs.get(&type_idx) {
+            let candidates: Vec<u32> = candidates.iter().map(|f| f.0).collect();
+            if let Some(set) = self.callee_sets.get_mut(caller.0 as usize) {
+                set.extend(candidates);
+            }
+        }
+    }
+
+    /// Consume the builder and produce a [`CallGraph`].
+    pub fn finish(self) -> CallGraph {
+        let callees = self
+            .callee_sets
+            .into_iter()
+            .map(|set| set.into_iter().map(FuncIdx).collect())
+            .collect();
+        CallGraph {
+            callees,
+            num_funcs: self.num_funcs,
+        }
     }
 }
