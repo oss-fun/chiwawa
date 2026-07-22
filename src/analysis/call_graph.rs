@@ -1,14 +1,13 @@
-//! Static call graph built from processed Wasm bytecode.
+//! Static call graph built incrementally during Wasm bytecode parsing.
 //!
 //! Nodes are function indices (same space as FuncIdx):
 //!   0..module.num_imported_funcs      → imported/WASI functions (no outgoing edges)
 //!   num_imported_funcs..num_funcs     → locally-defined functions
 //!
 //! `call_indirect` edges use type-based conservative approximation:
-//! for each `CallIndirectReg { type_idx }`, all non-WASI functions with that type
+//! for each `call_indirect` with a given type, all non-WASI functions with that type
 //! become candidate callees.
 
-use crate::execution::ir::ProcessedInstr;
 use crate::structure::module::{ExportDesc, ImportDesc, Module};
 use crate::structure::types::{FuncIdx, TypeIdx};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -24,54 +23,6 @@ pub struct CallGraph {
 }
 
 impl CallGraph {
-    /// Build a call graph from a fully-parsed module.
-    ///
-    /// Internally uses [`CallGraphBuilder`]. For a single-pass alternative that
-    /// avoids re-scanning function bodies, integrate `CallGraphBuilder` directly
-    /// into the parser.
-    pub fn build(module: &Module) -> Self {
-        let num_imported = module.num_imported_funcs;
-        let mut builder = CallGraphBuilder::new();
-
-        // Register all functions in FuncIdx order.
-        let mut import_func_idx: u32 = 0;
-        for import in &module.imports {
-            match &import.desc {
-                ImportDesc::Func(type_idx) => {
-                    builder.register_import_func(FuncIdx(import_func_idx), *type_idx);
-                    import_func_idx += 1;
-                }
-                ImportDesc::WasiFunc(_) => {
-                    builder.register_wasi_func();
-                    import_func_idx += 1;
-                }
-                _ => {}
-            }
-        }
-        for (local_idx, func) in module.funcs.iter().enumerate() {
-            builder.register_local_func(FuncIdx((num_imported + local_idx) as u32), func.type_);
-        }
-
-        // Scan local function bodies for call instructions.
-        for (local_idx, func) in module.funcs.iter().enumerate() {
-            let caller = FuncIdx((num_imported + local_idx) as u32);
-            for instr in func.body.iter() {
-                match instr {
-                    ProcessedInstr::CallReg { func_idx, .. } => {
-                        builder.record_call(caller, *func_idx);
-                    }
-                    ProcessedInstr::CallIndirectReg { type_idx, .. } => {
-                        builder.record_call_indirect(caller, *type_idx);
-                    }
-                    ProcessedInstr::CallWasiReg { .. } => {}
-                    _ => {}
-                }
-            }
-        }
-
-        builder.finish()
-    }
-
     /// Total number of functions in the module (imported + local).
     pub fn num_funcs(&self) -> usize {
         self.num_funcs
