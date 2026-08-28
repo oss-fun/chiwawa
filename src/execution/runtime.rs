@@ -4,6 +4,7 @@ use crate::error::RuntimeError;
 use crate::execution::dispatch;
 use crate::execution::func::{FuncAddr, FuncInst};
 use crate::execution::ir::Outcome;
+use crate::execution::mem::MemAddr;
 use crate::execution::migration;
 use crate::execution::module::ModuleInst;
 use crate::execution::regs::{Reg, RegFile};
@@ -24,6 +25,7 @@ use std::sync::Once;
 /// Execution entry point that manages the interpreter loop.
 pub struct Runtime {
     module_inst: Rc<ModuleInst>,
+    primary_mem: Option<MemAddr>,
     stacks: Stacks,
     #[cfg_attr(not(feature = "stats"), allow(dead_code))]
     execution_stats: Option<ExecutionStats>,
@@ -71,6 +73,7 @@ impl Runtime {
         };
 
         Ok(Runtime {
+            primary_mem: module_inst.mem_addrs.first().cloned(),
             module_inst,
             stacks,
             execution_stats: if enable_stats {
@@ -109,6 +112,7 @@ impl Runtime {
         };
 
         Runtime {
+            primary_mem: module_inst.mem_addrs.first().cloned(),
             module_inst,
             stacks,
             execution_stats: if enable_stats {
@@ -355,7 +359,6 @@ impl Runtime {
                             match &*func_inst_guard {
                                 FuncInst::RuntimeFunc {
                                     type_,
-                                    module: func_module_weak,
                                     code,
                                     func_idx,
                                     #[cfg(all(
@@ -385,10 +388,8 @@ impl Runtime {
                                         caller.result_regs = result_regs;
                                     }
                                     // Cache primary memory address and raw pointer
-                                    let primary_mem = func_module_weak
-                                        .upgrade()
-                                        .and_then(|m| m.mem_addrs.first().cloned());
-                                    let cached_mem_ptr = primary_mem.as_ref().map(|m| m.data_ptr());
+                                    let cached_mem_ptr =
+                                        self.primary_mem.as_ref().map(|m| m.data_ptr());
 
                                     let new_frame = FrameStack {
                                         func_idx: *func_idx,
@@ -399,7 +400,6 @@ impl Runtime {
                                         enable_checkpoint: self.enable_checkpoint,
                                         result_regs: ArrayVec::new(),
                                         return_result_regs: ArrayVec::new(),
-                                        primary_mem,
                                         cached_mem_ptr,
                                         #[cfg(all(
                                             target_arch = "wasm32",
@@ -466,13 +466,13 @@ impl Runtime {
                                 // Restore offsets to caller's frame
                                 self.stacks.reg_file.restore_offsets();
 
+                                // Refresh cached memory pointer (may have changed due to memory.grow in callee)
+                                let mem_ptr = self.primary_mem.as_ref().map(|m| m.data_ptr());
+
                                 // Write to caller's registers (after restore, in caller's coordinate system)
                                 let (reg_file, frames) = self.stacks.get_reg_file_and_frames();
                                 let caller_frame = frames.last_mut().unwrap();
-
-                                // Refresh cached memory pointer (may have changed due to memory.grow in callee)
-                                caller_frame.cached_mem_ptr =
-                                    caller_frame.primary_mem.as_ref().map(|m| m.data_ptr());
+                                caller_frame.cached_mem_ptr = mem_ptr;
 
                                 if !caller_frame.result_regs.is_empty() {
                                     for (caller_reg, val) in
