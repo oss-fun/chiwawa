@@ -20,7 +20,8 @@ Chiwawa instantiates a module through a multi-phase pipeline:
 
 ```
 Phase 1: Decode
-  Parse Wasm bytecode, build instruction-to-position mapping
+  Parse Wasm bytecode, assign operands to typed registers,
+  apply operand folding, build instruction-to-position mapping
 
 Phase 2: Branch Resolution
   Resolve Br, BrIf, If, Else targets to absolute positions
@@ -28,9 +29,18 @@ Phase 2: Branch Resolution
 Phase 3: BrTable Resolution
   Handle variable-target branch tables
 
-Phase 4: Register Allocation
-  Assign operands to typed registers
+Phase 4: Fixup Check
+  Verify every branch target was resolved
+
+Phase 5: Computation Folding
+  Merge pairs of computing instructions into superinstructions
+
+Phase 6: Compaction
+  Strip no-op instructions and remap branch targets
 ```
+
+Register allocation and operand folding both happen during decoding, not as
+later passes. See [folding.md](folding.md) for both folding kinds.
 
 ## Register-Based Execution
 

@@ -1,6 +1,13 @@
-# Operand Folding
+# Folding
 
-Operand folding is a preprocessing optimization that identifies patterns of consecutive instructions that can be merged into a single operation. This eliminates intermediate register allocations and reduces dispatch overhead.
+Folding is a preprocessing optimization that identifies patterns of consecutive instructions that can be merged into a single operation. This eliminates intermediate register allocations and reduces dispatch overhead.
+
+There are two kinds, applied in different phases:
+
+- **Operand folding** removes instructions that only *carry* a value (`i32.const`, `local.get`, `local.set`) by embedding them in a neighbour's operand slot. The surviving instruction does the same work as before.
+- **Computation folding** merges two *computing* instructions into one handler, removing a dispatch and the intermediate register that connected them.
+
+## Operand Folding
 
 ```
 Before folding:
@@ -10,8 +17,6 @@ Before folding:
 After folding:
   i32.const 42 -> local[0]  ; store 42 directly to local[0]
 ```
-
-## Folding Types
 
 ### Source Folding
 
@@ -59,9 +64,9 @@ After:
   i32.load (addr: const 100) -> r1
 ```
 
-## Implementation
+### Implementation
 
-Folding is performed during the preprocessing phase using a peek-ahead mechanism:
+Operand folding is performed during instruction decoding using a peek-ahead mechanism:
 
 1. **Pending Operand Stack**: When a foldable source instruction (const, local.get) is encountered, it is pushed to a pending stack instead of generating a register instruction.
 
@@ -69,10 +74,52 @@ Folding is performed during the preprocessing phase using a peek-ahead mechanism
 
 3. **Destination Check**: After processing an instruction, the parser peeks ahead to check if the next instruction is `local.set`. If so, the destination is changed from register to local.
 
-## Limitations
+### Limitations
 
 - Folding only occurs for immediately adjacent instructions
 - Control flow instructions (block, loop, if) break folding chains
 - Reference types (funcref, externref) are not folded
 - Type mismatch between pending operand and consumer prevents folding
+
+## Computation Folding
+
+Merges two computing instructions into a single superinstruction.
+
+```
+Before:
+  i32.lt_s       ; r2 = r0 < r1
+  br_if $l       ; if r2 != 0 goto $l
+
+After:
+  br_if.i32.lt_s (r0, r1) -> $l
+```
+
+This removes a dispatch, the write of the intermediate value into a register,
+and the read back out of it. In a hot loop that is one dispatch per iteration.
+
+### Supported Patterns
+
+| Pattern | Result |
+| --- | --- |
+| `<i32 comparison>; br_if` | `BrIfCmpReg` (`eq` `ne` `lt_s` `lt_u` `le_s` `le_u` `gt_s` `gt_u` `ge_s` `ge_u` `eqz`) |
+
+### Implementation
+
+Computation folding is a pass over the finished instruction stream
+(`fold_computations` in `parser.rs`), placed between branch fixup and no-op
+compaction:
+
+1. **After fixup**, because a folded instruction absorbs the branch target of
+   the instruction it swallows, and targets are unresolved during decoding.
+2. **Before compaction**, because each fold vacates a slot. Leaving a `NopReg`
+   there lets `compact_instruction_stream` strip it and remap every branch
+   target, so the pass needs no remapping logic of its own.
+
+### Limitations
+
+- A fold may not swallow an instruction that is itself a jump target: incoming
+  edges would land past the folded instruction and skip the work it absorbed.
+  Jumps to the *first* instruction of a pair are fine, since landing on the
+  folded instruction performs both halves in order.
+- Only immediately adjacent instructions are folded.
 
