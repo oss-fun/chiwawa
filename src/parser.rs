@@ -1389,7 +1389,7 @@ fn is_noop_instr(instr: &ProcessedInstr) -> bool {
     }
 }
 
-/// Phase 5: computation folding — merges two computing instructions into one
+/// Phase 5: computation folding: merges two computing instructions into one
 /// handler, removing a dispatch and the register between them.
 ///
 /// Runs after fixup (a fold absorbs the swallowed instruction's branch target)
@@ -1404,7 +1404,7 @@ fn fold_computations(processed: &mut [ProcessedInstr]) {
             continue;
         }
         // Further folds chain here: `|| fold_xxx(processed, i)`.
-        fold_compare_branch(processed, i);
+        let _ = fold_compare_branch(processed, i) || fold_compare_if(processed, i);
     }
 }
 
@@ -1456,6 +1456,68 @@ fn folded_br_if_handler(cmp_handler: usize) -> Option<usize> {
         HANDLER_IDX_I32_EQZ => HANDLER_IDX_BR_IF_EQZ,
         _ => return None,
     })
+}
+
+/// Same as `folded_br_if_handler` but negated, which is the polarity `if` needs.
+fn negated_cond_br_handler(cmp_handler: usize) -> Option<usize> {
+    Some(match cmp_handler {
+        HANDLER_IDX_I32_EQ => HANDLER_IDX_BR_IF_NE,
+        HANDLER_IDX_I32_NE => HANDLER_IDX_BR_IF_EQ,
+        HANDLER_IDX_I32_LT_S => HANDLER_IDX_BR_IF_GE_S,
+        HANDLER_IDX_I32_LT_U => HANDLER_IDX_BR_IF_GE_U,
+        HANDLER_IDX_I32_LE_S => HANDLER_IDX_BR_IF_GT_S,
+        HANDLER_IDX_I32_LE_U => HANDLER_IDX_BR_IF_GT_U,
+        HANDLER_IDX_I32_GT_S => HANDLER_IDX_BR_IF_LE_S,
+        HANDLER_IDX_I32_GT_U => HANDLER_IDX_BR_IF_LE_U,
+        HANDLER_IDX_I32_GE_S => HANDLER_IDX_BR_IF_LT_S,
+        HANDLER_IDX_I32_GE_U => HANDLER_IDX_BR_IF_LT_U,
+        // `a == 0` negated is `a != 0`.
+        HANDLER_IDX_I32_EQZ => HANDLER_IDX_BR_IF_NE,
+        _ => return None,
+    })
+}
+
+/// Folds `<i32 comparison>; if` at `i` into a negated `BrIfCmpReg`.
+fn fold_compare_if(processed: &mut [ProcessedInstr], i: usize) -> bool {
+    let handler_index = match (&processed[i], &processed[i + 1]) {
+        (
+            ProcessedInstr::I32Reg {
+                handler_index,
+                dst: I32RegOperand::Reg(dst),
+                src2,
+                ..
+            },
+            ProcessedInstr::IfReg {
+                cond_reg: Reg::I32(cond),
+                ..
+            },
+        ) if dst == cond => match negated_cond_br_handler(*handler_index) {
+            Some(h) if (*handler_index == HANDLER_IDX_I32_EQZ) == src2.is_none() => h,
+            _ => return false,
+        },
+        _ => return false,
+    };
+
+    let cmp = std::mem::replace(&mut processed[i], ProcessedInstr::NopReg);
+    let if_instr = std::mem::replace(&mut processed[i + 1], ProcessedInstr::NopReg);
+    let (src1, src2) = match cmp {
+        ProcessedInstr::I32Reg { src1, src2, .. } => (src1, src2),
+        _ => unreachable!(),
+    };
+    let target_ip = match if_instr {
+        ProcessedInstr::IfReg { else_target_ip, .. } => else_target_ip,
+        _ => unreachable!(),
+    };
+    processed[i] = ProcessedInstr::BrIfCmpReg {
+        handler_index,
+        target_ip,
+        src1,
+        // `eqz` became `ne`, so it needs the zero it was comparing against.
+        src2: src2.or(Some(I32RegOperand::Const(0))),
+        source_regs: Box::new([]),
+        target_result_regs: Box::new([]),
+    };
+    true
 }
 
 /// Folds `<i32 comparison>; br_if` at `i` into a single `BrIfCmpReg`.

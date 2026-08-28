@@ -101,7 +101,15 @@ and the read back out of it. In a hot loop that is one dispatch per iteration.
 
 | Pattern | Result |
 | --- | --- |
-| `<i32 comparison>; br_if` | `BrIfCmpReg` (`eq` `ne` `lt_s` `lt_u` `le_s` `le_u` `gt_s` `gt_u` `ge_s` `ge_u` `eqz`) |
+| `<i32 comparison>; br_if` | `BrIfCmpReg` on the comparison |
+| `<i32 comparison>; if` | `BrIfCmpReg` on the *negated* comparison, targeting the else branch |
+
+Comparisons: `eq` `ne` `lt_s` `lt_u` `le_s` `le_u` `gt_s` `gt_u` `ge_s` `ge_u`
+`eqz`.
+
+`if` branches on the opposite polarity, so negating the comparison lets it
+reuse the same handlers — `if (a < b)` becomes a branch-to-else on `a >= b`.
+Handler names describe the branch, not the source opcode.
 
 ### Implementation
 

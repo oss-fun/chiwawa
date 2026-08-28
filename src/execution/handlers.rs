@@ -295,8 +295,7 @@ pub const HANDLER_IDX_CALL_WASI: usize = 0x103;
 /// Function-level `end`: writes the return registers and halts the frame.
 pub const HANDLER_IDX_END_FUNC: usize = 0x104;
 
-// Folded compare-and-branch: an i32 comparison feeding the `br_if` that
-// immediately follows it, emitted by the parser's computation-folding pass.
+// Folded compare-and-branch: an i32 comparison feeding the `br_if` or `if`
 pub const HANDLER_IDX_BR_IF_EQ: usize = 0x110;
 pub const HANDLER_IDX_BR_IF_NE: usize = 0x111;
 pub const HANDLER_IDX_BR_IF_LT_S: usize = 0x112;
