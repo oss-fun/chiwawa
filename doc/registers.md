@@ -175,11 +175,19 @@ Global Register File (i32_regs):
 On function call:
 1. Save current frame offsets
 2. Extend register arrays if needed
-3. New frame accesses registers relative to its offset
+3. Copy the arguments from the caller's frame into the callee's local registers
+4. New frame accesses registers relative to its offset
 
 On function return:
-1. Restore previous frame offsets
-2. Register memory is not deallocated (reused by subsequent calls)
+1. Copy the return values from the callee's frame into the caller's result
+   registers
+2. Restore previous frame offsets
+3. Register memory is not deallocated (reused by subsequent calls)
+
+Both frames index the same backing vectors, so passing arguments and results
+is a copy within one array — no intermediate `Val` and no heap allocation per
+call. The copy must precede the offset restore, which truncates the vectors
+down to the callee's base.
 
 ## Instruction Format
 
