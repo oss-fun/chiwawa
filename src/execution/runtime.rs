@@ -134,13 +134,21 @@ impl Runtime {
     ) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError> {
         let module_ptr: *const ModuleInst = Rc::as_ptr(&self.module_inst);
         let reg_file_ptr: *mut RegFile = &mut self.stacks.reg_file as *mut RegFile;
+
+        // Body and handlers stay owned by the module for its whole lifetime, so
+        // the frame names its function by index rather than holding an `Rc`.
+        let func_idx = self.stacks.activation_frame_stack[frame_stack_idx].func_idx;
+        let (body_ptr, body_len, code_handlers_ptr) =
+            match self.module_inst.func_addrs[func_idx as usize].read_lock() {
+                FuncInst::RuntimeFunc { code, .. } => {
+                    (code.body.as_ptr(), code.body.len(), code.handlers.as_ptr())
+                }
+                _ => (std::ptr::null(), 0, std::ptr::null()),
+            };
+
         let frame_stack = &mut self.stacks.activation_frame_stack[frame_stack_idx];
 
-        let (instrs_ptr, instrs_len, pc) = (
-            frame_stack.processed_instrs.as_ptr(),
-            frame_stack.processed_instrs.len(),
-            frame_stack.ip,
-        );
+        let (instrs_ptr, instrs_len, pc) = (body_ptr, body_len, frame_stack.ip);
         let handlers_ptr = {
             cfg_if::cfg_if! {
                 if #[cfg(all(
@@ -151,10 +159,10 @@ impl Runtime {
                 ))] {
                     match &frame_stack.handler_ctrl {
                         Some(ctrl) => ctrl.handlers_ptr(),
-                        None => frame_stack.handlers.as_ptr(),
+                        None => code_handlers_ptr,
                     }
                 } else {
-                    frame_stack.handlers.as_ptr()
+                    code_handlers_ptr
                 }
             }
         };
@@ -239,6 +247,30 @@ impl Runtime {
         }
 
         // Set checkpoint enabled flag for initial frame stack
+        #[cfg(all(
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p1",
+            target_feature = "atomics"
+        ))]
+        let entry_ctrl = if self.enable_checkpoint {
+            let func_idx = self
+                .stacks
+                .activation_frame_stack
+                .first()
+                .map(|f| f.func_idx);
+            match func_idx {
+                Some(idx) => match self.module_inst.func_addrs[idx as usize].read_lock() {
+                    FuncInst::RuntimeFunc { code, .. } => {
+                        Some(migration::HandlerControl::new(&code.handlers))
+                    }
+                    _ => None,
+                },
+                None => None,
+            }
+        } else {
+            None
+        };
         if let Some(frame_stack) = self.stacks.activation_frame_stack.first_mut() {
             frame_stack.enable_checkpoint = self.enable_checkpoint;
             #[cfg(all(
@@ -247,9 +279,8 @@ impl Runtime {
                 target_env = "p1",
                 target_feature = "atomics"
             ))]
-            if self.enable_checkpoint && frame_stack.handler_ctrl.is_none() {
-                frame_stack.handler_ctrl =
-                    Some(migration::HandlerControl::new(&frame_stack.handlers));
+            if frame_stack.handler_ctrl.is_none() {
+                frame_stack.handler_ctrl = entry_ctrl;
             }
         }
 
@@ -362,17 +393,14 @@ impl Runtime {
                                     let new_frame = FrameStack {
                                         func_idx: *func_idx,
                                         frame: Frame {
-                                            module: func_module_weak.clone(),
                                             n: type_.results.len(),
                                         },
                                         ip: 0,
-                                        processed_instrs: code.body.clone(),
                                         enable_checkpoint: self.enable_checkpoint,
                                         result_regs: ArrayVec::new(),
                                         return_result_regs: ArrayVec::new(),
                                         primary_mem,
                                         cached_mem_ptr,
-                                        handlers: code.handlers.clone(),
                                         #[cfg(all(
                                             target_arch = "wasm32",
                                             target_os = "wasi",

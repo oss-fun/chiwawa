@@ -39,7 +39,6 @@
 //! `runtime.rs` translates into a `checkpoint` call.
 
 use crate::error::RuntimeError;
-use crate::execution::func::FuncInst;
 use crate::execution::global::GlobalAddr;
 use crate::execution::mem::MemAddr;
 use crate::execution::module::ModuleInst;
@@ -319,38 +318,17 @@ pub fn restore<P: AsRef<Path>>(
         );
     }
 
-    // 5. Reconstruct skipped fields in Stacks (Frame::module, primary_mem, processed_instrs)
+    // 5. Reconstruct skipped fields in Stacks (primary_mem, cached_mem_ptr).
+    // The body and handler array are not stored per frame; `execute_frame`
+    // reads them from the module via `func_idx`.
     let primary_mem = module_inst.mem_addrs.first().cloned();
     for frame_stack in state.stacks.activation_frame_stack.iter_mut() {
-        let func_idx = frame_stack.func_idx;
-        frame_stack.frame.module = Rc::downgrade(&module_inst);
         frame_stack.primary_mem = primary_mem.clone();
-
-        // Reconstruct skipped fields from module function body
-        let func_addr = &module_inst.func_addrs[func_idx as usize];
-        let func_inst = func_addr.read_lock();
-        if let FuncInst::RuntimeFunc { code, .. } = func_inst {
-            frame_stack.processed_instrs = code.body.clone();
-            // v2 dispatcher: handler array (function pointers) — Rc<Vec<Handler>>
-            frame_stack.handlers = code.handlers.clone();
-            // Restored frames default to enable_checkpoint=false (Runtime::run
-            // sets it true on the topmost frame later); HandlerControl will be
-            // re-created at run() time if needed.
-            #[cfg(all(
-                target_arch = "wasm32",
-                target_os = "wasi",
-                target_env = "p1",
-                target_feature = "atomics"
-            ))]
-            {
-                frame_stack.handler_ctrl = None;
-            }
-        }
-
-        // v2 dispatcher: cached raw pointer to memory data
         frame_stack.cached_mem_ptr = primary_mem.as_ref().map(|m| m.data_ptr());
     }
-    println!("Frame module references and processed instructions restored.");
+    // `enable_checkpoint` and `handler_ctrl` are `#[serde(skip)]`, so they
+    // arrive as false / None; Runtime::run sets them on the topmost frame.
+    println!("Frame memory references restored.");
 
     println!("Restore successful (state applied to module). Returning Stacks.");
     Ok(state.stacks)
