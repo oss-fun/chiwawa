@@ -43,7 +43,7 @@ impl Reg {
 }
 
 /// Frame register offsets for global register file
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct FrameRegOffsets {
     pub i32_offset: u32,
     pub i64_offset: u32,
@@ -177,6 +177,70 @@ impl RegFile {
             self.v128_regs.truncate(popped.v128_offset as usize);
         }
         self.cached_offsets = self.frame_offsets.last().cloned().unwrap_or_default();
+    }
+
+    /// Copy the callee's return values into the caller's result registers,
+    /// then pop the callee's frame.
+    pub fn pop_frame_with_results(&mut self, src_regs: &[Reg], dst_regs: &[Reg]) {
+        let callee = self.cached_offsets;
+        let caller = match self.frame_offsets.len().checked_sub(2) {
+            Some(i) => self.frame_offsets[i],
+            None => FrameRegOffsets::default(),
+        };
+        for (src, dst) in src_regs.iter().zip(dst_regs.iter()) {
+            self.copy_between_frames(&callee, src, &caller, dst);
+        }
+        self.restore_offsets();
+    }
+
+    /// Open the callee's frame and move the call arguments from the caller's
+    /// registers into the callee's local registers.
+    pub fn push_frame_with_params(&mut self, allocation: &RegAllocation, param_regs: &[Reg]) {
+        let caller = self.cached_offsets;
+        self.save_offsets(allocation);
+        let callee = self.cached_offsets;
+        for (src, dst) in param_regs.iter().zip(allocation.local_regs.iter()) {
+            self.copy_between_frames(&caller, src, &callee, dst);
+        }
+    }
+
+    /// Copy one register from the frame based at `src_base` to the frame based
+    /// at `dst_base`. Both frames index the same backing vectors.
+    #[inline]
+    fn copy_between_frames(
+        &mut self,
+        src_base: &FrameRegOffsets,
+        src: &Reg,
+        dst_base: &FrameRegOffsets,
+        dst: &Reg,
+    ) {
+        match (src, dst) {
+            (Reg::I32(s), Reg::I32(d)) => {
+                let v = self.i32_regs[src_base.i32_offset as usize + *s as usize];
+                self.i32_regs[dst_base.i32_offset as usize + *d as usize] = v;
+            }
+            (Reg::I64(s), Reg::I64(d)) => {
+                let v = self.i64_regs[src_base.i64_offset as usize + *s as usize];
+                self.i64_regs[dst_base.i64_offset as usize + *d as usize] = v;
+            }
+            (Reg::F32(s), Reg::F32(d)) => {
+                let v = self.f32_regs[src_base.f32_offset as usize + *s as usize];
+                self.f32_regs[dst_base.f32_offset as usize + *d as usize] = v;
+            }
+            (Reg::F64(s), Reg::F64(d)) => {
+                let v = self.f64_regs[src_base.f64_offset as usize + *s as usize];
+                self.f64_regs[dst_base.f64_offset as usize + *d as usize] = v;
+            }
+            (Reg::Ref(s), Reg::Ref(d)) => {
+                let v = self.ref_regs[src_base.ref_offset as usize + *s as usize].clone();
+                self.ref_regs[dst_base.ref_offset as usize + *d as usize] = v;
+            }
+            (Reg::V128(s), Reg::V128(d)) => {
+                let v = self.v128_regs[src_base.v128_offset as usize + *s as usize];
+                self.v128_regs[dst_base.v128_offset as usize + *d as usize] = v;
+            }
+            _ => {}
+        }
     }
 
     /// Get current frame offsets (returns cached value for performance)

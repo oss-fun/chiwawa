@@ -116,8 +116,8 @@ pub enum ModuleLevelInstr {
     },
     InvokeReg {
         func_addr: FuncAddr,
-        params: Vec<Val>,
-        result_regs: ArrayVec<Reg, 8>,
+        param_regs: &'static [Reg],
+        result_regs: &'static [Reg],
     },
 }
 
