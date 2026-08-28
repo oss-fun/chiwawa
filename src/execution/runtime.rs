@@ -456,32 +456,17 @@ impl Runtime {
                                 self.stacks.reg_file.restore_offsets();
                                 return Ok(values_to_pass.into_iter().collect());
                             } else {
-                                // First read values from finished frame's registers (before restore)
-                                // Use ArrayVec to avoid heap allocation
-                                let values_to_pass: ArrayVec<Val, 8> = return_result_regs
-                                    .iter()
-                                    .map(|reg| self.stacks.reg_file.get_val(reg))
-                                    .collect();
-
-                                // Restore offsets to caller's frame
-                                self.stacks.reg_file.restore_offsets();
-
                                 // Refresh cached memory pointer (may have changed due to memory.grow in callee)
                                 let mem_ptr = self.primary_mem.as_ref().map(|m| m.data_ptr());
 
-                                // Write to caller's registers (after restore, in caller's coordinate system)
                                 let (reg_file, frames) = self.stacks.get_reg_file_and_frames();
                                 let caller_frame = frames.last_mut().unwrap();
+                                reg_file.pop_frame_with_results(
+                                    &return_result_regs,
+                                    &caller_frame.result_regs,
+                                );
+                                caller_frame.result_regs.clear();
                                 caller_frame.cached_mem_ptr = mem_ptr;
-
-                                if !caller_frame.result_regs.is_empty() {
-                                    for (caller_reg, val) in
-                                        caller_frame.result_regs.iter().zip(values_to_pass.iter())
-                                    {
-                                        reg_file.set_val(caller_reg, val);
-                                    }
-                                    caller_frame.result_regs.clear();
-                                }
                             }
                         }
                     }
