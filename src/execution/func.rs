@@ -33,6 +33,8 @@ pub enum FuncInst {
         type_: FuncType,
         module: Weak<ModuleInst>,
         code: Func,
+        /// Index in the owning module's `func_addrs`.
+        func_idx: u32,
         /// Cached per-function so repeat calls only `Arc::clone`, avoiding the
         /// `Vec` clone + registry `Mutex` lock of `HandlerControl::new`.
         /// Single-threaded `OnceCell` suffices; the `Arc` is what reaches the
@@ -113,6 +115,7 @@ impl FuncAddr {
                 reg_allocation: None,
                 handlers: Rc::new(Vec::new()),
             },
+            func_idx: 0,
             #[cfg(all(
                 target_arch = "wasm32",
                 target_os = "wasi",
@@ -133,7 +136,7 @@ impl FuncAddr {
     }
 
     /// Replaces placeholder with actual function definition.
-    pub fn replace(&self, func: Func, module: Weak<ModuleInst>) {
+    pub fn replace(&self, func: Func, module: Weak<ModuleInst>, func_idx: u32) {
         let upgraded_module = module.upgrade().expect("Module weak ref expired");
         let func_type = upgraded_module.types.get_by_idx(func.type_).clone();
         drop(upgraded_module);
@@ -142,6 +145,7 @@ impl FuncAddr {
             type_: func_type,
             module: module,
             code: func,
+            func_idx,
             #[cfg(all(
                 target_arch = "wasm32",
                 target_os = "wasi",

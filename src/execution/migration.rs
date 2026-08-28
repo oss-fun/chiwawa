@@ -194,14 +194,12 @@ pub struct SerializableState {
     pub stacks: Stacks,
     pub memory_data_compressed: Vec<u8>,
     pub global_values: Vec<Val>,
-    pub frame_func_indices: Vec<u32>,
 }
 
 /// Serializes runtime state to a checkpoint file.
 ///
 /// Captures memory, globals, and stack state for later restoration.
 pub fn checkpoint<P: AsRef<Path>>(
-    module_inst: &ModuleInst,
     stacks: &Stacks,
     mem_addrs: &[MemAddr],
     global_addrs: &[GlobalAddr],
@@ -225,36 +223,13 @@ pub fn checkpoint<P: AsRef<Path>>(
         .map(|global_addr| Ok(global_addr.get()))
         .collect::<Result<Vec<Val>, RuntimeError>>()?;
 
-    // 3. Compute function indices for each activation frame (using Rc::ptr_eq)
-    let frame_func_indices = stacks
-        .activation_frame_stack
-        .iter()
-        .map(|frame_stack| {
-            let frame_instrs = &frame_stack.processed_instrs;
-            module_inst
-                .func_addrs
-                .iter()
-                .position(|func_addr| {
-                    let inst = func_addr.read_lock();
-                    if let FuncInst::RuntimeFunc { code, .. } = inst {
-                        Rc::ptr_eq(frame_instrs, &code.body)
-                    } else {
-                        false
-                    }
-                })
-                .expect("Function not found in module func_addrs during checkpoint")
-                as u32
-        })
-        .collect::<Vec<u32>>();
-
-    // 4. Assemble state
+    // 3. Assemble state
     // Note: Register file is already compact because restore_offsets() truncates
     // register vectors on function return, so no checkpoint-time compaction needed.
     let state = SerializableState {
         stacks: stacks.clone(),
         memory_data_compressed,
         global_values,
-        frame_func_indices,
     };
 
     // 6. Serialize and write (with per-component size diagnostics)
@@ -272,9 +247,6 @@ pub fn checkpoint<P: AsRef<Path>>(
     let globals_size = bincode::serialize(&state.global_values)
         .map(|v| v.len())
         .unwrap_or(0);
-    let indices_size = bincode::serialize(&state.frame_func_indices)
-        .map(|v| v.len())
-        .unwrap_or(0);
     println!("Checkpoint component sizes:");
     println!("  reg_file:           {} bytes", reg_file_size);
     println!(
@@ -286,7 +258,6 @@ pub fn checkpoint<P: AsRef<Path>>(
         memory_size, mem_raw_size
     );
     println!("  global_values:      {} bytes", globals_size);
-    println!("  frame_func_indices: {} bytes", indices_size);
 
     let encoded: Vec<u8> =
         bincode::serialize(&state).map_err(|e| RuntimeError::SerializationError(e.to_string()))?;
@@ -350,12 +321,8 @@ pub fn restore<P: AsRef<Path>>(
 
     // 5. Reconstruct skipped fields in Stacks (Frame::module, primary_mem, processed_instrs)
     let primary_mem = module_inst.mem_addrs.first().cloned();
-    for (frame_stack, &func_idx) in state
-        .stacks
-        .activation_frame_stack
-        .iter_mut()
-        .zip(state.frame_func_indices.iter())
-    {
+    for frame_stack in state.stacks.activation_frame_stack.iter_mut() {
+        let func_idx = frame_stack.func_idx;
         frame_stack.frame.module = Rc::downgrade(&module_inst);
         frame_stack.primary_mem = primary_mem.clone();
 
