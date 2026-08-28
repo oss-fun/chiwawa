@@ -16,7 +16,6 @@ use crate::execution::value::Val;
 use crate::structure::module::WasiFuncType;
 use arrayvec::ArrayVec;
 use serde::{Deserialize, Serialize};
-use std::rc::{Rc, Weak};
 
 cfg_if::cfg_if! {
     if #[cfg(all(
@@ -163,17 +162,14 @@ impl VMState {
                 let initial_frame = FrameStack {
                     func_idx: *func_idx,
                     frame: Frame {
-                        module: module.clone(),
                         n: type_.results.len(),
                     },
                     ip: 0,
-                    processed_instrs: code.body.clone(),
                     enable_checkpoint: false,
                     result_regs: ArrayVec::new(),
                     return_result_regs: ArrayVec::new(),
                     primary_mem,
                     cached_mem_ptr,
-                    handlers: code.handlers.clone(),
                     #[cfg(all(
                         target_arch = "wasm32",
                         target_os = "wasi",
@@ -201,8 +197,6 @@ impl VMState {
 /// Call frame containing locals and module reference.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Frame {
-    #[serde(skip)]
-    pub module: Weak<ModuleInst>,
     pub n: usize,
 }
 
@@ -215,9 +209,6 @@ pub struct FrameStack {
     /// Program counter within this frame's body. Saved when the frame yields
     /// (call/checkpoint) and used to resume execution.
     pub ip: usize,
-    /// Function body (invariant per frame).
-    #[serde(skip)]
-    pub processed_instrs: Rc<Vec<ProcessedInstr>>,
     #[serde(skip)]
     pub enable_checkpoint: bool,
     pub result_regs: ArrayVec<Reg, 8>,
@@ -226,8 +217,6 @@ pub struct FrameStack {
     pub primary_mem: Option<MemAddr>,
     #[serde(skip)]
     pub cached_mem_ptr: Option<*mut u8>,
-    #[serde(skip)]
-    pub handlers: Rc<Vec<Handler>>,
     #[cfg(all(
         target_arch = "wasm32",
         target_os = "wasi",
