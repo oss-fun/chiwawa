@@ -295,6 +295,19 @@ pub const HANDLER_IDX_CALL_WASI: usize = 0x103;
 /// Function-level `end`: writes the return registers and halts the frame.
 pub const HANDLER_IDX_END_FUNC: usize = 0x104;
 
+// Folded compare-and-branch: an i32 comparison feeding the `br_if` or `if`
+pub const HANDLER_IDX_BR_IF_EQ: usize = 0x110;
+pub const HANDLER_IDX_BR_IF_NE: usize = 0x111;
+pub const HANDLER_IDX_BR_IF_LT_S: usize = 0x112;
+pub const HANDLER_IDX_BR_IF_LT_U: usize = 0x113;
+pub const HANDLER_IDX_BR_IF_LE_S: usize = 0x114;
+pub const HANDLER_IDX_BR_IF_LE_U: usize = 0x115;
+pub const HANDLER_IDX_BR_IF_GT_S: usize = 0x116;
+pub const HANDLER_IDX_BR_IF_GT_U: usize = 0x117;
+pub const HANDLER_IDX_BR_IF_GE_S: usize = 0x118;
+pub const HANDLER_IDX_BR_IF_GE_U: usize = 0x119;
+pub const HANDLER_IDX_BR_IF_EQZ: usize = 0x11A;
+
 // ============================================================================
 // advance! macro — the difference between tco and non-tco mode
 // ============================================================================
@@ -1457,6 +1470,79 @@ pub fn br_if(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
+/// Folded `<i32 comparison>; br_if`. Saves a dispatch, the write of the
+/// condition into a register, and the read back out of it.
+macro_rules! br_if_cmp {
+    ($name:ident, $op:expr) => {
+        pub fn $name(state: &mut VmState) -> Outcome {
+            let instr = unsafe { &*state.instrs.add(state.pc) };
+            let ProcessedInstr::BrIfCmpReg {
+                target_ip,
+                src1,
+                src2,
+                source_regs,
+                target_result_regs,
+                ..
+            } = instr
+            else {
+                unsafe { std::hint::unreachable_unchecked() }
+            };
+            let a = operand::read_i32(state, src1);
+            // SAFETY: the folding pass only builds this variant from a binary
+            // comparison, which always has src2.
+            let b = operand::read_i32(state, unsafe { src2.as_ref().unwrap_unchecked() });
+            if !$op(a, b) {
+                state.pc += 1;
+                return advance!(state);
+            }
+            if !source_regs.is_empty() && !target_result_regs.is_empty() {
+                state
+                    .reg_file_mut()
+                    .copy_regs(source_regs, target_result_regs);
+            }
+            state.pc = *target_ip;
+            advance!(state)
+        }
+    };
+}
+
+br_if_cmp!(br_if_eq, |a: i32, b: i32| a == b);
+br_if_cmp!(br_if_ne, |a: i32, b: i32| a != b);
+br_if_cmp!(br_if_lt_s, |a: i32, b: i32| a < b);
+br_if_cmp!(br_if_lt_u, |a: i32, b: i32| (a as u32) < (b as u32));
+br_if_cmp!(br_if_le_s, |a: i32, b: i32| a <= b);
+br_if_cmp!(br_if_le_u, |a: i32, b: i32| (a as u32) <= (b as u32));
+br_if_cmp!(br_if_gt_s, |a: i32, b: i32| a > b);
+br_if_cmp!(br_if_gt_u, |a: i32, b: i32| (a as u32) > (b as u32));
+br_if_cmp!(br_if_ge_s, |a: i32, b: i32| a >= b);
+br_if_cmp!(br_if_ge_u, |a: i32, b: i32| (a as u32) >= (b as u32));
+
+/// Folded `i32.eqz; br_if`. Unary, so `src2` is unused.
+pub fn br_if_eqz(state: &mut VmState) -> Outcome {
+    let instr = unsafe { &*state.instrs.add(state.pc) };
+    let ProcessedInstr::BrIfCmpReg {
+        target_ip,
+        src1,
+        source_regs,
+        target_result_regs,
+        ..
+    } = instr
+    else {
+        unsafe { std::hint::unreachable_unchecked() }
+    };
+    if operand::read_i32(state, src1) != 0 {
+        state.pc += 1;
+        return advance!(state);
+    }
+    if !source_regs.is_empty() && !target_result_regs.is_empty() {
+        state
+            .reg_file_mut()
+            .copy_regs(source_regs, target_result_regs);
+    }
+    state.pc = *target_ip;
+    advance!(state)
+}
+
 pub fn br_table(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::BrTableReg {
@@ -2261,6 +2347,20 @@ pub fn select_handler(instr: &ProcessedInstr) -> Handler {
         } => end_func,
         ProcessedInstr::BrReg { .. } => br,
         ProcessedInstr::BrIfReg { .. } => br_if,
+        ProcessedInstr::BrIfCmpReg { handler_index, .. } => match *handler_index {
+            HANDLER_IDX_BR_IF_EQ => br_if_eq,
+            HANDLER_IDX_BR_IF_NE => br_if_ne,
+            HANDLER_IDX_BR_IF_LT_S => br_if_lt_s,
+            HANDLER_IDX_BR_IF_LT_U => br_if_lt_u,
+            HANDLER_IDX_BR_IF_LE_S => br_if_le_s,
+            HANDLER_IDX_BR_IF_LE_U => br_if_le_u,
+            HANDLER_IDX_BR_IF_GT_S => br_if_gt_s,
+            HANDLER_IDX_BR_IF_GT_U => br_if_gt_u,
+            HANDLER_IDX_BR_IF_GE_S => br_if_ge_s,
+            HANDLER_IDX_BR_IF_GE_U => br_if_ge_u,
+            HANDLER_IDX_BR_IF_EQZ => br_if_eqz,
+            _ => unreachable,
+        },
         ProcessedInstr::BrTableReg { .. } => br_table,
         ProcessedInstr::NopReg => nop,
         ProcessedInstr::UnreachableReg => unreachable,

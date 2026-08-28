@@ -15,14 +15,15 @@
 //!                                                       |
 //!                                                       v
 //! +----------------+     +----------------+     +----------------+
-//! |  ProcessedInstr| <-- |  Fixup Phase   | <-- | Branch Targets |
-//! | (exec ready)   |     | (resolve PCs)  |     | (Br/BrIf/etc)  |
+//! |  ProcessedInstr| <-- | Fold + Compact | <-- |  Fixup Phase   |
+//! | (exec ready)   |     | (strip, remap) |     | (resolve PCs)  |
 //! +----------------+     +----------------+     +----------------+
 //! ```
 //!
 //! ### Phase 1: Decode and Map Building
-//! Parse WebAssembly instructions using `wasmparser` and build a mapping from
-//! original instruction indices to processed instruction positions.
+//! Parse WebAssembly instructions using `wasmparser`, assign operands to typed
+//! registers, apply operand folding, and build a mapping from original
+//! instruction indices to processed instruction positions.
 //!
 //! ### Phase 2: Branch Resolution
 //! Resolve branch targets (Br, BrIf, If, Else) by calculating absolute program
@@ -31,6 +32,15 @@
 //! ### Phase 3: BrTable Resolution
 //! Resolve BrTable targets which require special handling due to their variable
 //! number of branch destinations.
+//!
+//! ### Phase 4: Fixup Check
+//! Verify that every recorded fixup was resolved.
+//!
+//! ### Phase 5: Computation Folding
+//! Merge pairs of computing instructions into superinstructions.
+//!
+//! ### Phase 6: Compaction
+//! Strip no-op instructions and remap every branch target to the new indices.
 //!
 //! ## Register-Based Execution
 //!
@@ -1321,7 +1331,12 @@ fn decode_code_section(
     )
     .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
-    // Phase 5: Strip no-op instructions (block/loop, nop, no-op inner end)
+    // Phase 5: Computation folding. Leaves a NopReg in each vacated slot for
+    // the compaction pass below to strip.
+    let mut processed_instrs = processed_instrs;
+    fold_computations(&mut processed_instrs);
+
+    // Phase 6: Strip no-op instructions (block/loop, nop, no-op inner end)
     // and remap all branch targets to the compacted indices.
     let processed_instrs = compact_instruction_stream(processed_instrs);
 
@@ -1374,9 +1389,189 @@ fn is_noop_instr(instr: &ProcessedInstr) -> bool {
     }
 }
 
-/// Phase 5: Removes no-op instructions from the stream and remaps all branch
-/// targets (`BrReg`, `BrIfReg`, `BrTableReg`, `IfReg`, `JumpReg`) to the
-/// compacted indices.
+/// Phase 5: computation folding: merges two computing instructions into one
+/// handler, removing a dispatch and the register between them.
+///
+/// Runs after fixup (a fold absorbs the swallowed instruction's branch target)
+/// and before compaction (the vacated slot is left as `NopReg` to strip).
+///
+/// A fold must not swallow a jump target: incoming edges would land past the
+/// folded instruction and skip the work it absorbed.
+fn fold_computations(processed: &mut [ProcessedInstr]) {
+    let is_target = jump_targets(processed);
+    for i in 0..processed.len().saturating_sub(1) {
+        if is_target[i + 1] {
+            continue;
+        }
+        // Further folds chain here: `|| fold_xxx(processed, i)`.
+        let _ = fold_compare_branch(processed, i) || fold_compare_if(processed, i);
+    }
+}
+
+/// Marks every instruction index that some branch targets.
+fn jump_targets(processed: &[ProcessedInstr]) -> Vec<bool> {
+    fn mark(is_target: &mut [bool], ip: usize) {
+        if let Some(slot) = is_target.get_mut(ip) {
+            *slot = true;
+        }
+    }
+
+    let mut is_target = vec![false; processed.len() + 1];
+    for instr in processed.iter() {
+        match instr {
+            ProcessedInstr::BrReg { target_ip, .. }
+            | ProcessedInstr::BrIfReg { target_ip, .. }
+            | ProcessedInstr::BrIfCmpReg { target_ip, .. }
+            | ProcessedInstr::JumpReg { target_ip } => mark(&mut is_target, *target_ip),
+            ProcessedInstr::IfReg { else_target_ip, .. } => mark(&mut is_target, *else_target_ip),
+            ProcessedInstr::BrTableReg {
+                targets,
+                default_target,
+                ..
+            } => {
+                for (_, target_ip, _) in targets.iter() {
+                    mark(&mut is_target, *target_ip);
+                }
+                mark(&mut is_target, default_target.1);
+            }
+            _ => {}
+        }
+    }
+    is_target
+}
+
+/// Maps an i32 comparison handler to its folded compare-and-branch handler.
+fn folded_br_if_handler(cmp_handler: usize) -> Option<usize> {
+    Some(match cmp_handler {
+        HANDLER_IDX_I32_EQ => HANDLER_IDX_BR_IF_EQ,
+        HANDLER_IDX_I32_NE => HANDLER_IDX_BR_IF_NE,
+        HANDLER_IDX_I32_LT_S => HANDLER_IDX_BR_IF_LT_S,
+        HANDLER_IDX_I32_LT_U => HANDLER_IDX_BR_IF_LT_U,
+        HANDLER_IDX_I32_LE_S => HANDLER_IDX_BR_IF_LE_S,
+        HANDLER_IDX_I32_LE_U => HANDLER_IDX_BR_IF_LE_U,
+        HANDLER_IDX_I32_GT_S => HANDLER_IDX_BR_IF_GT_S,
+        HANDLER_IDX_I32_GT_U => HANDLER_IDX_BR_IF_GT_U,
+        HANDLER_IDX_I32_GE_S => HANDLER_IDX_BR_IF_GE_S,
+        HANDLER_IDX_I32_GE_U => HANDLER_IDX_BR_IF_GE_U,
+        HANDLER_IDX_I32_EQZ => HANDLER_IDX_BR_IF_EQZ,
+        _ => return None,
+    })
+}
+
+/// Same as `folded_br_if_handler` but negated, which is the polarity `if` needs.
+fn negated_cond_br_handler(cmp_handler: usize) -> Option<usize> {
+    Some(match cmp_handler {
+        HANDLER_IDX_I32_EQ => HANDLER_IDX_BR_IF_NE,
+        HANDLER_IDX_I32_NE => HANDLER_IDX_BR_IF_EQ,
+        HANDLER_IDX_I32_LT_S => HANDLER_IDX_BR_IF_GE_S,
+        HANDLER_IDX_I32_LT_U => HANDLER_IDX_BR_IF_GE_U,
+        HANDLER_IDX_I32_LE_S => HANDLER_IDX_BR_IF_GT_S,
+        HANDLER_IDX_I32_LE_U => HANDLER_IDX_BR_IF_GT_U,
+        HANDLER_IDX_I32_GT_S => HANDLER_IDX_BR_IF_LE_S,
+        HANDLER_IDX_I32_GT_U => HANDLER_IDX_BR_IF_LE_U,
+        HANDLER_IDX_I32_GE_S => HANDLER_IDX_BR_IF_LT_S,
+        HANDLER_IDX_I32_GE_U => HANDLER_IDX_BR_IF_LT_U,
+        // `a == 0` negated is `a != 0`.
+        HANDLER_IDX_I32_EQZ => HANDLER_IDX_BR_IF_NE,
+        _ => return None,
+    })
+}
+
+/// Folds `<i32 comparison>; if` at `i` into a negated `BrIfCmpReg`.
+fn fold_compare_if(processed: &mut [ProcessedInstr], i: usize) -> bool {
+    let handler_index = match (&processed[i], &processed[i + 1]) {
+        (
+            ProcessedInstr::I32Reg {
+                handler_index,
+                dst: I32RegOperand::Reg(dst),
+                src2,
+                ..
+            },
+            ProcessedInstr::IfReg {
+                cond_reg: Reg::I32(cond),
+                ..
+            },
+        ) if dst == cond => match negated_cond_br_handler(*handler_index) {
+            Some(h) if (*handler_index == HANDLER_IDX_I32_EQZ) == src2.is_none() => h,
+            _ => return false,
+        },
+        _ => return false,
+    };
+
+    let cmp = std::mem::replace(&mut processed[i], ProcessedInstr::NopReg);
+    let if_instr = std::mem::replace(&mut processed[i + 1], ProcessedInstr::NopReg);
+    let (src1, src2) = match cmp {
+        ProcessedInstr::I32Reg { src1, src2, .. } => (src1, src2),
+        _ => unreachable!(),
+    };
+    let target_ip = match if_instr {
+        ProcessedInstr::IfReg { else_target_ip, .. } => else_target_ip,
+        _ => unreachable!(),
+    };
+    processed[i] = ProcessedInstr::BrIfCmpReg {
+        handler_index,
+        target_ip,
+        src1,
+        // `eqz` became `ne`, so it needs the zero it was comparing against.
+        src2: src2.or(Some(I32RegOperand::Const(0))),
+        source_regs: Box::new([]),
+        target_result_regs: Box::new([]),
+    };
+    true
+}
+
+/// Folds `<i32 comparison>; br_if` at `i` into a single `BrIfCmpReg`.
+fn fold_compare_branch(processed: &mut [ProcessedInstr], i: usize) -> bool {
+    let handler_index = match (&processed[i], &processed[i + 1]) {
+        (
+            ProcessedInstr::I32Reg {
+                handler_index,
+                dst: I32RegOperand::Reg(dst),
+                src2,
+                ..
+            },
+            ProcessedInstr::BrIfReg {
+                cond_reg: Reg::I32(cond),
+                ..
+            },
+        ) if dst == cond => match folded_br_if_handler(*handler_index) {
+            // `eqz` is the only unary member, so operand count and handler
+            // must agree.
+            Some(h) if (h == HANDLER_IDX_BR_IF_EQZ) == src2.is_none() => h,
+            _ => return false,
+        },
+        _ => return false,
+    };
+
+    let cmp = std::mem::replace(&mut processed[i], ProcessedInstr::NopReg);
+    let br_if = std::mem::replace(&mut processed[i + 1], ProcessedInstr::NopReg);
+    let (src1, src2) = match cmp {
+        ProcessedInstr::I32Reg { src1, src2, .. } => (src1, src2),
+        _ => unreachable!(),
+    };
+    let (target_ip, source_regs, target_result_regs) = match br_if {
+        ProcessedInstr::BrIfReg {
+            target_ip,
+            source_regs,
+            target_result_regs,
+            ..
+        } => (target_ip, source_regs, target_result_regs),
+        _ => unreachable!(),
+    };
+    processed[i] = ProcessedInstr::BrIfCmpReg {
+        handler_index,
+        target_ip,
+        src1,
+        src2,
+        source_regs,
+        target_result_regs,
+    };
+    true
+}
+
+/// Phase 6: Removes no-op instructions from the stream and remaps all branch
+/// targets (`BrReg`, `BrIfReg`, `BrIfCmpReg`, `BrTableReg`, `IfReg`,
+/// `JumpReg`) to the compacted indices.
 ///
 /// A jump to a removed instruction lands on the next kept instruction at or
 /// after it, which is semantically identical because removed instructions do
@@ -1403,6 +1598,7 @@ fn compact_instruction_stream(processed: Vec<ProcessedInstr>) -> Vec<ProcessedIn
         match &mut instr {
             ProcessedInstr::BrReg { target_ip, .. } => *target_ip = remap[*target_ip],
             ProcessedInstr::BrIfReg { target_ip, .. } => *target_ip = remap[*target_ip],
+            ProcessedInstr::BrIfCmpReg { target_ip, .. } => *target_ip = remap[*target_ip],
             ProcessedInstr::IfReg { else_target_ip, .. } => {
                 *else_target_ip = remap[*else_target_ip]
             }

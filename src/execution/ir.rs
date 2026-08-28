@@ -227,6 +227,14 @@ pub enum ProcessedInstr {
         source_regs: RegSlice,
         target_result_regs: RegSlice,
     },
+    BrIfCmpReg {
+        handler_index: usize,
+        target_ip: usize,
+        src1: I32RegOperand,
+        src2: Option<I32RegOperand>,
+        source_regs: RegSlice,
+        target_result_regs: RegSlice,
+    },
     BrTableReg {
         targets: Vec<(u32, usize, RegSlice)>,
         default_target: (u32, usize, RegSlice),
@@ -273,6 +281,7 @@ impl ProcessedInstr {
             } => HANDLER_IDX_END_FUNC,
             ProcessedInstr::BrReg { .. } => HANDLER_IDX_BR,
             ProcessedInstr::BrIfReg { .. } => HANDLER_IDX_BR_IF,
+            ProcessedInstr::BrIfCmpReg { handler_index, .. } => *handler_index,
             ProcessedInstr::BrTableReg { .. } => HANDLER_IDX_BR_TABLE,
             ProcessedInstr::NopReg => HANDLER_IDX_NOP,
             ProcessedInstr::UnreachableReg => HANDLER_IDX_UNREACHABLE,
