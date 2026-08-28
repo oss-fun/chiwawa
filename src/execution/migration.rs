@@ -8,16 +8,16 @@
 //! The checkpoint captures:
 //! - The register file (`RegFile`), which holds both operand-stack values and
 //!   function locals (params + declared locals)
-//! - Activation frame stack (per-frame ip, result registers, frame metadata)
+//! - Activation frame stack (per-frame `func_idx`, ip, result registers)
 //! - Linear memory contents (LZ4 compressed)
 //! - Global variable values
-//! - Per-frame function indices (used to rebuild skipped `Rc` fields on restore)
 //!
-//! `FrameStack` fields that are derived from the module instance
-//! (`handlers`, `processed_instrs`, `primary_mem`, `cached_mem_ptr`) are
-//! `#[serde(skip)]` and reconstructed during `restore`. Tables are excluded:
-//! they are deterministically initialized from element segments during
-//! module instantiation.
+//! `FrameStack` fields that depend on host addresses are `#[serde(skip)]`:
+//! `cached_mem_ptr` is re-cached from the restored memory, while
+//! `enable_checkpoint` and `handler_ctrl` are set by `Runtime::run`. A frame
+//! names its function by `func_idx`, so the body and handler array need no
+//! reconstruction at all. Tables are excluded: they are deterministically
+//! initialized from element segments during module instantiation.
 //!
 //! ## Trigger Mechanisms
 //!
@@ -318,13 +318,12 @@ pub fn restore<P: AsRef<Path>>(
         );
     }
 
-    // 5. Reconstruct skipped fields in Stacks (primary_mem, cached_mem_ptr).
-    // The body and handler array are not stored per frame; `execute_frame`
-    // reads them from the module via `func_idx`.
-    let primary_mem = module_inst.mem_addrs.first().cloned();
+    // 5. Reconstruct the one skipped field that execution needs: the cached
+    // pointer to the freshly restored memory. The body and handler array are
+    // not stored per frame; `execute_frame` reads them via `func_idx`.
+    let mem_ptr = module_inst.mem_addrs.first().map(|m| m.data_ptr());
     for frame_stack in state.stacks.activation_frame_stack.iter_mut() {
-        frame_stack.primary_mem = primary_mem.clone();
-        frame_stack.cached_mem_ptr = primary_mem.as_ref().map(|m| m.data_ptr());
+        frame_stack.cached_mem_ptr = mem_ptr;
     }
     // `enable_checkpoint` and `handler_ctrl` are `#[serde(skip)]`, so they
     // arrive as false / None; Runtime::run sets them on the topmost frame.

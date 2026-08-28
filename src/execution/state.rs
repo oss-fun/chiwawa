@@ -9,7 +9,6 @@
 use crate::error::RuntimeError;
 use crate::execution::func::{FuncAddr, FuncInst};
 use crate::execution::ir::{Handler, ProcessedInstr};
-use crate::execution::mem::MemAddr;
 use crate::execution::module::ModuleInst;
 use crate::execution::regs::{Reg, RegFile};
 use crate::execution::value::Val;
@@ -156,8 +155,9 @@ impl VMState {
                     reg_file.write_params(&params, &alloc.local_regs);
                 }
 
-                let primary_mem = module.upgrade().and_then(|m| m.mem_addrs.first().cloned());
-                let cached_mem_ptr = primary_mem.as_ref().map(|m| m.data_ptr());
+                let cached_mem_ptr = module
+                    .upgrade()
+                    .and_then(|m| m.mem_addrs.first().map(|mem| mem.data_ptr()));
 
                 let initial_frame = FrameStack {
                     func_idx: *func_idx,
@@ -168,7 +168,6 @@ impl VMState {
                     enable_checkpoint: false,
                     result_regs: ArrayVec::new(),
                     return_result_regs: ArrayVec::new(),
-                    primary_mem,
                     cached_mem_ptr,
                     #[cfg(all(
                         target_arch = "wasm32",
@@ -213,8 +212,6 @@ pub struct FrameStack {
     pub enable_checkpoint: bool,
     pub result_regs: ArrayVec<Reg, 8>,
     pub return_result_regs: ArrayVec<Reg, 8>,
-    #[serde(skip)]
-    pub primary_mem: Option<MemAddr>,
     #[serde(skip)]
     pub cached_mem_ptr: Option<*mut u8>,
     #[cfg(all(
