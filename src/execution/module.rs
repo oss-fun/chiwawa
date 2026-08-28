@@ -221,8 +221,11 @@ impl ModuleInst {
                         _ => 0,
                     })
                     .sum::<usize>();
-            arc_module_inst.func_addrs[index]
-                .replace(func.clone(), Rc::downgrade(&arc_module_inst));
+            arc_module_inst.func_addrs[index].replace(
+                func.clone(),
+                Rc::downgrade(&arc_module_inst),
+                index as u32,
+            );
         }
         if let Some(start) = &module.start {
             arc_module_inst.func_addrs.get_by_idx(start.func);

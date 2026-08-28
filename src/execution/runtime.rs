@@ -268,7 +268,6 @@ impl Runtime {
                     let global_addrs = &self.module_inst.global_addrs;
 
                     match migration::checkpoint(
-                        &self.module_inst,
                         &self.stacks,
                         mem_addrs,
                         global_addrs,
@@ -327,6 +326,7 @@ impl Runtime {
                                     type_,
                                     module: func_module_weak,
                                     code,
+                                    func_idx,
                                     #[cfg(all(
                                         target_arch = "wasm32",
                                         target_os = "wasi",
@@ -334,6 +334,7 @@ impl Runtime {
                                         target_feature = "atomics"
                                     ))]
                                         handler_ctrl: cached_ctrl,
+                                    ..
                                 } => {
                                     // Locals live in the register file: open the
                                     // callee's register window (zero-initializing
@@ -359,6 +360,7 @@ impl Runtime {
                                     let cached_mem_ptr = primary_mem.as_ref().map(|m| m.data_ptr());
 
                                     let new_frame = FrameStack {
+                                        func_idx: *func_idx,
                                         frame: Frame {
                                             module: func_module_weak.clone(),
                                             n: type_.results.len(),

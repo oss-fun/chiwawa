@@ -141,6 +141,7 @@ impl VMState {
                 type_,
                 module,
                 code,
+                func_idx,
                 ..
             } => {
                 if params.len() != type_.params.len() {
@@ -160,6 +161,7 @@ impl VMState {
                 let cached_mem_ptr = primary_mem.as_ref().map(|m| m.data_ptr());
 
                 let initial_frame = FrameStack {
+                    func_idx: *func_idx,
                     frame: Frame {
                         module: module.clone(),
                         n: type_.results.len(),
@@ -208,6 +210,8 @@ pub struct Frame {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FrameStack {
     pub frame: Frame,
+    /// Index in the module's `func_addrs` of the function this frame runs.
+    pub func_idx: u32,
     /// Program counter within this frame's body. Saved when the frame yields
     /// (call/checkpoint) and used to resume execution.
     pub ip: usize,
