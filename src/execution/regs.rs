@@ -193,6 +193,17 @@ impl RegFile {
         self.restore_offsets();
     }
 
+    /// Open the callee's frame and move the call arguments from the caller's
+    /// registers into the callee's local registers.
+    pub fn push_frame_with_params(&mut self, allocation: &RegAllocation, param_regs: &[Reg]) {
+        let caller = self.cached_offsets;
+        self.save_offsets(allocation);
+        let callee = self.cached_offsets;
+        for (src, dst) in param_regs.iter().zip(allocation.local_regs.iter()) {
+            self.copy_between_frames(&caller, src, &callee, dst);
+        }
+    }
+
     /// Copy one register from the frame based at `src_base` to the frame based
     /// at `dst_base`. Both frames index the same backing vectors.
     #[inline]

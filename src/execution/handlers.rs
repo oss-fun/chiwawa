@@ -1581,14 +1581,11 @@ pub fn call(state: &mut VmState) -> Outcome {
             return trap(state);
         }
     };
-    let regs = state.reg_file();
-    let params: Vec<Val> = param_regs.iter().map(|r| regs.get_val(r)).collect();
-    let result_regs_vec: ArrayVec<Reg, 8> = result_regs.iter().copied().collect();
     state.pc += 1;
     state.yielded = Some(ModuleLevelInstr::InvokeReg {
         func_addr,
-        params,
-        result_regs: result_regs_vec,
+        param_regs,
+        result_regs,
     });
     Outcome::Yield
 }
@@ -1625,14 +1622,11 @@ pub fn call_indirect(state: &mut VmState) -> Outcome {
         state.trap = Some(RuntimeError::IndirectCallTypeMismatch);
         return trap(state);
     }
-    let regs = state.reg_file();
-    let params: Vec<Val> = param_regs.iter().map(|r| regs.get_val(r)).collect();
-    let result_regs_vec: ArrayVec<Reg, 8> = result_regs.iter().copied().collect();
     state.pc += 1;
     state.yielded = Some(ModuleLevelInstr::InvokeReg {
         func_addr,
-        params,
-        result_regs: result_regs_vec,
+        param_regs,
+        result_regs,
     });
     Outcome::Yield
 }

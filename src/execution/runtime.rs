@@ -351,10 +351,9 @@ impl Runtime {
                         }
                         Some(ModuleLevelInstr::InvokeReg {
                             func_addr,
-                            params,
+                            param_regs,
                             result_regs,
                         }) => {
-                            // Register-based function invocation - params already extracted
                             let func_inst_guard = func_addr.read_lock();
                             match &*func_inst_guard {
                                 FuncInst::RuntimeFunc {
@@ -372,20 +371,19 @@ impl Runtime {
                                 } => {
                                     // Locals live in the register file: open the
                                     // callee's register window (zero-initializing
-                                    // declared locals) and scatter the params into
+                                    // declared locals) and move the args into
                                     // their local slots.
                                     if let Some(ref alloc) = code.reg_allocation {
-                                        self.stacks.reg_file.save_offsets(alloc);
                                         self.stacks
                                             .reg_file
-                                            .write_params(&params, &alloc.local_regs);
+                                            .push_frame_with_params(alloc, param_regs);
                                     }
 
                                     // Store result_regs in caller frame
                                     if let Some(caller) =
                                         self.stacks.activation_frame_stack.last_mut()
                                     {
-                                        caller.result_regs = result_regs;
+                                        caller.result_regs = result_regs.iter().copied().collect();
                                     }
                                     // Cache primary memory address and raw pointer
                                     let cached_mem_ptr =
@@ -420,7 +418,10 @@ impl Runtime {
                                     self.stacks.activation_frame_stack.push(new_frame);
                                 }
                                 FuncInst::HostFunc { host_code, .. } => {
-                                    // Host function with register-based params
+                                    let params: Vec<Val> = param_regs
+                                        .iter()
+                                        .map(|r| self.stacks.reg_file.get_val(r))
+                                        .collect();
                                     match host_code(params) {
                                         Ok(results) => {
                                             // Write results directly to registers
