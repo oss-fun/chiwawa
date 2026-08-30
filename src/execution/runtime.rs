@@ -27,6 +27,7 @@ pub struct Runtime {
     module_inst: Rc<ModuleInst>,
     primary_mem: Option<MemAddr>,
     stacks: Stacks,
+    checkpoint_poll_counter: u32,
     #[cfg_attr(not(feature = "stats"), allow(dead_code))]
     execution_stats: Option<ExecutionStats>,
     #[cfg(feature = "trace")]
@@ -76,6 +77,7 @@ impl Runtime {
             primary_mem: module_inst.mem_addrs.first().cloned(),
             module_inst,
             stacks,
+            checkpoint_poll_counter: 0,
             execution_stats: if enable_stats {
                 Some(ExecutionStats::new())
             } else {
@@ -115,6 +117,7 @@ impl Runtime {
             primary_mem: module_inst.mem_addrs.first().cloned(),
             module_inst,
             stacks,
+            checkpoint_poll_counter: 0,
             execution_stats: if enable_stats {
                 Some(ExecutionStats::new())
             } else {
@@ -199,7 +202,7 @@ impl Runtime {
             yielded: None,
             return_result_regs: return_result_regs_ptr,
             enable_checkpoint,
-            checkpoint_poll_counter: 0,
+            checkpoint_poll_counter: self.checkpoint_poll_counter,
             #[cfg(feature = "stats")]
             stats: stats_ptr,
             #[cfg(feature = "trace")]
@@ -208,6 +211,7 @@ impl Runtime {
 
         let outcome = dispatch::execute_instructions(&mut state);
 
+        self.checkpoint_poll_counter = state.checkpoint_poll_counter;
         frame_stack.ip = state.pc;
         frame_stack.cached_mem_ptr = if state.mem_ptr.is_null() {
             None
