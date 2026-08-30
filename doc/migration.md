@@ -24,7 +24,8 @@ Live migration enables moving WebAssembly workloads between hosts and resuming e
 
 A checkpoint captures:
 
-- **Execution State**: Call stack, program counters, register values
+- **Execution State**: Call stack (per-frame `func_idx`, program counter,
+  result registers) and the register file
 - **Memory**: Complete linear memory contents
 - **Globals**: All global variable values
 
@@ -38,19 +39,18 @@ serializing them would only bloat the checkpoint.
 1. **Load**: Read checkpoint file
 2. **Deserialize**: Reconstruct state structures
 3. **Apply**: Restore memory and globals to the module instance
-4. **Rebuild derived state**: Re-attach fields that the checkpoint deliberately
-   skipped (they can be re-derived from the module):
-   - `processed_instrs` — refilled from each frame's function body
-   - `handlers` — per-frame handler function-pointer array, refilled from
-     `Func.handlers`
-   - `primary_mem` / `cached_mem_ptr` — re-cached from the freshly restored
-     memory instance
-   - `Frame.module` — re-linked to the live `ModuleInst`
+4. **Rebuild derived state**: Re-attach the fields the checkpoint deliberately
+   skipped — `cached_mem_ptr`, re-cached from the freshly restored memory
+   instance
 5. **Resume**: Continue execution from the saved program counter
 
-This split (serialize raw state vs. re-derive what depends on `Rc`/raw
-pointers) keeps the checkpoint small and avoids leaking host pointers into
-the file.
+Each frame records the `func_idx` of the function it runs, so the body and
+handler array need no reconstruction: `execute_frame` reads them from the
+module. That index also identifies the frame's function at checkpoint time,
+with no search over `func_addrs`.
+
+This split (serialize raw state vs. re-derive what depends on raw pointers)
+keeps the checkpoint small and avoids leaking host pointers into the file.
 
 ## Trigger Mechanisms
 
