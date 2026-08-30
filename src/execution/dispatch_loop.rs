@@ -12,9 +12,6 @@ use crate::execution::migration;
 use crate::execution::state::VmState;
 
 /// Drive the dispatcher until an outcome other than `Continue` is returned.
-///
-/// # Safety
-/// `state` must have all pointer fields valid for the duration of the call.
 pub fn execute_instructions(state: &mut VmState) -> Outcome {
     if state.enable_checkpoint {
         run::<true>(state)
@@ -29,12 +26,6 @@ fn run<const CHECKPOINT: bool>(state: &mut VmState) -> Outcome {
         if CHECKPOINT && migration::poll_checkpoint(state) {
             state.trap = Some(RuntimeError::CheckpointRequested);
             return Outcome::Trap;
-        }
-
-        // pc past the body means the frame is done (function-level `end` and
-        // function-level branches both halt through here or directly).
-        if state.pc >= state.instrs_len {
-            return Outcome::Halt;
         }
 
         #[cfg(feature = "stats")]
