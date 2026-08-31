@@ -45,7 +45,9 @@ pub fn write_i32(state: &mut VmState, dst: &I32RegOperand, val: i32) {
 pub fn read_i64(state: &VmState, op: &I64RegOperand) -> i64 {
     match op {
         I64RegOperand::Reg(idx) => state.reg_file().get_i64(*idx),
-        I64RegOperand::Const(v) => *v,
+        I64RegOperand::Const(i) => unsafe {
+            *state.code().wide_consts.get_unchecked(*i as usize) as i64
+        },
     }
 }
 
@@ -104,7 +106,9 @@ pub fn write_f32dst_i32(state: &mut VmState, dst: &F32RegOperand, val: i32) {
 pub fn read_f64(state: &VmState, op: &F64RegOperand) -> f64 {
     match op {
         F64RegOperand::Reg(idx) => state.reg_file().get_f64(*idx),
-        F64RegOperand::Const(v) => *v,
+        F64RegOperand::Const(i) => unsafe {
+            f64::from_bits(*state.code().wide_consts.get_unchecked(*i as usize))
+        },
     }
 }
 

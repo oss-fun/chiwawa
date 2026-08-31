@@ -32,6 +32,9 @@ pub struct Func {
     /// v2 dispatcher handler array. Built once at parse time, length =
     /// body.len() + 1 (last entry is `halt` sentinel).
     pub handlers: Rc<Vec<ir::Handler>>,
+    /// Immediates too wide to encode inline (i64/f64). 32-bit immediates are
+    /// carried in the instruction itself.
+    pub wide_consts: Box<[u64]>,
 }
 
 /// Table definition.

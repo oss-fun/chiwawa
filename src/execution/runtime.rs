@@ -14,7 +14,7 @@ use crate::execution::stats::ExecutionStats;
 #[cfg(feature = "trace")]
 use crate::execution::trace::{TraceConfig, Tracer};
 use crate::execution::value::{Num, Val};
-use crate::structure::module::WasiFuncType;
+use crate::structure::module::{Func, WasiFuncType};
 use crate::wasi::{WasiError, WasiResult};
 use arrayvec::ArrayVec;
 use std::path::Path;
@@ -145,12 +145,15 @@ impl Runtime {
         // Body and handlers stay owned by the module for its whole lifetime, so
         // the frame names its function by index rather than holding an `Rc`.
         let func_idx = self.stacks.activation_frame_stack[frame_stack_idx].func_idx;
-        let (body_ptr, body_len, code_handlers_ptr) =
+        let (body_ptr, body_len, code_handlers_ptr, code_ptr) =
             match self.module_inst.func_addrs[func_idx as usize].read_lock() {
-                FuncInst::RuntimeFunc { code, .. } => {
-                    (code.body.as_ptr(), code.body.len(), code.handlers.as_ptr())
-                }
-                _ => (std::ptr::null(), 0, std::ptr::null()),
+                FuncInst::RuntimeFunc { code, .. } => (
+                    code.body.as_ptr(),
+                    code.body.len(),
+                    code.handlers.as_ptr(),
+                    code as *const Func,
+                ),
+                _ => (std::ptr::null(), 0, std::ptr::null(), std::ptr::null()),
             };
 
         let frame_stack = &mut self.stacks.activation_frame_stack[frame_stack_idx];
@@ -197,6 +200,7 @@ impl Runtime {
             instrs_len,
             handlers: handlers_ptr,
             mem_ptr,
+            code: code_ptr,
             module: module_ptr,
             trap: None,
             yielded: None,

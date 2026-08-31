@@ -12,7 +12,7 @@ use crate::execution::ir::{Handler, ProcessedInstr};
 use crate::execution::module::ModuleInst;
 use crate::execution::regs::{Reg, RegFile};
 use crate::execution::value::Val;
-use crate::structure::module::WasiFuncType;
+use crate::structure::module::{Func, WasiFuncType};
 use arrayvec::ArrayVec;
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +42,10 @@ pub struct VmState {
 
     // Memory fast path (load/store)
     pub mem_ptr: *mut u8,
+
+    /// Code of the running function. `instrs` and `handlers` are hoisted out
+    /// of it above because they are read every instruction.
+    pub code: *const Func,
 
     // Module (call/call_indirect/global access)
     pub module: *const ModuleInst,
@@ -96,6 +100,12 @@ impl VmState {
     #[inline(always)]
     pub fn module(&self) -> &ModuleInst {
         unsafe { &*self.module }
+    }
+
+    /// Reference to the running function's code.
+    #[inline(always)]
+    pub fn code(&self) -> &Func {
+        unsafe { &*self.code }
     }
 
     /// Mutable reference to the return-value register slot.

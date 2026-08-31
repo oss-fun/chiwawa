@@ -114,6 +114,7 @@ impl FuncAddr {
                 body: Rc::new(Vec::new()),
                 reg_allocation: None,
                 handlers: Rc::new(Vec::new()),
+                wide_consts: Box::new([]),
             },
             func_idx: 0,
             #[cfg(all(
