@@ -4,7 +4,6 @@ use crate::error::RuntimeError;
 use crate::execution::dispatch;
 use crate::execution::func::{FuncAddr, FuncInst};
 use crate::execution::ir::Outcome;
-use crate::execution::mem::MemAddr;
 use crate::execution::migration;
 use crate::execution::module::ModuleInst;
 use crate::execution::regs::RegFile;
@@ -16,7 +15,6 @@ use crate::execution::trace::{TraceConfig, Tracer};
 use crate::execution::value::{Num, Val};
 use crate::structure::module::{Func, WasiFuncType};
 use crate::wasi::{WasiError, WasiResult};
-use arrayvec::ArrayVec;
 use std::path::Path;
 use std::rc::Rc;
 #[cfg(all(target_os = "wasi", target_env = "p1", target_feature = "atomics"))]
@@ -25,9 +23,7 @@ use std::sync::Once;
 /// Execution entry point that manages the interpreter loop.
 pub struct Runtime {
     module_inst: Rc<ModuleInst>,
-    primary_mem: Option<MemAddr>,
     stacks: Stacks,
-    checkpoint_poll_counter: u32,
     #[cfg_attr(not(feature = "stats"), allow(dead_code))]
     execution_stats: Option<ExecutionStats>,
     #[cfg(feature = "trace")]
@@ -74,10 +70,8 @@ impl Runtime {
         };
 
         Ok(Runtime {
-            primary_mem: module_inst.mem_addrs.first().cloned(),
             module_inst,
             stacks,
-            checkpoint_poll_counter: 0,
             execution_stats: if enable_stats {
                 Some(ExecutionStats::new())
             } else {
@@ -114,10 +108,8 @@ impl Runtime {
         };
 
         Runtime {
-            primary_mem: module_inst.mem_addrs.first().cloned(),
             module_inst,
             stacks,
-            checkpoint_poll_counter: 0,
             execution_stats: if enable_stats {
                 Some(ExecutionStats::new())
             } else {
@@ -130,15 +122,9 @@ impl Runtime {
         }
     }
 
-    /// Executes interpreter loop for a specific frame stack via the v2
-    /// dispatcher (`dispatch::execute_instructions`). Constructs a `VmState`,
-    /// runs dispatch, writes back state, and translates `Outcome` into the
-    /// legacy result.
-    fn execute_frame(
-        &mut self,
-        frame_stack_idx: usize,
-        _called_func_addr: &mut Option<FuncAddr>,
-    ) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError> {
+    /// Builds the dispatcher state for the frame on top of the stack. Called
+    /// once per `run`; frame switches update the state in place.
+    fn build_vm_state(&mut self) -> VmState {
         let module_ptr: *const ModuleInst = Rc::as_ptr(&self.module_inst);
         let reg_file_ptr: *mut RegFile = &mut self.stacks.reg_file as *mut RegFile;
         let frames_ptr: *mut Vec<FrameStack> =
@@ -146,7 +132,8 @@ impl Runtime {
 
         // Body and handlers stay owned by the module for its whole lifetime, so
         // the frame names its function by index rather than holding an `Rc`.
-        let func_idx = self.stacks.activation_frame_stack[frame_stack_idx].func_idx;
+        let frame_stack = self.stacks.activation_frame_stack.last().unwrap();
+        let func_idx = frame_stack.func_idx;
         let (body_ptr, body_len, code_handlers_ptr, code_ptr) =
             match self.module_inst.func_addrs[func_idx as usize].read_lock() {
                 FuncInst::RuntimeFunc { code, .. } => (
@@ -158,9 +145,6 @@ impl Runtime {
                 _ => (std::ptr::null(), 0, std::ptr::null(), std::ptr::null()),
             };
 
-        let frame_stack = &mut self.stacks.activation_frame_stack[frame_stack_idx];
-
-        let (instrs_ptr, instrs_len, pc) = (body_ptr, body_len, frame_stack.ip);
         let handlers_ptr = {
             cfg_if::cfg_if! {
                 if #[cfg(all(
@@ -178,68 +162,31 @@ impl Runtime {
                 }
             }
         };
-        let mem_ptr = frame_stack.cached_mem_ptr.unwrap_or(std::ptr::null_mut());
-        let enable_checkpoint = frame_stack.enable_checkpoint;
 
-        #[cfg(feature = "stats")]
-        let stats_ptr = self
-            .execution_stats
-            .as_mut()
-            .map_or(std::ptr::null_mut(), |s| s as *mut ExecutionStats);
-
-        #[cfg(feature = "trace")]
-        let tracer_ptr = self
-            .tracer
-            .as_mut()
-            .map_or(std::ptr::null_mut(), |t| t as *mut Tracer);
-
-        let mut state = VmState {
+        VmState {
             reg_file: reg_file_ptr,
-            pc,
-            instrs: instrs_ptr,
-            instrs_len,
+            pc: frame_stack.ip,
+            instrs: body_ptr,
+            instrs_len: body_len,
             handlers: handlers_ptr,
-            mem_ptr,
+            mem_ptr: frame_stack.cached_mem_ptr.unwrap_or(std::ptr::null_mut()),
             code: code_ptr,
             module: module_ptr,
             frames: frames_ptr,
             trap: None,
             yielded: None,
-            enable_checkpoint,
-            checkpoint_poll_counter: self.checkpoint_poll_counter,
+            enable_checkpoint: frame_stack.enable_checkpoint,
+            checkpoint_poll_counter: 0,
             #[cfg(feature = "stats")]
-            stats: stats_ptr,
+            stats: self
+                .execution_stats
+                .as_mut()
+                .map_or(std::ptr::null_mut(), |s| s as *mut ExecutionStats),
             #[cfg(feature = "trace")]
-            tracer: tracer_ptr,
-        };
-
-        let outcome = dispatch::execute_instructions(&mut state);
-
-        self.checkpoint_poll_counter = state.checkpoint_poll_counter;
-        // The dispatcher may have entered callees, so write back to the frame
-        // it ended in rather than the one it started in.
-        let frame_stack = self.stacks.activation_frame_stack.last_mut().unwrap();
-        frame_stack.ip = state.pc;
-        frame_stack.cached_mem_ptr = if state.mem_ptr.is_null() {
-            None
-        } else {
-            Some(state.mem_ptr)
-        };
-
-        match outcome {
-            Outcome::Halt => Ok(Ok(None)),
-            Outcome::Yield => Ok(Ok(state.yielded)),
-            Outcome::Trap => {
-                let err = state
-                    .trap
-                    .expect("Outcome::Trap returned without state.trap set");
-                if matches!(err, RuntimeError::CheckpointRequested) {
-                    Ok(Err(err))
-                } else {
-                    Err(err)
-                }
-            }
-            Outcome::Continue => unreachable!("dispatcher must not return Continue"),
+            tracer: self
+                .tracer
+                .as_mut()
+                .map_or(std::ptr::null_mut(), |t| t as *mut Tracer),
         }
     }
 
@@ -299,12 +246,41 @@ impl Runtime {
             }
         }
 
-        while !self.stacks.activation_frame_stack.is_empty() {
-            let frame_stack_idx = self.stacks.activation_frame_stack.len() - 1;
-            let mut called_func_addr: Option<FuncAddr> = None;
+        // One state for the whole run: frame switches update it in place, so a
+        // WASI or host call resumes without rebuilding it.
+        let mut state = self.build_vm_state();
 
-            let module_level_instr_result =
-                self.execute_frame(frame_stack_idx, &mut called_func_addr)?;
+        loop {
+            let outcome = dispatch::execute_instructions(&mut state);
+
+            // The dispatcher may have entered callees, so write back to the
+            // frame it ended in.
+            if let Some(frame) = self.stacks.activation_frame_stack.last_mut() {
+                frame.ip = state.pc;
+                frame.cached_mem_ptr = if state.mem_ptr.is_null() {
+                    None
+                } else {
+                    Some(state.mem_ptr)
+                };
+            }
+
+            let module_level_instr_result: Result<Option<ModuleLevelInstr>, RuntimeError> =
+                match outcome {
+                    Outcome::Halt => Ok(None),
+                    Outcome::Yield => Ok(state.yielded.take()),
+                    Outcome::Trap => {
+                        let err = state
+                            .trap
+                            .take()
+                            .expect("Outcome::Trap returned without state.trap set");
+                        if matches!(err, RuntimeError::CheckpointRequested) {
+                            Err(err)
+                        } else {
+                            return Err(err);
+                        }
+                    }
+                    Outcome::Continue => unreachable!("dispatcher must not return Continue"),
+                };
 
             match module_level_instr_result {
                 Err(RuntimeError::CheckpointRequested) => {
@@ -382,41 +358,23 @@ impl Runtime {
                                 }
                             }
                         }
+                        // Halt only reaches here from the outermost frame;
+                        // nested returns are handled by the dispatcher.
                         None => {
-                            // Pop register file frame but keep reference for reading return values
-                            let finished_frame = self.stacks.activation_frame_stack.pop().unwrap();
-                            let expected_n = finished_frame.frame.n;
-                            let return_result_regs = finished_frame.return_result_regs;
-
-                            if self.stacks.activation_frame_stack.is_empty() {
-                                // Read values from registers before restoring
-                                // Use ArrayVec to avoid heap allocation (most functions return 0-2 values)
-                                let values_to_pass: ArrayVec<Val, 8> = return_result_regs
-                                    .iter()
-                                    .take(expected_n)
-                                    .map(|reg| self.stacks.reg_file.get_val(reg))
-                                    .collect();
-                                self.stacks.reg_file.restore_offsets();
-                                return Ok(values_to_pass.into_iter().collect());
-                            } else {
-                                // Refresh cached memory pointer (may have changed due to memory.grow in callee)
-                                let mem_ptr = self.primary_mem.as_ref().map(|m| m.data_ptr());
-
-                                let (reg_file, frames) = self.stacks.get_reg_file_and_frames();
-                                let caller_frame = frames.last_mut().unwrap();
-                                reg_file.pop_frame_with_results(
-                                    &return_result_regs,
-                                    &caller_frame.result_regs,
-                                );
-                                caller_frame.result_regs.clear();
-                                caller_frame.cached_mem_ptr = mem_ptr;
-                            }
+                            let finished = self.stacks.activation_frame_stack.pop().unwrap();
+                            let values: Vec<Val> = finished
+                                .return_result_regs
+                                .iter()
+                                .take(finished.frame.n)
+                                .map(|reg| self.stacks.reg_file.get_val(reg))
+                                .collect();
+                            self.stacks.reg_file.restore_offsets();
+                            return Ok(values);
                         }
                     }
                 }
             }
         }
-        Ok(vec![])
     }
 
     /// Calls a WASI function with the given parameters.
