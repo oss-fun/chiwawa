@@ -58,11 +58,16 @@ inspects the returned `Outcome`.
 
 ### TCO dispatcher
 
-`dispatch_tco::execute_instructions` only fires the *initial* call into the
-handler chain. Once entered, control flows handler-to-handler via tail calls
-and never returns to `execute_instructions` until a sentinel (`Halt` / `Trap`
-/ `Yield`) terminates the chain. The mechanism that wires this up is the
-`advance!` macro.
+`dispatch_tco::execute_instructions` fires the initial call into the handler
+chain. Once entered, control flows handler-to-handler via tail calls and does
+not return until an outcome other than `Continue` ends the chain. The
+mechanism that wires this up is the `advance!` macro.
+
+Entering or leaving a frame returns `Continue`, which restarts the chain from
+`execute_instructions`. A chain therefore spans at most one function body.
+Rust does not guarantee tail calls, so a chain that spanned frames would make
+host stack depth track guest call depth whenever LLVM declined to emit
+`return_call_indirect` — correctness would depend on an optimization.
 
 ## The `advance!` Macro and the `next_handler` Shim
 
@@ -95,8 +100,9 @@ an `Outcome` instead of calling `advance!`:
   signals a request; writes `RuntimeError::CheckpointRequested` to
   `state.trap` and returns `Outcome::Trap`. Keeping this on the trap side
   preserves the single tail-call site in `advance!`.
-- `r#yield` — runtime yield (call / call_wasi / return); the
-  `ModuleLevelInstr` is in `state.yielded`.
+- `r#yield` — runtime yield (WASI and host calls); the `ModuleLevelInstr` is
+  in `state.yielded`. Wasm calls and returns do not yield: the handlers push
+  and pop frames themselves.
 
 The per-function `handlers: Rc<Vec<Handler>>` array is sized
 `body.len() + 1`, with `halt` planted at the final position so any

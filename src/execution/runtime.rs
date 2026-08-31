@@ -7,9 +7,9 @@ use crate::execution::ir::Outcome;
 use crate::execution::mem::MemAddr;
 use crate::execution::migration;
 use crate::execution::module::ModuleInst;
-use crate::execution::regs::{Reg, RegFile};
+use crate::execution::regs::RegFile;
 use crate::execution::state::VmState;
-use crate::execution::state::{Frame, FrameStack, ModuleLevelInstr, Stacks};
+use crate::execution::state::{FrameStack, ModuleLevelInstr, Stacks};
 use crate::execution::stats::ExecutionStats;
 #[cfg(feature = "trace")]
 use crate::execution::trace::{TraceConfig, Tracer};
@@ -141,6 +141,8 @@ impl Runtime {
     ) -> Result<Result<Option<ModuleLevelInstr>, RuntimeError>, RuntimeError> {
         let module_ptr: *const ModuleInst = Rc::as_ptr(&self.module_inst);
         let reg_file_ptr: *mut RegFile = &mut self.stacks.reg_file as *mut RegFile;
+        let frames_ptr: *mut Vec<FrameStack> =
+            &mut self.stacks.activation_frame_stack as *mut Vec<FrameStack>;
 
         // Body and handlers stay owned by the module for its whole lifetime, so
         // the frame names its function by index rather than holding an `Rc`.
@@ -177,8 +179,6 @@ impl Runtime {
             }
         };
         let mem_ptr = frame_stack.cached_mem_ptr.unwrap_or(std::ptr::null_mut());
-        let return_result_regs_ptr: *mut ArrayVec<Reg, 8> =
-            &mut frame_stack.return_result_regs as *mut ArrayVec<Reg, 8>;
         let enable_checkpoint = frame_stack.enable_checkpoint;
 
         #[cfg(feature = "stats")]
@@ -202,9 +202,9 @@ impl Runtime {
             mem_ptr,
             code: code_ptr,
             module: module_ptr,
+            frames: frames_ptr,
             trap: None,
             yielded: None,
-            return_result_regs: return_result_regs_ptr,
             enable_checkpoint,
             checkpoint_poll_counter: self.checkpoint_poll_counter,
             #[cfg(feature = "stats")]
@@ -216,6 +216,9 @@ impl Runtime {
         let outcome = dispatch::execute_instructions(&mut state);
 
         self.checkpoint_poll_counter = state.checkpoint_poll_counter;
+        // The dispatcher may have entered callees, so write back to the frame
+        // it ended in rather than the one it started in.
+        let frame_stack = self.stacks.activation_frame_stack.last_mut().unwrap();
         frame_stack.ip = state.pc;
         frame_stack.cached_mem_ptr = if state.mem_ptr.is_null() {
             None
@@ -357,98 +360,29 @@ impl Runtime {
                                 }
                             }
                         }
-                        Some(ModuleLevelInstr::InvokeReg {
+                        Some(ModuleLevelInstr::InvokeHost {
                             func_addr,
-                            param_regs,
+                            params,
                             result_regs,
                         }) => {
                             let func_inst_guard = func_addr.read_lock();
                             match &*func_inst_guard {
-                                FuncInst::RuntimeFunc {
-                                    type_,
-                                    code,
-                                    func_idx,
-                                    #[cfg(all(
-                                        target_arch = "wasm32",
-                                        target_os = "wasi",
-                                        target_env = "p1",
-                                        target_feature = "atomics"
-                                    ))]
-                                        handler_ctrl: cached_ctrl,
-                                    ..
-                                } => {
-                                    // Locals live in the register file: open the
-                                    // callee's register window (zero-initializing
-                                    // declared locals) and move the args into
-                                    // their local slots.
-                                    if let Some(ref alloc) = code.reg_allocation {
-                                        self.stacks
-                                            .reg_file
-                                            .push_frame_with_params(alloc, param_regs);
-                                    }
-
-                                    // Store result_regs in caller frame
-                                    if let Some(caller) =
-                                        self.stacks.activation_frame_stack.last_mut()
-                                    {
-                                        caller.result_regs = result_regs.iter().copied().collect();
-                                    }
-                                    // Cache primary memory address and raw pointer
-                                    let cached_mem_ptr =
-                                        self.primary_mem.as_ref().map(|m| m.data_ptr());
-
-                                    let new_frame = FrameStack {
-                                        func_idx: *func_idx,
-                                        frame: Frame {
-                                            n: type_.results.len(),
-                                        },
-                                        ip: 0,
-                                        enable_checkpoint: self.enable_checkpoint,
-                                        result_regs: ArrayVec::new(),
-                                        return_result_regs: ArrayVec::new(),
-                                        cached_mem_ptr,
-                                        #[cfg(all(
-                                            target_arch = "wasm32",
-                                            target_os = "wasi",
-                                            target_env = "p1",
-                                            target_feature = "atomics"
-                                        ))]
-                                        handler_ctrl: if self.enable_checkpoint {
-                                            // Reuse this function's cached HandlerControl
-                                            // (created once on its first call with --cr on).
-                                            Some(std::sync::Arc::clone(cached_ctrl.get_or_init(
-                                                || migration::HandlerControl::new(&code.handlers),
-                                            )))
-                                        } else {
-                                            None
-                                        },
-                                    };
-                                    self.stacks.activation_frame_stack.push(new_frame);
-                                }
-                                FuncInst::HostFunc { host_code, .. } => {
-                                    let params: Vec<Val> = param_regs
-                                        .iter()
-                                        .map(|r| self.stacks.reg_file.get_val(r))
-                                        .collect();
-                                    match host_code(params) {
-                                        Ok(results) => {
-                                            // Write results directly to registers
-                                            for (reg, val) in result_regs.iter().zip(results.iter())
-                                            {
-                                                self.stacks.reg_file.set_val(reg, val);
-                                            }
+                                FuncInst::HostFunc { host_code, .. } => match host_code(params) {
+                                    Ok(results) => {
+                                        for (reg, val) in result_regs.iter().zip(results.iter()) {
+                                            self.stacks.reg_file.set_val(reg, val);
                                         }
-                                        Err(e) => return Err(e),
                                     }
-                                }
-                                FuncInst::WasiFunc { .. } => {
+                                    Err(e) => return Err(e),
+                                },
+                                _ => {
                                     return Err(RuntimeError::ExecutionFailed(
-                                        "WASI function called via InvokeReg - use CallWasiReg",
+                                        "WASI function called via InvokeHost - use CallWasiReg",
                                     ));
                                 }
                             }
                         }
-                        Some(ModuleLevelInstr::Return) | None => {
+                        None => {
                             // Pop register file frame but keep reference for reading return values
                             let finished_frame = self.stacks.activation_frame_stack.pop().unwrap();
                             let expected_n = finished_frame.frame.n;
