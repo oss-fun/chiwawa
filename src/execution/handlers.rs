@@ -24,12 +24,14 @@
 #![allow(unused_unsafe)]
 
 use crate::error::RuntimeError;
+use crate::execution::func::{FuncAddr, FuncInst};
 use crate::execution::ir::{Handler, Outcome, ProcessedInstr, RegOrLocal};
 use crate::execution::module::GetInstanceByIdx;
 use crate::execution::operand;
 use crate::execution::regs::Reg;
-use crate::execution::state::{ModuleLevelInstr, VmState};
+use crate::execution::state::{Frame, FrameStack, ModuleLevelInstr, VmState};
 use crate::execution::value::Val;
+use crate::structure::module::Func;
 use arrayvec::ArrayVec;
 
 // ============================================================================
@@ -1606,8 +1608,12 @@ pub fn end_func(state: &mut VmState) -> Outcome {
     for r in source_regs.iter() {
         dst.push(*r);
     }
-    state.pc = state.instrs_len;
-    Outcome::Halt
+    if pop_frame(state) {
+        Outcome::Continue
+    } else {
+        state.pc = state.instrs_len;
+        Outcome::Halt
+    }
 }
 
 pub fn jump(state: &mut VmState) -> Outcome {
@@ -1628,6 +1634,118 @@ pub fn jump(state: &mut VmState) -> Outcome {
 // transitions. State.pc is advanced to the post-call position so resume
 // continues correctly.
 
+/// Enters `code` in a fresh frame without leaving the dispatcher: opens the
+/// callee's registers, records where its results go, pushes its frame, and
+/// retargets `state` at it.
+#[inline]
+fn enter_frame(
+    state: &mut VmState,
+    code: &Func,
+    func_idx: u32,
+    n_results: usize,
+    param_regs: &[Reg],
+    result_regs: &[Reg],
+    handlers: *const Handler,
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_os = "wasi",
+        target_env = "p1",
+        target_feature = "atomics"
+    ))]
+    handler_ctrl: Option<std::sync::Arc<crate::execution::migration::HandlerControl>>,
+) {
+    if let Some(ref alloc) = code.reg_allocation {
+        state
+            .reg_file_mut()
+            .push_frame_with_params(alloc, param_regs);
+    }
+
+    let mem_ptr = state.mem_ptr;
+    let pc = state.pc;
+    let caller = state.frame_mut();
+    caller.ip = pc;
+    caller.result_regs = result_regs.iter().copied().collect();
+
+    let new_frame = FrameStack {
+        func_idx,
+        frame: Frame { n: n_results },
+        ip: 0,
+        enable_checkpoint: state.enable_checkpoint,
+        result_regs: ArrayVec::new(),
+        return_result_regs: ArrayVec::new(),
+        cached_mem_ptr: if mem_ptr.is_null() {
+            None
+        } else {
+            Some(mem_ptr)
+        },
+        #[cfg(all(
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p1",
+            target_feature = "atomics"
+        ))]
+        handler_ctrl,
+    };
+
+    let frames = unsafe { &mut *state.frames };
+    frames.push(new_frame);
+
+    state.pc = 0;
+    state.instrs = code.body.as_ptr();
+    state.instrs_len = code.body.len();
+    state.handlers = handlers;
+    state.code = code as *const Func;
+}
+
+/// Pops the running frame, hands its results to the caller and retargets
+/// `state` at the caller. Returns false for the outermost frame, which the
+/// runtime has to finish so it can collect the values.
+#[inline]
+fn pop_frame(state: &mut VmState) -> bool {
+    let frames = unsafe { &mut *state.frames };
+    if frames.len() == 1 {
+        return false;
+    }
+    let finished = frames.pop().unwrap();
+    let caller_idx = frames.len() - 1;
+
+    let regs = unsafe { &mut *state.reg_file };
+    regs.pop_frame_with_results(
+        &finished.return_result_regs,
+        &frames[caller_idx].result_regs,
+    );
+    frames[caller_idx].result_regs.clear();
+
+    state.pc = frames[caller_idx].ip;
+
+    let module = unsafe { &*state.module };
+    let func_idx = frames[caller_idx].func_idx;
+    match module.func_addrs[func_idx as usize].read_lock() {
+        FuncInst::RuntimeFunc { code, .. } => {
+            state.instrs = code.body.as_ptr();
+            state.instrs_len = code.body.len();
+            state.code = code as *const Func;
+            cfg_if::cfg_if! {
+                if #[cfg(all(
+                    target_arch = "wasm32",
+                    target_os = "wasi",
+                    target_env = "p1",
+                    target_feature = "atomics"
+                ))] {
+                    state.handlers = match &frames[caller_idx].handler_ctrl {
+                        Some(c) => c.handlers_ptr(),
+                        None => code.handlers.as_ptr(),
+                    };
+                } else {
+                    state.handlers = code.handlers.as_ptr();
+                }
+            }
+        }
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    }
+    true
+}
+
 pub fn call(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::CallReg {
@@ -1639,20 +1757,94 @@ pub fn call(state: &mut VmState) -> Outcome {
         unsafe { std::hint::unreachable_unchecked() }
     };
     let func_idx = *func_idx;
-    let func_addr = match state.module().func_addrs.get(func_idx.0 as usize) {
-        Some(fa) => fa.clone(),
+    let module = unsafe { &*state.module };
+    let func_addr = match module.func_addrs.get(func_idx.0 as usize) {
+        Some(fa) => fa,
         None => {
             state.trap = Some(RuntimeError::ExportFuncNotFound);
             return trap(state);
         }
     };
     state.pc += 1;
-    state.yielded = Some(ModuleLevelInstr::InvokeReg {
-        func_addr,
-        param_regs,
-        result_regs,
-    });
-    Outcome::Yield
+    if enter_or_yield(state, func_addr, param_regs, result_regs) {
+        Outcome::Continue
+    } else {
+        Outcome::Yield
+    }
+}
+
+#[inline]
+fn enter_or_yield(
+    state: &mut VmState,
+    func_addr: &FuncAddr,
+    param_regs: &[Reg],
+    result_regs: &[Reg],
+) -> bool {
+    match func_addr.read_lock() {
+        FuncInst::RuntimeFunc {
+            type_,
+            code,
+            func_idx,
+            #[cfg(all(
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p1",
+                target_feature = "atomics"
+            ))]
+                handler_ctrl: cached_ctrl,
+            ..
+        } => {
+            cfg_if::cfg_if! {
+                if #[cfg(all(
+                    target_arch = "wasm32",
+                    target_os = "wasi",
+                    target_env = "p1",
+                    target_feature = "atomics"
+                ))] {
+                    let ctrl = if state.enable_checkpoint {
+                        Some(std::sync::Arc::clone(cached_ctrl.get_or_init(|| {
+                            crate::execution::migration::HandlerControl::new(&code.handlers)
+                        })))
+                    } else {
+                        None
+                    };
+                    let handlers = match &ctrl {
+                        Some(c) => c.handlers_ptr(),
+                        None => code.handlers.as_ptr(),
+                    };
+                } else {
+                    let handlers = code.handlers.as_ptr();
+                }
+            }
+            enter_frame(
+                state,
+                code,
+                *func_idx,
+                type_.results.len(),
+                param_regs,
+                result_regs,
+                handlers,
+                #[cfg(all(
+                    target_arch = "wasm32",
+                    target_os = "wasi",
+                    target_env = "p1",
+                    target_feature = "atomics"
+                ))]
+                ctrl,
+            );
+            true
+        }
+        _ => {
+            let regs = state.reg_file();
+            let params: Vec<Val> = param_regs.iter().map(|r| regs.get_val(r)).collect();
+            state.yielded = Some(ModuleLevelInstr::InvokeHost {
+                func_addr: func_addr.clone(),
+                params,
+                result_regs: result_regs.iter().copied().collect(),
+            });
+            false
+        }
+    }
 }
 
 pub fn call_indirect(state: &mut VmState) -> Outcome {
@@ -1688,12 +1880,11 @@ pub fn call_indirect(state: &mut VmState) -> Outcome {
         return trap(state);
     }
     state.pc += 1;
-    state.yielded = Some(ModuleLevelInstr::InvokeReg {
-        func_addr,
-        param_regs,
-        result_regs,
-    });
-    Outcome::Yield
+    if enter_or_yield(state, &func_addr, param_regs, result_regs) {
+        Outcome::Continue
+    } else {
+        Outcome::Yield
+    }
 }
 
 pub fn call_wasi(state: &mut VmState) -> Outcome {
@@ -1726,8 +1917,12 @@ pub fn r#return(state: &mut VmState) -> Outcome {
     };
     let rrr: ArrayVec<Reg, 8> = result_regs.iter().copied().collect();
     *state.return_result_regs_mut() = rrr;
-    state.yielded = Some(ModuleLevelInstr::Return);
-    Outcome::Yield
+    if pop_frame(state) {
+        Outcome::Continue
+    } else {
+        state.pc = state.instrs_len;
+        Outcome::Halt
+    }
 }
 
 // ============================================================================

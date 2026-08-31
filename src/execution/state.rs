@@ -50,10 +50,12 @@ pub struct VmState {
     // Module (call/call_indirect/global access)
     pub module: *const ModuleInst,
 
+    // Activation frame stack; the running frame is its last entry.
+    pub frames: *mut Vec<FrameStack>,
+
     // Outcome channels
     pub trap: Option<RuntimeError>,
     pub yielded: Option<ModuleLevelInstr>,
-    pub return_result_regs: *mut ArrayVec<Reg, 8>,
 
     // Per-frame flags
     pub enable_checkpoint: bool,
@@ -108,26 +110,32 @@ impl VmState {
         unsafe { &*self.code }
     }
 
+    /// The running frame.
+    #[inline(always)]
+    pub fn frame_mut(&mut self) -> &mut FrameStack {
+        let frames = unsafe { &mut *self.frames };
+        unsafe { frames.last_mut().unwrap_unchecked() }
+    }
+
     /// Mutable reference to the return-value register slot.
     #[inline(always)]
     pub fn return_result_regs_mut(&mut self) -> &mut ArrayVec<Reg, 8> {
-        unsafe { &mut *self.return_result_regs }
+        &mut self.frame_mut().return_result_regs
     }
 }
 
 /// Module-level instructions that require runtime handling outside the DTC loop.
 #[derive(Clone)]
 pub enum ModuleLevelInstr {
-    Return,
     InvokeWasiReg {
         wasi_func_type: WasiFuncType,
         params: Vec<Val>,
         result_reg: Option<Reg>,
     },
-    InvokeReg {
+    InvokeHost {
         func_addr: FuncAddr,
-        param_regs: &'static [Reg],
-        result_regs: &'static [Reg],
+        params: Vec<Val>,
+        result_regs: ArrayVec<Reg, 8>,
     },
 }
 
