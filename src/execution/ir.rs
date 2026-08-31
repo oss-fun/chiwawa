@@ -80,7 +80,7 @@ pub enum I32RegOperand {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum I64RegOperand {
     Reg(u16),
-    Const(i64),
+    Const(u32),
 }
 
 /// Register-based operand for F32 operations.
@@ -94,7 +94,34 @@ pub enum F32RegOperand {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum F64RegOperand {
     Reg(u16),
-    Const(f64),
+    Const(u32),
+}
+
+/// Payload of a `br_table`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BrTableData {
+    pub targets: Vec<(u32, usize, RegSlice)>,
+    pub default_target: (u32, usize, RegSlice),
+    pub index_reg: Reg,
+    pub source_regs: RegSlice,
+}
+
+/// Register copies a taken branch performs to pass block results.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BranchCopies {
+    pub from: RegSlice,
+    pub to: RegSlice,
+}
+
+impl BranchCopies {
+    /// `None` when the branch has nothing to copy, which is the common case.
+    pub fn new(from: RegSlice, to: RegSlice) -> Option<Box<Self>> {
+        if from.is_empty() || to.is_empty() {
+            None
+        } else {
+            Some(Box::new(Self { from, to }))
+        }
+    }
 }
 
 /// Processed instruction for DTC execution with pre-resolved operands.
@@ -218,29 +245,23 @@ pub enum ProcessedInstr {
     },
     BrReg {
         target_ip: usize,
-        source_regs: RegSlice,
-        target_result_regs: RegSlice,
+        result_copies: Option<Box<BranchCopies>>,
     },
     BrIfReg {
         target_ip: usize,
         cond_reg: Reg,
-        source_regs: RegSlice,
-        target_result_regs: RegSlice,
+        result_copies: Option<Box<BranchCopies>>,
     },
     BrIfCmpReg {
         handler_index: usize,
         target_ip: usize,
         src1: I32RegOperand,
         src2: Option<I32RegOperand>,
-        source_regs: RegSlice,
-        target_result_regs: RegSlice,
+        /// `None` when the branch copies nothing, which is the common case.
+        result_copies: Option<Box<BranchCopies>>,
     },
-    BrTableReg {
-        targets: Vec<(u32, usize, RegSlice)>,
-        default_target: (u32, usize, RegSlice),
-        index_reg: Reg,
-        source_regs: RegSlice,
-    },
+    /// Boxed so its payload does not set the size of every instruction.
+    BrTableReg(Box<BrTableData>),
     NopReg,
     UnreachableReg,
 }
@@ -282,7 +303,7 @@ impl ProcessedInstr {
             ProcessedInstr::BrReg { .. } => HANDLER_IDX_BR,
             ProcessedInstr::BrIfReg { .. } => HANDLER_IDX_BR_IF,
             ProcessedInstr::BrIfCmpReg { handler_index, .. } => *handler_index,
-            ProcessedInstr::BrTableReg { .. } => HANDLER_IDX_BR_TABLE,
+            ProcessedInstr::BrTableReg(_) => HANDLER_IDX_BR_TABLE,
             ProcessedInstr::NopReg => HANDLER_IDX_NOP,
             ProcessedInstr::UnreachableReg => HANDLER_IDX_UNREACHABLE,
         }

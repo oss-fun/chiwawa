@@ -1425,18 +1425,14 @@ pub fn br(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::BrReg {
         target_ip,
-        source_regs,
-        target_result_regs,
-        ..
+        result_copies,
     } = instr
     else {
         unsafe { std::hint::unreachable_unchecked() }
     };
     let target_ip = *target_ip;
-    if !source_regs.is_empty() && !target_result_regs.is_empty() {
-        state
-            .reg_file_mut()
-            .copy_regs(source_regs, target_result_regs);
+    if let Some(c) = result_copies {
+        state.reg_file_mut().copy_regs(&c.from, &c.to);
     }
     state.pc = target_ip;
     advance!(state)
@@ -1447,9 +1443,7 @@ pub fn br_if(state: &mut VmState) -> Outcome {
     let ProcessedInstr::BrIfReg {
         target_ip,
         cond_reg,
-        source_regs,
-        target_result_regs,
-        ..
+        result_copies,
     } = instr
     else {
         unsafe { std::hint::unreachable_unchecked() }
@@ -1461,10 +1455,8 @@ pub fn br_if(state: &mut VmState) -> Outcome {
         state.pc += 1;
         return advance!(state);
     }
-    if !source_regs.is_empty() && !target_result_regs.is_empty() {
-        state
-            .reg_file_mut()
-            .copy_regs(source_regs, target_result_regs);
+    if let Some(c) = result_copies {
+        state.reg_file_mut().copy_regs(&c.from, &c.to);
     }
     state.pc = target_ip;
     advance!(state)
@@ -1480,8 +1472,7 @@ macro_rules! br_if_cmp {
                 target_ip,
                 src1,
                 src2,
-                source_regs,
-                target_result_regs,
+                result_copies,
                 ..
             } = instr
             else {
@@ -1495,10 +1486,8 @@ macro_rules! br_if_cmp {
                 state.pc += 1;
                 return advance!(state);
             }
-            if !source_regs.is_empty() && !target_result_regs.is_empty() {
-                state
-                    .reg_file_mut()
-                    .copy_regs(source_regs, target_result_regs);
+            if let Some(c) = result_copies {
+                state.reg_file_mut().copy_regs(&c.from, &c.to);
             }
             state.pc = *target_ip;
             advance!(state)
@@ -1523,8 +1512,7 @@ pub fn br_if_eqz(state: &mut VmState) -> Outcome {
     let ProcessedInstr::BrIfCmpReg {
         target_ip,
         src1,
-        source_regs,
-        target_result_regs,
+        result_copies,
         ..
     } = instr
     else {
@@ -1534,10 +1522,8 @@ pub fn br_if_eqz(state: &mut VmState) -> Outcome {
         state.pc += 1;
         return advance!(state);
     }
-    if !source_regs.is_empty() && !target_result_regs.is_empty() {
-        state
-            .reg_file_mut()
-            .copy_regs(source_regs, target_result_regs);
+    if let Some(c) = result_copies {
+        state.reg_file_mut().copy_regs(&c.from, &c.to);
     }
     state.pc = *target_ip;
     advance!(state)
@@ -1545,30 +1531,23 @@ pub fn br_if_eqz(state: &mut VmState) -> Outcome {
 
 pub fn br_table(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
-    let ProcessedInstr::BrTableReg {
-        targets,
-        default_target,
-        index_reg,
-        source_regs,
-    } = instr
-    else {
+    let ProcessedInstr::BrTableReg(table) = instr else {
         unsafe { std::hint::unreachable_unchecked() }
     };
-    let index_reg = *index_reg;
-    let idx = state.reg_file().get_i32(index_reg.index()) as usize;
+    let idx = state.reg_file().get_i32(table.index_reg.index()) as usize;
 
-    let (target_ip, target_result_regs_slice): (usize, &[Reg]) = if idx < targets.len() {
-        let (_, ip, rs) = &targets[idx];
+    let (target_ip, target_result_regs_slice): (usize, &[Reg]) = if idx < table.targets.len() {
+        let (_, ip, rs) = &table.targets[idx];
         (*ip, &rs[..])
     } else {
-        let (_, ip, rs) = default_target;
+        let (_, ip, rs) = &table.default_target;
         (*ip, &rs[..])
     };
 
-    if !source_regs.is_empty() && !target_result_regs_slice.is_empty() {
+    if !table.source_regs.is_empty() && !target_result_regs_slice.is_empty() {
         state
             .reg_file_mut()
-            .copy_regs(source_regs, target_result_regs_slice);
+            .copy_regs(&table.source_regs, target_result_regs_slice);
     }
     state.pc = target_ip;
     advance!(state)
@@ -2361,7 +2340,7 @@ pub fn select_handler(instr: &ProcessedInstr) -> Handler {
             HANDLER_IDX_BR_IF_EQZ => br_if_eqz,
             _ => unreachable,
         },
-        ProcessedInstr::BrTableReg { .. } => br_table,
+        ProcessedInstr::BrTableReg(_) => br_table,
         ProcessedInstr::NopReg => nop,
         ProcessedInstr::UnreachableReg => unreachable,
     }
