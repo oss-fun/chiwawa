@@ -32,15 +32,12 @@ Phase 3: BrTable Resolution
 Phase 4: Fixup Check
   Verify every branch target was resolved
 
-Phase 5: Computation Folding
-  Merge pairs of computing instructions into superinstructions
-
-Phase 6: Compaction
+Phase 5: Compaction
   Strip no-op instructions and remap branch targets
 ```
 
 Register allocation and operand folding both happen during decoding, not as
-later passes. See [folding.md](folding.md) for both folding kinds.
+later passes. See [folding.md](folding.md).
 
 ## Register-Based Execution
 
