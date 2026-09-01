@@ -104,6 +104,13 @@ impl VmState {
         unsafe { &*self.module }
     }
 
+    /// Like `module`, but does not borrow `self`. Sound because `Runtime` holds
+    /// the module for the whole run.
+    #[inline(always)]
+    pub fn module_static(&self) -> &'static ModuleInst {
+        unsafe { &*self.module }
+    }
+
     /// Reference to the running function's code.
     #[inline(always)]
     pub fn code(&self) -> &Func {
@@ -129,7 +136,7 @@ impl VmState {
 pub enum ModuleLevelInstr {
     InvokeWasiReg {
         wasi_func_type: WasiFuncType,
-        params: Vec<Val>,
+        params: ArrayVec<Val, 12>,
         result_reg: Option<Reg>,
     },
     InvokeHost {

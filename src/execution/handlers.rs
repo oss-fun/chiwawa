@@ -1718,7 +1718,7 @@ fn pop_frame(state: &mut VmState) -> bool {
 
     state.pc = frames[caller_idx].ip;
 
-    let module = unsafe { &*state.module };
+    let module = state.module_static();
     let func_idx = frames[caller_idx].func_idx;
     match module.func_addrs[func_idx as usize].read_lock() {
         FuncInst::RuntimeFunc { code, .. } => {
@@ -1757,7 +1757,7 @@ pub fn call(state: &mut VmState) -> Outcome {
         unsafe { std::hint::unreachable_unchecked() }
     };
     let func_idx = *func_idx;
-    let module = unsafe { &*state.module };
+    let module = state.module_static();
     let func_addr = match module.func_addrs.get(func_idx.0 as usize) {
         Some(fa) => fa,
         None => {
@@ -1862,17 +1862,17 @@ pub fn call_indirect(state: &mut VmState) -> Outcome {
     let type_idx = *type_idx;
     let table_idx = *table_idx;
     let index_reg = *index_reg;
-    let module_inst = state.module();
+    let module = state.module_static();
     let i = state.reg_file().get_i32(index_reg.index());
-    let table_addr = match module_inst.table_addrs.get(table_idx.0 as usize) {
-        Some(t) => t.clone(),
+    let table_addr = match module.table_addrs.get(table_idx.0 as usize) {
+        Some(t) => t,
         None => {
             state.trap = Some(RuntimeError::TableNotFound);
             return trap(state);
         }
     };
     // Out-of-bounds index / null reference: delegate to host via Rust panic.
-    let func_addr = table_addr.get_func_addr(i as usize).unwrap();
+    let func_addr = table_addr.borrow_func_addr(i as usize).unwrap();
     let actual_type = func_addr.func_type();
     let expected_type = &state.module().types[type_idx.0 as usize];
     if *actual_type != *expected_type {
@@ -1900,7 +1900,7 @@ pub fn call_wasi(state: &mut VmState) -> Outcome {
     let wasi_func_type = *wasi_func_type;
     let result_reg = *result_reg;
     let regs = state.reg_file();
-    let params: Vec<Val> = param_regs.iter().map(|r| regs.get_val(r)).collect();
+    let params: ArrayVec<Val, 12> = param_regs.iter().map(|r| regs.get_val(r)).collect();
     state.pc += 1;
     state.yielded = Some(ModuleLevelInstr::InvokeWasiReg {
         wasi_func_type,
@@ -2062,8 +2062,9 @@ pub fn table_get(state: &mut VmState) -> Outcome {
         } => (*table_idx, *regs),
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
-    let table_addr = match state.module().table_addrs.get(table_idx as usize) {
-        Some(t) => t.clone(),
+    let module = state.module_static();
+    let table_addr = match module.table_addrs.get(table_idx as usize) {
+        Some(t) => t,
         None => {
             state.trap = Some(RuntimeError::TableNotFound);
             return trap(state);
@@ -2091,8 +2092,9 @@ pub fn table_set(state: &mut VmState) -> Outcome {
         } => (*table_idx, *regs),
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
-    let table_addr = match state.module().table_addrs.get(table_idx as usize) {
-        Some(t) => t.clone(),
+    let module = state.module_static();
+    let table_addr = match module.table_addrs.get(table_idx as usize) {
+        Some(t) => t,
         None => {
             state.trap = Some(RuntimeError::TableNotFound);
             return trap(state);
@@ -2113,8 +2115,9 @@ pub fn table_fill(state: &mut VmState) -> Outcome {
         } => (*table_idx, *regs),
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
-    let table_addr = match state.module().table_addrs.get(table_idx as usize) {
-        Some(t) => t.clone(),
+    let module = state.module_static();
+    let table_addr = match module.table_addrs.get(table_idx as usize) {
+        Some(t) => t,
         None => {
             state.trap = Some(RuntimeError::TableNotFound);
             return trap(state);
@@ -2139,7 +2142,7 @@ pub fn mem_size(state: &mut VmState) -> Outcome {
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
     let mem_addr = match state.module().mem_addrs.first() {
-        Some(m) => m.clone(),
+        Some(m) => m,
         None => {
             state.trap = Some(RuntimeError::MemoryNotFound);
             return trap(state);
@@ -2158,8 +2161,10 @@ pub fn mem_grow(state: &mut VmState) -> Outcome {
     let ProcessedInstr::MemoryOpsReg { dst, args, .. } = instr else {
         unsafe { std::hint::unreachable_unchecked() }
     };
-    let mem_addr = match state.module().mem_addrs.first() {
-        Some(m) => m.clone(),
+
+    let module = state.module_static();
+    let mem_addr = match module.mem_addrs.first() {
+        Some(m) => m,
         None => {
             state.trap = Some(RuntimeError::MemoryNotFound);
             return trap(state);
@@ -2188,7 +2193,7 @@ pub fn mem_copy(state: &mut VmState) -> Outcome {
         unsafe { std::hint::unreachable_unchecked() }
     };
     let mem_addr = match state.module().mem_addrs.first() {
-        Some(m) => m.clone(),
+        Some(m) => m,
         None => {
             state.trap = Some(RuntimeError::MemoryNotFound);
             return trap(state);
@@ -2213,7 +2218,7 @@ pub fn mem_init(state: &mut VmState) -> Outcome {
     };
     let module_inst = state.module();
     let mem_addr = match module_inst.mem_addrs.first() {
-        Some(m) => m.clone(),
+        Some(m) => m,
         None => {
             state.trap = Some(RuntimeError::MemoryNotFound);
             return trap(state);
@@ -2241,7 +2246,7 @@ pub fn mem_fill(state: &mut VmState) -> Outcome {
         unsafe { std::hint::unreachable_unchecked() }
     };
     let mem_addr = match state.module().mem_addrs.first() {
-        Some(m) => m.clone(),
+        Some(m) => m,
         None => {
             state.trap = Some(RuntimeError::MemoryNotFound);
             return trap(state);
