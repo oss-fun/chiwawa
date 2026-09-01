@@ -1862,17 +1862,17 @@ pub fn call_indirect(state: &mut VmState) -> Outcome {
     let type_idx = *type_idx;
     let table_idx = *table_idx;
     let index_reg = *index_reg;
-    let module_inst = state.module();
+    let module = unsafe { &*state.module };
     let i = state.reg_file().get_i32(index_reg.index());
-    let table_addr = match module_inst.table_addrs.get(table_idx.0 as usize) {
-        Some(t) => t.clone(),
+    let table_addr = match module.table_addrs.get(table_idx.0 as usize) {
+        Some(t) => t,
         None => {
             state.trap = Some(RuntimeError::TableNotFound);
             return trap(state);
         }
     };
     // Out-of-bounds index / null reference: delegate to host via Rust panic.
-    let func_addr = table_addr.get_func_addr(i as usize).unwrap();
+    let func_addr = table_addr.borrow_func_addr(i as usize).unwrap();
     let actual_type = func_addr.func_type();
     let expected_type = &state.module().types[type_idx.0 as usize];
     if *actual_type != *expected_type {

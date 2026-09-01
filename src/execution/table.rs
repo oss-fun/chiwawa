@@ -73,6 +73,14 @@ impl TableAddr {
         }
     }
 
+    pub fn borrow_func_addr(&self, i: usize) -> Option<Ref<'_, FuncAddr>> {
+        Ref::filter_map(self.0.borrow(), |inst| match &inst.elem[i] {
+            Val::Ref(value::Ref::FuncAddr(func_addr)) => Some(func_addr),
+            _ => None,
+        })
+        .ok()
+    }
+
     /// Replaces all elements (used during restore).
     pub fn set_elements(&self, elems: Vec<Option<FuncAddr>>) -> Result<(), RuntimeError> {
         let mut guard = self.0.borrow_mut();
