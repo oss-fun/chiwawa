@@ -252,14 +252,6 @@ pub enum ProcessedInstr {
         cond_reg: Reg,
         result_copies: Option<Box<BranchCopies>>,
     },
-    BrIfCmpReg {
-        handler_index: usize,
-        target_ip: usize,
-        src1: I32RegOperand,
-        src2: Option<I32RegOperand>,
-        /// `None` when the branch copies nothing, which is the common case.
-        result_copies: Option<Box<BranchCopies>>,
-    },
     /// Boxed so its payload does not set the size of every instruction.
     BrTableReg(Box<BrTableData>),
     NopReg,
@@ -302,7 +294,6 @@ impl ProcessedInstr {
             } => HANDLER_IDX_END_FUNC,
             ProcessedInstr::BrReg { .. } => HANDLER_IDX_BR,
             ProcessedInstr::BrIfReg { .. } => HANDLER_IDX_BR_IF,
-            ProcessedInstr::BrIfCmpReg { handler_index, .. } => *handler_index,
             ProcessedInstr::BrTableReg(_) => HANDLER_IDX_BR_TABLE,
             ProcessedInstr::NopReg => HANDLER_IDX_NOP,
             ProcessedInstr::UnreachableReg => HANDLER_IDX_UNREACHABLE,
