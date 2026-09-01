@@ -1900,7 +1900,7 @@ pub fn call_wasi(state: &mut VmState) -> Outcome {
     let wasi_func_type = *wasi_func_type;
     let result_reg = *result_reg;
     let regs = state.reg_file();
-    let params: Vec<Val> = param_regs.iter().map(|r| regs.get_val(r)).collect();
+    let params: ArrayVec<Val, 12> = param_regs.iter().map(|r| regs.get_val(r)).collect();
     state.pc += 1;
     state.yielded = Some(ModuleLevelInstr::InvokeWasiReg {
         wasi_func_type,

@@ -129,7 +129,7 @@ impl VmState {
 pub enum ModuleLevelInstr {
     InvokeWasiReg {
         wasi_func_type: WasiFuncType,
-        params: Vec<Val>,
+        params: ArrayVec<Val, 12>,
         result_reg: Option<Reg>,
     },
     InvokeHost {
