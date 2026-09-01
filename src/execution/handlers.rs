@@ -2139,7 +2139,7 @@ pub fn mem_size(state: &mut VmState) -> Outcome {
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
     let mem_addr = match state.module().mem_addrs.first() {
-        Some(m) => m.clone(),
+        Some(m) => m,
         None => {
             state.trap = Some(RuntimeError::MemoryNotFound);
             return trap(state);
@@ -2158,8 +2158,10 @@ pub fn mem_grow(state: &mut VmState) -> Outcome {
     let ProcessedInstr::MemoryOpsReg { dst, args, .. } = instr else {
         unsafe { std::hint::unreachable_unchecked() }
     };
-    let mem_addr = match state.module().mem_addrs.first() {
-        Some(m) => m.clone(),
+
+    let module = unsafe { &*state.module };
+    let mem_addr = match module.mem_addrs.first() {
+        Some(m) => m,
         None => {
             state.trap = Some(RuntimeError::MemoryNotFound);
             return trap(state);
@@ -2188,7 +2190,7 @@ pub fn mem_copy(state: &mut VmState) -> Outcome {
         unsafe { std::hint::unreachable_unchecked() }
     };
     let mem_addr = match state.module().mem_addrs.first() {
-        Some(m) => m.clone(),
+        Some(m) => m,
         None => {
             state.trap = Some(RuntimeError::MemoryNotFound);
             return trap(state);
@@ -2213,7 +2215,7 @@ pub fn mem_init(state: &mut VmState) -> Outcome {
     };
     let module_inst = state.module();
     let mem_addr = match module_inst.mem_addrs.first() {
-        Some(m) => m.clone(),
+        Some(m) => m,
         None => {
             state.trap = Some(RuntimeError::MemoryNotFound);
             return trap(state);
@@ -2241,7 +2243,7 @@ pub fn mem_fill(state: &mut VmState) -> Outcome {
         unsafe { std::hint::unreachable_unchecked() }
     };
     let mem_addr = match state.module().mem_addrs.first() {
-        Some(m) => m.clone(),
+        Some(m) => m,
         None => {
             state.trap = Some(RuntimeError::MemoryNotFound);
             return trap(state);
