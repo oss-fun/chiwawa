@@ -1,6 +1,6 @@
 //! Global variable instances.
 
-use super::value::Val;
+use super::value::{Num, Val};
 use crate::error::RuntimeError;
 use crate::structure::types::*;
 use serde::{Deserialize, Serialize};
@@ -45,5 +45,56 @@ impl GlobalAddr {
         } else {
             Err(RuntimeError::InstructionFailed)
         }
+    }
+    #[inline(always)]
+    pub fn get_i32(&self) -> i32 {
+        match &self.global_inst.borrow().value {
+            Val::Num(Num::I32(v)) => *v,
+            _ => 0,
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_i32(&self, v: i32) {
+        self.global_inst.borrow_mut().value = Val::Num(Num::I32(v));
+    }
+
+    #[inline(always)]
+    pub fn get_i64(&self) -> i64 {
+        match &self.global_inst.borrow().value {
+            Val::Num(Num::I64(v)) => *v,
+            _ => 0,
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_i64(&self, v: i64) {
+        self.global_inst.borrow_mut().value = Val::Num(Num::I64(v));
+    }
+
+    #[inline(always)]
+    pub fn get_f32(&self) -> f32 {
+        match &self.global_inst.borrow().value {
+            Val::Num(Num::F32(v)) => *v,
+            _ => 0.0,
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_f32(&self, v: f32) {
+        self.global_inst.borrow_mut().value = Val::Num(Num::F32(v));
+    }
+
+    #[inline(always)]
+    pub fn get_f64(&self) -> f64 {
+        match &self.global_inst.borrow().value {
+            Val::Num(Num::F64(v)) => *v,
+            _ => 0.0,
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_f64(&self, v: f64) {
+        self.global_inst.borrow_mut().value = Val::Num(Num::F64(v));
     }
 }

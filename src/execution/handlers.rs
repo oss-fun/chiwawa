@@ -1930,7 +1930,7 @@ pub fn r#return(state: &mut VmState) -> Outcome {
 // ============================================================================
 
 macro_rules! global_get {
-    ($name:ident, $to:ident, $write:ident, $variant:ident) => {
+    ($name:ident, $to:ident, $write:ident) => {
         pub fn $name(state: &mut VmState) -> Outcome {
             let (dst, global_index) = match state.current_instr() {
                 ProcessedInstr::GlobalGetReg {
@@ -1938,13 +1938,11 @@ macro_rules! global_get {
                 } => (*dst, *global_index),
                 _ => unsafe { std::hint::unreachable_unchecked() },
             };
-            let global_addr = state
+            let v = state
                 .module()
                 .global_addrs
                 .get_by_idx(crate::structure::types::GlobalIdx(global_index))
-                .clone();
-            let val = global_addr.get();
-            let v = val.$to().unwrap_or(Default::default());
+                .$to();
             operand::$write(state, &dst, v);
             state.pc += 1;
             advance!(state)
@@ -1952,13 +1950,13 @@ macro_rules! global_get {
     };
 }
 
-global_get!(global_get_i32, to_i32, write_dst_i32, I32);
-global_get!(global_get_i64, to_i64, write_dst_i64, I64);
-global_get!(global_get_f32, to_f32, write_dst_f32, F32);
-global_get!(global_get_f64, to_f64, write_dst_f64, F64);
+global_get!(global_get_i32, get_i32, write_dst_i32);
+global_get!(global_get_i64, get_i64, write_dst_i64);
+global_get!(global_get_f32, get_f32, write_dst_f32);
+global_get!(global_get_f64, get_f64, write_dst_f64);
 
 macro_rules! global_set {
-    ($name:ident, $get:ident, $variant:ident) => {
+    ($name:ident, $get:ident, $set:ident) => {
         pub fn $name(state: &mut VmState) -> Outcome {
             let (src, global_index) = match state.current_instr() {
                 ProcessedInstr::GlobalSetReg {
@@ -1969,25 +1967,21 @@ macro_rules! global_set {
             let v = match src {
                 RegOrLocal::Reg(idx) => state.reg_file().$get(idx),
             };
-            let global_addr = state
+            state
                 .module()
                 .global_addrs
                 .get_by_idx(crate::structure::types::GlobalIdx(global_index))
-                .clone();
-            if let Err(e) = global_addr.set(Val::Num(crate::execution::value::Num::$variant(v))) {
-                state.trap = Some(e);
-                return trap(state);
-            }
+                .$set(v);
             state.pc += 1;
             advance!(state)
         }
     };
 }
 
-global_set!(global_set_i32, get_i32, I32);
-global_set!(global_set_i64, get_i64, I64);
-global_set!(global_set_f32, get_f32, F32);
-global_set!(global_set_f64, get_f64, F64);
+global_set!(global_set_i32, get_i32, set_i32);
+global_set!(global_set_i64, get_i64, set_i64);
+global_set!(global_set_f32, get_f32, set_f32);
+global_set!(global_set_f64, get_f64, set_f64);
 
 // ============================================================================
 // DataDrop
