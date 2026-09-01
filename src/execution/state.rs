@@ -104,6 +104,13 @@ impl VmState {
         unsafe { &*self.module }
     }
 
+    /// Like `module`, but does not borrow `self`. Sound because `Runtime` holds
+    /// the module for the whole run.
+    #[inline(always)]
+    pub fn module_static(&self) -> &'static ModuleInst {
+        unsafe { &*self.module }
+    }
+
     /// Reference to the running function's code.
     #[inline(always)]
     pub fn code(&self) -> &Func {
