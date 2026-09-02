@@ -70,7 +70,7 @@ pub struct VmState {
 
     /// Execution tracer (loop dispatcher only)
     #[cfg(feature = "trace")]
-    pub tracer: *mut crate::execution::trace::Tracer,
+    pub tracer: *mut crate::instrument::trace::Tracer,
 }
 
 impl VmState {

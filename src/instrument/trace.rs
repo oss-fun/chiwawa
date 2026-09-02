@@ -4,10 +4,10 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::path::Path;
 
-use super::global::GlobalAddr;
-use super::handlers::*;
-use super::regs::RegFile;
-use super::value::Val;
+use crate::execution::global::GlobalAddr;
+use crate::execution::handlers::*;
+use crate::execution::regs::RegFile;
+use crate::execution::value::Val;
 
 /// Event types that can trigger tracing.
 #[derive(Debug, Clone, PartialEq)]
@@ -269,18 +269,18 @@ impl Tracer {
     fn format_val(val: &Val) -> String {
         match val {
             Val::Num(num) => match num {
-                super::value::Num::I32(v) => format!("I32({})", v),
-                super::value::Num::I64(v) => format!("I64({})", v),
-                super::value::Num::F32(v) => format!("F32({})", v),
-                super::value::Num::F64(v) => format!("F64({})", v),
+                crate::execution::value::Num::I32(v) => format!("I32({})", v),
+                crate::execution::value::Num::I64(v) => format!("I64({})", v),
+                crate::execution::value::Num::F32(v) => format!("F32({})", v),
+                crate::execution::value::Num::F64(v) => format!("F64({})", v),
             },
             Val::Vec_(vec) => match vec {
-                super::value::Vec_::V128(v) => format!("V128({})", v),
+                crate::execution::value::Vec_::V128(v) => format!("V128({})", v),
             },
             Val::Ref(r) => match r {
-                super::value::Ref::RefNull => "RefNull".to_string(),
-                super::value::Ref::FuncAddr(_) => "FuncAddr".to_string(),
-                super::value::Ref::RefExtern(_) => "RefExtern".to_string(),
+                crate::execution::value::Ref::RefNull => "RefNull".to_string(),
+                crate::execution::value::Ref::FuncAddr(_) => "FuncAddr".to_string(),
+                crate::execution::value::Ref::RefExtern(_) => "RefExtern".to_string(),
             },
         }
     }

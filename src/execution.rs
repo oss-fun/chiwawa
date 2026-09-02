@@ -7,7 +7,7 @@ pub mod dispatch_tco;
 mod elem;
 mod export;
 pub mod func;
-mod global;
+pub(crate) mod global;
 pub mod handlers;
 pub mod ir;
 pub mod mem;
@@ -18,6 +18,4 @@ pub mod regs;
 pub mod runtime;
 pub mod state;
 mod table;
-#[cfg(feature = "trace")]
-pub mod trace;
 pub mod value;

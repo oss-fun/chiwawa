@@ -1,6 +1,6 @@
 use anyhow::Result;
 #[cfg(feature = "trace")]
-use chiwawa::execution::trace::TraceConfig;
+use chiwawa::instrument::trace::TraceConfig;
 use chiwawa::{
     execution::module::*,
     execution::runtime::Runtime,

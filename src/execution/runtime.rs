@@ -9,11 +9,11 @@ use crate::execution::module::ModuleInst;
 use crate::execution::regs::RegFile;
 use crate::execution::state::VmState;
 use crate::execution::state::{FrameStack, ModuleLevelInstr, Stacks};
-#[cfg(feature = "trace")]
-use crate::execution::trace::{TraceConfig, Tracer};
 use crate::execution::value::{Num, Val};
 #[cfg(feature = "stats")]
 use crate::instrument::stats::ExecutionStats;
+#[cfg(feature = "trace")]
+use crate::instrument::trace::{TraceConfig, Tracer};
 use crate::structure::module::{Func, WasiFuncType};
 use crate::wasi::{WasiError, WasiResult};
 use std::path::Path;
