@@ -62,7 +62,7 @@ use std::rc::Rc;
 use std::sync::LazyLock;
 
 #[cfg(feature = "call_graph")]
-use crate::analysis::call_graph::{CallGraph, CallGraphBuilder};
+use crate::instrument::call_graph::{CallGraph, CallGraphBuilder};
 
 /// Pending operand for peek-based operand folding.
 /// When a const or local.get instruction is followed by a foldable consumer,
