@@ -66,11 +66,11 @@ pub struct VmState {
 
     /// Execution statistics (loop dispatcher only)
     #[cfg(feature = "stats")]
-    pub stats: *mut crate::execution::stats::ExecutionStats,
+    pub stats: *mut crate::instrument::stats::ExecutionStats,
 
     /// Execution tracer (loop dispatcher only)
     #[cfg(feature = "trace")]
-    pub tracer: *mut crate::execution::trace::Tracer,
+    pub tracer: *mut crate::instrument::trace::Tracer,
 }
 
 impl VmState {

@@ -1,9 +1,9 @@
 use anyhow::Result;
 #[cfg(feature = "trace")]
-use chiwawa::execution::trace::TraceConfig;
+use chiwawa::instrument::trace::TraceConfig;
 use chiwawa::{
     execution::module::*,
-    execution::runtime::Runtime,
+    execution::runtime::{Runtime, RuntimeConfig},
     execution::value::*,
     execution::{migration, state::Stacks},
     parser,
@@ -205,6 +205,14 @@ fn main() -> Result<()> {
         None
     };
 
+    let runtime_config = RuntimeConfig {
+        enable_checkpoint: cli.enable_checkpoint,
+        #[cfg(feature = "stats")]
+        enable_stats: cli.enable_stats,
+        #[cfg(feature = "trace")]
+        trace_config,
+    };
+
     if let Some(restore_path) = cli.restore {
         println!("Restoring from checkpoint: {}", restore_path);
 
@@ -217,14 +225,7 @@ fn main() -> Result<()> {
         };
         println!("State restored into module instance. Stacks obtained.");
 
-        let mut runtime = Runtime::new_restored(
-            Rc::clone(&inst),
-            restored_stacks,
-            cli.enable_stats,
-            cli.enable_checkpoint,
-            #[cfg(feature = "trace")]
-            trace_config,
-        );
+        let mut runtime = Runtime::new_restored(Rc::clone(&inst), restored_stacks, runtime_config);
         println!("Runtime reconstructed. Resuming execution...");
 
         let result = runtime.run();
@@ -233,15 +234,7 @@ fn main() -> Result<()> {
         let func_addr = inst.get_export_func(&cli.invoke)?;
         let params = parse_params(cli.params.unwrap_or_default());
 
-        match Runtime::new(
-            Rc::clone(&inst),
-            &func_addr,
-            params,
-            cli.enable_stats,
-            cli.enable_checkpoint,
-            #[cfg(feature = "trace")]
-            trace_config,
-        ) {
+        match Runtime::new(Rc::clone(&inst), &func_addr, params, runtime_config) {
             Ok(mut runtime) => {
                 let result = runtime.run();
                 handle_result(result);

@@ -1,6 +1,10 @@
 use chiwawa::{
-    execution::func::FuncAddr, execution::module::*, execution::runtime::Runtime,
-    execution::value::*, parser, structure::module::Module,
+    execution::func::FuncAddr,
+    execution::module::*,
+    execution::runtime::{Runtime, RuntimeConfig},
+    execution::value::*,
+    parser,
+    structure::module::Module,
 };
 use rustc_hash::FxHashMap;
 use std::rc::Rc;
@@ -22,7 +26,12 @@ mod tests {
         params: Vec<Val>,
     ) -> Result<Vec<Val>, chiwawa::error::RuntimeError> {
         let func_addr = inst.get_export_func(func_name)?;
-        let mut runtime = Runtime::new(Rc::clone(inst), &func_addr, params, true, false)?;
+        let mut runtime = Runtime::new(
+            Rc::clone(inst),
+            &func_addr,
+            params,
+            RuntimeConfig::default(),
+        )?;
         runtime.run()
     }
 

@@ -1,24 +1,21 @@
 mod data;
-pub mod dispatch;
+mod dispatch;
 #[cfg(not(feature = "tco"))]
-pub mod dispatch_loop;
+mod dispatch_loop;
 #[cfg(feature = "tco")]
-pub mod dispatch_tco;
+mod dispatch_tco;
 mod elem;
 mod export;
 pub mod func;
-mod global;
-pub mod handlers;
-pub mod ir;
-pub mod mem;
+pub(crate) mod global;
+pub(crate) mod handlers;
+pub(crate) mod ir;
+pub(crate) mod mem;
 pub mod migration;
 pub mod module;
-pub mod operand;
-pub mod regs;
+mod operand;
+pub(crate) mod regs;
 pub mod runtime;
 pub mod state;
-pub mod stats;
 mod table;
-#[cfg(feature = "trace")]
-pub mod trace;
 pub mod value;

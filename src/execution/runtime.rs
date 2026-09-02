@@ -9,10 +9,11 @@ use crate::execution::module::ModuleInst;
 use crate::execution::regs::RegFile;
 use crate::execution::state::VmState;
 use crate::execution::state::{FrameStack, ModuleLevelInstr, Stacks};
-use crate::execution::stats::ExecutionStats;
-#[cfg(feature = "trace")]
-use crate::execution::trace::{TraceConfig, Tracer};
 use crate::execution::value::{Num, Val};
+#[cfg(feature = "stats")]
+use crate::instrument::stats::ExecutionStats;
+#[cfg(feature = "trace")]
+use crate::instrument::trace::{TraceConfig, Tracer};
 use crate::structure::module::{Func, WasiFuncType};
 use crate::wasi::{WasiError, WasiResult};
 use std::path::Path;
@@ -20,15 +21,28 @@ use std::rc::Rc;
 #[cfg(all(target_os = "wasi", target_env = "p1", target_feature = "atomics"))]
 use std::sync::Once;
 
+/// Optional runtime settings.
+///
+/// Each field exists only when its feature is enabled, so the constructor
+/// signature is the same in every build.
+#[derive(Default)]
+pub struct RuntimeConfig {
+    pub enable_checkpoint: bool,
+    #[cfg(feature = "stats")]
+    pub enable_stats: bool,
+    #[cfg(feature = "trace")]
+    pub trace_config: Option<TraceConfig>,
+}
+
 /// Execution entry point that manages the interpreter loop.
 pub struct Runtime {
     module_inst: Rc<ModuleInst>,
     stacks: Stacks,
-    #[cfg_attr(not(feature = "stats"), allow(dead_code))]
+    #[cfg(feature = "stats")]
     execution_stats: Option<ExecutionStats>,
     #[cfg(feature = "trace")]
     tracer: Option<Tracer>,
-    #[cfg_attr(not(feature = "stats"), allow(dead_code))]
+    #[cfg(feature = "stats")]
     enable_stats: bool,
     enable_checkpoint: bool,
 }
@@ -50,15 +64,13 @@ impl Runtime {
         module_inst: Rc<ModuleInst>,
         func_addr: &FuncAddr,
         params: Vec<Val>,
-        enable_stats: bool,
-        enable_checkpoint: bool,
-        #[cfg(feature = "trace")] trace_config: Option<TraceConfig>,
+        config: RuntimeConfig,
     ) -> Result<Self, RuntimeError> {
         let stacks = Stacks::new(func_addr, params)?;
 
         #[cfg(feature = "trace")]
-        let tracer = if let Some(config) = trace_config {
-            match Tracer::new(config) {
+        let tracer = if let Some(trace_config) = config.trace_config {
+            match Tracer::new(trace_config) {
                 Ok(tracer) => Some(tracer),
                 Err(e) => {
                     eprintln!("Failed to create tracer: {:?}", e);
@@ -72,15 +84,17 @@ impl Runtime {
         Ok(Runtime {
             module_inst,
             stacks,
-            execution_stats: if enable_stats {
+            #[cfg(feature = "stats")]
+            execution_stats: if config.enable_stats {
                 Some(ExecutionStats::new())
             } else {
                 None
             },
             #[cfg(feature = "trace")]
             tracer,
-            enable_stats,
-            enable_checkpoint,
+            #[cfg(feature = "stats")]
+            enable_stats: config.enable_stats,
+            enable_checkpoint: config.enable_checkpoint,
         })
     }
 
@@ -90,13 +104,11 @@ impl Runtime {
     pub fn new_restored(
         module_inst: Rc<ModuleInst>,
         stacks: Stacks,
-        enable_stats: bool,
-        enable_checkpoint: bool,
-        #[cfg(feature = "trace")] trace_config: Option<TraceConfig>,
+        config: RuntimeConfig,
     ) -> Self {
         #[cfg(feature = "trace")]
-        let tracer = if let Some(config) = trace_config {
-            match Tracer::new(config) {
+        let tracer = if let Some(trace_config) = config.trace_config {
+            match Tracer::new(trace_config) {
                 Ok(tracer) => Some(tracer),
                 Err(e) => {
                     eprintln!("Failed to create tracer: {:?}", e);
@@ -110,15 +122,17 @@ impl Runtime {
         Runtime {
             module_inst,
             stacks,
-            execution_stats: if enable_stats {
+            #[cfg(feature = "stats")]
+            execution_stats: if config.enable_stats {
                 Some(ExecutionStats::new())
             } else {
                 None
             },
             #[cfg(feature = "trace")]
             tracer,
-            enable_stats,
-            enable_checkpoint,
+            #[cfg(feature = "stats")]
+            enable_stats: config.enable_stats,
+            enable_checkpoint: config.enable_checkpoint,
         }
     }
 

@@ -640,72 +640,6 @@ impl RegAllocator {
         }
     }
 
-    /// Reserve a register without tracking on type stack
-    pub fn reserve(&mut self, vtype: ValueType) -> Reg {
-        match vtype {
-            ValueType::NumType(NumType::I32) => {
-                let reg = Reg::I32(self.i32_depth as u16);
-                self.i32_depth += 1;
-                self.max_i32_depth = self.max_i32_depth.max(self.i32_depth);
-                reg
-            }
-            ValueType::NumType(NumType::I64) => {
-                let reg = Reg::I64(self.i64_depth as u16);
-                self.i64_depth += 1;
-                self.max_i64_depth = self.max_i64_depth.max(self.i64_depth);
-                reg
-            }
-            ValueType::NumType(NumType::F32) => {
-                let reg = Reg::F32(self.f32_depth as u16);
-                self.f32_depth += 1;
-                self.max_f32_depth = self.max_f32_depth.max(self.f32_depth);
-                reg
-            }
-            ValueType::NumType(NumType::F64) => {
-                let reg = Reg::F64(self.f64_depth as u16);
-                self.f64_depth += 1;
-                self.max_f64_depth = self.max_f64_depth.max(self.f64_depth);
-                reg
-            }
-            ValueType::RefType(_) => {
-                let reg = Reg::Ref(self.ref_depth as u16);
-                self.ref_depth += 1;
-                self.max_ref_depth = self.max_ref_depth.max(self.ref_depth);
-                reg
-            }
-            ValueType::VecType(_) => {
-                let reg = Reg::V128(self.v128_depth as u16);
-                self.v128_depth += 1;
-                self.max_v128_depth = self.max_v128_depth.max(self.v128_depth);
-                reg
-            }
-        }
-    }
-
-    /// Free a register of the given type.
-    pub fn free(&mut self, vtype: &ValueType) {
-        match vtype {
-            ValueType::NumType(NumType::I32) => {
-                self.i32_depth = self.i32_depth.saturating_sub(1);
-            }
-            ValueType::NumType(NumType::I64) => {
-                self.i64_depth = self.i64_depth.saturating_sub(1);
-            }
-            ValueType::NumType(NumType::F32) => {
-                self.f32_depth = self.f32_depth.saturating_sub(1);
-            }
-            ValueType::NumType(NumType::F64) => {
-                self.f64_depth = self.f64_depth.saturating_sub(1);
-            }
-            ValueType::RefType(_) => {
-                self.ref_depth = self.ref_depth.saturating_sub(1);
-            }
-            ValueType::VecType(_) => {
-                self.v128_depth = self.v128_depth.saturating_sub(1);
-            }
-        }
-    }
-
     /// Pop a value from the stack (decrease depth and return the register)
     pub fn pop(&mut self, vtype: &ValueType) -> Reg {
         self.type_stack.pop();
@@ -851,16 +785,6 @@ impl RegAllocator {
         result
     }
 
-    /// Clear the current stack depths
-    pub fn clear_stack(&mut self) {
-        self.i32_depth = 0;
-        self.i64_depth = 0;
-        self.f32_depth = 0;
-        self.f64_depth = 0;
-        self.ref_depth = 0;
-        self.v128_depth = 0;
-    }
-
     /// Save current stack state for block entry
     pub fn save_state(&self) -> RegAllocatorState {
         RegAllocatorState {
@@ -912,19 +836,6 @@ pub struct RegAllocatorState {
 }
 
 impl RegAllocatorState {
-    /// Get register at entry_depth for given type
-    /// Used to determine result_regs at block entry
-    pub fn reg_for_type(&self, vtype: &ValueType) -> Reg {
-        match vtype {
-            ValueType::NumType(NumType::I32) => Reg::I32(self.i32_depth as u16),
-            ValueType::NumType(NumType::I64) => Reg::I64(self.i64_depth as u16),
-            ValueType::NumType(NumType::F32) => Reg::F32(self.f32_depth as u16),
-            ValueType::NumType(NumType::F64) => Reg::F64(self.f64_depth as u16),
-            ValueType::RefType(_) => Reg::Ref(self.ref_depth as u16),
-            ValueType::VecType(_) => Reg::V128(self.v128_depth as u16),
-        }
-    }
-
     /// Increment depth for a type and return the register at that position
     pub fn next_reg_for_type(&mut self, vtype: &ValueType) -> Reg {
         match vtype {

@@ -1,6 +1,6 @@
 use chiwawa::{
     execution::module::*,
-    execution::runtime::Runtime,
+    execution::runtime::{Runtime, RuntimeConfig},
     execution::value::*,
     parser,
     structure::module::{Module, WasiFuncType},
@@ -25,7 +25,12 @@ mod tests {
         params: Vec<Val>,
     ) -> Result<Vec<Val>, chiwawa::error::RuntimeError> {
         let func_addr = inst.get_export_func(func_name)?;
-        let mut runtime = Runtime::new(Rc::clone(inst), &func_addr, params, true, false)?;
+        let mut runtime = Runtime::new(
+            Rc::clone(inst),
+            &func_addr,
+            params,
+            RuntimeConfig::default(),
+        )?;
         runtime.run()
     }
 
