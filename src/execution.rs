@@ -17,7 +17,6 @@ pub mod operand;
 pub mod regs;
 pub mod runtime;
 pub mod state;
-pub mod stats;
 mod table;
 #[cfg(feature = "trace")]
 pub mod trace;

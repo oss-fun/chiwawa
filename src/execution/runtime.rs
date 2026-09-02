@@ -9,10 +9,11 @@ use crate::execution::module::ModuleInst;
 use crate::execution::regs::RegFile;
 use crate::execution::state::VmState;
 use crate::execution::state::{FrameStack, ModuleLevelInstr, Stacks};
-use crate::execution::stats::ExecutionStats;
 #[cfg(feature = "trace")]
 use crate::execution::trace::{TraceConfig, Tracer};
 use crate::execution::value::{Num, Val};
+#[cfg(feature = "stats")]
+use crate::instrument::stats::ExecutionStats;
 use crate::structure::module::{Func, WasiFuncType};
 use crate::wasi::{WasiError, WasiResult};
 use std::path::Path;
@@ -24,11 +25,11 @@ use std::sync::Once;
 pub struct Runtime {
     module_inst: Rc<ModuleInst>,
     stacks: Stacks,
-    #[cfg_attr(not(feature = "stats"), allow(dead_code))]
+    #[cfg(feature = "stats")]
     execution_stats: Option<ExecutionStats>,
     #[cfg(feature = "trace")]
     tracer: Option<Tracer>,
-    #[cfg_attr(not(feature = "stats"), allow(dead_code))]
+    #[cfg(feature = "stats")]
     enable_stats: bool,
     enable_checkpoint: bool,
 }
@@ -69,9 +70,13 @@ impl Runtime {
             None
         };
 
+        #[cfg(not(feature = "stats"))]
+        let _ = enable_stats;
+
         Ok(Runtime {
             module_inst,
             stacks,
+            #[cfg(feature = "stats")]
             execution_stats: if enable_stats {
                 Some(ExecutionStats::new())
             } else {
@@ -79,6 +84,7 @@ impl Runtime {
             },
             #[cfg(feature = "trace")]
             tracer,
+            #[cfg(feature = "stats")]
             enable_stats,
             enable_checkpoint,
         })
@@ -107,9 +113,13 @@ impl Runtime {
             None
         };
 
+        #[cfg(not(feature = "stats"))]
+        let _ = enable_stats;
+
         Runtime {
             module_inst,
             stacks,
+            #[cfg(feature = "stats")]
             execution_stats: if enable_stats {
                 Some(ExecutionStats::new())
             } else {
@@ -117,6 +127,7 @@ impl Runtime {
             },
             #[cfg(feature = "trace")]
             tracer,
+            #[cfg(feature = "stats")]
             enable_stats,
             enable_checkpoint,
         }

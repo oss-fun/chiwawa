@@ -1,6 +1,6 @@
 //! Instruction execution statistics collection.
 
-use super::handlers::*;
+use crate::execution::handlers::*;
 
 /// Number of handler-index slots. Must exceed the largest `HANDLER_IDX_*`
 /// (currently 0x104); 0x105 leaves the counter array indexable by every index.
