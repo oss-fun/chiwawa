@@ -18,8 +18,6 @@
 //! - `trap`: generic trap, error already stored in `state.trap`.
 //! - `checkpoint_trap`: stores `RuntimeError::CheckpointRequested` and
 //!   returns Outcome::Trap (selected by `next_handler` when polling fires).
-//! - `r#yield`: runtime yield (call / wasi / return), payload in
-//!   `state.yielded`.
 
 #![allow(unused_unsafe)]
 
@@ -333,6 +331,7 @@ pub fn trap(_state: &mut VmState) -> Outcome {
 /// Sentinel handler for checkpoint-requested traps. Tail-called from
 /// `next_handler` when `poll_checkpoint` returns `true`, so the dispatcher's
 /// per-instruction tail-call structure is preserved.
+#[cfg(feature = "tco")]
 #[inline(never)]
 pub fn checkpoint_trap(state: &mut VmState) -> Outcome {
     state.trap = Some(crate::error::RuntimeError::CheckpointRequested);
@@ -344,6 +343,7 @@ pub fn checkpoint_trap(state: &mut VmState) -> Outcome {
 /// at `state.pc`. The returned function pointer is then tail-called from
 /// the `advance!` macro, so this helper itself must not break tail-call
 /// optimization at its call site.
+#[cfg(feature = "tco")]
 #[inline(always)]
 pub unsafe fn next_handler(state: &mut VmState) -> Handler {
     if crate::execution::migration::poll_checkpoint(state) {
@@ -356,11 +356,6 @@ pub unsafe fn next_handler(state: &mut VmState) -> Handler {
 #[inline(never)]
 pub fn halt(_state: &mut VmState) -> Outcome {
     Outcome::Halt
-}
-
-#[inline(never)]
-pub fn r#yield(_state: &mut VmState) -> Outcome {
-    Outcome::Yield
 }
 
 /// Default handler for unknown handler_index — returns Trap with InvalidHandlerIndex.
@@ -2444,9 +2439,4 @@ pub fn select_handler(instr: &ProcessedInstr) -> Handler {
         ProcessedInstr::NopReg => nop,
         ProcessedInstr::UnreachableReg => unreachable,
     }
-}
-
-/// Build a parallel handler array from a slice of processed instructions.
-pub fn build_handlers(instrs: &[ProcessedInstr]) -> Vec<Handler> {
-    instrs.iter().map(select_handler).collect()
 }
