@@ -12,3 +12,4 @@ CLAUDE.md
 /benchmarks/target
 # Prebuilt runtimes and AOT modules used for comparison
 /bin/
+/tests/wasi-threads/testsuite
