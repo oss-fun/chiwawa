@@ -22,6 +22,7 @@
 #![allow(unused_unsafe)]
 
 use crate::error::RuntimeError;
+use crate::execution::atomics;
 use crate::execution::func::{FuncAddr, FuncInst};
 use crate::execution::ir::{Handler, Outcome, ProcessedInstr, RegOrLocal};
 use crate::execution::module::GetInstanceByIdx;
@@ -31,6 +32,7 @@ use crate::execution::state::{Frame, FrameStack, ModuleLevelInstr, VmState};
 use crate::execution::value::Val;
 use crate::structure::module::Func;
 use arrayvec::ArrayVec;
+use std::sync::atomic::{self, AtomicU16, AtomicU32, AtomicU64, AtomicU8};
 
 // ============================================================================
 // Handler index constants
@@ -294,6 +296,26 @@ pub const HANDLER_IDX_REF_LOCAL_SET: usize = 0x102;
 pub const HANDLER_IDX_CALL_WASI: usize = 0x103;
 /// Function-level `end`: writes the return registers and halts the frame.
 pub const HANDLER_IDX_END_FUNC: usize = 0x104;
+
+// Threads proposal — atomics
+pub const HANDLER_IDX_MEMORY_ATOMIC_NOTIFY: usize = 0x105;
+pub const HANDLER_IDX_MEMORY_ATOMIC_WAIT32: usize = 0x106;
+pub const HANDLER_IDX_MEMORY_ATOMIC_WAIT64: usize = 0x107;
+pub const HANDLER_IDX_ATOMIC_FENCE: usize = 0x108;
+pub const HANDLER_IDX_I32_ATOMIC_LOAD: usize = 0x109;
+pub const HANDLER_IDX_I64_ATOMIC_LOAD: usize = 0x10A;
+pub const HANDLER_IDX_I32_ATOMIC_LOAD8_U: usize = 0x10B;
+pub const HANDLER_IDX_I32_ATOMIC_LOAD16_U: usize = 0x10C;
+pub const HANDLER_IDX_I64_ATOMIC_LOAD8_U: usize = 0x10D;
+pub const HANDLER_IDX_I64_ATOMIC_LOAD16_U: usize = 0x10E;
+pub const HANDLER_IDX_I64_ATOMIC_LOAD32_U: usize = 0x10F;
+pub const HANDLER_IDX_I32_ATOMIC_STORE: usize = 0x110;
+pub const HANDLER_IDX_I64_ATOMIC_STORE: usize = 0x111;
+pub const HANDLER_IDX_I32_ATOMIC_STORE8: usize = 0x112;
+pub const HANDLER_IDX_I32_ATOMIC_STORE16: usize = 0x113;
+pub const HANDLER_IDX_I64_ATOMIC_STORE8: usize = 0x114;
+pub const HANDLER_IDX_I64_ATOMIC_STORE16: usize = 0x115;
+pub const HANDLER_IDX_I64_ATOMIC_STORE32: usize = 0x116;
 
 // ============================================================================
 // advance! macro — the difference between tco and non-tco mode
@@ -1363,6 +1385,155 @@ mem_store!(mem_store_i64_16, read_reg_i64, u16, |v: i64| v as u16);
 mem_store!(mem_store_i64_32, read_reg_i64, u32, |v: i64| v as u32);
 
 // ============================================================================
+// Atomic handlers (threads proposal)
+//
+// Every access is sequentially consistent and must be naturally aligned. The
+// alignment check is not optional the way the bounds checks are: the spec traps
+// on a misaligned access, and Rust's atomic types make it UB.
+// ============================================================================
+
+/// Traps unless `$pos` is naturally aligned for `$atomic`. Natural alignment
+/// is the access width, which is the atomic type's own size.
+macro_rules! check_alignment {
+    ($state:expr, $pos:expr, $atomic:ty) => {
+        if $pos % std::mem::size_of::<$atomic>() != 0 {
+            $state.trap = Some(RuntimeError::UnalignedAtomicAccess);
+            return trap($state);
+        }
+    };
+}
+
+macro_rules! atomic_load {
+    ($name:ident, $atomic:ty, $write:ident, $to:ty) => {
+        pub fn $name(state: &mut VmState) -> Outcome {
+            let (addr, dst, offset) = match state.current_instr() {
+                ProcessedInstr::MemoryLoadReg {
+                    addr, dst, offset, ..
+                } => (*addr, *dst, *offset),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let pos = (operand::read_i32(state, &addr) as usize) + (offset as usize);
+            check_alignment!(state, pos, $atomic);
+            let v = unsafe {
+                (*(state.mem_ptr.add(pos) as *const $atomic)).load(atomic::Ordering::SeqCst)
+            };
+            operand::$write(state, &dst, v as $to);
+            state.pc += 1;
+            advance!(state)
+        }
+    };
+}
+
+atomic_load!(atomic_load_i32, AtomicU32, write_dst_i32, i32);
+atomic_load!(atomic_load_i64, AtomicU64, write_dst_i64, i64);
+atomic_load!(atomic_load_i32_8u, AtomicU8, write_dst_i32, i32);
+atomic_load!(atomic_load_i32_16u, AtomicU16, write_dst_i32, i32);
+atomic_load!(atomic_load_i64_8u, AtomicU8, write_dst_i64, i64);
+atomic_load!(atomic_load_i64_16u, AtomicU16, write_dst_i64, i64);
+atomic_load!(atomic_load_i64_32u, AtomicU32, write_dst_i64, i64);
+
+macro_rules! atomic_store {
+    ($name:ident, $atomic:ty, $read:ident, $to:ty) => {
+        pub fn $name(state: &mut VmState) -> Outcome {
+            let (addr, value, offset) = match state.current_instr() {
+                ProcessedInstr::MemoryStoreReg {
+                    addr,
+                    value,
+                    offset,
+                    ..
+                } => (*addr, *value, *offset),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let pos = (operand::read_i32(state, &addr) as usize) + (offset as usize);
+            check_alignment!(state, pos, $atomic);
+            let v = operand::$read(state, &value);
+            unsafe {
+                (*(state.mem_ptr.add(pos) as *const $atomic))
+                    .store(v as $to, atomic::Ordering::SeqCst)
+            };
+            state.pc += 1;
+            advance!(state)
+        }
+    };
+}
+
+atomic_store!(atomic_store_i32, AtomicU32, read_reg_i32, u32);
+atomic_store!(atomic_store_i64, AtomicU64, read_reg_i64, u64);
+atomic_store!(atomic_store_i32_8, AtomicU8, read_reg_i32, u8);
+atomic_store!(atomic_store_i32_16, AtomicU16, read_reg_i32, u16);
+atomic_store!(atomic_store_i64_8, AtomicU8, read_reg_i64, u8);
+atomic_store!(atomic_store_i64_16, AtomicU16, read_reg_i64, u16);
+atomic_store!(atomic_store_i64_32, AtomicU32, read_reg_i64, u32);
+
+pub fn atomic_fence(state: &mut VmState) -> Outcome {
+    atomic::fence(atomic::Ordering::SeqCst);
+    state.pc += 1;
+    advance!(state)
+}
+
+pub fn memory_atomic_notify(state: &mut VmState) -> Outcome {
+    let (dst, args, offset) = match state.current_instr() {
+        ProcessedInstr::AtomicWaitReg {
+            dst, args, offset, ..
+        } => (*dst, *args, *offset),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let pos = (state.reg_file().get_i32(args[0].index()) as usize) + (offset as usize);
+    check_alignment!(state, pos, AtomicU32);
+    let count = state.reg_file().get_i32(args[1].index()) as u32;
+    // The parking table keys on the host address, which is unique across
+    // memories and identical in every thread's instance of a shared one.
+    let addr = unsafe { state.mem_ptr.add(pos) as usize };
+    let woken = atomics::notify(addr, count);
+    state.reg_file_mut().set_i32(dst.index(), woken as i32);
+    state.pc += 1;
+    advance!(state)
+}
+
+/// `memory.atomic.wait32/64`. Both park on the same table; they differ only in
+/// the width they compare.
+macro_rules! atomic_wait {
+    ($name:ident, $atomic:ty, $read:ident) => {
+        pub fn $name(state: &mut VmState) -> Outcome {
+            let (dst, args, offset) = match state.current_instr() {
+                ProcessedInstr::AtomicWaitReg {
+                    dst, args, offset, ..
+                } => (*dst, *args, *offset),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            // Waiting on a memory no other thread can reach would never end.
+            match state.module().mem_addrs.first() {
+                Some(mem) if mem.is_shared() => {}
+                _ => {
+                    state.trap = Some(RuntimeError::AtomicWaitOnUnsharedMemory);
+                    return trap(state);
+                }
+            }
+            let pos = (state.reg_file().get_i32(args[0].index()) as usize) + (offset as usize);
+            check_alignment!(state, pos, $atomic);
+            let expected = state.reg_file().$read(args[1].index()) as _;
+            let timeout = state.reg_file().get_i64(args[2].index());
+            let addr = unsafe { state.mem_ptr.add(pos) as usize };
+            let result = atomics::wait(
+                addr,
+                || {
+                    let current =
+                        unsafe { (*(addr as *const $atomic)).load(atomic::Ordering::SeqCst) };
+                    current == expected
+                },
+                timeout,
+            );
+            state.reg_file_mut().set_i32(dst.index(), result);
+            state.pc += 1;
+            advance!(state)
+        }
+    };
+}
+
+atomic_wait!(memory_atomic_wait32, AtomicU32, get_i32);
+atomic_wait!(memory_atomic_wait64, AtomicU64, get_i64);
+
+// ============================================================================
 // Select handlers
 // ============================================================================
 
@@ -2367,6 +2538,13 @@ pub fn select_handler(instr: &ProcessedInstr) -> Handler {
             HANDLER_IDX_I64_LOAD16_U => mem_load_i64_16u,
             HANDLER_IDX_I64_LOAD32_S => mem_load_i64_32s,
             HANDLER_IDX_I64_LOAD32_U => mem_load_i64_32u,
+            HANDLER_IDX_I32_ATOMIC_LOAD => atomic_load_i32,
+            HANDLER_IDX_I64_ATOMIC_LOAD => atomic_load_i64,
+            HANDLER_IDX_I32_ATOMIC_LOAD8_U => atomic_load_i32_8u,
+            HANDLER_IDX_I32_ATOMIC_LOAD16_U => atomic_load_i32_16u,
+            HANDLER_IDX_I64_ATOMIC_LOAD8_U => atomic_load_i64_8u,
+            HANDLER_IDX_I64_ATOMIC_LOAD16_U => atomic_load_i64_16u,
+            HANDLER_IDX_I64_ATOMIC_LOAD32_U => atomic_load_i64_32u,
             _ => invalid,
         },
         ProcessedInstr::MemoryStoreReg { handler_index, .. } => match *handler_index {
@@ -2379,9 +2557,23 @@ pub fn select_handler(instr: &ProcessedInstr) -> Handler {
             HANDLER_IDX_I64_STORE8 => mem_store_i64_8,
             HANDLER_IDX_I64_STORE16 => mem_store_i64_16,
             HANDLER_IDX_I64_STORE32 => mem_store_i64_32,
+            HANDLER_IDX_I32_ATOMIC_STORE => atomic_store_i32,
+            HANDLER_IDX_I64_ATOMIC_STORE => atomic_store_i64,
+            HANDLER_IDX_I32_ATOMIC_STORE8 => atomic_store_i32_8,
+            HANDLER_IDX_I32_ATOMIC_STORE16 => atomic_store_i32_16,
+            HANDLER_IDX_I64_ATOMIC_STORE8 => atomic_store_i64_8,
+            HANDLER_IDX_I64_ATOMIC_STORE16 => atomic_store_i64_16,
+            HANDLER_IDX_I64_ATOMIC_STORE32 => atomic_store_i64_32,
+            _ => invalid,
+        },
+        ProcessedInstr::AtomicWaitReg { handler_index, .. } => match *handler_index {
+            HANDLER_IDX_MEMORY_ATOMIC_NOTIFY => memory_atomic_notify,
+            HANDLER_IDX_MEMORY_ATOMIC_WAIT32 => memory_atomic_wait32,
+            HANDLER_IDX_MEMORY_ATOMIC_WAIT64 => memory_atomic_wait64,
             _ => invalid,
         },
         ProcessedInstr::MemoryOpsReg { handler_index, .. } => match *handler_index {
+            HANDLER_IDX_ATOMIC_FENCE => atomic_fence,
             HANDLER_IDX_MEMORY_SIZE => mem_size,
             HANDLER_IDX_MEMORY_GROW => mem_grow,
             HANDLER_IDX_MEMORY_COPY => mem_copy,

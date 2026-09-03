@@ -68,7 +68,11 @@ if [ ! -f "$SUITE/.commit" ] || [ "$(cat "$SUITE/.commit")" != "$COMMIT" ]; then
 fi
 
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+
+mkfifo "$WORK/stdin"
+sleep 86400 >"$WORK/stdin" &
+writer=$!
+trap 'kill "$writer" 2>/dev/null; rm -rf "$WORK"' EXIT
 
 passed=0
 failed=0
@@ -88,7 +92,7 @@ for name in $MODULES; do
 
     # shellcheck disable=SC2086
     timeout "$TIMEOUT" $RUNTIME --dir "$WORK::/t" "$CHIWAWA" "/t/$name.wasm" --threads \
-        >"$WORK/$name.out" 2>&1
+        <"$WORK/stdin" >"$WORK/$name.out" 2>&1
     actual=$?
 
     if [ "$actual" -eq "$expected" ]; then

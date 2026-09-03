@@ -7818,6 +7818,269 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
 
                 // Memory Ops instructions (size, grow, copy, init, fill)
+                wasmparser::Operator::I32AtomicLoad { memarg } => {
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr =
+                        take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        Some(ProcessedInstr::MemoryLoadReg {
+                            handler_index: HANDLER_IDX_I32_ATOMIC_LOAD,
+                            dst: RegOrLocal::Reg(dst.index()),
+                            addr,
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64AtomicLoad { memarg } => {
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr =
+                        take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        Some(ProcessedInstr::MemoryLoadReg {
+                            handler_index: HANDLER_IDX_I64_ATOMIC_LOAD,
+                            dst: RegOrLocal::Reg(dst.index()),
+                            addr,
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32AtomicLoad8U { memarg } => {
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr =
+                        take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        Some(ProcessedInstr::MemoryLoadReg {
+                            handler_index: HANDLER_IDX_I32_ATOMIC_LOAD8_U,
+                            dst: RegOrLocal::Reg(dst.index()),
+                            addr,
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32AtomicLoad16U { memarg } => {
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr =
+                        take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        Some(ProcessedInstr::MemoryLoadReg {
+                            handler_index: HANDLER_IDX_I32_ATOMIC_LOAD16_U,
+                            dst: RegOrLocal::Reg(dst.index()),
+                            addr,
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64AtomicLoad8U { memarg } => {
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr =
+                        take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        Some(ProcessedInstr::MemoryLoadReg {
+                            handler_index: HANDLER_IDX_I64_ATOMIC_LOAD8_U,
+                            dst: RegOrLocal::Reg(dst.index()),
+                            addr,
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64AtomicLoad16U { memarg } => {
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr =
+                        take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        Some(ProcessedInstr::MemoryLoadReg {
+                            handler_index: HANDLER_IDX_I64_ATOMIC_LOAD16_U,
+                            dst: RegOrLocal::Reg(dst.index()),
+                            addr,
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64AtomicLoad32U { memarg } => {
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr =
+                        take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        Some(ProcessedInstr::MemoryLoadReg {
+                            handler_index: HANDLER_IDX_I64_ATOMIC_LOAD32_U,
+                            dst: RegOrLocal::Reg(dst.index()),
+                            addr,
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32AtomicStore { memarg } => {
+                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr =
+                        take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    (
+                        Some(ProcessedInstr::MemoryStoreReg {
+                            handler_index: HANDLER_IDX_I32_ATOMIC_STORE,
+                            addr,
+                            value,
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64AtomicStore { memarg } => {
+                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr =
+                        take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    (
+                        Some(ProcessedInstr::MemoryStoreReg {
+                            handler_index: HANDLER_IDX_I64_ATOMIC_STORE,
+                            addr,
+                            value,
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32AtomicStore8 { memarg } => {
+                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr =
+                        take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    (
+                        Some(ProcessedInstr::MemoryStoreReg {
+                            handler_index: HANDLER_IDX_I32_ATOMIC_STORE8,
+                            addr,
+                            value,
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32AtomicStore16 { memarg } => {
+                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr =
+                        take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    (
+                        Some(ProcessedInstr::MemoryStoreReg {
+                            handler_index: HANDLER_IDX_I32_ATOMIC_STORE16,
+                            addr,
+                            value,
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64AtomicStore8 { memarg } => {
+                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr =
+                        take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    (
+                        Some(ProcessedInstr::MemoryStoreReg {
+                            handler_index: HANDLER_IDX_I64_ATOMIC_STORE8,
+                            addr,
+                            value,
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64AtomicStore16 { memarg } => {
+                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr =
+                        take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    (
+                        Some(ProcessedInstr::MemoryStoreReg {
+                            handler_index: HANDLER_IDX_I64_ATOMIC_STORE16,
+                            addr,
+                            value,
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64AtomicStore32 { memarg } => {
+                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr =
+                        take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    (
+                        Some(ProcessedInstr::MemoryStoreReg {
+                            handler_index: HANDLER_IDX_I64_ATOMIC_STORE32,
+                            addr,
+                            value,
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::MemoryAtomicNotify { memarg } => {
+                    let count = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        Some(ProcessedInstr::AtomicWaitReg {
+                            handler_index: HANDLER_IDX_MEMORY_ATOMIC_NOTIFY,
+                            dst,
+                            args: [addr, count, count],
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::MemoryAtomicWait32 { memarg } => {
+                    let timeout = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let expected = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        Some(ProcessedInstr::AtomicWaitReg {
+                            handler_index: HANDLER_IDX_MEMORY_ATOMIC_WAIT32,
+                            dst,
+                            args: [addr, expected, timeout],
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::MemoryAtomicWait64 { memarg } => {
+                    let timeout = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let expected = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        Some(ProcessedInstr::AtomicWaitReg {
+                            handler_index: HANDLER_IDX_MEMORY_ATOMIC_WAIT64,
+                            dst,
+                            args: [addr, expected, timeout],
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::AtomicFence => (
+                    Some(ProcessedInstr::MemoryOpsReg {
+                        handler_index: HANDLER_IDX_ATOMIC_FENCE,
+                        dst: None,
+                        args: Box::new([]),
+                        data_index: 0,
+                    }),
+                    None,
+                ),
                 wasmparser::Operator::MemorySize { .. } => {
                     let dst = allocator.push(ValueType::NumType(NumType::I32));
                     (

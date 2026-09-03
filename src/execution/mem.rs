@@ -103,6 +103,13 @@ impl MemAddr {
         mem.data.as_mut_ptr()
     }
 
+    #[inline]
+    pub fn is_shared(&self) -> bool {
+        // Safety: Single-threaded access
+        let mem = unsafe { &*self.mem_inst.get() };
+        mem._type_.shared
+    }
+
     /// Returns current memory size in pages (64KB each).
     #[inline]
     pub fn mem_size(&self) -> i32 {

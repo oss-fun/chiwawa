@@ -38,6 +38,10 @@ pub enum RuntimeError {
     InvalidConstantExpression,
     #[error("Invalid Data Segment Index")]
     InvalidDataSegmentIndex,
+    #[error("Unaligned Atomic Access")]
+    UnalignedAtomicAccess,
+    #[error("Atomic Wait on Unshared Memory")]
+    AtomicWaitOnUnsharedMemory,
 
     // Migration Errors
     #[error("Serialization Error: {0}")]
