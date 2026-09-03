@@ -328,10 +328,17 @@ pub fn trap(_state: &mut VmState) -> Outcome {
     Outcome::Trap
 }
 
-/// Sentinel handler for checkpoint-requested traps. Tail-called from
-/// `next_handler` when `poll_checkpoint` returns `true`, so the dispatcher's
-/// per-instruction tail-call structure is preserved.
-#[cfg(feature = "tco")]
+/// Sentinel handler reporting a checkpoint request. Reached by handler-array
+/// patching on atomics, and from `next_handler` under `tco` without atomics.
+#[cfg(any(
+    feature = "tco",
+    all(
+        target_arch = "wasm32",
+        target_os = "wasi",
+        target_env = "p1",
+        target_feature = "atomics"
+    )
+))]
 #[inline(never)]
 pub fn checkpoint_trap(state: &mut VmState) -> Outcome {
     state.trap = Some(crate::error::RuntimeError::CheckpointRequested);
