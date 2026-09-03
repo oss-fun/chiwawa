@@ -8,4 +8,7 @@
 !tests/wasi/*.wat
 *.bin
 /.cursor
+CLAUDE.md
 /benchmarks/target
+# Prebuilt runtimes and AOT modules used for comparison
+/bin/
