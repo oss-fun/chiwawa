@@ -6136,6 +6136,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                         _ => None,
                     };
 
+                    #[cfg(feature = "call_graph")]
+                    if let Some(b) = cg_builder.as_mut() {
+                        b.record_call(FuncIdx(func_index as u32), FuncIdx(*function_index));
+                    }
+
                     if let Some(wasi_type) = wasi_func_type {
                         let func_type = wasi_type.expected_func_type();
                         let param_types = func_type.params;
@@ -6163,10 +6168,6 @@ fn decode_processed_instrs_and_fixups<'a>(
                             None,
                         )
                     } else {
-                        #[cfg(feature = "call_graph")]
-                        if let Some(b) = cg_builder.as_mut() {
-                            b.record_call(FuncIdx(func_index as u32), FuncIdx(*function_index));
-                        }
                         let (param_types, result_types) = if (*function_index as usize)
                             < module.num_imported_funcs
                         {
