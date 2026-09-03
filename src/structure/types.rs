@@ -181,7 +181,11 @@ pub struct Limits {
 
 /// Memory type specifying size limits.
 #[derive(PartialEq, Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct MemType(pub Limits);
+pub struct MemType {
+    pub limits: Limits,
+    /// Shared between threads (threads proposal).
+    pub shared: bool,
+}
 
 /// Global type specifying mutability and value type.
 #[derive(PartialEq, Clone, Copy, Debug, Serialize, Deserialize)]

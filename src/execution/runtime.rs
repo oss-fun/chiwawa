@@ -15,9 +15,13 @@ use crate::instrument::stats::ExecutionStats;
 #[cfg(feature = "trace")]
 use crate::instrument::trace::{TraceConfig, Tracer};
 use crate::structure::module::{Func, WasiFuncType};
+#[cfg(feature = "threads")]
+use crate::wasi::threads::ThreadContext;
 use crate::wasi::{WasiError, WasiResult};
 use std::path::Path;
 use std::rc::Rc;
+#[cfg(feature = "threads")]
+use std::sync::Arc;
 #[cfg(all(target_os = "wasi", target_env = "p1", target_feature = "atomics"))]
 use std::sync::Once;
 
@@ -32,6 +36,9 @@ pub struct RuntimeConfig {
     pub enable_stats: bool,
     #[cfg(feature = "trace")]
     pub trace_config: Option<TraceConfig>,
+    /// Present when wasi-threads is enabled; `None` makes `thread_spawn` fail.
+    #[cfg(feature = "threads")]
+    pub thread_ctx: Option<Arc<ThreadContext>>,
 }
 
 /// Execution entry point that manages the interpreter loop.
@@ -45,6 +52,8 @@ pub struct Runtime {
     #[cfg(feature = "stats")]
     enable_stats: bool,
     enable_checkpoint: bool,
+    #[cfg(feature = "threads")]
+    thread_ctx: Option<Arc<ThreadContext>>,
 }
 
 impl Drop for Runtime {
@@ -95,6 +104,8 @@ impl Runtime {
             #[cfg(feature = "stats")]
             enable_stats: config.enable_stats,
             enable_checkpoint: config.enable_checkpoint,
+            #[cfg(feature = "threads")]
+            thread_ctx: config.thread_ctx,
         })
     }
 
@@ -133,6 +144,8 @@ impl Runtime {
             #[cfg(feature = "stats")]
             enable_stats: config.enable_stats,
             enable_checkpoint: config.enable_checkpoint,
+            #[cfg(feature = "threads")]
+            thread_ctx: config.thread_ctx,
         }
     }
 
@@ -391,6 +404,24 @@ impl Runtime {
         }
     }
 
+    /// wasi-threads `thread_spawn`: starts a thread on the guest's
+    /// `wasi_thread_start` export and returns its thread id, or a negative
+    /// errno when threads are unavailable or the host refused the spawn.
+    fn thread_spawn(&self, start_arg: i32) -> i32 {
+        #[cfg(feature = "threads")]
+        if let Some(ctx) = self.thread_ctx.as_ref() {
+            return match ctx.spawn(start_arg) {
+                Ok(tid) => tid,
+                Err(e) => {
+                    eprintln!("thread_spawn failed: {:?}", e);
+                    -WasiError::Again.to_errno()
+                }
+            };
+        }
+        let _ = start_arg;
+        -WasiError::NoSys.to_errno()
+    }
+
     /// Calls a WASI function with the given parameters.
     fn call_wasi_function(
         &self,
@@ -552,6 +583,13 @@ impl Runtime {
 
                 let result = wasi_impl.sched_yield()?;
                 Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::ThreadSpawn => {
+                if params.len() != 1 {
+                    return Err(WasiError::Inval);
+                }
+                let start_arg = params[0].to_i32().map_err(|_| WasiError::Inval)?;
+                Ok(Some(Val::Num(Num::I32(self.thread_spawn(start_arg)))))
             }
             WasiFuncType::FdFdstatGet => {
                 if params.len() != 2 {

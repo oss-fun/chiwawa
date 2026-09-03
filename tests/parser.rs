@@ -163,7 +163,7 @@ mod tests {
 
         let expects_min = [2, 1];
         for i in 0..memory_num {
-            let limits = &module.mems[i].type_.0;
+            let limits = &module.mems[i].type_.limits;
             let min = limits.min;
             let max = limits.max;
             assert_eq!(min, expects_min[i]);

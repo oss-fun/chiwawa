@@ -3,6 +3,7 @@
 use super::module::*;
 use super::value::{Val, WasiFuncAddr};
 use crate::error::RuntimeError;
+use crate::shared::Shared;
 use crate::structure::{module::*, types::*};
 use std::cell::UnsafeCell;
 use std::fmt::{self, Debug};
@@ -111,9 +112,9 @@ impl FuncAddr {
             code: Func {
                 type_: TypeIdx(0),
                 locals: Vec::new(),
-                body: Rc::new(Vec::new()),
+                body: Shared::new(Vec::new()),
                 reg_allocation: None,
-                handlers: Rc::new(Vec::new()),
+                handlers: Shared::new(Vec::new()),
                 wide_consts: Box::new([]),
             },
             func_idx: 0,

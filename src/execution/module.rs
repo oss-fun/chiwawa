@@ -6,6 +6,7 @@ use super::{
     mem::MemAddr, table::TableAddr,
 };
 use crate::error::RuntimeError;
+use crate::shared::Shared;
 use crate::structure::{instructions::*, module::*, types::*};
 use crate::wasi::passthrough::PassthroughWasiImpl;
 use rustc_hash::FxHashMap;
@@ -14,7 +15,7 @@ use std::sync::Arc;
 
 /// Instantiated module with all runtime components.
 pub struct ModuleInst {
-    pub types: Rc<Vec<FuncType>>,
+    pub types: Shared<Vec<FuncType>>,
     pub func_addrs: Vec<FuncAddr>,
     pub table_addrs: Vec<TableAddr>,
     pub mem_addrs: Vec<MemAddr>,
@@ -53,6 +54,17 @@ impl ModuleInst {
         module: &Module,
         imports: ImportObjects,
         argv: Vec<String>,
+    ) -> Result<Rc<ModuleInst>, RuntimeError> {
+        Self::new_with_shared_memory(module, imports, argv, None)
+    }
+
+    /// Instantiates a module, substituting `shared_mem` for the memory the
+    /// module defines itself, so wasi-threads instances share one buffer.
+    pub fn new_with_shared_memory(
+        module: &Module,
+        imports: ImportObjects,
+        argv: Vec<String>,
+        mut shared_mem: Option<MemAddr>,
     ) -> Result<Rc<ModuleInst>, RuntimeError> {
         let mut module_inst = ModuleInst {
             types: module.types.clone(),
@@ -104,6 +116,15 @@ impl ModuleInst {
                             .push(FuncAddr::alloc_wasi(wasi_func_addr.clone()));
                         module_inst.wasi_func_addrs.push(wasi_func_addr);
                     }
+                    ImportDesc::Mem(mem_type) => {
+                        let mem = imports
+                            .get(&import.module.0)
+                            .and_then(|module| module.get(&import.name.0))
+                            .cloned()
+                            .and_then(|val| val.as_mem())
+                            .unwrap_or_else(|| MemAddr::new(mem_type));
+                        module_inst.mem_addrs.push(mem);
+                    }
                     _ => todo!(),
                 }
             }
@@ -118,7 +139,11 @@ impl ModuleInst {
         }
 
         for mem in &module.mems {
-            module_inst.mem_addrs.push(MemAddr::new(&mem.type_))
+            let addr = match shared_mem.take_if(|_| mem.type_.shared) {
+                Some(shared) => shared,
+                None => MemAddr::new(&mem.type_),
+            };
+            module_inst.mem_addrs.push(addr);
         }
 
         for global in &module.globals {

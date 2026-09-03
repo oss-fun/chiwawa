@@ -55,10 +55,10 @@ use crate::error::{ParserError, RuntimeError};
 use crate::execution::handlers::*;
 use crate::execution::ir::*;
 use crate::execution::regs::{Reg, RegAllocator};
+use crate::shared::Shared;
 use crate::structure::{instructions::*, module::*, types::*};
 use itertools::Itertools;
 use rustc_hash::FxHashMap;
-use std::rc::Rc;
 use std::sync::LazyLock;
 
 #[cfg(feature = "call_graph")]
@@ -929,7 +929,7 @@ fn decode_type_section(
         types_to_vec(functype.params(), &mut params);
         types_to_vec(functype.results(), &mut results);
 
-        Rc::get_mut(&mut module.types)
+        Shared::get_mut(&mut module.types)
             .unwrap()
             .push(crate::structure::types::FuncType { params, results });
     }
@@ -953,9 +953,9 @@ fn decode_func_section(
         module.funcs.push(Func {
             type_: typeidx,
             locals: Vec::new(),
-            body: Rc::new(Vec::new()),
+            body: Shared::new(Vec::new()),
             reg_allocation: None,
-            handlers: Rc::new(Vec::new()),
+            handlers: Shared::new(Vec::new()),
             wide_consts: Box::new([]),
         });
         #[cfg(feature = "call_graph")]
@@ -980,25 +980,13 @@ fn decode_import_section(
         let import = import?;
         let desc = match import.ty {
             TypeRef::Func(type_index) => {
-                if import.module == "wasi_snapshot_preview1" {
-                    if let Some(wasi_func_type) = parse_wasi_function(&import.name) {
-                        #[cfg(feature = "call_graph")]
-                        if let Some(b) = cg_builder.as_mut() {
-                            b.register_wasi_func();
-                        }
-                        module.num_imported_funcs += 1;
-                        ImportDesc::WasiFunc(wasi_func_type)
-                    } else {
-                        #[cfg(feature = "call_graph")]
-                        if let Some(b) = cg_builder.as_mut() {
-                            b.register_import_func(
-                                FuncIdx(module.num_imported_funcs as u32),
-                                TypeIdx(type_index),
-                            );
-                        }
-                        module.num_imported_funcs += 1;
-                        ImportDesc::Func(TypeIdx(type_index))
+                if let Some(wasi_func_type) = parse_wasi_import(&import.module, &import.name) {
+                    #[cfg(feature = "call_graph")]
+                    if let Some(b) = cg_builder.as_mut() {
+                        b.register_wasi_func();
                     }
+                    module.num_imported_funcs += 1;
+                    ImportDesc::WasiFunc(wasi_func_type)
                 } else {
                     #[cfg(feature = "call_graph")]
                     if let Some(b) = cg_builder.as_mut() {
@@ -1037,7 +1025,10 @@ fn decode_import_section(
                     min: TryFrom::try_from(memory.initial).unwrap(),
                     max,
                 };
-                ImportDesc::Mem(MemType(limits))
+                ImportDesc::Mem(MemType {
+                    limits,
+                    shared: memory.shared,
+                })
             }
             TypeRef::Global(global) => {
                 let mut_ = if global.mutable { Mut::Var } else { Mut::Const };
@@ -1055,9 +1046,20 @@ fn decode_import_section(
     Ok(())
 }
 
-/// Looks up a WASI function name in the function map.
-fn parse_wasi_function(name: &str) -> Option<WasiFuncType> {
-    WASI_FUNCTION_MAP.get(name).copied()
+/// Resolves an import to a WASI function handled by passthrough, if any.
+///
+/// Preview 1 functions come from `wasi_snapshot_preview1`; the wasi-threads
+/// proposal adds `thread_spawn` under the separate `wasi` module.
+fn parse_wasi_import(module: &str, name: &str) -> Option<WasiFuncType> {
+    match module {
+        "wasi_snapshot_preview1" => WASI_FUNCTION_MAP.get(name).copied(),
+        // wasi-libc emitted `thread_spawn` before switching to the WIT-style
+        // `thread-spawn`; accept both.
+        "wasi" if name == "thread-spawn" || name == "thread_spawn" => {
+            Some(WasiFuncType::ThreadSpawn)
+        }
+        _ => None,
+    }
 }
 
 /// Decodes the export section.
@@ -1099,7 +1101,10 @@ fn decode_mem_section(
             max,
         };
         module.mems.push(Mem {
-            type_: MemType(limits),
+            type_: MemType {
+                limits,
+                shared: memory.shared,
+            },
         });
     }
     Ok(())
@@ -1365,7 +1370,7 @@ fn decode_code_section(
     // and remap all branch targets to the compacted indices.
     let processed_instrs = compact_instruction_stream(processed_instrs);
 
-    let body_rc = Rc::new(processed_instrs);
+    let body_rc = Shared::new(processed_instrs);
 
     // v2 dispatcher handler array: parallel to body + halt sentinel at end
     // for safe out-of-range dispatch in TCO mode.
@@ -1374,7 +1379,7 @@ fn decode_code_section(
         .map(crate::execution::handlers::select_handler)
         .collect();
     handlers_vec.push(crate::execution::handlers::halt);
-    let handlers_rc = Rc::new(handlers_vec);
+    let handlers_rc = Shared::new(handlers_vec);
 
     // Store function body and metadata in module
     if let Some(func) = module.funcs.get_mut(relative_func_index) {
@@ -2015,6 +2020,19 @@ fn get_local_type(
     }
     // Should not reach here in valid wasm (wasmparser validates indices)
     ValueType::NumType(NumType::I32)
+}
+
+/// Returns the import declaring the function at `func_index`.
+///
+/// Function indices count only function imports, so a module that also imports
+/// a memory or table cannot index `module.imports` directly.
+fn get_imported_func_desc(module: &Module, func_index: u32) -> Option<&ImportDesc> {
+    module
+        .imports
+        .iter()
+        .filter(|import| matches!(import.desc, ImportDesc::Func(_) | ImportDesc::WasiFunc(_)))
+        .nth(func_index as usize)
+        .map(|import| &import.desc)
 }
 
 /// Returns the value type of a global variable by index.
@@ -6113,19 +6131,9 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
 
                 wasmparser::Operator::Call { function_index } => {
-                    let wasi_func_type = if (*function_index as usize) < module.num_imported_funcs {
-                        if let Some(import) = module.imports.get(*function_index as usize) {
-                            match &import.desc {
-                                crate::structure::module::ImportDesc::WasiFunc(wasi_type) => {
-                                    Some(*wasi_type)
-                                }
-                                _ => None,
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
+                    let wasi_func_type = match get_imported_func_desc(module, *function_index) {
+                        Some(ImportDesc::WasiFunc(wasi_type)) => Some(*wasi_type),
+                        _ => None,
                     };
 
                     if let Some(wasi_type) = wasi_func_type {
@@ -6162,21 +6170,16 @@ fn decode_processed_instrs_and_fixups<'a>(
                         let (param_types, result_types) = if (*function_index as usize)
                             < module.num_imported_funcs
                         {
-                            if let Some(import) = module.imports.get(*function_index as usize) {
-                                match &import.desc {
-                                    crate::structure::module::ImportDesc::Func(type_idx) => {
-                                        if let Some(func_type) =
-                                            module.types.get(type_idx.0 as usize)
-                                        {
+                            match get_imported_func_desc(module, *function_index) {
+                                Some(ImportDesc::Func(type_idx)) => {
+                                    match module.types.get(type_idx.0 as usize) {
+                                        Some(func_type) => {
                                             (func_type.params.clone(), func_type.results.clone())
-                                        } else {
-                                            (Vec::new(), Vec::new())
                                         }
+                                        None => (Vec::new(), Vec::new()),
                                     }
-                                    _ => (Vec::new(), Vec::new()),
                                 }
-                            } else {
-                                (Vec::new(), Vec::new())
+                                _ => (Vec::new(), Vec::new()),
                             }
                         } else {
                             let local_idx = *function_index as usize - module.num_imported_funcs;

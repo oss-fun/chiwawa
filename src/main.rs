@@ -9,6 +9,8 @@ use chiwawa::{
     parser,
     structure::module::Module,
 };
+#[cfg(feature = "threads")]
+use chiwawa::{shared::Shared, wasi::threads::ThreadContext};
 use clap::Parser;
 use fancy_regex::Regex;
 use rustc_hash::FxHashMap;
@@ -35,6 +37,9 @@ struct Cli {
     /// Enable checkpoint/restore
     #[arg(long = "cr", default_value = "false")]
     enable_checkpoint: bool,
+    /// Enable wasi-threads (requires a host runtime with thread support)
+    #[arg(long = "threads", default_value = "false")]
+    enable_threads: bool,
     /// Enable trace output
     #[arg(long = "trace", default_value = "false")]
     enable_trace: bool,
@@ -134,6 +139,25 @@ fn parse_params(params: Vec<String>) -> Vec<Val> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Warn if --threads is used but threads feature is not enabled
+    #[cfg(not(feature = "threads"))]
+    if cli.enable_threads {
+        eprintln!(
+            "Warning: --threads flag is ignored because the 'threads' feature is not enabled."
+        );
+        eprintln!(
+            "         Rebuild with: cargo build --target wasm32-wasip1-threads --features threads"
+        );
+    }
+
+    // Threads and checkpoint/restore are not usable together: a checkpoint
+    // captures a single interpreter's stacks, not every thread's.
+    if cli.enable_threads && (cli.enable_checkpoint || cli.restore.is_some()) {
+        return Err(anyhow::anyhow!(
+            "--threads cannot be combined with --cr or --restore"
+        ));
+    }
+
     // Warn if --stats is used but stats feature is not enabled
     #[cfg(not(feature = "stats"))]
     if cli.enable_stats {
@@ -174,6 +198,9 @@ fn main() -> Result<()> {
     let mut module = Module::new("test");
     let _parse_out = parser::parse_bytecode(&mut module, &cli.wasm_file);
 
+    #[cfg(feature = "threads")]
+    let module = Shared::new(module);
+
     #[cfg(feature = "call_graph")]
     if let Some(path) = &cli.call_graph_output {
         if let Ok(out) = &_parse_out {
@@ -191,6 +218,25 @@ fn main() -> Result<()> {
         wasm_argv.extend(additional_args);
     }
 
+    // With wasi-threads every thread gets its own instance of the module, all
+    // bound to the one memory the context owns -- this one included.
+    #[cfg(feature = "threads")]
+    let thread_ctx = if cli.enable_threads {
+        let ctx = ThreadContext::new(Shared::clone(&module), wasm_argv.clone());
+        if ctx.is_none() {
+            eprintln!("Warning: --threads is ignored because the module has no shared memory for threads to share.");
+        }
+        ctx
+    } else {
+        None
+    };
+
+    #[cfg(feature = "threads")]
+    let inst = match thread_ctx.as_ref() {
+        Some(ctx) => ctx.instantiate().unwrap(),
+        None => ModuleInst::new(&module, imports, wasm_argv).unwrap(),
+    };
+    #[cfg(not(feature = "threads"))]
     let inst = ModuleInst::new(&module, imports, wasm_argv).unwrap();
 
     // Create trace configuration if trace is enabled
@@ -211,6 +257,8 @@ fn main() -> Result<()> {
         enable_stats: cli.enable_stats,
         #[cfg(feature = "trace")]
         trace_config,
+        #[cfg(feature = "threads")]
+        thread_ctx,
     };
 
     if let Some(restore_path) = cli.restore {
