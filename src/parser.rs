@@ -8742,6 +8742,111 @@ fn decode_processed_instrs_and_fixups<'a>(
                         None,
                     )
                 }
+                wasmparser::Operator::I32AtomicRmwCmpxchg { memarg } => {
+                    let replacement = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let expected = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        Some(ProcessedInstr::AtomicCmpxchgReg {
+                            handler_index: HANDLER_IDX_CMPXCHG_I32,
+                            dst,
+                            args: [addr, expected, replacement],
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32AtomicRmw8CmpxchgU { memarg } => {
+                    let replacement = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let expected = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        Some(ProcessedInstr::AtomicCmpxchgReg {
+                            handler_index: HANDLER_IDX_CMPXCHG_I32_8,
+                            dst,
+                            args: [addr, expected, replacement],
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I32AtomicRmw16CmpxchgU { memarg } => {
+                    let replacement = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let expected = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I32));
+                    (
+                        Some(ProcessedInstr::AtomicCmpxchgReg {
+                            handler_index: HANDLER_IDX_CMPXCHG_I32_16,
+                            dst,
+                            args: [addr, expected, replacement],
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64AtomicRmwCmpxchg { memarg } => {
+                    let replacement = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let expected = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        Some(ProcessedInstr::AtomicCmpxchgReg {
+                            handler_index: HANDLER_IDX_CMPXCHG_I64,
+                            dst,
+                            args: [addr, expected, replacement],
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64AtomicRmw8CmpxchgU { memarg } => {
+                    let replacement = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let expected = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        Some(ProcessedInstr::AtomicCmpxchgReg {
+                            handler_index: HANDLER_IDX_CMPXCHG_I64_8,
+                            dst,
+                            args: [addr, expected, replacement],
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64AtomicRmw16CmpxchgU { memarg } => {
+                    let replacement = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let expected = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        Some(ProcessedInstr::AtomicCmpxchgReg {
+                            handler_index: HANDLER_IDX_CMPXCHG_I64_16,
+                            dst,
+                            args: [addr, expected, replacement],
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
+                wasmparser::Operator::I64AtomicRmw32CmpxchgU { memarg } => {
+                    let replacement = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let expected = allocator.pop(&ValueType::NumType(NumType::I64));
+                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let dst = allocator.push(ValueType::NumType(NumType::I64));
+                    (
+                        Some(ProcessedInstr::AtomicCmpxchgReg {
+                            handler_index: HANDLER_IDX_CMPXCHG_I64_32,
+                            dst,
+                            args: [addr, expected, replacement],
+                            offset: memarg.offset,
+                        }),
+                        None,
+                    )
+                }
                 wasmparser::Operator::MemoryAtomicNotify { memarg } => {
                     let count = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr = allocator.pop(&ValueType::NumType(NumType::I32));

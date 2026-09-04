@@ -359,6 +359,13 @@ pub const HANDLER_IDX_RMW_I64_XCHG: usize = 0x13D;
 pub const HANDLER_IDX_RMW_I64_8_XCHG: usize = 0x13E;
 pub const HANDLER_IDX_RMW_I64_16_XCHG: usize = 0x13F;
 pub const HANDLER_IDX_RMW_I64_32_XCHG: usize = 0x140;
+pub const HANDLER_IDX_CMPXCHG_I32: usize = 0x141;
+pub const HANDLER_IDX_CMPXCHG_I32_8: usize = 0x142;
+pub const HANDLER_IDX_CMPXCHG_I32_16: usize = 0x143;
+pub const HANDLER_IDX_CMPXCHG_I64: usize = 0x144;
+pub const HANDLER_IDX_CMPXCHG_I64_8: usize = 0x145;
+pub const HANDLER_IDX_CMPXCHG_I64_16: usize = 0x146;
+pub const HANDLER_IDX_CMPXCHG_I64_32: usize = 0x147;
 
 // ============================================================================
 // advance! macro — the difference between tco and non-tco mode
@@ -1592,6 +1599,58 @@ atomic_rmw_i64!(rmw_i64_8_xchg, AtomicU8, u8, swap);
 atomic_rmw_i64!(rmw_i64_16_xchg, AtomicU16, u16, swap);
 atomic_rmw_i64!(rmw_i64_32_xchg, AtomicU32, u32, swap);
 
+/// `i32/i64.atomic.rmw*.cmpxchg*`: swaps in the replacement only when the
+/// address still holds the expected value, and yields what it found either way.
+macro_rules! atomic_cmpxchg {
+    ($name:ident, $atomic:ty, $prim:ty, $read:ident, $set:ident, $to:ty) => {
+        pub fn $name(state: &mut VmState) -> Outcome {
+            let (dst, args, offset) = match state.current_instr() {
+                ProcessedInstr::AtomicCmpxchgReg {
+                    dst, args, offset, ..
+                } => (*dst, *args, *offset),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let pos = (state.reg_file().get_i32(args[0].index()) as usize) + (offset as usize);
+            check_alignment!(state, pos, $atomic);
+            let expected = operand::$read(state, &args[1]) as $prim;
+            let replacement = operand::$read(state, &args[2]) as $prim;
+            let found = unsafe {
+                match (*(state.mem_ptr.add(pos) as *const $atomic)).compare_exchange(
+                    expected,
+                    replacement,
+                    atomic::Ordering::SeqCst,
+                    atomic::Ordering::SeqCst,
+                ) {
+                    Ok(found) | Err(found) => found,
+                }
+            };
+            state.reg_file_mut().$set(dst.index(), found as $to);
+            state.pc += 1;
+            advance!(state)
+        }
+    };
+}
+
+macro_rules! atomic_cmpxchg_i32 {
+    ($name:ident, $atomic:ty, $prim:ty) => {
+        atomic_cmpxchg!($name, $atomic, $prim, read_reg_i32, set_i32, i32);
+    };
+}
+
+macro_rules! atomic_cmpxchg_i64 {
+    ($name:ident, $atomic:ty, $prim:ty) => {
+        atomic_cmpxchg!($name, $atomic, $prim, read_reg_i64, set_i64, i64);
+    };
+}
+
+atomic_cmpxchg_i32!(cmpxchg_i32, AtomicU32, u32);
+atomic_cmpxchg_i32!(cmpxchg_i32_8, AtomicU8, u8);
+atomic_cmpxchg_i32!(cmpxchg_i32_16, AtomicU16, u16);
+atomic_cmpxchg_i64!(cmpxchg_i64, AtomicU64, u64);
+atomic_cmpxchg_i64!(cmpxchg_i64_8, AtomicU8, u8);
+atomic_cmpxchg_i64!(cmpxchg_i64_16, AtomicU16, u16);
+atomic_cmpxchg_i64!(cmpxchg_i64_32, AtomicU32, u32);
+
 pub fn atomic_fence(state: &mut VmState) -> Outcome {
     atomic::fence(atomic::Ordering::SeqCst);
     state.pc += 1;
@@ -2736,6 +2795,16 @@ pub fn select_handler(instr: &ProcessedInstr) -> Handler {
             HANDLER_IDX_RMW_I64_8_XCHG => rmw_i64_8_xchg,
             HANDLER_IDX_RMW_I64_16_XCHG => rmw_i64_16_xchg,
             HANDLER_IDX_RMW_I64_32_XCHG => rmw_i64_32_xchg,
+            _ => invalid,
+        },
+        ProcessedInstr::AtomicCmpxchgReg { handler_index, .. } => match *handler_index {
+            HANDLER_IDX_CMPXCHG_I32 => cmpxchg_i32,
+            HANDLER_IDX_CMPXCHG_I32_8 => cmpxchg_i32_8,
+            HANDLER_IDX_CMPXCHG_I32_16 => cmpxchg_i32_16,
+            HANDLER_IDX_CMPXCHG_I64 => cmpxchg_i64,
+            HANDLER_IDX_CMPXCHG_I64_8 => cmpxchg_i64_8,
+            HANDLER_IDX_CMPXCHG_I64_16 => cmpxchg_i64_16,
+            HANDLER_IDX_CMPXCHG_I64_32 => cmpxchg_i64_32,
             _ => invalid,
         },
         ProcessedInstr::AtomicWaitReg { handler_index, .. } => match *handler_index {

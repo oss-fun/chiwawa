@@ -177,6 +177,13 @@ pub enum ProcessedInstr {
         value: Reg,
         offset: u64,
     },
+    AtomicCmpxchgReg {
+        handler_index: usize,
+        dst: Reg,
+        /// `[addr, expected, replacement]`.
+        args: [Reg; 3],
+        offset: u64,
+    },
     /// `memory.atomic.wait32/64` and `memory.atomic.notify`.
     AtomicWaitReg {
         handler_index: usize,
@@ -287,6 +294,7 @@ impl ProcessedInstr {
             ProcessedInstr::MemoryLoadReg { handler_index, .. } => *handler_index,
             ProcessedInstr::MemoryStoreReg { handler_index, .. } => *handler_index,
             ProcessedInstr::AtomicRmwReg { handler_index, .. } => *handler_index,
+            ProcessedInstr::AtomicCmpxchgReg { handler_index, .. } => *handler_index,
             ProcessedInstr::AtomicWaitReg { handler_index, .. } => *handler_index,
             ProcessedInstr::MemoryOpsReg { handler_index, .. } => *handler_index,
             ProcessedInstr::SelectReg { handler_index, .. } => *handler_index,
