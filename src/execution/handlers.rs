@@ -316,6 +316,49 @@ pub const HANDLER_IDX_I32_ATOMIC_STORE16: usize = 0x113;
 pub const HANDLER_IDX_I64_ATOMIC_STORE8: usize = 0x114;
 pub const HANDLER_IDX_I64_ATOMIC_STORE16: usize = 0x115;
 pub const HANDLER_IDX_I64_ATOMIC_STORE32: usize = 0x116;
+// Threads proposal — read-modify-write
+pub const HANDLER_IDX_RMW_I32_ADD: usize = 0x117;
+pub const HANDLER_IDX_RMW_I32_8_ADD: usize = 0x118;
+pub const HANDLER_IDX_RMW_I32_16_ADD: usize = 0x119;
+pub const HANDLER_IDX_RMW_I64_ADD: usize = 0x11A;
+pub const HANDLER_IDX_RMW_I64_8_ADD: usize = 0x11B;
+pub const HANDLER_IDX_RMW_I64_16_ADD: usize = 0x11C;
+pub const HANDLER_IDX_RMW_I64_32_ADD: usize = 0x11D;
+pub const HANDLER_IDX_RMW_I32_SUB: usize = 0x11E;
+pub const HANDLER_IDX_RMW_I32_8_SUB: usize = 0x11F;
+pub const HANDLER_IDX_RMW_I32_16_SUB: usize = 0x120;
+pub const HANDLER_IDX_RMW_I64_SUB: usize = 0x121;
+pub const HANDLER_IDX_RMW_I64_8_SUB: usize = 0x122;
+pub const HANDLER_IDX_RMW_I64_16_SUB: usize = 0x123;
+pub const HANDLER_IDX_RMW_I64_32_SUB: usize = 0x124;
+pub const HANDLER_IDX_RMW_I32_AND: usize = 0x125;
+pub const HANDLER_IDX_RMW_I32_8_AND: usize = 0x126;
+pub const HANDLER_IDX_RMW_I32_16_AND: usize = 0x127;
+pub const HANDLER_IDX_RMW_I64_AND: usize = 0x128;
+pub const HANDLER_IDX_RMW_I64_8_AND: usize = 0x129;
+pub const HANDLER_IDX_RMW_I64_16_AND: usize = 0x12A;
+pub const HANDLER_IDX_RMW_I64_32_AND: usize = 0x12B;
+pub const HANDLER_IDX_RMW_I32_OR: usize = 0x12C;
+pub const HANDLER_IDX_RMW_I32_8_OR: usize = 0x12D;
+pub const HANDLER_IDX_RMW_I32_16_OR: usize = 0x12E;
+pub const HANDLER_IDX_RMW_I64_OR: usize = 0x12F;
+pub const HANDLER_IDX_RMW_I64_8_OR: usize = 0x130;
+pub const HANDLER_IDX_RMW_I64_16_OR: usize = 0x131;
+pub const HANDLER_IDX_RMW_I64_32_OR: usize = 0x132;
+pub const HANDLER_IDX_RMW_I32_XOR: usize = 0x133;
+pub const HANDLER_IDX_RMW_I32_8_XOR: usize = 0x134;
+pub const HANDLER_IDX_RMW_I32_16_XOR: usize = 0x135;
+pub const HANDLER_IDX_RMW_I64_XOR: usize = 0x136;
+pub const HANDLER_IDX_RMW_I64_8_XOR: usize = 0x137;
+pub const HANDLER_IDX_RMW_I64_16_XOR: usize = 0x138;
+pub const HANDLER_IDX_RMW_I64_32_XOR: usize = 0x139;
+pub const HANDLER_IDX_RMW_I32_XCHG: usize = 0x13A;
+pub const HANDLER_IDX_RMW_I32_8_XCHG: usize = 0x13B;
+pub const HANDLER_IDX_RMW_I32_16_XCHG: usize = 0x13C;
+pub const HANDLER_IDX_RMW_I64_XCHG: usize = 0x13D;
+pub const HANDLER_IDX_RMW_I64_8_XCHG: usize = 0x13E;
+pub const HANDLER_IDX_RMW_I64_16_XCHG: usize = 0x13F;
+pub const HANDLER_IDX_RMW_I64_32_XCHG: usize = 0x140;
 
 // ============================================================================
 // advance! macro — the difference between tco and non-tco mode
@@ -1465,6 +1508,90 @@ atomic_store!(atomic_store_i64_8, AtomicU8, read_reg_i64, u8);
 atomic_store!(atomic_store_i64_16, AtomicU16, read_reg_i64, u16);
 atomic_store!(atomic_store_i64_32, AtomicU32, read_reg_i64, u32);
 
+/// `i32.atomic.rmw*` / `i64.atomic.rmw*`: apply the operation at the address and
+/// yield the value that was there before, indivisibly. The two macros differ
+/// only in the register bank the operand and result live in.
+macro_rules! atomic_rmw {
+    ($name:ident, $atomic:ty, $prim:ty, $op:ident, $read:ident, $set:ident, $to:ty) => {
+        pub fn $name(state: &mut VmState) -> Outcome {
+            let (dst, addr, value, offset) = match state.current_instr() {
+                ProcessedInstr::AtomicRmwReg {
+                    dst,
+                    addr,
+                    value,
+                    offset,
+                    ..
+                } => (*dst, *addr, *value, *offset),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let pos = (operand::read_i32(state, &addr) as usize) + (offset as usize);
+            check_alignment!(state, pos, $atomic);
+            let operand = operand::$read(state, &value) as $prim;
+            let old = unsafe {
+                (*(state.mem_ptr.add(pos) as *const $atomic)).$op(operand, atomic::Ordering::SeqCst)
+            };
+            state.reg_file_mut().$set(dst.index(), old as $to);
+            state.pc += 1;
+            advance!(state)
+        }
+    };
+}
+
+macro_rules! atomic_rmw_i32 {
+    ($name:ident, $atomic:ty, $prim:ty, $op:ident) => {
+        atomic_rmw!($name, $atomic, $prim, $op, read_reg_i32, set_i32, i32);
+    };
+}
+
+macro_rules! atomic_rmw_i64 {
+    ($name:ident, $atomic:ty, $prim:ty, $op:ident) => {
+        atomic_rmw!($name, $atomic, $prim, $op, read_reg_i64, set_i64, i64);
+    };
+}
+
+atomic_rmw_i32!(rmw_i32_add, AtomicU32, u32, fetch_add);
+atomic_rmw_i32!(rmw_i32_8_add, AtomicU8, u8, fetch_add);
+atomic_rmw_i32!(rmw_i32_16_add, AtomicU16, u16, fetch_add);
+atomic_rmw_i64!(rmw_i64_add, AtomicU64, u64, fetch_add);
+atomic_rmw_i64!(rmw_i64_8_add, AtomicU8, u8, fetch_add);
+atomic_rmw_i64!(rmw_i64_16_add, AtomicU16, u16, fetch_add);
+atomic_rmw_i64!(rmw_i64_32_add, AtomicU32, u32, fetch_add);
+atomic_rmw_i32!(rmw_i32_sub, AtomicU32, u32, fetch_sub);
+atomic_rmw_i32!(rmw_i32_8_sub, AtomicU8, u8, fetch_sub);
+atomic_rmw_i32!(rmw_i32_16_sub, AtomicU16, u16, fetch_sub);
+atomic_rmw_i64!(rmw_i64_sub, AtomicU64, u64, fetch_sub);
+atomic_rmw_i64!(rmw_i64_8_sub, AtomicU8, u8, fetch_sub);
+atomic_rmw_i64!(rmw_i64_16_sub, AtomicU16, u16, fetch_sub);
+atomic_rmw_i64!(rmw_i64_32_sub, AtomicU32, u32, fetch_sub);
+atomic_rmw_i32!(rmw_i32_and, AtomicU32, u32, fetch_and);
+atomic_rmw_i32!(rmw_i32_8_and, AtomicU8, u8, fetch_and);
+atomic_rmw_i32!(rmw_i32_16_and, AtomicU16, u16, fetch_and);
+atomic_rmw_i64!(rmw_i64_and, AtomicU64, u64, fetch_and);
+atomic_rmw_i64!(rmw_i64_8_and, AtomicU8, u8, fetch_and);
+atomic_rmw_i64!(rmw_i64_16_and, AtomicU16, u16, fetch_and);
+atomic_rmw_i64!(rmw_i64_32_and, AtomicU32, u32, fetch_and);
+atomic_rmw_i32!(rmw_i32_or, AtomicU32, u32, fetch_or);
+atomic_rmw_i32!(rmw_i32_8_or, AtomicU8, u8, fetch_or);
+atomic_rmw_i32!(rmw_i32_16_or, AtomicU16, u16, fetch_or);
+atomic_rmw_i64!(rmw_i64_or, AtomicU64, u64, fetch_or);
+atomic_rmw_i64!(rmw_i64_8_or, AtomicU8, u8, fetch_or);
+atomic_rmw_i64!(rmw_i64_16_or, AtomicU16, u16, fetch_or);
+atomic_rmw_i64!(rmw_i64_32_or, AtomicU32, u32, fetch_or);
+atomic_rmw_i32!(rmw_i32_xor, AtomicU32, u32, fetch_xor);
+atomic_rmw_i32!(rmw_i32_8_xor, AtomicU8, u8, fetch_xor);
+atomic_rmw_i32!(rmw_i32_16_xor, AtomicU16, u16, fetch_xor);
+atomic_rmw_i64!(rmw_i64_xor, AtomicU64, u64, fetch_xor);
+atomic_rmw_i64!(rmw_i64_8_xor, AtomicU8, u8, fetch_xor);
+atomic_rmw_i64!(rmw_i64_16_xor, AtomicU16, u16, fetch_xor);
+atomic_rmw_i64!(rmw_i64_32_xor, AtomicU32, u32, fetch_xor);
+atomic_rmw_i32!(rmw_i32_xchg, AtomicU32, u32, swap);
+atomic_rmw_i32!(rmw_i32_8_xchg, AtomicU8, u8, swap);
+atomic_rmw_i32!(rmw_i32_16_xchg, AtomicU16, u16, swap);
+atomic_rmw_i64!(rmw_i64_xchg, AtomicU64, u64, swap);
+atomic_rmw_i64!(rmw_i64_8_xchg, AtomicU8, u8, swap);
+atomic_rmw_i64!(rmw_i64_16_xchg, AtomicU16, u16, swap);
+atomic_rmw_i64!(rmw_i64_32_xchg, AtomicU32, u32, swap);
+
 pub fn atomic_fence(state: &mut VmState) -> Outcome {
     atomic::fence(atomic::Ordering::SeqCst);
     state.pc += 1;
@@ -2564,6 +2691,51 @@ pub fn select_handler(instr: &ProcessedInstr) -> Handler {
             HANDLER_IDX_I64_ATOMIC_STORE8 => atomic_store_i64_8,
             HANDLER_IDX_I64_ATOMIC_STORE16 => atomic_store_i64_16,
             HANDLER_IDX_I64_ATOMIC_STORE32 => atomic_store_i64_32,
+            _ => invalid,
+        },
+        ProcessedInstr::AtomicRmwReg { handler_index, .. } => match *handler_index {
+            HANDLER_IDX_RMW_I32_ADD => rmw_i32_add,
+            HANDLER_IDX_RMW_I32_8_ADD => rmw_i32_8_add,
+            HANDLER_IDX_RMW_I32_16_ADD => rmw_i32_16_add,
+            HANDLER_IDX_RMW_I64_ADD => rmw_i64_add,
+            HANDLER_IDX_RMW_I64_8_ADD => rmw_i64_8_add,
+            HANDLER_IDX_RMW_I64_16_ADD => rmw_i64_16_add,
+            HANDLER_IDX_RMW_I64_32_ADD => rmw_i64_32_add,
+            HANDLER_IDX_RMW_I32_SUB => rmw_i32_sub,
+            HANDLER_IDX_RMW_I32_8_SUB => rmw_i32_8_sub,
+            HANDLER_IDX_RMW_I32_16_SUB => rmw_i32_16_sub,
+            HANDLER_IDX_RMW_I64_SUB => rmw_i64_sub,
+            HANDLER_IDX_RMW_I64_8_SUB => rmw_i64_8_sub,
+            HANDLER_IDX_RMW_I64_16_SUB => rmw_i64_16_sub,
+            HANDLER_IDX_RMW_I64_32_SUB => rmw_i64_32_sub,
+            HANDLER_IDX_RMW_I32_AND => rmw_i32_and,
+            HANDLER_IDX_RMW_I32_8_AND => rmw_i32_8_and,
+            HANDLER_IDX_RMW_I32_16_AND => rmw_i32_16_and,
+            HANDLER_IDX_RMW_I64_AND => rmw_i64_and,
+            HANDLER_IDX_RMW_I64_8_AND => rmw_i64_8_and,
+            HANDLER_IDX_RMW_I64_16_AND => rmw_i64_16_and,
+            HANDLER_IDX_RMW_I64_32_AND => rmw_i64_32_and,
+            HANDLER_IDX_RMW_I32_OR => rmw_i32_or,
+            HANDLER_IDX_RMW_I32_8_OR => rmw_i32_8_or,
+            HANDLER_IDX_RMW_I32_16_OR => rmw_i32_16_or,
+            HANDLER_IDX_RMW_I64_OR => rmw_i64_or,
+            HANDLER_IDX_RMW_I64_8_OR => rmw_i64_8_or,
+            HANDLER_IDX_RMW_I64_16_OR => rmw_i64_16_or,
+            HANDLER_IDX_RMW_I64_32_OR => rmw_i64_32_or,
+            HANDLER_IDX_RMW_I32_XOR => rmw_i32_xor,
+            HANDLER_IDX_RMW_I32_8_XOR => rmw_i32_8_xor,
+            HANDLER_IDX_RMW_I32_16_XOR => rmw_i32_16_xor,
+            HANDLER_IDX_RMW_I64_XOR => rmw_i64_xor,
+            HANDLER_IDX_RMW_I64_8_XOR => rmw_i64_8_xor,
+            HANDLER_IDX_RMW_I64_16_XOR => rmw_i64_16_xor,
+            HANDLER_IDX_RMW_I64_32_XOR => rmw_i64_32_xor,
+            HANDLER_IDX_RMW_I32_XCHG => rmw_i32_xchg,
+            HANDLER_IDX_RMW_I32_8_XCHG => rmw_i32_8_xchg,
+            HANDLER_IDX_RMW_I32_16_XCHG => rmw_i32_16_xchg,
+            HANDLER_IDX_RMW_I64_XCHG => rmw_i64_xchg,
+            HANDLER_IDX_RMW_I64_8_XCHG => rmw_i64_8_xchg,
+            HANDLER_IDX_RMW_I64_16_XCHG => rmw_i64_16_xchg,
+            HANDLER_IDX_RMW_I64_32_XCHG => rmw_i64_32_xchg,
             _ => invalid,
         },
         ProcessedInstr::AtomicWaitReg { handler_index, .. } => match *handler_index {

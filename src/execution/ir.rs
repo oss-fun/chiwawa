@@ -168,6 +168,15 @@ pub enum ProcessedInstr {
         value: Reg,
         offset: u64,
     },
+    /// `i32/i64.atomic.rmw*`: applies the operation at `addr` and yields the
+    /// value that was there before.
+    AtomicRmwReg {
+        handler_index: usize,
+        dst: Reg,
+        addr: I32RegOperand,
+        value: Reg,
+        offset: u64,
+    },
     /// `memory.atomic.wait32/64` and `memory.atomic.notify`.
     AtomicWaitReg {
         handler_index: usize,
@@ -277,6 +286,7 @@ impl ProcessedInstr {
             ProcessedInstr::ConversionReg { handler_index, .. } => *handler_index,
             ProcessedInstr::MemoryLoadReg { handler_index, .. } => *handler_index,
             ProcessedInstr::MemoryStoreReg { handler_index, .. } => *handler_index,
+            ProcessedInstr::AtomicRmwReg { handler_index, .. } => *handler_index,
             ProcessedInstr::AtomicWaitReg { handler_index, .. } => *handler_index,
             ProcessedInstr::MemoryOpsReg { handler_index, .. } => *handler_index,
             ProcessedInstr::SelectReg { handler_index, .. } => *handler_index,
