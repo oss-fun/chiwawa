@@ -41,6 +41,21 @@ pub struct RuntimeConfig {
     pub thread_ctx: Option<Arc<ThreadContext>>,
 }
 
+/// Runs the module's start section, if it has one.
+pub fn run_start_section(module_inst: &Rc<ModuleInst>) -> Result<(), RuntimeError> {
+    let Some(start) = module_inst.start_section.clone() else {
+        return Ok(());
+    };
+    let mut runtime = Runtime::new(
+        Rc::clone(module_inst),
+        &start,
+        Vec::new(),
+        RuntimeConfig::default(),
+    )?;
+    runtime.run()?;
+    Ok(())
+}
+
 /// Execution entry point that manages the interpreter loop.
 pub struct Runtime {
     module_inst: Rc<ModuleInst>,

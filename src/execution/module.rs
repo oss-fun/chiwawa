@@ -25,6 +25,8 @@ pub struct ModuleInst {
     pub exports: Vec<ExportInst>,
     pub wasi_func_addrs: Vec<WasiFuncAddr>,
     pub wasi_impl: Option<Arc<PassthroughWasiImpl>>,
+    /// Function named by the start section, run at instantiation.
+    pub start_section: Option<FuncAddr>,
 }
 
 /// Trait for indexed access to instance vectors.
@@ -77,6 +79,7 @@ impl ModuleInst {
             exports: Vec::new(),
             wasi_func_addrs: Vec::new(),
             wasi_impl: None,
+            start_section: None,
         };
 
         // Check if we need WASI support
@@ -233,6 +236,11 @@ impl ModuleInst {
                 },
             })
         }
+        module_inst.start_section = module
+            .start
+            .as_ref()
+            .map(|start| module_inst.func_addrs.get_by_idx(start.func).clone());
+
         let arc_module_inst = Rc::new(module_inst);
 
         for (base, func) in module.funcs.iter().enumerate() {
@@ -251,9 +259,6 @@ impl ModuleInst {
                 Rc::downgrade(&arc_module_inst),
                 index as u32,
             );
-        }
-        if let Some(start) = &module.start {
-            arc_module_inst.func_addrs.get_by_idx(start.func);
         }
         Ok(arc_module_inst)
     }

@@ -3,7 +3,7 @@ use anyhow::Result;
 use chiwawa::instrument::trace::TraceConfig;
 use chiwawa::{
     execution::module::*,
-    execution::runtime::{Runtime, RuntimeConfig},
+    execution::runtime::{run_start_section, Runtime, RuntimeConfig},
     execution::value::*,
     execution::{migration, state::Stacks},
     parser,
@@ -279,6 +279,10 @@ fn main() -> Result<()> {
         let result = runtime.run();
         handle_result(result);
     } else {
+        // A restore resumes mid-execution, so the start function only runs on
+        // a fresh instantiation.
+        run_start_section(&inst)?;
+
         let func_addr = inst.get_export_func(&cli.invoke)?;
         let params = parse_params(cli.params.unwrap_or_default());
 

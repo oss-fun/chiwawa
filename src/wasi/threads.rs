@@ -13,7 +13,7 @@
 use crate::error::RuntimeError;
 use crate::execution::mem::MemAddr;
 use crate::execution::module::{ImportObjects, ModuleInst};
-use crate::execution::runtime::{Runtime, RuntimeConfig};
+use crate::execution::runtime::{run_start_section, Runtime, RuntimeConfig};
 use crate::execution::value::{Externval, Num, Val};
 use crate::structure::module::{ImportDesc, Module};
 use rustc_hash::FxHashMap;
@@ -103,6 +103,7 @@ impl ThreadContext {
     /// thread entry point.
     fn run(self: &Arc<Self>, tid: i32, start_arg: i32) -> Result<(), RuntimeError> {
         let inst = self.instantiate()?;
+        run_start_section(&inst)?;
         let start = inst.get_export_func(THREAD_START_EXPORT)?;
         let params = vec![Val::Num(Num::I32(tid)), Val::Num(Num::I32(start_arg))];
 
