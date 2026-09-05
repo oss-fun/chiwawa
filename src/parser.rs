@@ -955,7 +955,7 @@ fn decode_func_section(
             locals: Vec::new(),
             body: Shared::new(Vec::new()),
             reg_allocation: None,
-            handlers: Shared::new(Vec::new()),
+            handlers: Shared::new(HandlerTable::new(Vec::new())),
             wide_consts: Box::new([]),
         });
         #[cfg(feature = "call_graph")]
@@ -1379,7 +1379,7 @@ fn decode_code_section(
         .map(crate::execution::handlers::select_handler)
         .collect();
     handlers_vec.push(crate::execution::handlers::halt);
-    let handlers_rc = Shared::new(handlers_vec);
+    let handlers_rc = Shared::new(HandlerTable::new(handlers_vec));
 
     // Store function body and metadata in module
     if let Some(func) = module.funcs.get_mut(relative_func_index) {

@@ -1925,13 +1925,6 @@ fn enter_frame(
     param_regs: &[Reg],
     result_regs: &[Reg],
     handlers: *const Handler,
-    #[cfg(all(
-        target_arch = "wasm32",
-        target_os = "wasi",
-        target_env = "p1",
-        target_feature = "atomics"
-    ))]
-    handler_ctrl: Option<std::sync::Arc<crate::execution::migration::HandlerControl>>,
 ) {
     if let Some(ref alloc) = code.reg_allocation {
         state
@@ -1957,13 +1950,6 @@ fn enter_frame(
         } else {
             Some(mem_ptr)
         },
-        #[cfg(all(
-            target_arch = "wasm32",
-            target_os = "wasi",
-            target_env = "p1",
-            target_feature = "atomics"
-        ))]
-        handler_ctrl,
     };
 
     let frames = unsafe { &mut *state.frames };
@@ -2004,21 +1990,7 @@ fn pop_frame(state: &mut VmState) -> bool {
             state.instrs = code.body.as_ptr();
             state.instrs_len = code.body.len();
             state.code = code as *const Func;
-            cfg_if::cfg_if! {
-                if #[cfg(all(
-                    target_arch = "wasm32",
-                    target_os = "wasi",
-                    target_env = "p1",
-                    target_feature = "atomics"
-                ))] {
-                    state.handlers = match &frames[caller_idx].handler_ctrl {
-                        Some(c) => c.handlers_ptr(),
-                        None => code.handlers.as_ptr(),
-                    };
-                } else {
-                    state.handlers = code.handlers.as_ptr();
-                }
-            }
+            state.handlers = code.handlers.as_ptr();
         }
         _ => unsafe { std::hint::unreachable_unchecked() },
     }
@@ -2064,37 +2036,9 @@ fn enter_or_yield(
             type_,
             code,
             func_idx,
-            #[cfg(all(
-                target_arch = "wasm32",
-                target_os = "wasi",
-                target_env = "p1",
-                target_feature = "atomics"
-            ))]
-                handler_ctrl: cached_ctrl,
             ..
         } => {
-            cfg_if::cfg_if! {
-                if #[cfg(all(
-                    target_arch = "wasm32",
-                    target_os = "wasi",
-                    target_env = "p1",
-                    target_feature = "atomics"
-                ))] {
-                    let ctrl = if state.enable_checkpoint {
-                        Some(std::sync::Arc::clone(cached_ctrl.get_or_init(|| {
-                            crate::execution::migration::HandlerControl::new(&code.handlers)
-                        })))
-                    } else {
-                        None
-                    };
-                    let handlers = match &ctrl {
-                        Some(c) => c.handlers_ptr(),
-                        None => code.handlers.as_ptr(),
-                    };
-                } else {
-                    let handlers = code.handlers.as_ptr();
-                }
-            }
+            let handlers = code.handlers.as_ptr();
             enter_frame(
                 state,
                 code,
@@ -2103,13 +2047,6 @@ fn enter_or_yield(
                 param_regs,
                 result_regs,
                 handlers,
-                #[cfg(all(
-                    target_arch = "wasm32",
-                    target_os = "wasi",
-                    target_env = "p1",
-                    target_feature = "atomics"
-                ))]
-                ctrl,
             );
             true
         }

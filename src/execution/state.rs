@@ -16,18 +16,6 @@ use crate::structure::module::{Func, WasiFuncType};
 use arrayvec::ArrayVec;
 use serde::{Deserialize, Serialize};
 
-cfg_if::cfg_if! {
-    if #[cfg(all(
-        target_arch = "wasm32",
-        target_os = "wasi",
-        target_env = "p1",
-        target_feature = "atomics"
-    ))] {
-        use crate::execution::migration::HandlerControl;
-        use std::sync::Arc;
-    }
-}
-
 /// Per-call dispatcher state. Constructed at the entry of each
 /// `dispatch::execute_instructions` call from the active `FrameStack`.
 pub struct VmState {
@@ -194,13 +182,6 @@ impl VMState {
                     result_regs: ArrayVec::new(),
                     return_result_regs: ArrayVec::new(),
                     cached_mem_ptr,
-                    #[cfg(all(
-                        target_arch = "wasm32",
-                        target_os = "wasi",
-                        target_env = "p1",
-                        target_feature = "atomics"
-                    ))]
-                    handler_ctrl: None,
                 };
 
                 Ok(VMState {
@@ -239,12 +220,4 @@ pub struct FrameStack {
     pub return_result_regs: ArrayVec<Reg, 8>,
     #[serde(skip)]
     pub cached_mem_ptr: Option<*mut u8>,
-    #[cfg(all(
-        target_arch = "wasm32",
-        target_os = "wasi",
-        target_env = "p1",
-        target_feature = "atomics"
-    ))]
-    #[serde(skip)]
-    pub handler_ctrl: Option<Arc<HandlerControl>>,
 }

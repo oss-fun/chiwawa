@@ -9,19 +9,6 @@ use std::cell::UnsafeCell;
 use std::fmt::{self, Debug};
 use std::rc::{Rc, Weak};
 
-cfg_if::cfg_if! {
-    if #[cfg(all(
-        target_arch = "wasm32",
-        target_os = "wasi",
-        target_env = "p1",
-        target_feature = "atomics"
-    ))] {
-        use crate::execution::migration::HandlerControl;
-        use std::cell::OnceCell;
-        use std::sync::Arc;
-    }
-}
-
 /// Reference-counted handle to a function instance.
 /// Uses UnsafeCell for zero-cost access in the interpreter hot path.
 /// Safety: WebAssembly execution is single-threaded and operations don't overlap.
@@ -36,17 +23,6 @@ pub enum FuncInst {
         code: Func,
         /// Index in the owning module's `func_addrs`.
         func_idx: u32,
-        /// Cached per-function so repeat calls only `Arc::clone`, avoiding the
-        /// `Vec` clone + registry `Mutex` lock of `HandlerControl::new`.
-        /// Single-threaded `OnceCell` suffices; the `Arc` is what reaches the
-        /// monitor thread.
-        #[cfg(all(
-            target_arch = "wasm32",
-            target_os = "wasi",
-            target_env = "p1",
-            target_feature = "atomics"
-        ))]
-        handler_ctrl: OnceCell<Arc<HandlerControl>>,
     },
     HostFunc {
         type_: FuncType,
@@ -114,17 +90,10 @@ impl FuncAddr {
                 locals: Vec::new(),
                 body: Shared::new(Vec::new()),
                 reg_allocation: None,
-                handlers: Shared::new(Vec::new()),
+                handlers: Shared::new(HandlerTable::new(Vec::new())),
                 wide_consts: Box::new([]),
             },
             func_idx: 0,
-            #[cfg(all(
-                target_arch = "wasm32",
-                target_os = "wasi",
-                target_env = "p1",
-                target_feature = "atomics"
-            ))]
-            handler_ctrl: OnceCell::new(),
         })))
     }
 
@@ -148,13 +117,6 @@ impl FuncAddr {
             module: module,
             code: func,
             func_idx,
-            #[cfg(all(
-                target_arch = "wasm32",
-                target_os = "wasi",
-                target_env = "p1",
-                target_feature = "atomics"
-            ))]
-            handler_ctrl: OnceCell::new(),
         };
         // Safety: Single-threaded access, no overlapping borrows
         unsafe {

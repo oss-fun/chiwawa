@@ -14,7 +14,7 @@
 //!
 //! `FrameStack` fields that depend on host addresses are `#[serde(skip)]`:
 //! `cached_mem_ptr` is re-cached from the restored memory, while
-//! `enable_checkpoint` and `handler_ctrl` are set by `Runtime::run`. A frame
+//! `enable_checkpoint` is set by `Runtime::run`. A frame
 //! names its function by `func_idx`, so the body and handler array need no
 //! reconstruction at all. Tables are excluded: they are deterministically
 //! initialized from element segments during module instantiation.
@@ -28,8 +28,8 @@
 //!
 //! - **wasm32-wasip1-threads** (`target_feature = "atomics"`): background
 //!   thread set up by `setup_checkpoint_monitor` watches the
-//!   `checkpoint.trigger` file and toggles an atomic flag. `poll_checkpoint`
-//!   only does a cheap relaxed atomic load on the hot path.
+//!   `checkpoint.trigger` file and fills every registered handler table with
+//!   `checkpoint_trap`, so the dispatcher polls nothing at all.
 //! - **wasm32-wasip1** (no atomics): `poll_checkpoint` throttles itself with
 //!   `VmState.checkpoint_poll_counter` and only issues the WASI file-existence
 //!   syscall every `CHECKPOINT_POLL_MASK + 1` (= 1024) instructions to keep
@@ -59,91 +59,37 @@ cfg_if::cfg_if! {
         target_env = "p1",
         target_feature = "atomics"
     ))] {
-        use crate::execution::ir::Handler;
-        use std::cell::UnsafeCell;
-        use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-        use std::sync::{Arc, Mutex, Weak};
+        use crate::structure::module::HandlerTable;
         use std::thread;
         use std::time::Duration;
 
-        static CHECKPOINT_TRIGGERED: AtomicBool = AtomicBool::new(false);
+        /// Safety: the tables live in the `Module`, which outlives the
+        /// monitor, and the monitor only calls `fill` on them.
+        pub struct MonitoredTables(Vec<*const HandlerTable>);
+        unsafe impl Send for MonitoredTables {}
 
-        /// Per-frame mutable handler array. The monitor thread patches entries
-        /// with `checkpoint_trap` via atomic stores; the dispatcher reads via
-        /// non-atomic raw pointer.
-        pub struct HandlerControl {
-            pub handlers: UnsafeCell<Vec<Handler>>,
-        }
-
-        impl std::fmt::Debug for HandlerControl {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.debug_struct("HandlerControl").finish_non_exhaustive()
-            }
-        }
-
-        unsafe impl Send for HandlerControl {}
-        unsafe impl Sync for HandlerControl {}
-
-        impl HandlerControl {
-            pub fn new(source: &[Handler]) -> Arc<Self> {
-                let ctrl = Arc::new(Self {
-                    handlers: UnsafeCell::new(source.to_vec()),
-                });
-                register_handler_control(&ctrl);
-                // Catch a trigger that arrived since the monitor's last sweep.
-                if CHECKPOINT_TRIGGERED.load(Ordering::Relaxed) {
-                    ctrl.patch();
-                }
-                ctrl
+        impl MonitoredTables {
+            pub fn new(tables: Vec<*const HandlerTable>) -> Self {
+                MonitoredTables(tables)
             }
 
-            /// Raw pointer fed into `VmState::handlers` at frame entry.
-            #[inline]
-            pub fn handlers_ptr(&self) -> *const Handler {
-                unsafe { (*self.handlers.get()).as_ptr() }
-            }
-
-            /// Overwrite every entry with `checkpoint_trap`.
-            pub fn patch(&self) {
-                let vec = unsafe { &mut *self.handlers.get() };
-                let len = vec.len();
-                let base = vec.as_mut_ptr() as *mut AtomicPtr<()>;
-                let target = crate::execution::handlers::checkpoint_trap as *mut ();
-                for i in 0..len {
-                    unsafe { (&*base.add(i)).store(target, Ordering::Relaxed) };
+            fn fill_all(&self, handler: crate::execution::ir::Handler) {
+                for table in &self.0 {
+                    unsafe { (**table).fill(handler) };
                 }
             }
         }
 
-        static HANDLER_REGISTRY: Mutex<Vec<Weak<HandlerControl>>> = Mutex::new(Vec::new());
-
-        fn register_handler_control(ctrl: &Arc<HandlerControl>) {
-            let mut reg = HANDLER_REGISTRY.lock().unwrap();
-            reg.retain(|w| w.strong_count() > 0);
-            reg.push(Arc::downgrade(ctrl));
-        }
-
-        /// Spawns a background thread that watches the trigger file and patches
-        /// every live `HandlerControl`, sparing the dispatcher any per-instruction poll.
-        pub fn setup_checkpoint_monitor() {
-            thread::spawn(|| loop {
+        pub fn setup_checkpoint_monitor(tables: MonitoredTables) {
+            thread::spawn(move || loop {
                 if std::path::Path::new(CHECKPOINT_TRIGGER_FILE).exists() {
-                    CHECKPOINT_TRIGGERED.store(true, Ordering::Relaxed);
-                    let reg = HANDLER_REGISTRY.lock().unwrap();
-                    for weak in reg.iter() {
-                        if let Some(ctrl) = weak.upgrade() {
-                            ctrl.patch();
-                        }
-                    }
-                    drop(reg);
+                    tables.fill_all(crate::execution::handlers::checkpoint_trap);
                     let _ = std::fs::remove_file(CHECKPOINT_TRIGGER_FILE);
                 }
                 thread::sleep(Duration::from_millis(100));
             });
         }
 
-        /// No-op on atomics — monitor patches handlers ([`HandlerControl::patch`]).
-        /// `#[inline(always)]` lets LLVM erase the call-site branches.
         #[inline(always)]
         pub fn poll_checkpoint(_state: &mut VmState) -> bool {
             false
@@ -325,8 +271,6 @@ pub fn restore<P: AsRef<Path>>(
     for frame_stack in state.stacks.activation_frame_stack.iter_mut() {
         frame_stack.cached_mem_ptr = mem_ptr;
     }
-    // `enable_checkpoint` and `handler_ctrl` are `#[serde(skip)]`, so they
-    // arrive as false / None; Runtime::run sets them on the topmost frame.
     println!("Frame memory references restored.");
 
     println!("Restore successful (state applied to module). Returning Stacks.");
