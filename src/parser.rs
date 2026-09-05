@@ -7822,106 +7822,204 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
+                    if let Some(local_idx) = try_fold_dst_i32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I32));
+                        allocator.pop(&ValueType::NumType(NumType::I32));
+                        initial_processed_instrs.push(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I32_ATOMIC_LOAD,
-                            dst: RegOrLocal::Reg(dst.index()),
+                            dst: RegOrLocal::Reg(local_regs[local_idx as usize].index()),
                             addr,
                             offset: memarg.offset,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I32));
+                        (
+                            Some(ProcessedInstr::MemoryLoadReg {
+                                handler_index: HANDLER_IDX_I32_ATOMIC_LOAD,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                addr,
+                                offset: memarg.offset,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I64AtomicLoad { memarg } => {
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
+                    if let Some(local_idx) = try_fold_dst_i64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I64));
+                        allocator.pop(&ValueType::NumType(NumType::I64));
+                        initial_processed_instrs.push(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I64_ATOMIC_LOAD,
-                            dst: RegOrLocal::Reg(dst.index()),
+                            dst: RegOrLocal::Reg(local_regs[local_idx as usize].index()),
                             addr,
                             offset: memarg.offset,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I64));
+                        (
+                            Some(ProcessedInstr::MemoryLoadReg {
+                                handler_index: HANDLER_IDX_I64_ATOMIC_LOAD,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                addr,
+                                offset: memarg.offset,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I32AtomicLoad8U { memarg } => {
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
+                    if let Some(local_idx) = try_fold_dst_i32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I32));
+                        allocator.pop(&ValueType::NumType(NumType::I32));
+                        initial_processed_instrs.push(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I32_ATOMIC_LOAD8_U,
-                            dst: RegOrLocal::Reg(dst.index()),
+                            dst: RegOrLocal::Reg(local_regs[local_idx as usize].index()),
                             addr,
                             offset: memarg.offset,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I32));
+                        (
+                            Some(ProcessedInstr::MemoryLoadReg {
+                                handler_index: HANDLER_IDX_I32_ATOMIC_LOAD8_U,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                addr,
+                                offset: memarg.offset,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I32AtomicLoad16U { memarg } => {
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
+                    if let Some(local_idx) = try_fold_dst_i32(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I32));
+                        allocator.pop(&ValueType::NumType(NumType::I32));
+                        initial_processed_instrs.push(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I32_ATOMIC_LOAD16_U,
-                            dst: RegOrLocal::Reg(dst.index()),
+                            dst: RegOrLocal::Reg(local_regs[local_idx as usize].index()),
                             addr,
                             offset: memarg.offset,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I32));
+                        (
+                            Some(ProcessedInstr::MemoryLoadReg {
+                                handler_index: HANDLER_IDX_I32_ATOMIC_LOAD16_U,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                addr,
+                                offset: memarg.offset,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I64AtomicLoad8U { memarg } => {
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
+                    if let Some(local_idx) = try_fold_dst_i64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I64));
+                        allocator.pop(&ValueType::NumType(NumType::I64));
+                        initial_processed_instrs.push(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I64_ATOMIC_LOAD8_U,
-                            dst: RegOrLocal::Reg(dst.index()),
+                            dst: RegOrLocal::Reg(local_regs[local_idx as usize].index()),
                             addr,
                             offset: memarg.offset,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I64));
+                        (
+                            Some(ProcessedInstr::MemoryLoadReg {
+                                handler_index: HANDLER_IDX_I64_ATOMIC_LOAD8_U,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                addr,
+                                offset: memarg.offset,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I64AtomicLoad16U { memarg } => {
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
+                    if let Some(local_idx) = try_fold_dst_i64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I64));
+                        allocator.pop(&ValueType::NumType(NumType::I64));
+                        initial_processed_instrs.push(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I64_ATOMIC_LOAD16_U,
-                            dst: RegOrLocal::Reg(dst.index()),
+                            dst: RegOrLocal::Reg(local_regs[local_idx as usize].index()),
                             addr,
                             offset: memarg.offset,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I64));
+                        (
+                            Some(ProcessedInstr::MemoryLoadReg {
+                                handler_index: HANDLER_IDX_I64_ATOMIC_LOAD16_U,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                addr,
+                                offset: memarg.offset,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I64AtomicLoad32U { memarg } => {
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
+                    if let Some(local_idx) = try_fold_dst_i64(&mut ops, param_types, locals) {
+                        let _ = ops.next();
+                        let _dst = allocator.push(ValueType::NumType(NumType::I64));
+                        allocator.pop(&ValueType::NumType(NumType::I64));
+                        initial_processed_instrs.push(ProcessedInstr::MemoryLoadReg {
                             handler_index: HANDLER_IDX_I64_ATOMIC_LOAD32_U,
-                            dst: RegOrLocal::Reg(dst.index()),
+                            dst: RegOrLocal::Reg(local_regs[local_idx as usize].index()),
                             addr,
                             offset: memarg.offset,
-                        }),
-                        None,
-                    )
+                        });
+                        current_processed_pc += 1;
+                        (None, None)
+                    } else {
+                        let dst = allocator.push(ValueType::NumType(NumType::I64));
+                        (
+                            Some(ProcessedInstr::MemoryLoadReg {
+                                handler_index: HANDLER_IDX_I64_ATOMIC_LOAD32_U,
+                                dst: RegOrLocal::Reg(dst.index()),
+                                addr,
+                                offset: memarg.offset,
+                            }),
+                            None,
+                        )
+                    }
                 }
                 wasmparser::Operator::I32AtomicStore { memarg } => {
                     let value = allocator.pop(&ValueType::NumType(NumType::I32));
