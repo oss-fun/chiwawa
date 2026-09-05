@@ -164,6 +164,7 @@ dependencies = [
  "thiserror",
  "typenum",
  "wasmparser",
+ "wast",
  "wat",
 ]
 

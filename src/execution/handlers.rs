@@ -22,6 +22,7 @@
 #![allow(unused_unsafe)]
 
 use crate::error::RuntimeError;
+use crate::execution::atomics;
 use crate::execution::func::{FuncAddr, FuncInst};
 use crate::execution::ir::{Handler, Outcome, ProcessedInstr, RegOrLocal};
 use crate::execution::module::GetInstanceByIdx;
@@ -31,6 +32,7 @@ use crate::execution::state::{Frame, FrameStack, ModuleLevelInstr, VmState};
 use crate::execution::value::Val;
 use crate::structure::module::Func;
 use arrayvec::ArrayVec;
+use std::sync::atomic::{self, AtomicU16, AtomicU32, AtomicU64, AtomicU8};
 
 // ============================================================================
 // Handler index constants
@@ -295,6 +297,76 @@ pub const HANDLER_IDX_CALL_WASI: usize = 0x103;
 /// Function-level `end`: writes the return registers and halts the frame.
 pub const HANDLER_IDX_END_FUNC: usize = 0x104;
 
+// Threads proposal — atomics
+pub const HANDLER_IDX_MEMORY_ATOMIC_NOTIFY: usize = 0x105;
+pub const HANDLER_IDX_MEMORY_ATOMIC_WAIT32: usize = 0x106;
+pub const HANDLER_IDX_MEMORY_ATOMIC_WAIT64: usize = 0x107;
+pub const HANDLER_IDX_ATOMIC_FENCE: usize = 0x108;
+pub const HANDLER_IDX_I32_ATOMIC_LOAD: usize = 0x109;
+pub const HANDLER_IDX_I64_ATOMIC_LOAD: usize = 0x10A;
+pub const HANDLER_IDX_I32_ATOMIC_LOAD8_U: usize = 0x10B;
+pub const HANDLER_IDX_I32_ATOMIC_LOAD16_U: usize = 0x10C;
+pub const HANDLER_IDX_I64_ATOMIC_LOAD8_U: usize = 0x10D;
+pub const HANDLER_IDX_I64_ATOMIC_LOAD16_U: usize = 0x10E;
+pub const HANDLER_IDX_I64_ATOMIC_LOAD32_U: usize = 0x10F;
+pub const HANDLER_IDX_I32_ATOMIC_STORE: usize = 0x110;
+pub const HANDLER_IDX_I64_ATOMIC_STORE: usize = 0x111;
+pub const HANDLER_IDX_I32_ATOMIC_STORE8: usize = 0x112;
+pub const HANDLER_IDX_I32_ATOMIC_STORE16: usize = 0x113;
+pub const HANDLER_IDX_I64_ATOMIC_STORE8: usize = 0x114;
+pub const HANDLER_IDX_I64_ATOMIC_STORE16: usize = 0x115;
+pub const HANDLER_IDX_I64_ATOMIC_STORE32: usize = 0x116;
+// Threads proposal — read-modify-write
+pub const HANDLER_IDX_RMW_I32_ADD: usize = 0x117;
+pub const HANDLER_IDX_RMW_I32_8_ADD: usize = 0x118;
+pub const HANDLER_IDX_RMW_I32_16_ADD: usize = 0x119;
+pub const HANDLER_IDX_RMW_I64_ADD: usize = 0x11A;
+pub const HANDLER_IDX_RMW_I64_8_ADD: usize = 0x11B;
+pub const HANDLER_IDX_RMW_I64_16_ADD: usize = 0x11C;
+pub const HANDLER_IDX_RMW_I64_32_ADD: usize = 0x11D;
+pub const HANDLER_IDX_RMW_I32_SUB: usize = 0x11E;
+pub const HANDLER_IDX_RMW_I32_8_SUB: usize = 0x11F;
+pub const HANDLER_IDX_RMW_I32_16_SUB: usize = 0x120;
+pub const HANDLER_IDX_RMW_I64_SUB: usize = 0x121;
+pub const HANDLER_IDX_RMW_I64_8_SUB: usize = 0x122;
+pub const HANDLER_IDX_RMW_I64_16_SUB: usize = 0x123;
+pub const HANDLER_IDX_RMW_I64_32_SUB: usize = 0x124;
+pub const HANDLER_IDX_RMW_I32_AND: usize = 0x125;
+pub const HANDLER_IDX_RMW_I32_8_AND: usize = 0x126;
+pub const HANDLER_IDX_RMW_I32_16_AND: usize = 0x127;
+pub const HANDLER_IDX_RMW_I64_AND: usize = 0x128;
+pub const HANDLER_IDX_RMW_I64_8_AND: usize = 0x129;
+pub const HANDLER_IDX_RMW_I64_16_AND: usize = 0x12A;
+pub const HANDLER_IDX_RMW_I64_32_AND: usize = 0x12B;
+pub const HANDLER_IDX_RMW_I32_OR: usize = 0x12C;
+pub const HANDLER_IDX_RMW_I32_8_OR: usize = 0x12D;
+pub const HANDLER_IDX_RMW_I32_16_OR: usize = 0x12E;
+pub const HANDLER_IDX_RMW_I64_OR: usize = 0x12F;
+pub const HANDLER_IDX_RMW_I64_8_OR: usize = 0x130;
+pub const HANDLER_IDX_RMW_I64_16_OR: usize = 0x131;
+pub const HANDLER_IDX_RMW_I64_32_OR: usize = 0x132;
+pub const HANDLER_IDX_RMW_I32_XOR: usize = 0x133;
+pub const HANDLER_IDX_RMW_I32_8_XOR: usize = 0x134;
+pub const HANDLER_IDX_RMW_I32_16_XOR: usize = 0x135;
+pub const HANDLER_IDX_RMW_I64_XOR: usize = 0x136;
+pub const HANDLER_IDX_RMW_I64_8_XOR: usize = 0x137;
+pub const HANDLER_IDX_RMW_I64_16_XOR: usize = 0x138;
+pub const HANDLER_IDX_RMW_I64_32_XOR: usize = 0x139;
+pub const HANDLER_IDX_RMW_I32_XCHG: usize = 0x13A;
+pub const HANDLER_IDX_RMW_I32_8_XCHG: usize = 0x13B;
+pub const HANDLER_IDX_RMW_I32_16_XCHG: usize = 0x13C;
+pub const HANDLER_IDX_RMW_I64_XCHG: usize = 0x13D;
+pub const HANDLER_IDX_RMW_I64_8_XCHG: usize = 0x13E;
+pub const HANDLER_IDX_RMW_I64_16_XCHG: usize = 0x13F;
+pub const HANDLER_IDX_RMW_I64_32_XCHG: usize = 0x140;
+pub const HANDLER_IDX_CMPXCHG_I32: usize = 0x141;
+pub const HANDLER_IDX_CMPXCHG_I32_8: usize = 0x142;
+pub const HANDLER_IDX_CMPXCHG_I32_16: usize = 0x143;
+pub const HANDLER_IDX_CMPXCHG_I64: usize = 0x144;
+pub const HANDLER_IDX_CMPXCHG_I64_8: usize = 0x145;
+pub const HANDLER_IDX_CMPXCHG_I64_16: usize = 0x146;
+pub const HANDLER_IDX_CMPXCHG_I64_32: usize = 0x147;
+
 // ============================================================================
 // advance! macro — the difference between tco and non-tco mode
 // ============================================================================
@@ -328,10 +400,17 @@ pub fn trap(_state: &mut VmState) -> Outcome {
     Outcome::Trap
 }
 
-/// Sentinel handler for checkpoint-requested traps. Tail-called from
-/// `next_handler` when `poll_checkpoint` returns `true`, so the dispatcher's
-/// per-instruction tail-call structure is preserved.
-#[cfg(feature = "tco")]
+/// Sentinel handler reporting a checkpoint request. Reached by handler-array
+/// patching on atomics, and from `next_handler` under `tco` without atomics.
+#[cfg(any(
+    feature = "tco",
+    all(
+        target_arch = "wasm32",
+        target_os = "wasi",
+        target_env = "p1",
+        target_feature = "atomics"
+    )
+))]
 #[inline(never)]
 pub fn checkpoint_trap(state: &mut VmState) -> Outcome {
     state.trap = Some(crate::error::RuntimeError::CheckpointRequested);
@@ -1356,6 +1435,291 @@ mem_store!(mem_store_i64_16, read_reg_i64, u16, |v: i64| v as u16);
 mem_store!(mem_store_i64_32, read_reg_i64, u32, |v: i64| v as u32);
 
 // ============================================================================
+// Atomic handlers (threads proposal)
+//
+// Every access is sequentially consistent and must be naturally aligned. The
+// alignment check is not optional the way the bounds checks are: the spec traps
+// on a misaligned access, and Rust's atomic types make it UB.
+// ============================================================================
+
+/// Traps unless `$pos` is naturally aligned for `$atomic`. Natural alignment
+/// is the access width, which is the atomic type's own size.
+macro_rules! check_alignment {
+    ($state:expr, $pos:expr, $atomic:ty) => {
+        if $pos % std::mem::size_of::<$atomic>() != 0 {
+            $state.trap = Some(RuntimeError::UnalignedAtomicAccess);
+            return trap($state);
+        }
+    };
+}
+
+macro_rules! atomic_load {
+    ($name:ident, $atomic:ty, $write:ident, $to:ty) => {
+        pub fn $name(state: &mut VmState) -> Outcome {
+            let (addr, dst, offset) = match state.current_instr() {
+                ProcessedInstr::MemoryLoadReg {
+                    addr, dst, offset, ..
+                } => (*addr, *dst, *offset),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let pos = (operand::read_i32(state, &addr) as usize) + (offset as usize);
+            check_alignment!(state, pos, $atomic);
+            let v = unsafe {
+                (*(state.mem_ptr.add(pos) as *const $atomic)).load(atomic::Ordering::SeqCst)
+            };
+            operand::$write(state, &dst, v as $to);
+            state.pc += 1;
+            advance!(state)
+        }
+    };
+}
+
+atomic_load!(atomic_load_i32, AtomicU32, write_dst_i32, i32);
+atomic_load!(atomic_load_i64, AtomicU64, write_dst_i64, i64);
+atomic_load!(atomic_load_i32_8u, AtomicU8, write_dst_i32, i32);
+atomic_load!(atomic_load_i32_16u, AtomicU16, write_dst_i32, i32);
+atomic_load!(atomic_load_i64_8u, AtomicU8, write_dst_i64, i64);
+atomic_load!(atomic_load_i64_16u, AtomicU16, write_dst_i64, i64);
+atomic_load!(atomic_load_i64_32u, AtomicU32, write_dst_i64, i64);
+
+macro_rules! atomic_store {
+    ($name:ident, $atomic:ty, $read:ident, $to:ty) => {
+        pub fn $name(state: &mut VmState) -> Outcome {
+            let (addr, value, offset) = match state.current_instr() {
+                ProcessedInstr::MemoryStoreReg {
+                    addr,
+                    value,
+                    offset,
+                    ..
+                } => (*addr, *value, *offset),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let pos = (operand::read_i32(state, &addr) as usize) + (offset as usize);
+            check_alignment!(state, pos, $atomic);
+            let v = operand::$read(state, &value);
+            unsafe {
+                (*(state.mem_ptr.add(pos) as *const $atomic))
+                    .store(v as $to, atomic::Ordering::SeqCst)
+            };
+            state.pc += 1;
+            advance!(state)
+        }
+    };
+}
+
+atomic_store!(atomic_store_i32, AtomicU32, read_reg_i32, u32);
+atomic_store!(atomic_store_i64, AtomicU64, read_reg_i64, u64);
+atomic_store!(atomic_store_i32_8, AtomicU8, read_reg_i32, u8);
+atomic_store!(atomic_store_i32_16, AtomicU16, read_reg_i32, u16);
+atomic_store!(atomic_store_i64_8, AtomicU8, read_reg_i64, u8);
+atomic_store!(atomic_store_i64_16, AtomicU16, read_reg_i64, u16);
+atomic_store!(atomic_store_i64_32, AtomicU32, read_reg_i64, u32);
+
+/// `i32.atomic.rmw*` / `i64.atomic.rmw*`: apply the operation at the address and
+/// yield the value that was there before, indivisibly. The two macros differ
+/// only in the register bank the operand and result live in.
+macro_rules! atomic_rmw {
+    ($name:ident, $atomic:ty, $prim:ty, $op:ident, $read:ident, $set:ident, $to:ty) => {
+        pub fn $name(state: &mut VmState) -> Outcome {
+            let (dst, addr, value, offset) = match state.current_instr() {
+                ProcessedInstr::AtomicRmwReg {
+                    dst,
+                    addr,
+                    value,
+                    offset,
+                    ..
+                } => (*dst, *addr, *value, *offset),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let pos = (operand::read_i32(state, &addr) as usize) + (offset as usize);
+            check_alignment!(state, pos, $atomic);
+            let operand = operand::$read(state, &value) as $prim;
+            let old = unsafe {
+                (*(state.mem_ptr.add(pos) as *const $atomic)).$op(operand, atomic::Ordering::SeqCst)
+            };
+            state.reg_file_mut().$set(dst.index(), old as $to);
+            state.pc += 1;
+            advance!(state)
+        }
+    };
+}
+
+macro_rules! atomic_rmw_i32 {
+    ($name:ident, $atomic:ty, $prim:ty, $op:ident) => {
+        atomic_rmw!($name, $atomic, $prim, $op, read_reg_i32, set_i32, i32);
+    };
+}
+
+macro_rules! atomic_rmw_i64 {
+    ($name:ident, $atomic:ty, $prim:ty, $op:ident) => {
+        atomic_rmw!($name, $atomic, $prim, $op, read_reg_i64, set_i64, i64);
+    };
+}
+
+atomic_rmw_i32!(rmw_i32_add, AtomicU32, u32, fetch_add);
+atomic_rmw_i32!(rmw_i32_8_add, AtomicU8, u8, fetch_add);
+atomic_rmw_i32!(rmw_i32_16_add, AtomicU16, u16, fetch_add);
+atomic_rmw_i64!(rmw_i64_add, AtomicU64, u64, fetch_add);
+atomic_rmw_i64!(rmw_i64_8_add, AtomicU8, u8, fetch_add);
+atomic_rmw_i64!(rmw_i64_16_add, AtomicU16, u16, fetch_add);
+atomic_rmw_i64!(rmw_i64_32_add, AtomicU32, u32, fetch_add);
+atomic_rmw_i32!(rmw_i32_sub, AtomicU32, u32, fetch_sub);
+atomic_rmw_i32!(rmw_i32_8_sub, AtomicU8, u8, fetch_sub);
+atomic_rmw_i32!(rmw_i32_16_sub, AtomicU16, u16, fetch_sub);
+atomic_rmw_i64!(rmw_i64_sub, AtomicU64, u64, fetch_sub);
+atomic_rmw_i64!(rmw_i64_8_sub, AtomicU8, u8, fetch_sub);
+atomic_rmw_i64!(rmw_i64_16_sub, AtomicU16, u16, fetch_sub);
+atomic_rmw_i64!(rmw_i64_32_sub, AtomicU32, u32, fetch_sub);
+atomic_rmw_i32!(rmw_i32_and, AtomicU32, u32, fetch_and);
+atomic_rmw_i32!(rmw_i32_8_and, AtomicU8, u8, fetch_and);
+atomic_rmw_i32!(rmw_i32_16_and, AtomicU16, u16, fetch_and);
+atomic_rmw_i64!(rmw_i64_and, AtomicU64, u64, fetch_and);
+atomic_rmw_i64!(rmw_i64_8_and, AtomicU8, u8, fetch_and);
+atomic_rmw_i64!(rmw_i64_16_and, AtomicU16, u16, fetch_and);
+atomic_rmw_i64!(rmw_i64_32_and, AtomicU32, u32, fetch_and);
+atomic_rmw_i32!(rmw_i32_or, AtomicU32, u32, fetch_or);
+atomic_rmw_i32!(rmw_i32_8_or, AtomicU8, u8, fetch_or);
+atomic_rmw_i32!(rmw_i32_16_or, AtomicU16, u16, fetch_or);
+atomic_rmw_i64!(rmw_i64_or, AtomicU64, u64, fetch_or);
+atomic_rmw_i64!(rmw_i64_8_or, AtomicU8, u8, fetch_or);
+atomic_rmw_i64!(rmw_i64_16_or, AtomicU16, u16, fetch_or);
+atomic_rmw_i64!(rmw_i64_32_or, AtomicU32, u32, fetch_or);
+atomic_rmw_i32!(rmw_i32_xor, AtomicU32, u32, fetch_xor);
+atomic_rmw_i32!(rmw_i32_8_xor, AtomicU8, u8, fetch_xor);
+atomic_rmw_i32!(rmw_i32_16_xor, AtomicU16, u16, fetch_xor);
+atomic_rmw_i64!(rmw_i64_xor, AtomicU64, u64, fetch_xor);
+atomic_rmw_i64!(rmw_i64_8_xor, AtomicU8, u8, fetch_xor);
+atomic_rmw_i64!(rmw_i64_16_xor, AtomicU16, u16, fetch_xor);
+atomic_rmw_i64!(rmw_i64_32_xor, AtomicU32, u32, fetch_xor);
+atomic_rmw_i32!(rmw_i32_xchg, AtomicU32, u32, swap);
+atomic_rmw_i32!(rmw_i32_8_xchg, AtomicU8, u8, swap);
+atomic_rmw_i32!(rmw_i32_16_xchg, AtomicU16, u16, swap);
+atomic_rmw_i64!(rmw_i64_xchg, AtomicU64, u64, swap);
+atomic_rmw_i64!(rmw_i64_8_xchg, AtomicU8, u8, swap);
+atomic_rmw_i64!(rmw_i64_16_xchg, AtomicU16, u16, swap);
+atomic_rmw_i64!(rmw_i64_32_xchg, AtomicU32, u32, swap);
+
+/// `i32/i64.atomic.rmw*.cmpxchg*`: swaps in the replacement only when the
+/// address still holds the expected value, and yields what it found either way.
+macro_rules! atomic_cmpxchg {
+    ($name:ident, $atomic:ty, $prim:ty, $read:ident, $set:ident, $to:ty) => {
+        pub fn $name(state: &mut VmState) -> Outcome {
+            let (dst, args, offset) = match state.current_instr() {
+                ProcessedInstr::AtomicCmpxchgReg {
+                    dst, args, offset, ..
+                } => (*dst, *args, *offset),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let pos = (state.reg_file().get_i32(args[0].index()) as usize) + (offset as usize);
+            check_alignment!(state, pos, $atomic);
+            let expected = operand::$read(state, &args[1]) as $prim;
+            let replacement = operand::$read(state, &args[2]) as $prim;
+            let found = unsafe {
+                match (*(state.mem_ptr.add(pos) as *const $atomic)).compare_exchange(
+                    expected,
+                    replacement,
+                    atomic::Ordering::SeqCst,
+                    atomic::Ordering::SeqCst,
+                ) {
+                    Ok(found) | Err(found) => found,
+                }
+            };
+            state.reg_file_mut().$set(dst.index(), found as $to);
+            state.pc += 1;
+            advance!(state)
+        }
+    };
+}
+
+macro_rules! atomic_cmpxchg_i32 {
+    ($name:ident, $atomic:ty, $prim:ty) => {
+        atomic_cmpxchg!($name, $atomic, $prim, read_reg_i32, set_i32, i32);
+    };
+}
+
+macro_rules! atomic_cmpxchg_i64 {
+    ($name:ident, $atomic:ty, $prim:ty) => {
+        atomic_cmpxchg!($name, $atomic, $prim, read_reg_i64, set_i64, i64);
+    };
+}
+
+atomic_cmpxchg_i32!(cmpxchg_i32, AtomicU32, u32);
+atomic_cmpxchg_i32!(cmpxchg_i32_8, AtomicU8, u8);
+atomic_cmpxchg_i32!(cmpxchg_i32_16, AtomicU16, u16);
+atomic_cmpxchg_i64!(cmpxchg_i64, AtomicU64, u64);
+atomic_cmpxchg_i64!(cmpxchg_i64_8, AtomicU8, u8);
+atomic_cmpxchg_i64!(cmpxchg_i64_16, AtomicU16, u16);
+atomic_cmpxchg_i64!(cmpxchg_i64_32, AtomicU32, u32);
+
+pub fn atomic_fence(state: &mut VmState) -> Outcome {
+    atomic::fence(atomic::Ordering::SeqCst);
+    state.pc += 1;
+    advance!(state)
+}
+
+pub fn memory_atomic_notify(state: &mut VmState) -> Outcome {
+    let (dst, args, offset) = match state.current_instr() {
+        ProcessedInstr::AtomicWaitReg {
+            dst, args, offset, ..
+        } => (*dst, *args, *offset),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    let pos = (state.reg_file().get_i32(args[0].index()) as usize) + (offset as usize);
+    check_alignment!(state, pos, AtomicU32);
+    let count = state.reg_file().get_i32(args[1].index()) as u32;
+    // The parking table keys on the host address, which is unique across
+    // memories and identical in every thread's instance of a shared one.
+    let addr = unsafe { state.mem_ptr.add(pos) as usize };
+    let woken = atomics::notify(addr, count);
+    state.reg_file_mut().set_i32(dst.index(), woken as i32);
+    state.pc += 1;
+    advance!(state)
+}
+
+/// `memory.atomic.wait32/64`. Both park on the same table; they differ only in
+/// the width they compare.
+macro_rules! atomic_wait {
+    ($name:ident, $atomic:ty, $read:ident) => {
+        pub fn $name(state: &mut VmState) -> Outcome {
+            let (dst, args, offset) = match state.current_instr() {
+                ProcessedInstr::AtomicWaitReg {
+                    dst, args, offset, ..
+                } => (*dst, *args, *offset),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            // Waiting on a memory no other thread can reach would never end.
+            match state.module().mem_addrs.first() {
+                Some(mem) if mem.is_shared() => {}
+                _ => {
+                    state.trap = Some(RuntimeError::AtomicWaitOnUnsharedMemory);
+                    return trap(state);
+                }
+            }
+            let pos = (state.reg_file().get_i32(args[0].index()) as usize) + (offset as usize);
+            check_alignment!(state, pos, $atomic);
+            let expected = state.reg_file().$read(args[1].index()) as _;
+            let timeout = state.reg_file().get_i64(args[2].index());
+            let addr = unsafe { state.mem_ptr.add(pos) as usize };
+            let result = atomics::wait(
+                addr,
+                || {
+                    let current =
+                        unsafe { (*(addr as *const $atomic)).load(atomic::Ordering::SeqCst) };
+                    current == expected
+                },
+                timeout,
+            );
+            state.reg_file_mut().set_i32(dst.index(), result);
+            state.pc += 1;
+            advance!(state)
+        }
+    };
+}
+
+atomic_wait!(memory_atomic_wait32, AtomicU32, get_i32);
+atomic_wait!(memory_atomic_wait64, AtomicU64, get_i64);
+
+// ============================================================================
 // Select handlers
 // ============================================================================
 
@@ -2360,6 +2724,13 @@ pub fn select_handler(instr: &ProcessedInstr) -> Handler {
             HANDLER_IDX_I64_LOAD16_U => mem_load_i64_16u,
             HANDLER_IDX_I64_LOAD32_S => mem_load_i64_32s,
             HANDLER_IDX_I64_LOAD32_U => mem_load_i64_32u,
+            HANDLER_IDX_I32_ATOMIC_LOAD => atomic_load_i32,
+            HANDLER_IDX_I64_ATOMIC_LOAD => atomic_load_i64,
+            HANDLER_IDX_I32_ATOMIC_LOAD8_U => atomic_load_i32_8u,
+            HANDLER_IDX_I32_ATOMIC_LOAD16_U => atomic_load_i32_16u,
+            HANDLER_IDX_I64_ATOMIC_LOAD8_U => atomic_load_i64_8u,
+            HANDLER_IDX_I64_ATOMIC_LOAD16_U => atomic_load_i64_16u,
+            HANDLER_IDX_I64_ATOMIC_LOAD32_U => atomic_load_i64_32u,
             _ => invalid,
         },
         ProcessedInstr::MemoryStoreReg { handler_index, .. } => match *handler_index {
@@ -2372,9 +2743,78 @@ pub fn select_handler(instr: &ProcessedInstr) -> Handler {
             HANDLER_IDX_I64_STORE8 => mem_store_i64_8,
             HANDLER_IDX_I64_STORE16 => mem_store_i64_16,
             HANDLER_IDX_I64_STORE32 => mem_store_i64_32,
+            HANDLER_IDX_I32_ATOMIC_STORE => atomic_store_i32,
+            HANDLER_IDX_I64_ATOMIC_STORE => atomic_store_i64,
+            HANDLER_IDX_I32_ATOMIC_STORE8 => atomic_store_i32_8,
+            HANDLER_IDX_I32_ATOMIC_STORE16 => atomic_store_i32_16,
+            HANDLER_IDX_I64_ATOMIC_STORE8 => atomic_store_i64_8,
+            HANDLER_IDX_I64_ATOMIC_STORE16 => atomic_store_i64_16,
+            HANDLER_IDX_I64_ATOMIC_STORE32 => atomic_store_i64_32,
+            _ => invalid,
+        },
+        ProcessedInstr::AtomicRmwReg { handler_index, .. } => match *handler_index {
+            HANDLER_IDX_RMW_I32_ADD => rmw_i32_add,
+            HANDLER_IDX_RMW_I32_8_ADD => rmw_i32_8_add,
+            HANDLER_IDX_RMW_I32_16_ADD => rmw_i32_16_add,
+            HANDLER_IDX_RMW_I64_ADD => rmw_i64_add,
+            HANDLER_IDX_RMW_I64_8_ADD => rmw_i64_8_add,
+            HANDLER_IDX_RMW_I64_16_ADD => rmw_i64_16_add,
+            HANDLER_IDX_RMW_I64_32_ADD => rmw_i64_32_add,
+            HANDLER_IDX_RMW_I32_SUB => rmw_i32_sub,
+            HANDLER_IDX_RMW_I32_8_SUB => rmw_i32_8_sub,
+            HANDLER_IDX_RMW_I32_16_SUB => rmw_i32_16_sub,
+            HANDLER_IDX_RMW_I64_SUB => rmw_i64_sub,
+            HANDLER_IDX_RMW_I64_8_SUB => rmw_i64_8_sub,
+            HANDLER_IDX_RMW_I64_16_SUB => rmw_i64_16_sub,
+            HANDLER_IDX_RMW_I64_32_SUB => rmw_i64_32_sub,
+            HANDLER_IDX_RMW_I32_AND => rmw_i32_and,
+            HANDLER_IDX_RMW_I32_8_AND => rmw_i32_8_and,
+            HANDLER_IDX_RMW_I32_16_AND => rmw_i32_16_and,
+            HANDLER_IDX_RMW_I64_AND => rmw_i64_and,
+            HANDLER_IDX_RMW_I64_8_AND => rmw_i64_8_and,
+            HANDLER_IDX_RMW_I64_16_AND => rmw_i64_16_and,
+            HANDLER_IDX_RMW_I64_32_AND => rmw_i64_32_and,
+            HANDLER_IDX_RMW_I32_OR => rmw_i32_or,
+            HANDLER_IDX_RMW_I32_8_OR => rmw_i32_8_or,
+            HANDLER_IDX_RMW_I32_16_OR => rmw_i32_16_or,
+            HANDLER_IDX_RMW_I64_OR => rmw_i64_or,
+            HANDLER_IDX_RMW_I64_8_OR => rmw_i64_8_or,
+            HANDLER_IDX_RMW_I64_16_OR => rmw_i64_16_or,
+            HANDLER_IDX_RMW_I64_32_OR => rmw_i64_32_or,
+            HANDLER_IDX_RMW_I32_XOR => rmw_i32_xor,
+            HANDLER_IDX_RMW_I32_8_XOR => rmw_i32_8_xor,
+            HANDLER_IDX_RMW_I32_16_XOR => rmw_i32_16_xor,
+            HANDLER_IDX_RMW_I64_XOR => rmw_i64_xor,
+            HANDLER_IDX_RMW_I64_8_XOR => rmw_i64_8_xor,
+            HANDLER_IDX_RMW_I64_16_XOR => rmw_i64_16_xor,
+            HANDLER_IDX_RMW_I64_32_XOR => rmw_i64_32_xor,
+            HANDLER_IDX_RMW_I32_XCHG => rmw_i32_xchg,
+            HANDLER_IDX_RMW_I32_8_XCHG => rmw_i32_8_xchg,
+            HANDLER_IDX_RMW_I32_16_XCHG => rmw_i32_16_xchg,
+            HANDLER_IDX_RMW_I64_XCHG => rmw_i64_xchg,
+            HANDLER_IDX_RMW_I64_8_XCHG => rmw_i64_8_xchg,
+            HANDLER_IDX_RMW_I64_16_XCHG => rmw_i64_16_xchg,
+            HANDLER_IDX_RMW_I64_32_XCHG => rmw_i64_32_xchg,
+            _ => invalid,
+        },
+        ProcessedInstr::AtomicCmpxchgReg { handler_index, .. } => match *handler_index {
+            HANDLER_IDX_CMPXCHG_I32 => cmpxchg_i32,
+            HANDLER_IDX_CMPXCHG_I32_8 => cmpxchg_i32_8,
+            HANDLER_IDX_CMPXCHG_I32_16 => cmpxchg_i32_16,
+            HANDLER_IDX_CMPXCHG_I64 => cmpxchg_i64,
+            HANDLER_IDX_CMPXCHG_I64_8 => cmpxchg_i64_8,
+            HANDLER_IDX_CMPXCHG_I64_16 => cmpxchg_i64_16,
+            HANDLER_IDX_CMPXCHG_I64_32 => cmpxchg_i64_32,
+            _ => invalid,
+        },
+        ProcessedInstr::AtomicWaitReg { handler_index, .. } => match *handler_index {
+            HANDLER_IDX_MEMORY_ATOMIC_NOTIFY => memory_atomic_notify,
+            HANDLER_IDX_MEMORY_ATOMIC_WAIT32 => memory_atomic_wait32,
+            HANDLER_IDX_MEMORY_ATOMIC_WAIT64 => memory_atomic_wait64,
             _ => invalid,
         },
         ProcessedInstr::MemoryOpsReg { handler_index, .. } => match *handler_index {
+            HANDLER_IDX_ATOMIC_FENCE => atomic_fence,
             HANDLER_IDX_MEMORY_SIZE => mem_size,
             HANDLER_IDX_MEMORY_GROW => mem_grow,
             HANDLER_IDX_MEMORY_COPY => mem_copy,

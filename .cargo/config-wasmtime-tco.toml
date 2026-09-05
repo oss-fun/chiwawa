@@ -1,9 +1,11 @@
-[target.wasm32-wasip1]
-runner = ["wasmtime", "--dir", ".", "--dir", "tests/testdir"]
+[target.wasm32-wasip1-threads]
+# `threads=y` alone implies `preview2=false`, whose stdio polling needs a tty
+# and so fails wherever there is none (CI).
+runner = ["wasmtime", "-S", "threads=y,preview2=y", "--dir", ".", "--dir", "tests/testdir"]
 
 [build]
 target-dir = "target/wasmtime-tco"
 rustflags = [
-  "-C", "target-feature=+multivalue,+tail-call",
+  "-C", "target-feature=+atomics,+multivalue,+tail-call",
   "-C", "link-arg=-s",
 ]

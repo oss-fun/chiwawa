@@ -1,17 +1,28 @@
 //! Linear memory instances and load/store operations.
 
+use crate::shared::Shared;
 use crate::structure::types::*;
 use serde::{Deserialize, Serialize};
 use std::cell::UnsafeCell;
-use std::rc::Rc;
+#[cfg(feature = "threads")]
+use std::sync::Mutex;
 
 /// Reference-counted handle to a memory instance.
 /// Uses UnsafeCell for zero-cost memory access in the interpreter hot path.
-/// Safety: WebAssembly execution is single-threaded and operations don't overlap.
+/// Safety: accesses within one interpreter do not overlap. A memory shared
+/// between wasi-threads threads is the one exception
 #[derive(Clone, Debug)]
 pub struct MemAddr {
-    mem_inst: Rc<UnsafeCell<MemInst>>,
+    mem_inst: Shared<UnsafeCell<MemInst>>,
+    /// Serializes `mem_grow` between threads
+    #[cfg(feature = "threads")]
+    grow_lock: Shared<Mutex<()>>,
 }
+
+#[cfg(feature = "threads")]
+unsafe impl Send for MemAddr {}
+#[cfg(feature = "threads")]
+unsafe impl Sync for MemAddr {}
 
 /// Linear memory instance with bounds tracking.
 #[derive(Debug, Serialize, Deserialize)]
@@ -23,20 +34,33 @@ pub struct MemInst {
 impl MemAddr {
     /// Creates a new memory instance with initial size from type.
     pub fn new(type_: &MemType) -> MemAddr {
-        let min = (type_.0.min * 65536) as usize;
-        let max = type_.0.max.map(|max| max);
+        let min = (type_.limits.min * 65536) as usize;
+        let max = type_.limits.max.map(|max| max);
+        let shared = type_.shared;
+        // Threads cache raw pointers into this buffer, so a shared memory
+        // reserves its declared maximum here and never reallocates on growth.
+        let capacity = if shared {
+            max.map_or(min, |max| (max as usize) * 65536)
+        } else {
+            min
+        };
         MemAddr {
-            mem_inst: Rc::new(UnsafeCell::new(MemInst {
-                _type_: MemType(Limits {
-                    min: min as u32,
-                    max,
-                }),
+            mem_inst: Shared::new(UnsafeCell::new(MemInst {
+                _type_: MemType {
+                    limits: Limits {
+                        min: min as u32,
+                        max,
+                    },
+                    shared,
+                },
                 data: {
-                    let mut vec = Vec::with_capacity(min);
+                    let mut vec = Vec::with_capacity(capacity);
                     vec.resize(min, 0);
                     vec
                 },
             })),
+            #[cfg(feature = "threads")]
+            grow_lock: Shared::new(Mutex::new(())),
         }
     }
 
@@ -79,6 +103,13 @@ impl MemAddr {
         mem.data.as_mut_ptr()
     }
 
+    #[inline]
+    pub fn is_shared(&self) -> bool {
+        // Safety: Single-threaded access
+        let mem = unsafe { &*self.mem_inst.get() };
+        mem._type_.shared
+    }
+
     /// Returns current memory size in pages (64KB each).
     #[inline]
     pub fn mem_size(&self) -> i32 {
@@ -89,17 +120,30 @@ impl MemAddr {
 
     /// Grows memory by the given number of pages. Returns previous size or -1 on failure.
     pub fn mem_grow(&self, size: i32) -> i32 {
+        // Only one thread may extend the memory at a time.
+        #[cfg(feature = "threads")]
+        let _grow_guard = self
+            .grow_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         let prev_size = self.mem_size();
         let new = prev_size + size;
 
         // Safety: Single-threaded access
         let mem = unsafe { &*self.mem_inst.get() };
-        let max_pages = mem._type_.0.max;
+        let max_pages = mem._type_.limits.max;
 
         if let Some(max) = max_pages {
             if new > max as i32 {
                 return -1;
             }
+        }
+
+        // Growing a shared memory past its reservation would move the buffer
+        // out from under the pointers other threads have cached.
+        if mem._type_.shared && (new as usize) * 65536 > mem.data.capacity() {
+            return -1;
         }
 
         if new > 65536 {

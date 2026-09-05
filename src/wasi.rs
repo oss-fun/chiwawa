@@ -23,11 +23,15 @@
 //! ## Module Organization
 //!
 //! - [`passthrough`]: WASI function implementations delegating to wasi-libc
+//! - [`threads`]: wasi-threads `thread-spawn`, which interposes rather than
+//!   forwarding to wasi-libc
 //! - [`types`]: WASI type definitions
 //! - [`error`]: WASI error codes and handling
 
 pub mod error;
 pub mod passthrough;
+#[cfg(feature = "threads")]
+pub mod threads;
 pub mod types;
 
 pub use error::*;

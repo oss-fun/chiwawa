@@ -207,4 +207,13 @@ impl Externval {
             None
         }
     }
+
+    /// Extracts memory address if this is a Mem variant.
+    pub fn as_mem(self) -> Option<MemAddr> {
+        if let Externval::Mem(x) = self {
+            Some(x)
+        } else {
+            None
+        }
+    }
 }

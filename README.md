@@ -53,6 +53,25 @@ touch ./checkpoint.trigger # Trigger of Checkpointing
 # Restore from checkpoint
 somethingWasmRuntime target/tco-threads/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm --restore checkpoint.bin
 ```
+## wasi-threads
+
+Chiwawa runs multi-threaded guests on a host runtime that provides
+wasi-threads: one interpreter instance per host thread, all sharing a single
+linear memory. Needs the `wasm32-wasip1-threads` target, so the `-threads`
+build aliases enable the `threads` feature.
+
+```bash
+# Use cargo build-legacy-threads if the host runtime lacks tail-call support.
+cargo build-tco-threads
+
+# The host runtime needs its own switch too (`-S threads=y` on wasmtime).
+somethingWasmRuntime target/tco-threads/wasm32-wasip1-threads/release/chiwawa.wasm guest.wasm --threads
+```
+
+The guest must be built for wasi-threads (`wasm32-wasi-threads-clang -pthread`).
+Without `--threads` thread creation fails and the guest runs single-threaded,
+and `--threads` cannot be combined with `--cr` or `--restore`.
+
 ## Tracing
 
 Tracing requires the `trace` feature to be enabled at compile time. It is

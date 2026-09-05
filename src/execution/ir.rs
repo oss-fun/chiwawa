@@ -168,6 +168,30 @@ pub enum ProcessedInstr {
         value: Reg,
         offset: u64,
     },
+    /// `i32/i64.atomic.rmw*`: applies the operation at `addr` and yields the
+    /// value that was there before.
+    AtomicRmwReg {
+        handler_index: usize,
+        dst: Reg,
+        addr: I32RegOperand,
+        value: Reg,
+        offset: u64,
+    },
+    AtomicCmpxchgReg {
+        handler_index: usize,
+        dst: Reg,
+        /// `[addr, expected, replacement]`.
+        args: [Reg; 3],
+        offset: u64,
+    },
+    /// `memory.atomic.wait32/64` and `memory.atomic.notify`.
+    AtomicWaitReg {
+        handler_index: usize,
+        dst: Reg,
+        /// `[addr, expected, timeout]`; notify leaves the last slot unused.
+        args: [Reg; 3],
+        offset: u64,
+    },
     MemoryOpsReg {
         handler_index: usize,
         dst: Option<Reg>,
@@ -269,6 +293,9 @@ impl ProcessedInstr {
             ProcessedInstr::ConversionReg { handler_index, .. } => *handler_index,
             ProcessedInstr::MemoryLoadReg { handler_index, .. } => *handler_index,
             ProcessedInstr::MemoryStoreReg { handler_index, .. } => *handler_index,
+            ProcessedInstr::AtomicRmwReg { handler_index, .. } => *handler_index,
+            ProcessedInstr::AtomicCmpxchgReg { handler_index, .. } => *handler_index,
+            ProcessedInstr::AtomicWaitReg { handler_index, .. } => *handler_index,
             ProcessedInstr::MemoryOpsReg { handler_index, .. } => *handler_index,
             ProcessedInstr::SelectReg { handler_index, .. } => *handler_index,
             ProcessedInstr::GlobalGetReg { handler_index, .. } => *handler_index,

@@ -16,9 +16,9 @@
 //! - **Imports/Exports**: Module interface
 
 use crate::execution::ir::{self, ProcessedInstr};
+use crate::shared::Shared;
 use crate::structure::instructions::*;
 use crate::structure::types::*;
-use std::rc::Rc;
 
 /// Function definition within a module.
 ///
@@ -27,11 +27,11 @@ use std::rc::Rc;
 pub struct Func {
     pub type_: TypeIdx,
     pub locals: Vec<(u32, ValueType)>,
-    pub body: Rc<Vec<ProcessedInstr>>,
+    pub body: Shared<Vec<ProcessedInstr>>,
     pub reg_allocation: Option<crate::execution::regs::RegAllocation>,
     /// v2 dispatcher handler array. Built once at parse time, length =
     /// body.len() + 1 (last entry is `halt` sentinel).
-    pub handlers: Rc<Vec<ir::Handler>>,
+    pub handlers: Shared<Vec<ir::Handler>>,
     /// Immediates too wide to encode inline (i64/f64). 32-bit immediates are
     /// carried in the instruction itself.
     pub wide_consts: Box<[u64]>,
@@ -160,6 +160,10 @@ pub enum WasiFuncType {
     SockRecv,
     SockSend,
     SockShutdown,
+    /// `wasi::thread-spawn` from the wasi-threads proposal, imported from the
+    /// `wasi` module rather than `wasi_snapshot_preview1`. Handled by
+    /// `src/wasi/threads.rs`, not by passthrough.
+    ThreadSpawn,
 }
 
 impl WasiFuncType {
@@ -543,6 +547,10 @@ impl WasiFuncType {
                 ],
                 results: vec![ValueType::NumType(NumType::I32)], // Returns error code
             },
+            WasiFuncType::ThreadSpawn => FuncType {
+                params: vec![ValueType::NumType(NumType::I32)], // start_arg
+                results: vec![ValueType::NumType(NumType::I32)], // Thread id, or negative errno
+            },
         }
     }
 
@@ -572,7 +580,7 @@ pub enum ExportDesc {
 pub struct Module {
     _name: String,
     /// Function type signatures.
-    pub types: Rc<Vec<FuncType>>,
+    pub types: Shared<Vec<FuncType>>,
     /// Function definitions (including imported functions).
     pub funcs: Vec<Func>,
     /// Table definitions.
@@ -601,7 +609,7 @@ impl Module {
     pub fn new(name: &str) -> Self {
         Module {
             _name: name.to_string(),
-            types: Rc::new(Vec::new()),
+            types: Shared::new(Vec::new()),
             funcs: Vec::new(),
             tables: Vec::new(),
             mems: Vec::new(),
