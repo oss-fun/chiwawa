@@ -19,6 +19,7 @@ use crate::execution::ir::{self, ProcessedInstr};
 use crate::shared::Shared;
 use crate::structure::instructions::*;
 use crate::structure::types::*;
+use std::cell::UnsafeCell;
 
 /// Function definition within a module.
 ///
@@ -29,12 +30,38 @@ pub struct Func {
     pub locals: Vec<(u32, ValueType)>,
     pub body: Shared<Vec<ProcessedInstr>>,
     pub reg_allocation: Option<crate::execution::regs::RegAllocation>,
-    /// v2 dispatcher handler array. Built once at parse time, length =
-    /// body.len() + 1 (last entry is `halt` sentinel).
-    pub handlers: Shared<Vec<ir::Handler>>,
+    pub handlers: Shared<HandlerTable>,
     /// Immediates too wide to encode inline (i64/f64). 32-bit immediates are
     /// carried in the instruction itself.
     pub wide_consts: Box<[u64]>,
+}
+
+/// The checkpoint monitor fills it to stop the interpreter
+#[derive(Debug)]
+pub struct HandlerTable(UnsafeCell<Vec<ir::Handler>>);
+
+unsafe impl Send for HandlerTable {}
+unsafe impl Sync for HandlerTable {}
+
+impl HandlerTable {
+    pub fn new(handlers: Vec<ir::Handler>) -> Self {
+        HandlerTable(UnsafeCell::new(handlers))
+    }
+
+    #[inline]
+    pub fn as_ptr(&self) -> *const ir::Handler {
+        unsafe { (*self.0.get()).as_ptr() }
+    }
+
+    pub fn fill(&self, handler: ir::Handler) {
+        use std::sync::atomic::{AtomicPtr, Ordering};
+        let entries = unsafe { &mut *self.0.get() };
+        let base = entries.as_mut_ptr() as *mut AtomicPtr<()>;
+        let target = handler as *mut ();
+        for i in 0..entries.len() {
+            unsafe { (*base.add(i)).store(target, Ordering::Relaxed) };
+        }
+    }
 }
 
 /// Table definition.

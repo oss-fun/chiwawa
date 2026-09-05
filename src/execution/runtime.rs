@@ -187,30 +187,12 @@ impl Runtime {
                 _ => (std::ptr::null(), 0, std::ptr::null(), std::ptr::null()),
             };
 
-        let handlers_ptr = {
-            cfg_if::cfg_if! {
-                if #[cfg(all(
-                    target_arch = "wasm32",
-                    target_os = "wasi",
-                    target_env = "p1",
-                    target_feature = "atomics"
-                ))] {
-                    match &frame_stack.handler_ctrl {
-                        Some(ctrl) => ctrl.handlers_ptr(),
-                        None => code_handlers_ptr,
-                    }
-                } else {
-                    code_handlers_ptr
-                }
-            }
-        };
-
         VmState {
             reg_file: reg_file_ptr,
             pc: frame_stack.ip,
             instrs: body_ptr,
             instrs_len: body_len,
-            handlers: handlers_ptr,
+            handlers: code_handlers_ptr,
             mem_ptr: frame_stack.cached_mem_ptr.unwrap_or(std::ptr::null_mut()),
             code: code_ptr,
             module: module_ptr,
@@ -245,47 +227,23 @@ impl Runtime {
             if self.enable_checkpoint {
                 static INIT: Once = Once::new();
                 INIT.call_once(|| {
-                    migration::setup_checkpoint_monitor();
+                    // One table per function, shared by every thread's instance.
+                    let tables = self
+                        .module_inst
+                        .func_addrs
+                        .iter()
+                        .filter_map(|func_addr| match func_addr.read_lock() {
+                            FuncInst::RuntimeFunc { code, .. } => Some(&*code.handlers as *const _),
+                            _ => None,
+                        })
+                        .collect();
+                    migration::setup_checkpoint_monitor(migration::MonitoredTables::new(tables));
                 });
             }
         }
 
-        // Set checkpoint enabled flag for initial frame stack
-        #[cfg(all(
-            target_arch = "wasm32",
-            target_os = "wasi",
-            target_env = "p1",
-            target_feature = "atomics"
-        ))]
-        let entry_ctrl = if self.enable_checkpoint {
-            let func_idx = self
-                .stacks
-                .activation_frame_stack
-                .first()
-                .map(|f| f.func_idx);
-            match func_idx {
-                Some(idx) => match self.module_inst.func_addrs[idx as usize].read_lock() {
-                    FuncInst::RuntimeFunc { code, .. } => {
-                        Some(migration::HandlerControl::new(&code.handlers))
-                    }
-                    _ => None,
-                },
-                None => None,
-            }
-        } else {
-            None
-        };
         if let Some(frame_stack) = self.stacks.activation_frame_stack.first_mut() {
             frame_stack.enable_checkpoint = self.enable_checkpoint;
-            #[cfg(all(
-                target_arch = "wasm32",
-                target_os = "wasi",
-                target_env = "p1",
-                target_feature = "atomics"
-            ))]
-            if frame_stack.handler_ctrl.is_none() {
-                frame_stack.handler_ctrl = entry_ctrl;
-            }
         }
 
         // One state for the whole run: frame switches update it in place, so a
