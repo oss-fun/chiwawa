@@ -17,7 +17,7 @@ jobs:
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@nightly
       with:
-        target: wasm32-wasip1
+        targets: wasm32-wasip1, wasm32-wasip1-threads
         components: rustfmt
 
     - name: Checkout
@@ -34,6 +34,9 @@ jobs:
           target/
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+    - name: Install wabt
+      run: sudo apt-get update && sudo apt-get install -y wabt
+
     - name: Install wasmtime
       run: |
         curl -L https://github.com/bytecodealliance/wasmtime/releases/download/v35.0.0/wasmtime-v35.0.0-x86_64-linux.tar.xz | tar -xJ
@@ -42,10 +45,21 @@ jobs:
     - name: Build (wasm32-wasip1, tco)
       run: cargo build-tco --verbose
 
+    - name: Fetch proposal test scripts
+      run: ./tests/proposals/fetch.sh
+
     - name: Run tests (wasm32-wasip1, wasmtime + tco)
       run: |
         echo "Running wasm32-wasip1 tests with wasmtime (tco)"
         cargo test-wasmtime-tco --verbose
+
+    - name: Fetch the wasi-threads testsuite
+      run: ./tests/wasi-threads/fetch.sh
+
+    - name: Run the wasi-threads testsuite
+      run: |
+        cargo build-tco-threads
+        ./tests/wasi-threads/run.sh
     
     - name: Check formatting
       run: cargo fmt --all --check

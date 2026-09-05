@@ -1,9 +1,7 @@
 #!/bin/sh
 # Runs the wasi-threads proposal's own testsuite against chiwawa.
 #
-# The modules are not vendored: they are fetched from the upstream repository
-# at the commit pinned below, into `testsuite/` next to this script. Delete
-# that directory to re-download.
+# `fetch.sh` downloads the modules; this script only runs them.
 #
 # Each module runs as its own process: the suite reports its result through
 # `proc_exit`, so the exit code is the assertion and an in-process `cargo test`
@@ -17,18 +15,6 @@
 
 set -u
 
-# https://github.com/WebAssembly/wasi-threads/tree/main/test/testsuite
-UPSTREAM=WebAssembly/wasi-threads
-COMMIT=6b4e2e50a3929d9ebc3b1a54e36ab6f0c0ebc677
-
-MODULES="wasi_threads_exit_main_block wasi_threads_exit_main_busy
-wasi_threads_exit_main_wasi wasi_threads_exit_main_wasi_read
-wasi_threads_exit_nonmain_block wasi_threads_exit_nonmain_busy
-wasi_threads_exit_nonmain_wasi wasi_threads_exit_nonmain_wasi_read
-wasi_threads_noop wasi_threads_return_main_block wasi_threads_return_main_busy
-wasi_threads_return_main_wasi wasi_threads_return_main_wasi_read
-wasi_threads_spawn"
-
 DIR=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$DIR/../.." && pwd)
 SUITE="$DIR/testsuite"
@@ -36,7 +22,7 @@ CHIWAWA=${CHIWAWA:-$ROOT/target/tco-threads/wasm32-wasip1-threads/release/chiwaw
 TIMEOUT=${TIMEOUT:-30}
 RUNTIME=${RUNTIME:-"wasmtime run -S threads=y"}
 
-for tool in curl wat2wasm wasmtime; do
+for tool in wat2wasm wasmtime; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "error: $tool not found in PATH" >&2
         exit 1
@@ -49,23 +35,11 @@ done
     exit 1
 }
 
-# Fetch on first run, or whenever the pinned commit changes.
-if [ ! -f "$SUITE/.commit" ] || [ "$(cat "$SUITE/.commit")" != "$COMMIT" ]; then
-    echo "fetching testsuite from $UPSTREAM at $COMMIT"
-    rm -rf "$SUITE"
-    mkdir -p "$SUITE"
-    base="https://raw.githubusercontent.com/$UPSTREAM/$COMMIT/test/testsuite"
-    for name in $MODULES; do
-        curl -sfL "$base/$name.wat" -o "$SUITE/$name.wat" || {
-            echo "error: failed to fetch $name.wat" >&2
-            rm -rf "$SUITE"
-            exit 1
-        }
-        # A manifest is optional: without one the module must exit 0.
-        curl -sfL "$base/$name.json" -o "$SUITE/$name.json" || true
-    done
-    echo "$COMMIT" >"$SUITE/.commit"
-fi
+[ -f "$SUITE/.commit" ] || {
+    echo "error: testsuite not downloaded" >&2
+    echo "       run $DIR/fetch.sh" >&2
+    exit 1
+}
 
 WORK=$(mktemp -d)
 
@@ -77,7 +51,8 @@ trap 'kill "$writer" 2>/dev/null; rm -rf "$WORK"' EXIT
 passed=0
 failed=0
 
-for name in $MODULES; do
+for wat in "$SUITE"/*.wat; do
+    name=$(basename "$wat" .wat)
     expected=0
     if [ -f "$SUITE/$name.json" ]; then
         expected=$(sed -n 's/.*"exit_code"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$SUITE/$name.json")

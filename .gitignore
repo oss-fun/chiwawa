@@ -13,3 +13,6 @@ CLAUDE.md
 # Prebuilt runtimes and AOT modules used for comparison
 /bin/
 /tests/wasi-threads/testsuite
+/tests/proposals/threads
+/tests/proposals/.commit
+/tests/proposals/.module.wasm
