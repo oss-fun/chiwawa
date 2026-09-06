@@ -49,6 +49,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::{Condvar, Mutex, MutexGuard};
 
 const CHECKPOINT_TRIGGER_FILE: &str = "./checkpoint.trigger";
 
@@ -126,8 +127,6 @@ cfg_if::cfg_if! {
     }
 }
 
-/// Complete runtime state for checkpoint serialization.
-///
 /// Contains all information needed to restore execution:
 /// - Call stack and register state
 /// - Linear memory contents (LZ4 compressed)
@@ -137,73 +136,123 @@ cfg_if::cfg_if! {
 /// segments during module instantiation.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SerializableState {
-    pub stacks: Stacks,
     pub memory_data_compressed: Vec<u8>,
-    pub global_values: Vec<Val>,
+    pub threads: Vec<Vec<u8>>,
 }
 
-/// Serializes runtime state to a checkpoint file.
-///
-/// Captures memory, globals, and stack state for later restoration.
-pub fn checkpoint<P: AsRef<Path>>(
+#[derive(Serialize, Deserialize)]
+pub struct ThreadState {
+    pub stacks: Stacks,
+    pub globals: Vec<Val>,
+}
+pub fn serialize_thread(
     stacks: &Stacks,
-    mem_addrs: &[MemAddr],
     global_addrs: &[GlobalAddr],
+) -> Result<Vec<u8>, RuntimeError> {
+    let state = ThreadState {
+        stacks: stacks.clone(),
+        globals: global_addrs.iter().map(|global| global.get()).collect(),
+    };
+    bincode::serialize(&state).map_err(|e| RuntimeError::SerializationError(e.to_string()))
+}
+
+struct Rendezvous {
+    live_threads: usize,
+    arrived: Vec<Vec<u8>>,
+    written: bool,
+}
+
+static RENDEZVOUS: Mutex<Rendezvous> = Mutex::new(Rendezvous {
+    live_threads: 0,
+    arrived: Vec::new(),
+    written: false,
+});
+static ARRIVED: Condvar = Condvar::new();
+
+impl Rendezvous {
+    fn all_arrived(&self) -> bool {
+        !self.arrived.is_empty() && self.arrived.len() >= self.live_threads
+    }
+}
+
+fn lock_rendezvous() -> MutexGuard<'static, Rendezvous> {
+    RENDEZVOUS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+pub fn thread_started() {
+    lock_rendezvous().live_threads += 1;
+}
+
+pub fn thread_finished() {
+    let mut rendezvous = lock_rendezvous();
+    rendezvous.live_threads = rendezvous.live_threads.saturating_sub(1);
+    let all_arrived = rendezvous.all_arrived();
+    drop(rendezvous);
+    if all_arrived {
+        ARRIVED.notify_all();
+    }
+}
+
+pub fn rendezvous_and_checkpoint<P: AsRef<Path>>(
+    thread: Vec<u8>,
+    mem_addrs: &[MemAddr],
+    output_path: P,
+) -> Result<(), RuntimeError> {
+    let mut rendezvous = lock_rendezvous();
+    rendezvous.arrived.push(thread);
+    loop {
+        if rendezvous.written {
+            return Ok(());
+        }
+        if rendezvous.all_arrived() {
+            let threads = std::mem::take(&mut rendezvous.arrived);
+            let result = write_checkpoint(threads, mem_addrs, output_path);
+            rendezvous.written = true;
+            drop(rendezvous);
+            ARRIVED.notify_all();
+            return result;
+        }
+        rendezvous = ARRIVED
+            .wait(rendezvous)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    }
+}
+
+fn write_checkpoint<P: AsRef<Path>>(
+    threads: Vec<Vec<u8>>,
+    mem_addrs: &[MemAddr],
     output_path: P,
 ) -> Result<(), RuntimeError> {
     println!("Checkpointing state to {:?}...", output_path.as_ref());
 
-    // 1. Gather Memory state (LZ4 compressed)
-    let (memory_data_compressed, mem_raw_size) = if let Some(mem_addr) = mem_addrs.get(0) {
-        let raw = mem_addr.get_data();
-        let raw_len = raw.len();
-        let compressed = lz4_flex::compress_prepend_size(&raw);
-        (compressed, raw_len)
-    } else {
-        (Vec::new(), 0)
+    let (memory_data_compressed, mem_raw_size) = match mem_addrs.first() {
+        Some(mem_addr) => {
+            let raw = mem_addr.get_data();
+            let raw_len = raw.len();
+            (lz4_flex::compress_prepend_size(&raw), raw_len)
+        }
+        None => (Vec::new(), 0),
     };
 
-    // 2. Gather Global state
-    let global_values = global_addrs
-        .iter()
-        .map(|global_addr| Ok(global_addr.get()))
-        .collect::<Result<Vec<Val>, RuntimeError>>()?;
-
-    // 3. Assemble state
-    // Note: Register file is already compact because restore_offsets() truncates
-    // register vectors on function return, so no checkpoint-time compaction needed.
+    // No compaction: `restore_offsets` truncates the register file on every return.
     let state = SerializableState {
-        stacks: stacks.clone(),
         memory_data_compressed,
-        global_values,
+        threads,
     };
 
-    // 6. Serialize and write (with per-component size diagnostics)
-    let reg_file_size = bincode::serialize(&state.stacks.reg_file)
-        .map(|v| v.len())
-        .unwrap_or(0);
-    let frames_count = state.stacks.activation_frame_stack.len();
-    let frames_size = bincode::serialize(&state.stacks.activation_frame_stack)
-        .map(|v| v.len())
-        .unwrap_or(0);
-    let _stacks_size = reg_file_size + frames_size;
-    let memory_size = bincode::serialize(&state.memory_data_compressed)
-        .map(|v| v.len())
-        .unwrap_or(0);
-    let globals_size = bincode::serialize(&state.global_values)
-        .map(|v| v.len())
-        .unwrap_or(0);
     println!("Checkpoint component sizes:");
-    println!("  reg_file:           {} bytes", reg_file_size);
     println!(
-        "  frames:             {} bytes ({} frames)",
-        frames_size, frames_count
+        "  threads:            {} ({} bytes)",
+        state.threads.len(),
+        state.threads.iter().map(Vec::len).sum::<usize>()
     );
     println!(
         "  memory_data:        {} bytes (raw {} bytes, LZ4 compressed)",
-        memory_size, mem_raw_size
+        state.memory_data_compressed.len(),
+        mem_raw_size
     );
-    println!("  global_values:      {} bytes", globals_size);
 
     let encoded: Vec<u8> =
         bincode::serialize(&state).map_err(|e| RuntimeError::SerializationError(e.to_string()))?;
@@ -215,7 +264,7 @@ pub fn checkpoint<P: AsRef<Path>>(
     file.write_all(&encoded)
         .map_err(|e| RuntimeError::CheckpointSaveError(e.to_string()))?;
 
-    println!("Checkpoint successful.");
+    println!("Checkpoint successful ({} threads).", state.threads.len());
     Ok(())
 }
 
@@ -251,9 +300,20 @@ pub fn restore<P: AsRef<Path>>(
         eprintln!("Warning: Checkpoint contains memory data, but module has no memory instance.");
     }
 
-    // 4. Restore global state into module_inst
-    if module_inst.global_addrs.len() == state.global_values.len() {
-        for (global_addr, value) in module_inst.global_addrs.iter().zip(state.global_values) {
+    // 4. Restore globals
+    let Some(encoded) = state.threads.first() else {
+        return Err(RuntimeError::CheckpointLoadError(
+            "checkpoint holds no threads".to_string(),
+        ));
+    };
+    let mut thread: ThreadState = bincode::deserialize(encoded)
+        .map_err(|e| RuntimeError::DeserializationError(e.to_string()))?;
+    if module_inst.global_addrs.len() == thread.globals.len() {
+        for (global_addr, value) in module_inst
+            .global_addrs
+            .iter()
+            .zip(thread.globals.drain(..))
+        {
             global_addr.set(value)?;
         }
         println!("Global state restored into module instance.");
@@ -261,7 +321,13 @@ pub fn restore<P: AsRef<Path>>(
         eprintln!(
             "Warning: Mismatch in global variable count between module ({}) and checkpoint ({}). Globals not restored.",
             module_inst.global_addrs.len(),
-            state.global_values.len()
+            thread.globals.len()
+        );
+    }
+    if state.threads.len() > 1 {
+        eprintln!(
+            "Warning: checkpoint holds {} threads; only the first is restored.",
+            state.threads.len()
         );
     }
 
@@ -269,11 +335,12 @@ pub fn restore<P: AsRef<Path>>(
     // pointer to the freshly restored memory. The body and handler array are
     // not stored per frame; `execute_frame` reads them via `func_idx`.
     let mem_ptr = module_inst.mem_addrs.first().map(|m| m.data_ptr());
-    for frame_stack in state.stacks.activation_frame_stack.iter_mut() {
+    let mut stacks = thread.stacks;
+    for frame_stack in stacks.activation_frame_stack.iter_mut() {
         frame_stack.cached_mem_ptr = mem_ptr;
     }
     println!("Frame memory references restored.");
 
     println!("Restore successful (state applied to module). Returning Stacks.");
-    Ok(state.stacks)
+    Ok(stacks)
 }

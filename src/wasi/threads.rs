@@ -12,6 +12,7 @@
 
 use crate::error::RuntimeError;
 use crate::execution::mem::MemAddr;
+use crate::execution::migration;
 use crate::execution::module::{ImportObjects, ModuleInst};
 use crate::execution::runtime::{run_start_section, Runtime, RuntimeConfig};
 use crate::execution::value::{Externval, Num, Val};
@@ -89,13 +90,20 @@ impl ThreadContext {
     pub fn spawn(self: &Arc<Self>, start_arg: i32) -> Result<i32, RuntimeError> {
         let tid = self.next_tid.fetch_add(1, Ordering::Relaxed);
         let ctx = Arc::clone(self);
+        // Counted before the thread starts for checkpointing.
+        migration::thread_started();
         std::thread::Builder::new()
             .spawn(move || {
-                if let Err(e) = ctx.run(tid, start_arg) {
+                let result = ctx.run(tid, start_arg);
+                migration::thread_finished();
+                if let Err(e) = result {
                     eprintln!("Thread {} failed: {:?}", tid, e);
                 }
             })
-            .map_err(|_| RuntimeError::ExecutionFailed("failed to spawn thread"))?;
+            .map_err(|_| {
+                migration::thread_finished();
+                RuntimeError::ExecutionFailed("failed to spawn thread")
+            })?;
         Ok(tid)
     }
 

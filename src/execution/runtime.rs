@@ -285,15 +285,12 @@ impl Runtime {
             match module_level_instr_result {
                 Err(RuntimeError::CheckpointRequested) => {
                     println!("Runtime handling checkpoint request...");
-                    let checkpoint_path = Path::new("./checkpoint.bin");
-                    let mem_addrs = &self.module_inst.mem_addrs;
-                    let global_addrs = &self.module_inst.global_addrs;
-
-                    match migration::checkpoint(
-                        &self.stacks,
-                        mem_addrs,
-                        global_addrs,
-                        checkpoint_path,
+                    let thread =
+                        migration::serialize_thread(&self.stacks, &self.module_inst.global_addrs)?;
+                    match migration::rendezvous_and_checkpoint(
+                        thread,
+                        &self.module_inst.mem_addrs,
+                        Path::new("./checkpoint.bin"),
                     ) {
                         Ok(_) => {
                             println!("Checkpoint successful (Runtime).");

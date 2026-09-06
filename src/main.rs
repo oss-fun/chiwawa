@@ -253,6 +253,8 @@ fn main() -> Result<()> {
         thread_ctx,
     };
 
+    migration::thread_started();
+
     if let Some(restore_path) = cli.restore {
         println!("Restoring from checkpoint: {}", restore_path);
 
@@ -289,6 +291,7 @@ fn main() -> Result<()> {
         }
     }
 
+    migration::thread_finished();
     Ok(())
 }
 
