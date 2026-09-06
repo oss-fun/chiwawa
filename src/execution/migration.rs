@@ -84,6 +84,7 @@ cfg_if::cfg_if! {
             thread::spawn(move || loop {
                 if std::path::Path::new(CHECKPOINT_TRIGGER_FILE).exists() {
                     tables.fill_all(crate::execution::handlers::checkpoint_trap);
+                    crate::execution::atomics::interrupt_waiters();
                     let _ = std::fs::remove_file(CHECKPOINT_TRIGGER_FILE);
                 }
                 thread::sleep(Duration::from_millis(100));

@@ -401,16 +401,7 @@ pub fn trap(_state: &mut VmState) -> Outcome {
 }
 
 /// Sentinel handler reporting a checkpoint request. Reached by handler-array
-/// patching on atomics, and from `next_handler` under `tco` without atomics.
-#[cfg(any(
-    feature = "tco",
-    all(
-        target_arch = "wasm32",
-        target_os = "wasi",
-        target_env = "p1",
-        target_feature = "atomics"
-    )
-))]
+/// patching, by `next_handler` under `tco`, and by an interrupted atomic wait.
 #[inline(never)]
 pub fn checkpoint_trap(state: &mut VmState) -> Outcome {
     state.trap = Some(crate::error::RuntimeError::CheckpointRequested);
@@ -1709,9 +1700,15 @@ macro_rules! atomic_wait {
                 },
                 timeout,
             );
-            state.reg_file_mut().set_i32(dst.index(), result);
-            state.pc += 1;
-            advance!(state)
+            match result {
+                atomics::WaitOutcome::Done(result) => {
+                    state.reg_file_mut().set_i32(dst.index(), result);
+                    state.pc += 1;
+                    advance!(state)
+                }
+                // `pc` stays put, so the restore runs this instruction again.
+                atomics::WaitOutcome::Interrupted => checkpoint_trap(state),
+            }
         }
     };
 }
