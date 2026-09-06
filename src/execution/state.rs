@@ -134,18 +134,14 @@ pub enum ModuleLevelInstr {
     },
 }
 
-/// VM execution state - holds all runtime state for WebAssembly execution.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct VMState {
+pub struct Stacks {
     pub reg_file: RegFile,
     pub activation_frame_stack: Vec<FrameStack>,
 }
 
-/// Type alias for backward compatibility.
-pub type Stacks = VMState;
-
-impl VMState {
-    pub fn new(funcaddr: &FuncAddr, params: Vec<Val>) -> Result<VMState, RuntimeError> {
+impl Stacks {
+    pub fn new(funcaddr: &FuncAddr, params: Vec<Val>) -> Result<Stacks, RuntimeError> {
         let func_inst_guard = funcaddr.read_lock();
         match &*func_inst_guard {
             FuncInst::RuntimeFunc {
@@ -184,7 +180,7 @@ impl VMState {
                     cached_mem_ptr,
                 };
 
-                Ok(VMState {
+                Ok(Stacks {
                     reg_file,
                     activation_frame_stack: vec![initial_frame],
                 })
