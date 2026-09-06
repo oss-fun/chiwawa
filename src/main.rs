@@ -150,14 +150,6 @@ fn main() -> Result<()> {
         );
     }
 
-    // Threads and checkpoint/restore are not usable together: a checkpoint
-    // captures a single interpreter's stacks, not every thread's.
-    if cli.enable_threads && (cli.enable_checkpoint || cli.restore.is_some()) {
-        return Err(anyhow::anyhow!(
-            "--threads cannot be combined with --cr or --restore"
-        ));
-    }
-
     // Warn if --stats is used but stats feature is not enabled
     #[cfg(not(feature = "stats"))]
     if cli.enable_stats {
