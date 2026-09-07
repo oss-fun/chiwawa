@@ -400,6 +400,12 @@ pub fn trap(_state: &mut VmState) -> Outcome {
     Outcome::Trap
 }
 
+#[inline(never)]
+pub fn unaligned_trap(state: &mut VmState) -> Outcome {
+    state.trap = Some(RuntimeError::UnalignedAtomicAccess);
+    Outcome::Trap
+}
+
 /// Sentinel handler reporting a checkpoint request. Reached by handler-array
 /// patching, by `next_handler` under `tco`, and by an interrupted atomic wait.
 #[inline(never)]
@@ -1433,15 +1439,27 @@ mem_store!(mem_store_i64_32, read_reg_i64, u32, |v: i64| v as u32);
 // on a misaligned access, and Rust's atomic types make it UB.
 // ============================================================================
 
-/// Traps unless `$pos` is naturally aligned for `$atomic`. Natural alignment
-/// is the access width, which is the atomic type's own size.
-macro_rules! check_alignment {
-    ($state:expr, $pos:expr, $atomic:ty) => {
-        if $pos % std::mem::size_of::<$atomic>() != 0 {
-            $state.trap = Some(RuntimeError::UnalignedAtomicAccess);
-            return trap($state);
+#[cfg(feature = "tco")]
+macro_rules! advance_or_trap {
+    ($state:expr, $trapped:expr, $sentinel:expr) => {{
+        let h: Handler = if $trapped {
+            $sentinel
+        } else {
+            unsafe { crate::execution::handlers::next_handler($state) }
+        };
+        h($state)
+    }};
+}
+
+#[cfg(not(feature = "tco"))]
+macro_rules! advance_or_trap {
+    ($state:expr, $trapped:expr, $sentinel:expr) => {{
+        if $trapped {
+            $sentinel($state)
+        } else {
+            Outcome::Continue
         }
-    };
+    }};
 }
 
 macro_rules! atomic_load {
@@ -1454,13 +1472,15 @@ macro_rules! atomic_load {
                 _ => unsafe { std::hint::unreachable_unchecked() },
             };
             let pos = (operand::read_i32(state, &addr) as usize) + (offset as usize);
-            check_alignment!(state, pos, $atomic);
-            let v = unsafe {
-                (*(state.mem_ptr.add(pos) as *const $atomic)).load(atomic::Ordering::SeqCst)
-            };
-            operand::$write(state, &dst, v as $to);
-            state.pc += 1;
-            advance!(state)
+            let misaligned = pos % std::mem::align_of::<$atomic>() != 0;
+            if !misaligned {
+                let v = unsafe {
+                    (*(state.mem_ptr.add(pos) as *const $atomic)).load(atomic::Ordering::SeqCst)
+                };
+                operand::$write(state, &dst, v as $to);
+                state.pc += 1;
+            }
+            advance_or_trap!(state, misaligned, unaligned_trap)
         }
     };
 }
@@ -1486,14 +1506,16 @@ macro_rules! atomic_store {
                 _ => unsafe { std::hint::unreachable_unchecked() },
             };
             let pos = (operand::read_i32(state, &addr) as usize) + (offset as usize);
-            check_alignment!(state, pos, $atomic);
-            let v = operand::$read(state, &value);
-            unsafe {
-                (*(state.mem_ptr.add(pos) as *const $atomic))
-                    .store(v as $to, atomic::Ordering::SeqCst)
-            };
-            state.pc += 1;
-            advance!(state)
+            let misaligned = pos % std::mem::align_of::<$atomic>() != 0;
+            if !misaligned {
+                let v = operand::$read(state, &value);
+                unsafe {
+                    (*(state.mem_ptr.add(pos) as *const $atomic))
+                        .store(v as $to, atomic::Ordering::SeqCst)
+                };
+                state.pc += 1;
+            }
+            advance_or_trap!(state, misaligned, unaligned_trap)
         }
     };
 }
@@ -1523,14 +1545,17 @@ macro_rules! atomic_rmw {
                 _ => unsafe { std::hint::unreachable_unchecked() },
             };
             let pos = (operand::read_i32(state, &addr) as usize) + (offset as usize);
-            check_alignment!(state, pos, $atomic);
-            let operand = operand::$read(state, &value) as $prim;
-            let old = unsafe {
-                (*(state.mem_ptr.add(pos) as *const $atomic)).$op(operand, atomic::Ordering::SeqCst)
-            };
-            state.reg_file_mut().$set(dst.index(), old as $to);
-            state.pc += 1;
-            advance!(state)
+            let misaligned = pos % std::mem::align_of::<$atomic>() != 0;
+            if !misaligned {
+                let operand = operand::$read(state, &value) as $prim;
+                let old = unsafe {
+                    (*(state.mem_ptr.add(pos) as *const $atomic))
+                        .$op(operand, atomic::Ordering::SeqCst)
+                };
+                state.reg_file_mut().$set(dst.index(), old as $to);
+                state.pc += 1;
+            }
+            advance_or_trap!(state, misaligned, unaligned_trap)
         }
     };
 }
@@ -1602,22 +1627,24 @@ macro_rules! atomic_cmpxchg {
                 _ => unsafe { std::hint::unreachable_unchecked() },
             };
             let pos = (state.reg_file().get_i32(args[0].index()) as usize) + (offset as usize);
-            check_alignment!(state, pos, $atomic);
-            let expected = operand::$read(state, &args[1]) as $prim;
-            let replacement = operand::$read(state, &args[2]) as $prim;
-            let found = unsafe {
-                match (*(state.mem_ptr.add(pos) as *const $atomic)).compare_exchange(
-                    expected,
-                    replacement,
-                    atomic::Ordering::SeqCst,
-                    atomic::Ordering::SeqCst,
-                ) {
-                    Ok(found) | Err(found) => found,
-                }
-            };
-            state.reg_file_mut().$set(dst.index(), found as $to);
-            state.pc += 1;
-            advance!(state)
+            let misaligned = pos % std::mem::align_of::<$atomic>() != 0;
+            if !misaligned {
+                let expected = operand::$read(state, &args[1]) as $prim;
+                let replacement = operand::$read(state, &args[2]) as $prim;
+                let found = unsafe {
+                    match (*(state.mem_ptr.add(pos) as *const $atomic)).compare_exchange(
+                        expected,
+                        replacement,
+                        atomic::Ordering::SeqCst,
+                        atomic::Ordering::SeqCst,
+                    ) {
+                        Ok(found) | Err(found) => found,
+                    }
+                };
+                state.reg_file_mut().$set(dst.index(), found as $to);
+                state.pc += 1;
+            }
+            advance_or_trap!(state, misaligned, unaligned_trap)
         }
     };
 }
@@ -1656,15 +1683,17 @@ pub fn memory_atomic_notify(state: &mut VmState) -> Outcome {
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
     let pos = (state.reg_file().get_i32(args[0].index()) as usize) + (offset as usize);
-    check_alignment!(state, pos, AtomicU32);
-    let count = state.reg_file().get_i32(args[1].index()) as u32;
-    // The parking table keys on the host address, which is unique across
-    // memories and identical in every thread's instance of a shared one.
-    let addr = unsafe { state.mem_ptr.add(pos) as usize };
-    let woken = atomics::notify(addr, count);
-    state.reg_file_mut().set_i32(dst.index(), woken as i32);
-    state.pc += 1;
-    advance!(state)
+    let misaligned = pos % std::mem::align_of::<AtomicU32>() != 0;
+    if !misaligned {
+        let count = state.reg_file().get_i32(args[1].index()) as u32;
+        // The parking table keys on the host address, which is unique across
+        // memories and identical in every thread's instance of a shared one.
+        let addr = unsafe { state.mem_ptr.add(pos) as usize };
+        let woken = atomics::notify(addr, count);
+        state.reg_file_mut().set_i32(dst.index(), woken as i32);
+        state.pc += 1;
+    }
+    advance_or_trap!(state, misaligned, unaligned_trap)
 }
 
 /// `memory.atomic.wait32/64`. Both park on the same table; they differ only in
@@ -1687,7 +1716,9 @@ macro_rules! atomic_wait {
                 }
             }
             let pos = (state.reg_file().get_i32(args[0].index()) as usize) + (offset as usize);
-            check_alignment!(state, pos, $atomic);
+            if pos % std::mem::align_of::<$atomic>() != 0 {
+                return unaligned_trap(state);
+            }
             let expected = state.reg_file().$read(args[1].index()) as _;
             let timeout = state.reg_file().get_i64(args[2].index());
             let addr = unsafe { state.mem_ptr.add(pos) as usize };
