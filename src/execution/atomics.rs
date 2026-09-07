@@ -11,6 +11,7 @@
 //! and park again.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -53,6 +54,27 @@ impl Shard {
     }
 }
 
+static CHECKPOINT_PENDING: AtomicBool = AtomicBool::new(false);
+
+pub enum WaitOutcome {
+    Done(i32),
+    Interrupted,
+}
+
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p1",
+    target_feature = "atomics"
+))]
+pub fn interrupt_waiters() {
+    CHECKPOINT_PENDING.store(true, Ordering::Relaxed);
+    for shard in SHARDS.iter() {
+        drop(shard.lock());
+        shard.wakeup.notify_all();
+    }
+}
+
 fn take_permit(table: &mut BTreeMap<usize, Slot>, addr: usize) -> bool {
     match table.get_mut(&addr) {
         Some(slot) if slot.permits > 0 => {
@@ -66,14 +88,13 @@ fn take_permit(table: &mut BTreeMap<usize, Slot>, addr: usize) -> bool {
 /// Parks until notified or `timeout_ns` elapses, unless `matches` reports that
 /// the address no longer holds the expected value.
 ///
-/// Returns the value the instruction pushes: 0 woken, 1 not-equal, 2 timed out.
 /// `matches` runs under the shard lock so a `notify` cannot slip in between the
 /// comparison and parking. A negative `timeout_ns` means no timeout.
-pub fn wait(addr: usize, matches: impl FnOnce() -> bool, timeout_ns: i64) -> i32 {
+pub fn wait(addr: usize, matches: impl FnOnce() -> bool, timeout_ns: i64) -> WaitOutcome {
     let shard = Shard::of(addr);
     let mut table = shard.lock();
     if !matches() {
-        return 1;
+        return WaitOutcome::Done(1);
     }
     table.entry(addr).or_default().parked += 1;
 
@@ -83,9 +104,12 @@ pub fn wait(addr: usize, matches: impl FnOnce() -> bool, timeout_ns: i64) -> i32
         Some(Instant::now() + Duration::from_nanos(timeout_ns as u64))
     };
 
-    let result = loop {
+    let outcome = loop {
         if take_permit(&mut table, addr) {
-            break 0;
+            break WaitOutcome::Done(0);
+        }
+        if CHECKPOINT_PENDING.load(Ordering::Relaxed) {
+            break WaitOutcome::Interrupted;
         }
         let Some(deadline) = deadline else {
             table = shard
@@ -98,7 +122,7 @@ pub fn wait(addr: usize, matches: impl FnOnce() -> bool, timeout_ns: i64) -> i32
         // otherwise the deadline check above breaks out.
         let now = Instant::now();
         if now >= deadline {
-            break 2;
+            break WaitOutcome::Done(2);
         }
         table = shard
             .wakeup
@@ -113,7 +137,7 @@ pub fn wait(addr: usize, matches: impl FnOnce() -> bool, timeout_ns: i64) -> i32
             table.remove(&addr);
         }
     }
-    result
+    outcome
 }
 
 /// Wakes up to `count` waiters on `addr`, returning how many were woken.
