@@ -287,9 +287,16 @@ impl Runtime {
                     println!("Runtime handling checkpoint request...");
                     let thread =
                         migration::serialize_thread(&self.stacks, &self.module_inst.global_addrs)?;
+
+                    #[cfg(feature = "threads")]
+                    let next_tid = self.thread_ctx.as_ref().map_or(1, |ctx| ctx.next_tid());
+                    #[cfg(not(feature = "threads"))]
+                    let next_tid = 1;
+
                     match migration::rendezvous_and_checkpoint(
                         thread,
                         &self.module_inst.mem_addrs,
+                        next_tid,
                         Path::new("./checkpoint.bin"),
                     ) {
                         Ok(_) => {

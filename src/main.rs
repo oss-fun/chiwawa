@@ -2,10 +2,10 @@ use anyhow::Result;
 #[cfg(feature = "trace")]
 use chiwawa::instrument::trace::TraceConfig;
 use chiwawa::{
+    execution::migration,
     execution::module::*,
     execution::runtime::{run_start_section, Runtime, RuntimeConfig},
     execution::value::*,
-    execution::{migration, state::Stacks},
     parser,
     structure::module::Module,
 };
@@ -250,7 +250,7 @@ fn main() -> Result<()> {
         #[cfg(feature = "trace")]
         trace_config,
         #[cfg(feature = "threads")]
-        thread_ctx,
+        thread_ctx: thread_ctx.clone(),
     };
 
     migration::thread_started();
@@ -258,18 +258,43 @@ fn main() -> Result<()> {
     if let Some(restore_path) = cli.restore {
         println!("Restoring from checkpoint: {}", restore_path);
 
-        let restored_stacks: Stacks = match migration::restore(Rc::clone(&inst), &restore_path) {
-            Ok(stacks) => stacks,
+        let state = match migration::load_checkpoint(&restore_path) {
+            Ok(state) => state,
             Err(e) => {
                 eprintln!("Failed to restore state: {:?}", e);
                 return Err(anyhow::anyhow!("Restore failed: {:?}", e));
             }
         };
-        println!("State restored into module instance. Stacks obtained.");
+        migration::restore_memory(&inst, &state)?;
 
-        let mut runtime = Runtime::new_restored(Rc::clone(&inst), restored_stacks, runtime_config);
+        let mut threads = state.threads;
+        let Some(main_index) = threads.iter().position(|thread| thread.is_main) else {
+            return Err(anyhow::anyhow!(
+                "Restore failed: checkpoint has no main thread"
+            ));
+        };
+        let main_thread = threads.remove(main_index);
+
+        // Resumed before this thread does, which would otherwise end the
+        // process on its own.
+        #[cfg(feature = "threads")]
+        if let Some(ctx) = thread_ctx.as_ref() {
+            ctx.set_next_tid(state.next_tid);
+            for thread in threads {
+                ctx.resume(thread)?;
+            }
+        } else if !threads.is_empty() {
+            eprintln!("Warning: --threads is off, so the other saved threads are dropped.");
+        }
+        #[cfg(not(feature = "threads"))]
+        if !threads.is_empty() {
+            eprintln!("Warning: this build has no thread support, so the other saved threads are dropped.");
+        }
+
+        let stacks = migration::restore_thread(&inst, &main_thread.data)?;
         println!("Runtime reconstructed. Resuming execution...");
 
+        let mut runtime = Runtime::new_restored(Rc::clone(&inst), stacks, runtime_config);
         let result = runtime.run();
         handle_result(result);
     } else {

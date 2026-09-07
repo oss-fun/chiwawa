@@ -5,19 +5,13 @@
 //!
 //! ## Serializable State
 //!
-//! The checkpoint captures:
-//! - The register file (`RegFile`), which holds both operand-stack values and
-//!   function locals (params + declared locals)
-//! - Activation frame stack (per-frame `func_idx`, ip, result registers)
-//! - Linear memory contents (LZ4 compressed)
-//! - Global variable values
+//! Every thread contributes its register file, its activation frame stack and
+//! its globals; the linear memory is shared and saved once.
 //!
 //! `FrameStack` fields that depend on host addresses are `#[serde(skip)]`:
 //! `cached_mem_ptr` is re-cached from the restored memory, while
-//! `enable_checkpoint` is set by `Runtime::run`. A frame
-//! names its function by `func_idx`, so the body and handler array need no
-//! reconstruction at all. Tables are excluded: they are deterministically
-//! initialized from element segments during module instantiation.
+//! `enable_checkpoint` is set by `Runtime::run`. A frame names its function by
+//! `func_idx`, so the body and handler array need no reconstruction at all.
 //!
 //! ## Trigger Mechanisms
 //!
@@ -45,6 +39,7 @@ use crate::execution::module::ModuleInst;
 use crate::execution::state::{Stacks, VmState};
 use crate::execution::value::Val;
 use serde::{Deserialize, Serialize};
+use std::cell::Cell;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -127,38 +122,57 @@ cfg_if::cfg_if! {
     }
 }
 
-/// Contains all information needed to restore execution:
-/// - Call stack and register state
-/// - Linear memory contents (LZ4 compressed)
-/// - Global variable values
+/// Only the linear memory is shared; registers, frames and globals live in
+/// `threads`, one entry each.
 ///
-/// Tables are excluded: they are deterministically initialized from element
-/// segments during module instantiation.
+/// Tables are left out, which is wrong for a guest that writes them with
+/// `table.set` or `table.fill`.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SerializableState {
     pub memory_data_compressed: Vec<u8>,
-    pub threads: Vec<Vec<u8>>,
+    pub next_tid: i32,
+    pub threads: Vec<EncodedThread>,
+}
+
+/// Encoded by the thread it belongs to, because `Stacks` is not `Send`.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct EncodedThread {
+    pub is_main: bool,
+    pub data: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct ThreadState {
-    pub stacks: Stacks,
-    pub globals: Vec<Val>,
+struct ThreadState {
+    stacks: Stacks,
+    globals: Vec<Val>,
 }
+thread_local! {
+    static IS_WORKER: Cell<bool> = const { Cell::new(false) };
+}
+
+pub fn mark_worker() {
+    IS_WORKER.with(|worker| worker.set(true));
+}
+
 pub fn serialize_thread(
     stacks: &Stacks,
     global_addrs: &[GlobalAddr],
-) -> Result<Vec<u8>, RuntimeError> {
+) -> Result<EncodedThread, RuntimeError> {
     let state = ThreadState {
         stacks: stacks.clone(),
         globals: global_addrs.iter().map(|global| global.get()).collect(),
     };
-    bincode::serialize(&state).map_err(|e| RuntimeError::SerializationError(e.to_string()))
+    let data =
+        bincode::serialize(&state).map_err(|e| RuntimeError::SerializationError(e.to_string()))?;
+    Ok(EncodedThread {
+        is_main: !IS_WORKER.with(Cell::get),
+        data,
+    })
 }
 
 struct Rendezvous {
     live_threads: usize,
-    arrived: Vec<Vec<u8>>,
+    arrived: Vec<EncodedThread>,
     written: bool,
 }
 
@@ -196,8 +210,9 @@ pub fn thread_finished() {
 }
 
 pub fn rendezvous_and_checkpoint<P: AsRef<Path>>(
-    thread: Vec<u8>,
+    thread: EncodedThread,
     mem_addrs: &[MemAddr],
+    next_tid: i32,
     output_path: P,
 ) -> Result<(), RuntimeError> {
     let mut rendezvous = lock_rendezvous();
@@ -208,7 +223,7 @@ pub fn rendezvous_and_checkpoint<P: AsRef<Path>>(
         }
         if rendezvous.all_arrived() {
             let threads = std::mem::take(&mut rendezvous.arrived);
-            let result = write_checkpoint(threads, mem_addrs, output_path);
+            let result = write_checkpoint(threads, mem_addrs, next_tid, output_path);
             rendezvous.written = true;
             drop(rendezvous);
             ARRIVED.notify_all();
@@ -221,8 +236,9 @@ pub fn rendezvous_and_checkpoint<P: AsRef<Path>>(
 }
 
 fn write_checkpoint<P: AsRef<Path>>(
-    threads: Vec<Vec<u8>>,
+    threads: Vec<EncodedThread>,
     mem_addrs: &[MemAddr],
+    next_tid: i32,
     output_path: P,
 ) -> Result<(), RuntimeError> {
     println!("Checkpointing state to {:?}...", output_path.as_ref());
@@ -239,6 +255,7 @@ fn write_checkpoint<P: AsRef<Path>>(
     // No compaction: `restore_offsets` truncates the register file on every return.
     let state = SerializableState {
         memory_data_compressed,
+        next_tid,
         threads,
     };
 
@@ -246,7 +263,7 @@ fn write_checkpoint<P: AsRef<Path>>(
     println!(
         "  threads:            {} ({} bytes)",
         state.threads.len(),
-        state.threads.iter().map(Vec::len).sum::<usize>()
+        state.threads.iter().map(|t| t.data.len()).sum::<usize>()
     );
     println!(
         "  memory_data:        {} bytes (raw {} bytes, LZ4 compressed)",
@@ -268,46 +285,42 @@ fn write_checkpoint<P: AsRef<Path>>(
     Ok(())
 }
 
-/// Restores runtime state from a checkpoint file.
-///
-/// Reads serialized state and restores memory, globals, and stacks.
-pub fn restore<P: AsRef<Path>>(
-    module_inst: Rc<ModuleInst>,
-    input_path: P,
-) -> Result<Stacks, RuntimeError> {
+pub fn load_checkpoint<P: AsRef<Path>>(input_path: P) -> Result<SerializableState, RuntimeError> {
     println!("Restoring state from {:?}...", input_path.as_ref());
-
-    // 1. Read from file
     let mut file =
         File::open(input_path).map_err(|e| RuntimeError::CheckpointLoadError(e.to_string()))?;
     let mut encoded = Vec::new();
     file.read_to_end(&mut encoded)
         .map_err(|e| RuntimeError::CheckpointLoadError(e.to_string()))?;
+    bincode::deserialize(&encoded[..])
+        .map_err(|e| RuntimeError::DeserializationError(e.to_string()))
+}
 
-    // 2. Deserialize the state using bincode
-    let mut state: SerializableState = bincode::deserialize(&encoded[..])
-        .map_err(|e| RuntimeError::DeserializationError(e.to_string()))?;
-
-    // 3. Restore memory state (LZ4 decompress)
-    if let Some(mem_addr) = module_inst.mem_addrs.get(0) {
-        let memory_data = lz4_flex::decompress_size_prepended(&state.memory_data_compressed)
-            .map_err(|e| {
-                RuntimeError::DeserializationError(format!("LZ4 decompression failed: {}", e))
-            })?;
-        mem_addr.set_data(memory_data);
-        println!("Memory state restored into module instance.");
-    } else if !state.memory_data_compressed.is_empty() {
-        eprintln!("Warning: Checkpoint contains memory data, but module has no memory instance.");
-    }
-
-    // 4. Restore globals
-    let Some(encoded) = state.threads.first() else {
-        return Err(RuntimeError::CheckpointLoadError(
-            "checkpoint holds no threads".to_string(),
-        ));
+pub fn restore_memory(
+    module_inst: &Rc<ModuleInst>,
+    state: &SerializableState,
+) -> Result<(), RuntimeError> {
+    let Some(mem_addr) = module_inst.mem_addrs.first() else {
+        if !state.memory_data_compressed.is_empty() {
+            eprintln!(
+                "Warning: Checkpoint contains memory data, but module has no memory instance."
+            );
+        }
+        return Ok(());
     };
-    let mut thread: ThreadState = bincode::deserialize(encoded)
+    let memory_data =
+        lz4_flex::decompress_size_prepended(&state.memory_data_compressed).map_err(|e| {
+            RuntimeError::DeserializationError(format!("LZ4 decompression failed: {}", e))
+        })?;
+    mem_addr.set_data(memory_data);
+    println!("Memory state restored into module instance.");
+    Ok(())
+}
+
+pub fn restore_thread(module_inst: &Rc<ModuleInst>, data: &[u8]) -> Result<Stacks, RuntimeError> {
+    let mut thread: ThreadState = bincode::deserialize(data)
         .map_err(|e| RuntimeError::DeserializationError(e.to_string()))?;
+
     if module_inst.global_addrs.len() == thread.globals.len() {
         for (global_addr, value) in module_inst
             .global_addrs
@@ -316,7 +329,6 @@ pub fn restore<P: AsRef<Path>>(
         {
             global_addr.set(value)?;
         }
-        println!("Global state restored into module instance.");
     } else {
         eprintln!(
             "Warning: Mismatch in global variable count between module ({}) and checkpoint ({}). Globals not restored.",
@@ -324,23 +336,11 @@ pub fn restore<P: AsRef<Path>>(
             thread.globals.len()
         );
     }
-    if state.threads.len() > 1 {
-        eprintln!(
-            "Warning: checkpoint holds {} threads; only the first is restored.",
-            state.threads.len()
-        );
-    }
 
-    // 5. Reconstruct the one skipped field that execution needs: the cached
-    // pointer to the freshly restored memory. The body and handler array are
-    // not stored per frame; `execute_frame` reads them via `func_idx`.
     let mem_ptr = module_inst.mem_addrs.first().map(|m| m.data_ptr());
     let mut stacks = thread.stacks;
     for frame_stack in stacks.activation_frame_stack.iter_mut() {
         frame_stack.cached_mem_ptr = mem_ptr;
     }
-    println!("Frame memory references restored.");
-
-    println!("Restore successful (state applied to module). Returning Stacks.");
     Ok(stacks)
 }

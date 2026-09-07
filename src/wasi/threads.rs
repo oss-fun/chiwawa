@@ -12,7 +12,7 @@
 
 use crate::error::RuntimeError;
 use crate::execution::mem::MemAddr;
-use crate::execution::migration;
+use crate::execution::migration::{self, EncodedThread};
 use crate::execution::module::{ImportObjects, ModuleInst};
 use crate::execution::runtime::{run_start_section, Runtime, RuntimeConfig};
 use crate::execution::value::{Externval, Num, Val};
@@ -85,26 +85,45 @@ impl ThreadContext {
         ModuleInst::new_with_shared_memory(&self.module, imports, self.argv.clone(), defined_mem)
     }
 
+    pub fn next_tid(&self) -> i32 {
+        self.next_tid.load(Ordering::Relaxed)
+    }
+
     /// Spawns a thread running `wasi_thread_start(tid, start_arg)` and returns
     /// its thread id.
     pub fn spawn(self: &Arc<Self>, start_arg: i32) -> Result<i32, RuntimeError> {
         let tid = self.next_tid.fetch_add(1, Ordering::Relaxed);
         let ctx = Arc::clone(self);
-        // Counted before the thread starts for checkpointing.
-        migration::thread_started();
-        std::thread::Builder::new()
-            .spawn(move || {
-                let result = ctx.run(tid, start_arg);
-                migration::thread_finished();
-                if let Err(e) = result {
-                    eprintln!("Thread {} failed: {:?}", tid, e);
-                }
-            })
-            .map_err(|_| {
-                migration::thread_finished();
-                RuntimeError::ExecutionFailed("failed to spawn thread")
-            })?;
+        spawn_guest_thread(move || {
+            if let Err(e) = ctx.run(tid, start_arg) {
+                eprintln!("Thread {} failed: {:?}", tid, e);
+            }
+        })?;
         Ok(tid)
+    }
+
+    pub fn resume(self: &Arc<Self>, thread: EncodedThread) -> Result<(), RuntimeError> {
+        let ctx = Arc::clone(self);
+        spawn_guest_thread(move || {
+            if let Err(e) = ctx.run_restored(&thread) {
+                eprintln!("Restored thread failed: {:?}", e);
+            }
+        })
+    }
+
+    pub fn set_next_tid(&self, tid: i32) {
+        self.next_tid.store(tid, Ordering::Relaxed);
+    }
+
+    fn run_restored(self: &Arc<Self>, thread: &EncodedThread) -> Result<(), RuntimeError> {
+        let inst = self.instantiate()?;
+        let stacks = migration::restore_thread(&inst, &thread.data)?;
+        let config = RuntimeConfig {
+            thread_ctx: Some(Arc::clone(self)),
+            ..Default::default()
+        };
+        Runtime::new_restored(inst, stacks, config).run()?;
+        Ok(())
     }
 
     /// Instantiates the module against the shared memory and runs the guest's
@@ -122,4 +141,20 @@ impl ThreadContext {
         Runtime::new(inst, &start, params, config)?.run()?;
         Ok(())
     }
+}
+
+/// Counted before the thread starts, so a checkpoint waits for it.
+fn spawn_guest_thread(body: impl FnOnce() + Send + 'static) -> Result<(), RuntimeError> {
+    migration::thread_started();
+    std::thread::Builder::new()
+        .spawn(move || {
+            migration::mark_worker();
+            body();
+            migration::thread_finished();
+        })
+        .map_err(|_| {
+            migration::thread_finished();
+            RuntimeError::ExecutionFailed("failed to spawn thread")
+        })?;
+    Ok(())
 }
