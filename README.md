@@ -68,9 +68,9 @@ cargo build-tco-threads
 somethingWasmRuntime target/tco-threads/wasm32-wasip1-threads/release/chiwawa.wasm guest.wasm --threads
 ```
 
-The guest must be built for wasi-threads (`wasm32-wasi-threads-clang -pthread`).
-Without `--threads` thread creation fails and the guest runs single-threaded,
-and `--threads` cannot be combined with `--cr` or `--restore`.
+Without `--threads` thread creation fails and the guest runs single-threaded.
+`--cr` and `--restore` work with `--threads`; see
+[doc/migration.md](doc/migration.md) for what a checkpoint captures.
 
 ## Tracing
 
