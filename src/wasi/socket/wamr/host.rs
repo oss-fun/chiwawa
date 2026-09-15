@@ -2,8 +2,9 @@
 
 use super::layout::*;
 use crate::wasi::passthrough::WasiIovec;
-use crate::wasi::socket::{AddressFamily, Backend, SocketType};
+use crate::wasi::socket::{encode, AddressFamily, Backend, Resolved, SocketType};
 use crate::wasi::{WasiError, WasiResult};
+use std::ffi::CString;
 use std::net::SocketAddr;
 
 #[link(wasm_import_module = "wasi_snapshot_preview1")]
@@ -22,6 +23,14 @@ extern "C" {
         addr_out: *mut u8,
         len_out: *mut u32,
     ) -> u16;
+    fn sock_addr_resolve(
+        host: *const u8,
+        service: *const u8,
+        hints: *const u8,
+        out: *mut u8,
+        out_count: u32,
+        total_out: *mut u32,
+    ) -> u16;
     fn sock_send_to(
         fd: i32,
         iovs: *const WasiIovec,
@@ -30,10 +39,6 @@ extern "C" {
         addr: *const u8,
         len_out: *mut u32,
     ) -> u16;
-}
-
-fn encode<T: Copy + PartialEq>(table: &[(i32, T)], value: T) -> i32 {
-    table.iter().find(|(_, v)| *v == value).unwrap().0
 }
 
 fn check(errno: u16) -> WasiResult<()> {
@@ -100,5 +105,39 @@ impl Backend for Wamr {
             )
         })?;
         Ok(len)
+    }
+    fn resolve(
+        node: &str,
+        service: &str,
+        family: AddressFamily,
+        ty: SocketType,
+        max: usize,
+    ) -> WasiResult<(Vec<Resolved>, usize)> {
+        let node = CString::new(node).map_err(|_| WasiError::Inval)?;
+        let service = CString::new(service).map_err(|_| WasiError::Inval)?;
+        let hints = Hints::new(family, ty);
+        let mut out = vec![
+            AddrInfo {
+                addr: [0; ADDR_SIZE],
+                ty: 0,
+            };
+            max
+        ];
+        let mut total = 0u32;
+        check(unsafe {
+            sock_addr_resolve(
+                node.as_ptr() as *const u8,
+                service.as_ptr() as *const u8,
+                &hints as *const Hints as *const u8,
+                out.as_mut_ptr() as *mut u8,
+                max as u32,
+                &mut total,
+            )
+        })?;
+        let found = out[..(total as usize).min(max)]
+            .iter()
+            .map(AddrInfo::decode)
+            .collect::<WasiResult<Vec<_>>>()?;
+        Ok((found, total as usize))
     }
 }

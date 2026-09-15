@@ -1,5 +1,5 @@
 //! The numbers and layouts WasmEdge defines, shared by the guest and host
-//! sides.
+//! sides. Pointers are `u32`: guest and host are both wasm32.
 
 use crate::wasi::socket::{AddressFamily, SocketType};
 use crate::wasi::{WasiError, WasiResult};
@@ -16,19 +16,17 @@ pub(crate) const TYPE_CODES: [(i32, SocketType); 3] = [
     (2, SocketType::Stream),
 ];
 
-/// `__wasi_address_t` is a pointer and a length. The buffer holds raw octets
+/// `__wasi_address_t`: a pointer and a length. The buffer holds raw octets
 /// (4 or 16 bytes), or in V2 this storage form: u16 family, then octets.
-pub(crate) const STORAGE_SIZE: usize = 128;
-const FAMILY_INET4: u16 = 1;
-const FAMILY_INET6: u16 = 2;
-
-pub(crate) fn decode<T: Copy>(table: &[(i32, T)], code: i32) -> WasiResult<T> {
-    table
-        .iter()
-        .find(|(c, _)| *c == code)
-        .map(|(_, v)| *v)
-        .ok_or(WasiError::Inval)
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct WasiAddress {
+    pub buf: u32,
+    pub buf_len: u32,
 }
+pub(crate) const STORAGE_SIZE: usize = 128;
+pub(crate) const FAMILY_INET4: u16 = 1;
+pub(crate) const FAMILY_INET6: u16 = 2;
 
 /// Reads the IP from an address buffer of any accepted length.
 pub(crate) fn decode_ip(buf: &[u8]) -> WasiResult<IpAddr> {
@@ -73,4 +71,77 @@ pub(crate) fn v1_family_code(ip: &IpAddr) -> u32 {
         IpAddr::V4(_) => 4,
         IpAddr::V6(_) => 6,
     }
+}
+
+/// `__wasi_protocol_t`
+const PROTOCOL_IP: u8 = 0;
+const PROTOCOL_TCP: u8 = 1;
+const PROTOCOL_UDP: u8 = 2;
+
+/// The protocol a socket type implies.
+pub(crate) fn protocol_code(ty: SocketType) -> u8 {
+    match ty {
+        SocketType::Any => PROTOCOL_IP,
+        SocketType::Stream => PROTOCOL_TCP,
+        SocketType::Datagram => PROTOCOL_UDP,
+    }
+}
+
+/// `__wasi_addrinfo_t`
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct AddrInfo {
+    pub flags: u16,
+    pub family: u8,
+    pub socktype: u8,
+    pub protocol: u8,
+    pub _pad: [u8; 3],
+    pub addrlen: u32,
+    pub addr: u32,
+    pub canonname: u32,
+    pub canonname_len: u32,
+    pub next: u32,
+}
+
+/// `__wasi_sockaddr_t`
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct SockAddr {
+    pub family: u8,
+    pub _pad: [u8; 3],
+    pub data_len: u32,
+    pub data: u32,
+}
+
+/// `sa_data` is a Linux `sockaddr_in` or `sockaddr_in6` after its family:
+/// the port in network order, then the IPv4 address and 8 zero bytes, or 4
+/// flow-info bytes, the IPv6 address and 4 scope bytes.
+pub(crate) const SA_DATA_MAX: usize = 26;
+
+/// The family byte, `sa_data` and its length for an address. `ai_addrlen`
+/// is the length plus the 2 family bytes.
+pub(crate) fn sa_data(addr: &SocketAddr) -> (u8, [u8; SA_DATA_MAX], usize) {
+    let mut data = [0u8; SA_DATA_MAX];
+    data[0..2].copy_from_slice(&addr.port().to_be_bytes());
+    match addr.ip() {
+        IpAddr::V4(v4) => {
+            data[2..6].copy_from_slice(&v4.octets());
+            (FAMILY_INET4 as u8, data, 14)
+        }
+        IpAddr::V6(v6) => {
+            data[6..22].copy_from_slice(&v6.octets());
+            (FAMILY_INET6 as u8, data, SA_DATA_MAX)
+        }
+    }
+}
+
+#[cfg(feature = "socket-wasmedge")]
+pub(crate) fn decode_sa_data(family: u8, data: &[u8; SA_DATA_MAX]) -> WasiResult<SocketAddr> {
+    let port = u16::from_be_bytes([data[0], data[1]]);
+    let ip: IpAddr = match family as u16 {
+        FAMILY_INET4 => Ipv4Addr::from(<[u8; 4]>::try_from(&data[2..6]).unwrap()).into(),
+        FAMILY_INET6 => Ipv6Addr::from(<[u8; 16]>::try_from(&data[6..22]).unwrap()).into(),
+        _ => return Err(WasiError::Inval),
+    };
+    Ok(SocketAddr::new(ip, port))
 }

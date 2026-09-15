@@ -30,6 +30,28 @@ pub(crate) enum SocketType {
     Any,
 }
 
+/// One name-resolution result.
+pub(crate) struct Resolved {
+    pub addr: SocketAddr,
+    pub ty: SocketType,
+}
+
+/// The most results a guest may ask a resolution for.
+pub(crate) const RESOLVE_LIMIT: usize = 32;
+
+/// A code from an ABI's table, or EINVAL.
+pub(crate) fn decode<T: Copy>(table: &[(i32, T)], code: i32) -> WasiResult<T> {
+    table
+        .iter()
+        .find(|(c, _)| *c == code)
+        .map(|(_, v)| *v)
+        .ok_or(WasiError::Inval)
+}
+
+pub(crate) fn encode<T: Copy + PartialEq>(table: &[(i32, T)], value: T) -> i32 {
+    table.iter().find(|(_, v)| *v == value).unwrap().0
+}
+
 /// What a host's socket extension provides.
 pub(crate) trait Backend {
     fn open(family: AddressFamily, ty: SocketType) -> WasiResult<i32>;
@@ -41,6 +63,15 @@ pub(crate) trait Backend {
     /// Returns the byte count and the sender.
     fn recv_from(fd: i32, iovs: &[WasiIovec], flags: u32) -> WasiResult<(u32, SocketAddr)>;
     fn send_to(fd: i32, iovs: &[WasiIovec], flags: u32, to: &SocketAddr) -> WasiResult<u32>;
+    /// Resolves `node` and `service`: at most `max` results, and how many
+    /// the host found.
+    fn resolve(
+        node: &str,
+        service: &str,
+        family: AddressFamily,
+        ty: SocketType,
+        max: usize,
+    ) -> WasiResult<(Vec<Resolved>, usize)>;
 }
 
 cfg_if::cfg_if! {
@@ -79,6 +110,15 @@ cfg_if::cfg_if! {
             fn send_to(_: i32, _: &[WasiIovec], _: u32, _: &SocketAddr) -> WasiResult<u32> {
                 Err(WasiError::NotSup)
             }
+            fn resolve(
+                _: &str,
+                _: &str,
+                _: AddressFamily,
+                _: SocketType,
+                _: usize,
+            ) -> WasiResult<(Vec<Resolved>, usize)> {
+                Err(WasiError::NotSup)
+            }
         }
     }
 }
@@ -101,6 +141,8 @@ pub(crate) fn call(
         SocketExt::SendToWamr => wamr::guest::send_to(memory, params),
         SocketExt::Listen => listen(params),
         SocketExt::Close => wamr::guest::close(wasi, params),
+        SocketExt::AddrResolve => wamr::guest::addr_resolve(memory, params),
+        SocketExt::GetAddrInfo => wasmedge::guest::getaddrinfo(memory, params),
         SocketExt::OpenWasmEdge => wasmedge::guest::open(memory, params),
         SocketExt::BindWasmEdge => wasmedge::guest::bind(memory, params),
         SocketExt::ConnectWasmEdge => wasmedge::guest::connect(memory, params),
@@ -162,4 +204,36 @@ pub(crate) fn write_bytes(memory: &MemAddr, ptr: i32, bytes: &[u8]) -> WasiResul
         .ok_or(WasiError::Fault)?;
     memory.store_bytes(ptr, bytes);
     Ok(())
+}
+
+/// The NUL-terminated string at `ptr`.
+pub(crate) fn read_cstr(memory: &MemAddr, ptr: i32) -> WasiResult<String> {
+    let mem = memory.get_memory_direct_access();
+    let start = ptr as u32 as usize;
+    let rest = mem.data.get(start..).ok_or(WasiError::Fault)?;
+    let len = rest.iter().position(|&b| b == 0).ok_or(WasiError::Fault)?;
+    String::from_utf8(rest[..len].to_vec()).map_err(|_| WasiError::Inval)
+}
+
+/// The `len` bytes at `ptr` as text, less any trailing NUL.
+pub(crate) fn read_str(memory: &MemAddr, ptr: i32, len: usize) -> WasiResult<String> {
+    let mut bytes = read_bytes(memory, ptr, len)?;
+    while bytes.last() == Some(&0) {
+        bytes.pop();
+    }
+    String::from_utf8(bytes).map_err(|_| WasiError::Inval)
+}
+
+/// Reads a `#[repr(C)]` record with no implicit padding from guest memory.
+pub(crate) fn read_struct<T: Copy>(memory: &MemAddr, ptr: i32) -> WasiResult<T> {
+    let bytes = read_bytes(memory, ptr, std::mem::size_of::<T>())?;
+    Ok(unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const T) })
+}
+
+/// Writes a `#[repr(C)]` record with no implicit padding to guest memory.
+pub(crate) fn write_struct<T: Copy>(memory: &MemAddr, ptr: i32, value: &T) -> WasiResult<()> {
+    let bytes = unsafe {
+        std::slice::from_raw_parts(value as *const T as *const u8, std::mem::size_of::<T>())
+    };
+    write_bytes(memory, ptr, bytes)
 }

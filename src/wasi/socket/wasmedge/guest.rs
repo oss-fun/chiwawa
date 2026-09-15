@@ -4,16 +4,17 @@ use super::layout::*;
 use crate::execution::mem::MemAddr;
 use crate::execution::value::Val;
 use crate::wasi::passthrough::PassthroughWasiImpl;
-use crate::wasi::socket::{iovecs, param_i32, read_array, read_bytes, write_bytes, Backend, Host};
+use crate::wasi::socket::{
+    decode, encode, iovecs, param_i32, read_array, read_bytes, read_str, read_struct, write_bytes,
+    write_struct, Backend, Host, RESOLVE_LIMIT,
+};
 use crate::wasi::{WasiError, WasiResult};
 use std::net::SocketAddr;
 
 /// The guest's `__wasi_address_t` at `ptr`: where its buffer is, how long.
 fn address_buffer(memory: &MemAddr, ptr: i32) -> WasiResult<(i32, usize)> {
-    let bytes: [u8; 8] = read_array(memory, ptr)?;
-    let buf = i32::from_le_bytes(bytes[0..4].try_into().unwrap());
-    let len = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-    Ok((buf, len as usize))
+    let address: WasiAddress = read_struct(memory, ptr)?;
+    Ok((address.buf as i32, address.buf_len as usize))
 }
 
 fn read_addr(memory: &MemAddr, ptr: i32, port: i32) -> WasiResult<SocketAddr> {
@@ -136,4 +137,63 @@ pub(crate) fn peer_addr_v1(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
 
 pub(crate) fn peer_addr_v2(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
     addr_v2(memory, params, Host::peer_addr(param_i32(params, 0)?)?)
+}
+
+/// `sock_getaddrinfo(node, node_len, service, service_len, hints, res,
+/// max_len, res_len)`: fills the guest's chain of `max_len` addrinfo entries.
+pub(crate) fn getaddrinfo(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
+    let max = param_i32(params, 6)? as u32 as usize;
+    if max == 0 || max > RESOLVE_LIMIT {
+        return Err(WasiError::AiMemory);
+    }
+    let node = read_str(
+        memory,
+        param_i32(params, 0)?,
+        param_i32(params, 1)? as u32 as usize,
+    )?;
+    let service = read_str(
+        memory,
+        param_i32(params, 2)?,
+        param_i32(params, 3)? as u32 as usize,
+    )?;
+    if node.is_empty() && service.is_empty() {
+        return Err(WasiError::AiNoName);
+    }
+    let hints: AddrInfo = read_struct(memory, param_i32(params, 4)?)?;
+    let family = decode(&FAMILY_CODES, hints.family as i32)?;
+    let ty = decode(&TYPE_CODES, hints.socktype as i32)?;
+
+    let mut entries = Vec::with_capacity(max);
+    let mut at = i32::from_le_bytes(read_array(memory, param_i32(params, 5)?)?);
+    for _ in 0..max {
+        let entry: AddrInfo = read_struct(memory, at)?;
+        entries.push((at, entry));
+        at = entry.next as i32;
+    }
+
+    let (found, _) = Host::resolve(&node, &service, family, ty, max)?;
+    for (item, (at, entry)) in found.iter().zip(&entries) {
+        let (family, data, len) = sa_data(&item.addr);
+        let info = AddrInfo {
+            flags: 0,
+            family,
+            socktype: encode(&TYPE_CODES, item.ty) as u8,
+            protocol: protocol_code(item.ty),
+            addrlen: 2 + len as u32,
+            canonname_len: 0,
+            ..*entry
+        };
+        write_struct(memory, *at, &info)?;
+        let sockaddr: SockAddr = read_struct(memory, entry.addr as i32)?;
+        if len > sockaddr.data_len as usize {
+            return Err(WasiError::Fault);
+        }
+        write_struct(memory, entry.addr as i32, &SockAddr { family, ..sockaddr })?;
+        write_bytes(memory, sockaddr.data as i32, &data[..len])?;
+    }
+    write_bytes(
+        memory,
+        param_i32(params, 7)?,
+        &(found.len() as u32).to_le_bytes(),
+    )
 }

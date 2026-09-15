@@ -1,6 +1,6 @@
 //! The numbers and layouts WAMR defines, shared by the guest and host sides.
 
-use crate::wasi::socket::{AddressFamily, SocketType};
+use crate::wasi::socket::{decode, encode, AddressFamily, Resolved, SocketType};
 use crate::wasi::{WasiError, WasiResult};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -20,14 +20,6 @@ pub(crate) const TYPE_CODES: [(i32, SocketType); 3] = [
     (0, SocketType::Datagram),
     (1, SocketType::Stream),
 ];
-
-pub(crate) fn decode<T: Copy>(table: &[(i32, T)], code: i32) -> WasiResult<T> {
-    table
-        .iter()
-        .find(|(c, _)| *c == code)
-        .map(|(_, v)| *v)
-        .ok_or(WasiError::Inval)
-}
 
 pub(crate) fn decode_addr(bytes: &[u8; ADDR_SIZE]) -> WasiResult<SocketAddr> {
     let u16_at = |at: usize| u16::from_le_bytes(bytes[at..at + 2].try_into().unwrap());
@@ -64,4 +56,61 @@ pub(crate) fn encode_addr(addr: &SocketAddr) -> [u8; ADDR_SIZE] {
         }
     }
     bytes
+}
+
+/// `__wasi_addr_info_hints_t`
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct Hints {
+    pub ty: i32,
+    pub family: i32,
+    pub enabled: u8,
+    pub _pad: [u8; 3],
+}
+
+impl Hints {
+    #[cfg(feature = "socket-wamr")]
+    pub(crate) fn new(family: AddressFamily, ty: SocketType) -> Self {
+        Self {
+            ty: encode(&TYPE_CODES, ty),
+            family: encode(&FAMILY_CODES, family),
+            enabled: (family != AddressFamily::Unspec || ty != SocketType::Any) as u8,
+            _pad: [0; 3],
+        }
+    }
+
+    pub(crate) fn decode(&self) -> WasiResult<(AddressFamily, SocketType)> {
+        if self.enabled == 0 {
+            return Ok((AddressFamily::Unspec, SocketType::Any));
+        }
+        Ok((
+            decode(&FAMILY_CODES, self.family)?,
+            decode(&TYPE_CODES, self.ty)?,
+        ))
+    }
+}
+
+/// `__wasi_addr_info_t`
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct AddrInfo {
+    pub addr: [u8; ADDR_SIZE],
+    pub ty: i32,
+}
+
+impl AddrInfo {
+    pub(crate) fn new(found: &Resolved) -> Self {
+        Self {
+            addr: encode_addr(&found.addr),
+            ty: encode(&TYPE_CODES, found.ty),
+        }
+    }
+
+    #[cfg(feature = "socket-wamr")]
+    pub(crate) fn decode(&self) -> WasiResult<Resolved> {
+        Ok(Resolved {
+            addr: decode_addr(&self.addr)?,
+            ty: decode(&TYPE_CODES, self.ty)?,
+        })
+    }
 }

@@ -4,7 +4,10 @@ use super::layout::*;
 use crate::execution::mem::MemAddr;
 use crate::execution::value::Val;
 use crate::wasi::passthrough::PassthroughWasiImpl;
-use crate::wasi::socket::{iovecs, param_i32, read_array, write_bytes, Backend, Host};
+use crate::wasi::socket::{
+    decode, iovecs, param_i32, read_array, read_cstr, read_struct, write_bytes, write_struct,
+    Backend, Host, RESOLVE_LIMIT,
+};
 use crate::wasi::{WasiError, WasiResult};
 
 /// `sock_open(pool_fd, family, type, fd_out)`; the pool fd is a stub.
@@ -66,4 +69,21 @@ pub(crate) fn close(wasi: &PassthroughWasiImpl, params: &[Val]) -> WasiResult<()
         0 => Ok(()),
         errno => Err(WasiError::from_errno(errno as u16)),
     }
+}
+
+/// `sock_addr_resolve(host, service, hints, out, out_count, total_out)`: C
+/// strings in; up to `out_count` results out, and how many there were.
+pub(crate) fn addr_resolve(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
+    let host = read_cstr(memory, param_i32(params, 0)?)?;
+    let service = read_cstr(memory, param_i32(params, 1)?)?;
+    let hints: Hints = read_struct(memory, param_i32(params, 2)?)?;
+    let (family, ty) = hints.decode()?;
+    let out = param_i32(params, 3)?;
+    let count = (param_i32(params, 4)? as u32 as usize).min(RESOLVE_LIMIT);
+    let (found, total) = Host::resolve(&host, &service, family, ty, count)?;
+    for (i, item) in found.iter().enumerate() {
+        let at = out.wrapping_add((i * std::mem::size_of::<AddrInfo>()) as i32);
+        write_struct(memory, at, &AddrInfo::new(item))?;
+    }
+    write_bytes(memory, param_i32(params, 5)?, &(total as u32).to_le_bytes())
 }

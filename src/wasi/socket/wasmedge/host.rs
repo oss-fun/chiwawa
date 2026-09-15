@@ -4,16 +4,9 @@
 
 use super::layout::*;
 use crate::wasi::passthrough::WasiIovec;
-use crate::wasi::socket::{AddressFamily, Backend, SocketType};
+use crate::wasi::socket::{decode, encode, AddressFamily, Backend, Resolved, SocketType};
 use crate::wasi::{WasiError, WasiResult};
 use std::net::{IpAddr, SocketAddr};
-
-/// `__wasi_address_t`
-#[repr(C)]
-struct WasiAddress {
-    buf: *mut u8,
-    buf_len: u32,
-}
 
 #[link(wasm_import_module = "wasi_snapshot_preview1")]
 extern "C" {
@@ -37,6 +30,16 @@ extern "C" {
         port_out: *mut u16,
         len_out: *mut u32,
         flags_out: *mut u16,
+    ) -> u16;
+    fn sock_getaddrinfo(
+        node: *const u8,
+        node_len: u32,
+        service: *const u8,
+        service_len: u32,
+        hints: *const AddrInfo,
+        res: *mut u32,
+        max: u32,
+        res_len: *mut u32,
     ) -> u16;
     #[link_name = "sock_send_to_v2"]
     fn sock_send_to(
@@ -99,7 +102,7 @@ impl Storage {
     }
     fn address(&mut self) -> WasiAddress {
         WasiAddress {
-            buf: self.bytes.as_mut_ptr(),
+            buf: self.bytes.as_mut_ptr() as u32,
             buf_len: STORAGE_SIZE as u32,
         }
     }
@@ -171,5 +174,78 @@ impl Backend for WasmEdge {
             )
         })?;
         Ok(len)
+    }
+    fn resolve(
+        node: &str,
+        service: &str,
+        family: AddressFamily,
+        ty: SocketType,
+        max: usize,
+    ) -> WasiResult<(Vec<Resolved>, usize)> {
+        let mut data = vec![[0u8; SA_DATA_MAX]; max];
+        let mut names = vec![0u8; max];
+        let mut sockaddrs: Vec<SockAddr> = data
+            .iter_mut()
+            .map(|d| SockAddr {
+                family: 0,
+                _pad: [0; 3],
+                data_len: SA_DATA_MAX as u32,
+                data: d.as_mut_ptr() as u32,
+            })
+            .collect();
+        let blank = AddrInfo {
+            flags: 0,
+            family: 0,
+            socktype: 0,
+            protocol: 0,
+            _pad: [0; 3],
+            addrlen: 0,
+            addr: 0,
+            canonname: 0,
+            canonname_len: 0,
+            next: 0,
+        };
+        let mut infos: Vec<AddrInfo> = sockaddrs
+            .iter_mut()
+            .zip(names.iter_mut())
+            .map(|(addr, name)| AddrInfo {
+                addr: addr as *mut SockAddr as u32,
+                canonname: name as *mut u8 as u32,
+                ..blank
+            })
+            .collect();
+        for i in 1..max {
+            let next = &mut infos[i] as *mut AddrInfo as u32;
+            infos[i - 1].next = next;
+        }
+        let hints = AddrInfo {
+            family: encode(&FAMILY_CODES, family) as u8,
+            socktype: encode(&TYPE_CODES, ty) as u8,
+            ..blank
+        };
+        let mut res = infos.as_mut_ptr() as u32;
+        let mut res_len = 0u32;
+        check(unsafe {
+            sock_getaddrinfo(
+                node.as_ptr(),
+                node.len() as u32,
+                service.as_ptr(),
+                service.len() as u32,
+                &hints,
+                &mut res,
+                max as u32,
+                &mut res_len,
+            )
+        })?;
+        let found = (0..res_len as usize)
+            .map(|i| {
+                Ok(Resolved {
+                    addr: decode_sa_data(sockaddrs[i].family, &data[i])?,
+                    ty: decode(&TYPE_CODES, infos[i].socktype as i32)?,
+                })
+            })
+            .collect::<WasiResult<Vec<_>>>()?;
+        let total = found.len();
+        Ok((found, total))
     }
 }
