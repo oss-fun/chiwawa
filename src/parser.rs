@@ -1111,7 +1111,7 @@ fn decode_import_section(
 ///
 /// Preview 1 functions come from `wasi_snapshot_preview1`; the wasi-threads
 /// proposal adds `thread_spawn` under the separate `wasi` module. Socket
-/// extensions share that first module, so `func_type` picks the shape.
+/// extensions share that first module, so `func_type` picks the signature.
 fn parse_wasi_import(module: &str, name: &str, func_type: &FuncType) -> Option<WasiFuncType> {
     match module {
         "wasi_snapshot_preview1" => match SOCKET_EXTENSION_MAP.get(name) {

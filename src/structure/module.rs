@@ -196,7 +196,7 @@ pub enum WasiFuncType {
 }
 
 /// Socket functions WAMR and WasmEdge add under `wasi_snapshot_preview1`.
-/// Both hosts share some names with different shapes.
+/// Both hosts share some names with different signatures.
 #[derive(PartialEq, Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum SocketExt {
     Listen,

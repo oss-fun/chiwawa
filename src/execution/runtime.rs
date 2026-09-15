@@ -1013,8 +1013,7 @@ impl Runtime {
                 Ok(Some(Val::Num(Num::I32(result))))
             }
             WasiFuncType::SocketExt(ext) => {
-                let result = socket::call(*ext, memory, params)?;
-                Ok(Some(Val::Num(Num::I32(result))))
+                Ok(Some(Val::Num(Num::I32(socket::call(*ext, memory, params)))))
             }
             _ => Err(WasiError::NoSys),
         }

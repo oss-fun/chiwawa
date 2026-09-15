@@ -13,18 +13,25 @@ use WasiError;
 
 /// WASI iovec structure that matches wasi-libc layout.
 #[repr(C)]
-struct WasiIovec {
+pub(crate) struct WasiIovec {
     buf: *const u8,
     buf_len: u32,
 }
 
-/// Rebuilds a guest iovec array with its buffer pointers translated to host addresses.
-fn collect_iovecs(mem: &MemInst, iovs_ptr: Ptr, iovs_len: Size) -> WasiResult<Vec<WasiIovec>> {
-    let range = |start: usize, len: usize| start.checked_add(len).map(|end| start..end);
+/// The guest memory range `len` bytes from `start`, unless it overflows.
+pub(crate) fn guest_range(start: usize, len: usize) -> Option<std::ops::Range<usize>> {
+    start.checked_add(len).map(|end| start..end)
+}
 
+/// Rebuilds a guest iovec array with its buffer pointers translated to host addresses.
+pub(crate) fn collect_iovecs(
+    mem: &MemInst,
+    iovs_ptr: Ptr,
+    iovs_len: Size,
+) -> WasiResult<Vec<WasiIovec>> {
     let table = (iovs_len as usize)
         .checked_mul(8)
-        .and_then(|len| range(iovs_ptr as usize, len))
+        .and_then(|len| guest_range(iovs_ptr as usize, len))
         .and_then(|r| mem.data.get(r))
         .ok_or(WasiError::Fault)?;
 
@@ -39,7 +46,7 @@ fn collect_iovecs(mem: &MemInst, iovs_ptr: Ptr, iovs_len: Size) -> WasiResult<Ve
                     buf_len: 0,
                 });
             }
-            let buf = range(buf_ptr, buf_len as usize)
+            let buf = guest_range(buf_ptr, buf_len as usize)
                 .and_then(|r| mem.data.get(r))
                 .ok_or(WasiError::Fault)?;
             Ok(WasiIovec {
