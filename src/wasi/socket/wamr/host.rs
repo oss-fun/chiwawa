@@ -12,7 +12,6 @@ extern "C" {
     fn sock_bind(fd: i32, addr: *const u8) -> u16;
     fn sock_connect(fd: i32, addr: *const u8) -> u16;
     fn sock_listen(fd: i32, backlog: i32) -> u16;
-    fn sock_close(fd: i32) -> u16;
     fn sock_addr_local(fd: i32, addr_out: *mut u8) -> u16;
     fn sock_addr_remote(fd: i32, addr_out: *mut u8) -> u16;
     fn sock_recv_from(
@@ -62,9 +61,6 @@ impl Backend for Wamr {
     }
     fn listen(fd: i32, backlog: i32) -> WasiResult<()> {
         check(unsafe { sock_listen(fd, backlog) })
-    }
-    fn close(fd: i32) -> WasiResult<()> {
-        check(unsafe { sock_close(fd) })
     }
     fn local_addr(fd: i32) -> WasiResult<SocketAddr> {
         let mut bytes = [0u8; ADDR_SIZE];

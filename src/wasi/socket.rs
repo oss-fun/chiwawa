@@ -7,11 +7,12 @@
 compile_error!("socket-wamr and socket-wasmedge select different hosts; enable one");
 
 pub mod wamr;
+pub mod wasmedge;
 
 use crate::execution::mem::MemAddr;
 use crate::execution::value::Val;
 use crate::structure::module::SocketExt;
-use crate::wasi::passthrough::{collect_iovecs, guest_range, WasiIovec};
+use crate::wasi::passthrough::{collect_iovecs, guest_range, PassthroughWasiImpl, WasiIovec};
 use crate::wasi::{WasiError, WasiResult};
 use std::net::SocketAddr;
 
@@ -35,7 +36,6 @@ pub(crate) trait Backend {
     fn bind(fd: i32, addr: &SocketAddr) -> WasiResult<()>;
     fn connect(fd: i32, addr: &SocketAddr) -> WasiResult<()>;
     fn listen(fd: i32, backlog: i32) -> WasiResult<()>;
-    fn close(fd: i32) -> WasiResult<()>;
     fn local_addr(fd: i32) -> WasiResult<SocketAddr>;
     fn peer_addr(fd: i32) -> WasiResult<SocketAddr>;
     /// Returns the byte count and the sender.
@@ -46,6 +46,8 @@ pub(crate) trait Backend {
 cfg_if::cfg_if! {
     if #[cfg(feature = "socket-wamr")] {
         pub(crate) type Host = wamr::host::Wamr;
+    } else if #[cfg(feature = "socket-wasmedge")] {
+        pub(crate) type Host = wasmedge::host::WasmEdge;
     } else {
         pub(crate) type Host = NoHost;
 
@@ -63,9 +65,6 @@ cfg_if::cfg_if! {
                 Err(WasiError::NotSup)
             }
             fn listen(_: i32, _: i32) -> WasiResult<()> {
-                Err(WasiError::NotSup)
-            }
-            fn close(_: i32) -> WasiResult<()> {
                 Err(WasiError::NotSup)
             }
             fn local_addr(_: i32) -> WasiResult<SocketAddr> {
@@ -86,7 +85,12 @@ cfg_if::cfg_if! {
 
 /// Handles a socket extension call and returns the errno for the guest. A
 /// WASI function reports failure through its errno, never by trapping.
-pub(crate) fn call(ext: SocketExt, memory: &MemAddr, params: &[Val]) -> i32 {
+pub(crate) fn call(
+    ext: SocketExt,
+    wasi: &PassthroughWasiImpl,
+    memory: &MemAddr,
+    params: &[Val],
+) -> i32 {
     let result = match ext {
         SocketExt::OpenWamr => wamr::guest::open(memory, params),
         SocketExt::BindWamr => wamr::guest::bind(memory, params),
@@ -96,7 +100,18 @@ pub(crate) fn call(ext: SocketExt, memory: &MemAddr, params: &[Val]) -> i32 {
         SocketExt::RecvFromWamr => wamr::guest::recv_from(memory, params),
         SocketExt::SendToWamr => wamr::guest::send_to(memory, params),
         SocketExt::Listen => listen(params),
-        SocketExt::Close => wamr::guest::close(params),
+        SocketExt::Close => wamr::guest::close(wasi, params),
+        SocketExt::OpenWasmEdge => wasmedge::guest::open(memory, params),
+        SocketExt::BindWasmEdge => wasmedge::guest::bind(memory, params),
+        SocketExt::ConnectWasmEdge => wasmedge::guest::connect(memory, params),
+        SocketExt::AcceptV1 => wasmedge::guest::accept_v1(wasi, memory, params),
+        SocketExt::RecvFromV1 => wasmedge::guest::recv_from_v1(memory, params),
+        SocketExt::RecvFromV2 => wasmedge::guest::recv_from_v2(memory, params),
+        SocketExt::SendToWasmEdge => wasmedge::guest::send_to(memory, params),
+        SocketExt::GetLocalAddrV1 => wasmedge::guest::local_addr_v1(memory, params),
+        SocketExt::GetLocalAddrV2 => wasmedge::guest::local_addr_v2(memory, params),
+        SocketExt::GetPeerAddrV1 => wasmedge::guest::peer_addr_v1(memory, params),
+        SocketExt::GetPeerAddrV2 => wasmedge::guest::peer_addr_v2(memory, params),
         _ => Err(WasiError::NotSup),
     };
     result.map_or_else(|e| e.to_errno(), |()| 0)
@@ -105,10 +120,10 @@ pub(crate) fn call(ext: SocketExt, memory: &MemAddr, params: &[Val]) -> i32 {
 /// `sock_listen(fd, backlog)`: the same signature on both hosts, and no
 /// guest memory to read, so it needs no per-ABI frontend.
 fn listen(params: &[Val]) -> WasiResult<()> {
-    Host::listen(arg(params, 0)?, arg(params, 1)?)
+    Host::listen(param_i32(params, 0)?, param_i32(params, 1)?)
 }
 
-pub(crate) fn arg(params: &[Val], i: usize) -> WasiResult<i32> {
+pub(crate) fn param_i32(params: &[Val], i: usize) -> WasiResult<i32> {
     params
         .get(i)
         .and_then(|v| v.to_i32().ok())
@@ -118,7 +133,11 @@ pub(crate) fn arg(params: &[Val], i: usize) -> WasiResult<i32> {
 /// The iovec array that parameters 1 and 2 describe, with host pointers.
 pub(crate) fn iovecs(memory: &MemAddr, params: &[Val]) -> WasiResult<Vec<WasiIovec>> {
     let mem = memory.get_memory_direct_access();
-    collect_iovecs(mem, arg(params, 1)? as u32, arg(params, 2)? as u32)
+    collect_iovecs(
+        mem,
+        param_i32(params, 1)? as u32,
+        param_i32(params, 2)? as u32,
+    )
 }
 
 pub(crate) fn read_array<const N: usize>(memory: &MemAddr, ptr: i32) -> WasiResult<[u8; N]> {
@@ -126,6 +145,14 @@ pub(crate) fn read_array<const N: usize>(memory: &MemAddr, ptr: i32) -> WasiResu
     guest_range(ptr as u32 as usize, N)
         .and_then(|r| mem.data.get(r))
         .and_then(|bytes| bytes.try_into().ok())
+        .ok_or(WasiError::Fault)
+}
+
+pub(crate) fn read_bytes(memory: &MemAddr, ptr: i32, len: usize) -> WasiResult<Vec<u8>> {
+    let mem = memory.get_memory_direct_access();
+    guest_range(ptr as u32 as usize, len)
+        .and_then(|r| mem.data.get(r))
+        .map(<[u8]>::to_vec)
         .ok_or(WasiError::Fault)
 }
 

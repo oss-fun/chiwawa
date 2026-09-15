@@ -1012,9 +1012,9 @@ impl Runtime {
                 let result = wasi_impl.fd_renumber(memory, fd, to)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
-            WasiFuncType::SocketExt(ext) => {
-                Ok(Some(Val::Num(Num::I32(socket::call(*ext, memory, params)))))
-            }
+            WasiFuncType::SocketExt(ext) => Ok(Some(Val::Num(Num::I32(socket::call(
+                *ext, wasi_impl, memory, params,
+            ))))),
             _ => Err(WasiError::NoSys),
         }
     }
