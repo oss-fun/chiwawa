@@ -8,6 +8,7 @@ use chiwawa::{
     execution::value::*,
     parser,
     structure::module::Module,
+    wasi::socket::{self, HostFlavor},
 };
 #[cfg(feature = "threads")]
 use chiwawa::{shared::Shared, wasi::threads::ThreadContext};
@@ -40,6 +41,9 @@ struct Cli {
     /// Enable wasi-threads (requires a host runtime with thread support)
     #[arg(long = "threads", default_value = "false")]
     enable_threads: bool,
+    /// Host runtime whose socket extension may be called
+    #[arg(long = "socket-host", value_enum)]
+    socket_host: Option<SocketHost>,
     /// Enable trace output
     #[arg(long = "trace", default_value = "false")]
     enable_trace: bool,
@@ -55,6 +59,13 @@ struct Cli {
     /// Call graph output file in DOT format
     #[arg(long = "call-graph-output")]
     call_graph_output: Option<String>,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum SocketHost {
+    Wamr,
+    #[value(name = "wasmedge")]
+    WasmEdge,
 }
 
 fn parse_args_string(args: &str) -> Vec<String> {
@@ -138,6 +149,13 @@ fn parse_params(params: Vec<String>) -> Vec<Val> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if let Some(host) = cli.socket_host {
+        socket::set_host(match host {
+            SocketHost::Wamr => HostFlavor::Wamr,
+            SocketHost::WasmEdge => HostFlavor::WasmEdge,
+        });
+    }
 
     // Warn if --threads is used but threads feature is not enabled
     #[cfg(not(feature = "threads"))]

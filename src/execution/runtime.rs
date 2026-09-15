@@ -15,6 +15,7 @@ use crate::instrument::stats::ExecutionStats;
 #[cfg(feature = "trace")]
 use crate::instrument::trace::{TraceConfig, Tracer};
 use crate::structure::module::{Func, WasiFuncType};
+use crate::wasi::socket;
 #[cfg(feature = "threads")]
 use crate::wasi::threads::ThreadContext;
 use crate::wasi::{WasiError, WasiResult};
@@ -1011,8 +1012,9 @@ impl Runtime {
                 let result = wasi_impl.fd_renumber(memory, fd, to)?;
                 Ok(Some(Val::Num(Num::I32(result))))
             }
-            WasiFuncType::SocketExt(_) => {
-                Ok(Some(Val::Num(Num::I32(WasiError::NotSup.to_errno()))))
+            WasiFuncType::SocketExt(ext) => {
+                let result = socket::call(*ext, memory, params)?;
+                Ok(Some(Val::Num(Num::I32(result))))
             }
             _ => Err(WasiError::NoSys),
         }
