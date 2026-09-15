@@ -1,35 +1,17 @@
-//! Socket extensions of the host runtimes.
+//! Socket extensions of WAMR and WasmEdge.
 //!
-//! WAMR and WasmEdge each add socket functions under `wasi_snapshot_preview1`
-//! with their own names and shapes. The parser tells a guest's imports apart
-//! per function ([`SocketExt`]). Which host Chiwawa itself runs on comes from
-//! `--socket-host`: calling an import the host did not link traps, so the
-//! host cannot be probed.
+//! A guest may use either extension. The host Chiwawa itself calls is chosen
+//! at build time by the `socket-wamr` or `socket-wasmedge` feature.
+
+#[cfg(all(feature = "socket-wamr", feature = "socket-wasmedge", not(docsrs)))]
+compile_error!("socket-wamr and socket-wasmedge select different hosts; enable one");
 
 use crate::execution::mem::MemAddr;
 use crate::execution::value::Val;
 use crate::structure::module::SocketExt;
 use crate::wasi::{WasiError, WasiResult};
-use std::sync::OnceLock;
-
-/// The host runtime whose socket extension Chiwawa may call.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HostFlavor {
-    Wamr,
-    WasmEdge,
-}
-
-static HOST: OnceLock<HostFlavor> = OnceLock::new();
-
-pub fn set_host(flavor: HostFlavor) {
-    let _ = HOST.set(flavor);
-}
-
-pub fn host() -> Option<HostFlavor> {
-    HOST.get().copied()
-}
 
 pub fn call(_ext: SocketExt, _memory: &MemAddr, _params: &[Val]) -> WasiResult<i32> {
-    // No backend yet: every host answers ENOTSUP.
+    // No backend yet: every build answers ENOTSUP.
     Ok(WasiError::NotSup.to_errno())
 }
