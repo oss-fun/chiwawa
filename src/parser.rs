@@ -790,12 +790,67 @@ static WASI_FUNCTION_MAP: LazyLock<FxHashMap<&'static str, WasiFuncType>> = Lazy
     map.insert("path_link", WasiFuncType::PathLink);
     map.insert("path_rename", WasiFuncType::PathRename);
     map.insert("path_symlink", WasiFuncType::PathSymlink);
-    map.insert("sock_accept", WasiFuncType::SockAccept);
     map.insert("sock_recv", WasiFuncType::SockRecv);
     map.insert("sock_send", WasiFuncType::SockSend);
     map.insert("sock_shutdown", WasiFuncType::SockShutdown);
     map
 });
+
+/// Socket extension imports by name.
+static SOCKET_EXTENSION_MAP: LazyLock<FxHashMap<&'static str, Vec<WasiFuncType>>> =
+    LazyLock::new(|| {
+        use SocketExt::*;
+        let ext = WasiFuncType::SocketExt;
+        let mut list = vec![
+            ("sock_accept", WasiFuncType::SockAccept),
+            ("sock_accept", ext(AcceptV1)),
+            ("sock_accept_v2", WasiFuncType::SockAccept),
+            ("sock_recv_v2", WasiFuncType::SockRecv),
+            ("sock_send_v2", WasiFuncType::SockSend),
+            ("sock_listen", ext(Listen)),
+            ("sock_listen_v2", ext(Listen)),
+            ("sock_open", ext(OpenWamr)),
+            ("sock_open", ext(OpenWasmEdge)),
+            ("sock_open_v2", ext(OpenWasmEdge)),
+            ("sock_bind", ext(BindWamr)),
+            ("sock_bind", ext(BindWasmEdge)),
+            ("sock_bind_v2", ext(BindWasmEdge)),
+            ("sock_connect", ext(ConnectWamr)),
+            ("sock_connect", ext(ConnectWasmEdge)),
+            ("sock_connect_v2", ext(ConnectWasmEdge)),
+            ("sock_recv_from", ext(RecvFromWamr)),
+            ("sock_recv_from", ext(RecvFromV1)),
+            ("sock_recv_from", ext(RecvFromV2)),
+            ("sock_recv_from_v2", ext(RecvFromV2)),
+            ("sock_send_to", ext(SendToWamr)),
+            ("sock_send_to", ext(SendToWasmEdge)),
+            ("sock_send_to_v2", ext(SendToWasmEdge)),
+            ("sock_addr_local", ext(AddrLocal)),
+            ("sock_addr_remote", ext(AddrRemote)),
+            ("sock_addr_resolve", ext(AddrResolve)),
+            ("sock_close", ext(Close)),
+            ("sock_getlocaladdr", ext(GetLocalAddrV1)),
+            ("sock_getlocaladdr", ext(GetLocalAddrV2)),
+            ("sock_getlocaladdr_v2", ext(GetLocalAddrV2)),
+            ("sock_getpeeraddr", ext(GetPeerAddrV1)),
+            ("sock_getpeeraddr", ext(GetPeerAddrV2)),
+            ("sock_getpeeraddr_v2", ext(GetPeerAddrV2)),
+            ("sock_getaddrinfo", ext(GetAddrInfo)),
+            ("sock_setsockopt", ext(SetSockOpt)),
+            ("sock_getsockopt", ext(GetSockOpt)),
+        ];
+        for (opt, set_name, get_name) in WamrSockOpt::ALL {
+            list.push((set_name, ext(SetOptWamr(opt))));
+            if let Some(get_name) = get_name {
+                list.push((get_name, ext(GetOptWamr(opt))));
+            }
+        }
+        let mut map = FxHashMap::default();
+        for (name, func) in list {
+            map.entry(name).or_insert_with(Vec::new).push(func);
+        }
+        map
+    });
 
 /// Converts a wasmparser value type to the internal representation.
 fn match_value_type(t: ValType) -> ValueType {
@@ -980,7 +1035,13 @@ fn decode_import_section(
         let import = import?;
         let desc = match import.ty {
             TypeRef::Func(type_index) => {
-                if let Some(wasi_func_type) = parse_wasi_import(&import.module, &import.name) {
+                let func_type = module
+                    .types
+                    .get(type_index as usize)
+                    .ok_or("import refers to an unknown type")?;
+                if let Some(wasi_func_type) =
+                    parse_wasi_import(&import.module, &import.name, func_type)
+                {
                     #[cfg(feature = "call_graph")]
                     if let Some(b) = cg_builder.as_mut() {
                         b.register_wasi_func();
@@ -1049,10 +1110,17 @@ fn decode_import_section(
 /// Resolves an import to a WASI function handled by passthrough, if any.
 ///
 /// Preview 1 functions come from `wasi_snapshot_preview1`; the wasi-threads
-/// proposal adds `thread_spawn` under the separate `wasi` module.
-fn parse_wasi_import(module: &str, name: &str) -> Option<WasiFuncType> {
+/// proposal adds `thread_spawn` under the separate `wasi` module. Socket
+/// extensions share that first module, so `func_type` picks the shape.
+fn parse_wasi_import(module: &str, name: &str, func_type: &FuncType) -> Option<WasiFuncType> {
     match module {
-        "wasi_snapshot_preview1" => WASI_FUNCTION_MAP.get(name).copied(),
+        "wasi_snapshot_preview1" => match SOCKET_EXTENSION_MAP.get(name) {
+            Some(candidates) => candidates
+                .iter()
+                .copied()
+                .find(|candidate| candidate.expected_func_type().type_match(func_type)),
+            None => WASI_FUNCTION_MAP.get(name).copied(),
+        },
         // wasi-libc emitted `thread_spawn` before switching to the WIT-style
         // `thread-spawn`; accept both.
         "wasi" if name == "thread-spawn" || name == "thread_spawn" => {
