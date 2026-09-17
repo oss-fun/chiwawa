@@ -197,3 +197,24 @@ pub(crate) fn getaddrinfo(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
         &(found.len() as u32).to_le_bytes(),
     )
 }
+
+/// `sock_setsockopt(fd, level, name, value, value_len)`
+pub(crate) fn setsockopt(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
+    let opt = decode_opt_name(param_i32(params, 1)?, param_i32(params, 2)?)?;
+    let len = param_i32(params, 4)? as u32 as usize;
+    let value = decode_opt(opt, &read_bytes(memory, param_i32(params, 3)?, len)?)?;
+    Host::set_opt(param_i32(params, 0)?, opt, value)
+}
+
+/// `sock_getsockopt(fd, level, name, value_out, value_len_inout)`
+pub(crate) fn getsockopt(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
+    let opt = decode_opt_name(param_i32(params, 1)?, param_i32(params, 2)?)?;
+    let len_at = param_i32(params, 4)?;
+    let room = u32::from_le_bytes(read_array(memory, len_at)?) as usize;
+    let (bytes, len) = encode_opt(Host::get_opt(param_i32(params, 0)?, opt)?);
+    if len > room {
+        return Err(WasiError::Inval);
+    }
+    write_bytes(memory, param_i32(params, 3)?, &bytes[..len])?;
+    write_bytes(memory, len_at, &(len as u32).to_le_bytes())
+}

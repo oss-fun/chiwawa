@@ -3,10 +3,11 @@
 use super::layout::*;
 use crate::execution::mem::MemAddr;
 use crate::execution::value::Val;
+use crate::structure::module::WamrSockOpt;
 use crate::wasi::passthrough::PassthroughWasiImpl;
 use crate::wasi::socket::{
-    decode, iovecs, param_i32, read_array, read_cstr, read_struct, write_bytes, write_struct,
-    Backend, Host, RESOLVE_LIMIT,
+    decode, iovecs, param_i32, param_i64, read_array, read_cstr, read_struct, write_bytes,
+    write_struct, Backend, Host, OptValue, RESOLVE_LIMIT,
 };
 use crate::wasi::{WasiError, WasiResult};
 
@@ -86,4 +87,35 @@ pub(crate) fn addr_resolve(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
         write_struct(memory, at, &AddrInfo::new(item))?;
     }
     write_bytes(memory, param_i32(params, 5)?, &(total as u32).to_le_bytes())
+}
+
+/// `sock_set_*(fd, value)`: a bool or size as i32, a timeout as i64
+/// microseconds, linger as `(fd, on, secs)`.
+pub(crate) fn set_opt(opt: WamrSockOpt, params: &[Val]) -> WasiResult<()> {
+    let opt = common_opt(opt)?;
+    let value = match opt.blank() {
+        OptValue::Bool(_) => OptValue::Bool(param_i32(params, 1)? != 0),
+        OptValue::Size(_) => OptValue::Size(param_i32(params, 1)? as u32),
+        OptValue::Timeout(_) => OptValue::Timeout(param_i64(params, 1)? as u64),
+        OptValue::Linger { .. } => OptValue::Linger {
+            on: param_i32(params, 1)? != 0,
+            secs: param_i32(params, 2)?,
+        },
+    };
+    Host::set_opt(param_i32(params, 0)?, opt, value)
+}
+
+/// `sock_get_*(fd, out)`: a bool as one byte, a size as u32, a timeout as
+/// u64, linger as `(fd, on_out, secs_out)`.
+pub(crate) fn get_opt(opt: WamrSockOpt, memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
+    let out = param_i32(params, 1)?;
+    match Host::get_opt(param_i32(params, 0)?, common_opt(opt)?)? {
+        OptValue::Bool(on) => write_bytes(memory, out, &[on as u8]),
+        OptValue::Size(size) => write_bytes(memory, out, &size.to_le_bytes()),
+        OptValue::Timeout(us) => write_bytes(memory, out, &us.to_le_bytes()),
+        OptValue::Linger { on, secs } => {
+            write_bytes(memory, out, &[on as u8])?;
+            write_bytes(memory, param_i32(params, 2)?, &secs.to_le_bytes())
+        }
+    }
 }

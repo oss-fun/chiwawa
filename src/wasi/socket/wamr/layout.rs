@@ -1,6 +1,7 @@
 //! The numbers and layouts WAMR defines, shared by the guest and host sides.
 
-use crate::wasi::socket::{decode, encode, AddressFamily, Resolved, SocketType};
+use crate::structure::module::WamrSockOpt;
+use crate::wasi::socket::{decode, encode, AddressFamily, Resolved, SockOpt, SocketType};
 use crate::wasi::{WasiError, WasiResult};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -112,5 +113,20 @@ impl AddrInfo {
             addr: decode_addr(&self.addr)?,
             ty: decode(&TYPE_CODES, self.ty)?,
         })
+    }
+}
+
+/// The common option a WAMR option function stands for
+pub(crate) fn common_opt(opt: WamrSockOpt) -> WasiResult<SockOpt> {
+    match opt {
+        WamrSockOpt::ReuseAddr => Ok(SockOpt::ReuseAddr),
+        WamrSockOpt::KeepAlive => Ok(SockOpt::KeepAlive),
+        WamrSockOpt::Broadcast => Ok(SockOpt::Broadcast),
+        WamrSockOpt::RecvBufSize => Ok(SockOpt::RecvBufSize),
+        WamrSockOpt::SendBufSize => Ok(SockOpt::SendBufSize),
+        WamrSockOpt::RecvTimeout => Ok(SockOpt::RecvTimeout),
+        WamrSockOpt::SendTimeout => Ok(SockOpt::SendTimeout),
+        WamrSockOpt::Linger => Ok(SockOpt::Linger),
+        _ => Err(WasiError::NoProtoOpt),
     }
 }

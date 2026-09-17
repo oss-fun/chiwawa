@@ -4,7 +4,9 @@
 
 use super::layout::*;
 use crate::wasi::passthrough::WasiIovec;
-use crate::wasi::socket::{decode, encode, AddressFamily, Backend, Resolved, SocketType};
+use crate::wasi::socket::{
+    decode, encode, AddressFamily, Backend, OptValue, Resolved, SockOpt, SocketType,
+};
 use crate::wasi::{WasiError, WasiResult};
 use std::net::{IpAddr, SocketAddr};
 
@@ -41,6 +43,8 @@ extern "C" {
         max: u32,
         res_len: *mut u32,
     ) -> u16;
+    fn sock_setsockopt(fd: i32, level: i32, name: i32, value: *const u8, len: u32) -> u16;
+    fn sock_getsockopt(fd: i32, level: i32, name: i32, value: *mut u8, len: *mut u32) -> u16;
     #[link_name = "sock_send_to_v2"]
     fn sock_send_to(
         fd: i32,
@@ -247,5 +251,18 @@ impl Backend for WasmEdge {
             .collect::<WasiResult<Vec<_>>>()?;
         let total = found.len();
         Ok((found, total))
+    }
+    fn set_opt(fd: i32, opt: SockOpt, value: OptValue) -> WasiResult<()> {
+        let (bytes, len) = encode_opt(value);
+        let name = encode(&OPT_CODES, opt);
+        check(unsafe { sock_setsockopt(fd, LEVEL_SOCKET, name, bytes.as_ptr(), len as u32) })
+    }
+
+    fn get_opt(fd: i32, opt: SockOpt) -> WasiResult<OptValue> {
+        let mut bytes = [0u8; OPT_VALUE_MAX];
+        let mut len = OPT_VALUE_MAX as u32;
+        let name = encode(&OPT_CODES, opt);
+        check(unsafe { sock_getsockopt(fd, LEVEL_SOCKET, name, bytes.as_mut_ptr(), &mut len) })?;
+        decode_opt(opt, &bytes[..len as usize])
     }
 }

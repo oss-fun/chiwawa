@@ -2,7 +2,9 @@
 
 use super::layout::*;
 use crate::wasi::passthrough::WasiIovec;
-use crate::wasi::socket::{encode, AddressFamily, Backend, Resolved, SocketType};
+use crate::wasi::socket::{
+    encode, AddressFamily, Backend, OptValue, Resolved, SockOpt, SocketType,
+};
 use crate::wasi::{WasiError, WasiResult};
 use std::ffi::CString;
 use std::net::SocketAddr;
@@ -31,6 +33,22 @@ extern "C" {
         out_count: u32,
         total_out: *mut u32,
     ) -> u16;
+    fn sock_set_reuse_addr(fd: i32, on: i32) -> u16;
+    fn sock_get_reuse_addr(fd: i32, on_out: *mut u8) -> u16;
+    fn sock_set_keep_alive(fd: i32, on: i32) -> u16;
+    fn sock_get_keep_alive(fd: i32, on_out: *mut u8) -> u16;
+    fn sock_set_broadcast(fd: i32, on: i32) -> u16;
+    fn sock_get_broadcast(fd: i32, on_out: *mut u8) -> u16;
+    fn sock_set_recv_buf_size(fd: i32, size: u32) -> u16;
+    fn sock_get_recv_buf_size(fd: i32, size_out: *mut u64) -> u16;
+    fn sock_set_send_buf_size(fd: i32, size: u32) -> u16;
+    fn sock_get_send_buf_size(fd: i32, size_out: *mut u64) -> u16;
+    fn sock_set_recv_timeout(fd: i32, us: u64) -> u16;
+    fn sock_get_recv_timeout(fd: i32, us_out: *mut u64) -> u16;
+    fn sock_set_send_timeout(fd: i32, us: u64) -> u16;
+    fn sock_get_send_timeout(fd: i32, us_out: *mut u64) -> u16;
+    fn sock_set_linger(fd: i32, on: i32, secs: i32) -> u16;
+    fn sock_get_linger(fd: i32, on_out: *mut u8, secs_out: *mut i32) -> u16;
     fn sock_send_to(
         fd: i32,
         iovs: *const WasiIovec,
@@ -139,5 +157,44 @@ impl Backend for Wamr {
             .map(AddrInfo::decode)
             .collect::<WasiResult<Vec<_>>>()?;
         Ok((found, total as usize))
+    }
+    fn set_opt(fd: i32, opt: SockOpt, value: OptValue) -> WasiResult<()> {
+        check(unsafe {
+            match (opt, value) {
+                (SockOpt::ReuseAddr, OptValue::Bool(on)) => sock_set_reuse_addr(fd, on as i32),
+                (SockOpt::KeepAlive, OptValue::Bool(on)) => sock_set_keep_alive(fd, on as i32),
+                (SockOpt::Broadcast, OptValue::Bool(on)) => sock_set_broadcast(fd, on as i32),
+                (SockOpt::RecvBufSize, OptValue::Size(size)) => sock_set_recv_buf_size(fd, size),
+                (SockOpt::SendBufSize, OptValue::Size(size)) => sock_set_send_buf_size(fd, size),
+                (SockOpt::RecvTimeout, OptValue::Timeout(us)) => sock_set_recv_timeout(fd, us),
+                (SockOpt::SendTimeout, OptValue::Timeout(us)) => sock_set_send_timeout(fd, us),
+                (SockOpt::Linger, OptValue::Linger { on, secs }) => {
+                    sock_set_linger(fd, on as i32, secs)
+                }
+                _ => return Err(WasiError::Inval),
+            }
+        })
+    }
+
+    fn get_opt(fd: i32, opt: SockOpt) -> WasiResult<OptValue> {
+        let (mut on, mut wide, mut secs) = (0u8, 0u64, 0i32);
+        check(unsafe {
+            match opt {
+                SockOpt::ReuseAddr => sock_get_reuse_addr(fd, &mut on),
+                SockOpt::KeepAlive => sock_get_keep_alive(fd, &mut on),
+                SockOpt::Broadcast => sock_get_broadcast(fd, &mut on),
+                SockOpt::RecvBufSize => sock_get_recv_buf_size(fd, &mut wide),
+                SockOpt::SendBufSize => sock_get_send_buf_size(fd, &mut wide),
+                SockOpt::RecvTimeout => sock_get_recv_timeout(fd, &mut wide),
+                SockOpt::SendTimeout => sock_get_send_timeout(fd, &mut wide),
+                SockOpt::Linger => sock_get_linger(fd, &mut on, &mut secs),
+            }
+        })?;
+        Ok(match opt.blank() {
+            OptValue::Bool(_) => OptValue::Bool(on != 0),
+            OptValue::Size(_) => OptValue::Size(wide as u32),
+            OptValue::Timeout(_) => OptValue::Timeout(wide),
+            OptValue::Linger { .. } => OptValue::Linger { on: on != 0, secs },
+        })
     }
 }

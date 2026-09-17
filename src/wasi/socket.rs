@@ -30,6 +30,42 @@ pub(crate) enum SocketType {
     Any,
 }
 
+/// The options both extensions can express.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SockOpt {
+    ReuseAddr,
+    KeepAlive,
+    Broadcast,
+    RecvBufSize,
+    SendBufSize,
+    RecvTimeout,
+    SendTimeout,
+    Linger,
+}
+
+/// The value of a [`SockOpt`]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OptValue {
+    Bool(bool),
+    Size(u32),
+    Timeout(u64),
+    Linger {
+        on: bool,
+        secs: i32,
+    },
+}
+
+impl SockOpt {
+    pub(crate) fn blank(self) -> OptValue {
+        match self {
+            SockOpt::ReuseAddr | SockOpt::KeepAlive | SockOpt::Broadcast => OptValue::Bool(false),
+            SockOpt::RecvBufSize | SockOpt::SendBufSize => OptValue::Size(0),
+            SockOpt::RecvTimeout | SockOpt::SendTimeout => OptValue::Timeout(0),
+            SockOpt::Linger => OptValue::Linger { on: false, secs: 0 },
+        }
+    }
+}
+
 /// One name-resolution result.
 pub(crate) struct Resolved {
     pub addr: SocketAddr,
@@ -72,6 +108,8 @@ pub(crate) trait Backend {
         ty: SocketType,
         max: usize,
     ) -> WasiResult<(Vec<Resolved>, usize)>;
+    fn set_opt(fd: i32, opt: SockOpt, value: OptValue) -> WasiResult<()>;
+    fn get_opt(fd: i32, opt: SockOpt) -> WasiResult<OptValue>;
 }
 
 cfg_if::cfg_if! {
@@ -119,6 +157,12 @@ cfg_if::cfg_if! {
             ) -> WasiResult<(Vec<Resolved>, usize)> {
                 Err(WasiError::NotSup)
             }
+            fn set_opt(_: i32, _: SockOpt, _: OptValue) -> WasiResult<()> {
+                Err(WasiError::NotSup)
+            }
+            fn get_opt(_: i32, _: SockOpt) -> WasiResult<OptValue> {
+                Err(WasiError::NotSup)
+            }
         }
     }
 }
@@ -154,7 +198,10 @@ pub(crate) fn call(
         SocketExt::GetLocalAddrV2 => wasmedge::guest::local_addr_v2(memory, params),
         SocketExt::GetPeerAddrV1 => wasmedge::guest::peer_addr_v1(memory, params),
         SocketExt::GetPeerAddrV2 => wasmedge::guest::peer_addr_v2(memory, params),
-        _ => Err(WasiError::NotSup),
+        SocketExt::SetOptWamr(opt) => wamr::guest::set_opt(opt, params),
+        SocketExt::GetOptWamr(opt) => wamr::guest::get_opt(opt, memory, params),
+        SocketExt::SetSockOpt => wasmedge::guest::setsockopt(memory, params),
+        SocketExt::GetSockOpt => wasmedge::guest::getsockopt(memory, params),
     };
     result.map_or_else(|e| e.to_errno(), |()| 0)
 }
@@ -163,6 +210,13 @@ pub(crate) fn call(
 /// guest memory to read, so it needs no per-ABI frontend.
 fn listen(params: &[Val]) -> WasiResult<()> {
     Host::listen(param_i32(params, 0)?, param_i32(params, 1)?)
+}
+
+pub(crate) fn param_i64(params: &[Val], i: usize) -> WasiResult<i64> {
+    params
+        .get(i)
+        .and_then(|v| v.to_i64().ok())
+        .ok_or(WasiError::Inval)
 }
 
 pub(crate) fn param_i32(params: &[Val], i: usize) -> WasiResult<i32> {

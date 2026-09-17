@@ -1,7 +1,7 @@
 //! The numbers and layouts WasmEdge defines, shared by the guest and host
 //! sides. Pointers are `u32`: guest and host are both wasm32.
 
-use crate::wasi::socket::{AddressFamily, SocketType};
+use crate::wasi::socket::{AddressFamily, OptValue, SockOpt, SocketType};
 use crate::wasi::{WasiError, WasiResult};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -144,4 +144,78 @@ pub(crate) fn decode_sa_data(family: u8, data: &[u8; SA_DATA_MAX]) -> WasiResult
         _ => return Err(WasiError::Inval),
     };
     Ok(SocketAddr::new(ip, port))
+}
+
+/// `__wasi_sock_opt_level_t` has one level.
+pub(crate) const LEVEL_SOCKET: i32 = 0;
+
+/// `__wasi_sock_opt_so_t`, the options the other host also has.
+pub(crate) const OPT_CODES: [(i32, SockOpt); 8] = [
+    (0, SockOpt::ReuseAddr),
+    (4, SockOpt::Broadcast),
+    (5, SockOpt::SendBufSize),
+    (6, SockOpt::RecvBufSize),
+    (7, SockOpt::KeepAlive),
+    (9, SockOpt::Linger),
+    (11, SockOpt::RecvTimeout),
+    (12, SockOpt::SendTimeout),
+];
+
+/// The longest option value: a `timeval`.
+pub(crate) const OPT_VALUE_MAX: usize = 16;
+
+pub(crate) fn encode_opt(value: OptValue) -> ([u8; OPT_VALUE_MAX], usize) {
+    let mut bytes = [0u8; OPT_VALUE_MAX];
+    let len = match value {
+        OptValue::Bool(on) => {
+            bytes[0..4].copy_from_slice(&(on as i32).to_le_bytes());
+            4
+        }
+        OptValue::Size(size) => {
+            bytes[0..4].copy_from_slice(&size.to_le_bytes());
+            4
+        }
+        OptValue::Timeout(us) => {
+            bytes[0..8].copy_from_slice(&((us / 1_000_000) as i64).to_le_bytes());
+            bytes[8..16].copy_from_slice(&((us % 1_000_000) as i64).to_le_bytes());
+            16
+        }
+        OptValue::Linger { on, secs } => {
+            bytes[0..4].copy_from_slice(&(on as i32).to_le_bytes());
+            bytes[4..8].copy_from_slice(&secs.to_le_bytes());
+            8
+        }
+    };
+    (bytes, len)
+}
+
+pub(crate) fn decode_opt(opt: SockOpt, bytes: &[u8]) -> WasiResult<OptValue> {
+    let int = |at: usize| -> WasiResult<i32> {
+        let four = bytes.get(at..at + 4).ok_or(WasiError::Inval)?;
+        Ok(i32::from_le_bytes(four.try_into().unwrap()))
+    };
+    let long = |at: usize| -> WasiResult<i64> {
+        let eight = bytes.get(at..at + 8).ok_or(WasiError::Inval)?;
+        Ok(i64::from_le_bytes(eight.try_into().unwrap()))
+    };
+    Ok(match opt.blank() {
+        OptValue::Bool(_) => OptValue::Bool(int(0)? != 0),
+        OptValue::Size(_) => OptValue::Size(int(0)? as u32),
+        OptValue::Timeout(_) => OptValue::Timeout((long(0)? * 1_000_000 + long(8)?) as u64),
+        OptValue::Linger { .. } => OptValue::Linger {
+            on: int(0)? != 0,
+            secs: int(4)?,
+        },
+    })
+}
+
+pub(crate) fn decode_opt_name(level: i32, name: i32) -> WasiResult<SockOpt> {
+    if level != LEVEL_SOCKET {
+        return Err(WasiError::Inval);
+    }
+    OPT_CODES
+        .iter()
+        .find(|(code, _)| *code == name)
+        .map(|(_, opt)| *opt)
+        .ok_or(WasiError::NoProtoOpt)
 }
