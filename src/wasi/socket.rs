@@ -49,10 +49,7 @@ pub(crate) enum OptValue {
     Bool(bool),
     Size(u32),
     Timeout(u64),
-    Linger {
-        on: bool,
-        secs: i32,
-    },
+    Linger { on: bool, secs: i32 },
 }
 
 impl SockOpt {
