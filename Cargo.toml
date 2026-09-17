@@ -30,6 +30,9 @@ trace = []
 tco = []
 call_graph = []
 threads = []
+# One host's socket extension; the import must match the host that runs the file.
+socket-wamr = []
+socket-wasmedge = []
 
 [dependencies]
 anyhow = "1.0.86"

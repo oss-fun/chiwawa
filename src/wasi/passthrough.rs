@@ -8,14 +8,53 @@
 //! and translates between guest memory addresses and host pointers.
 
 use super::*;
-use crate::execution::mem::MemAddr;
+use crate::execution::mem::{MemAddr, MemInst};
 use WasiError;
 
 /// WASI iovec structure that matches wasi-libc layout.
 #[repr(C)]
-struct WasiIovec {
+pub(crate) struct WasiIovec {
     buf: *const u8,
     buf_len: u32,
+}
+
+/// The guest memory range `len` bytes from `start`, unless it overflows.
+pub(crate) fn guest_range(start: usize, len: usize) -> Option<std::ops::Range<usize>> {
+    start.checked_add(len).map(|end| start..end)
+}
+
+/// Rebuilds a guest iovec array with its buffer pointers translated to host addresses.
+pub(crate) fn collect_iovecs(
+    mem: &MemInst,
+    iovs_ptr: Ptr,
+    iovs_len: Size,
+) -> WasiResult<Vec<WasiIovec>> {
+    let table = (iovs_len as usize)
+        .checked_mul(8)
+        .and_then(|len| guest_range(iovs_ptr as usize, len))
+        .and_then(|r| mem.data.get(r))
+        .ok_or(WasiError::Fault)?;
+
+    table
+        .chunks_exact(8)
+        .map(|entry| {
+            let buf_ptr = u32::from_le_bytes(entry[..4].try_into().unwrap()) as usize;
+            let buf_len = u32::from_le_bytes(entry[4..].try_into().unwrap());
+            if buf_len == 0 {
+                return Ok(WasiIovec {
+                    buf: std::ptr::null(),
+                    buf_len: 0,
+                });
+            }
+            let buf = guest_range(buf_ptr, buf_len as usize)
+                .and_then(|r| mem.data.get(r))
+                .ok_or(WasiError::Fault)?;
+            Ok(WasiIovec {
+                buf: buf.as_ptr(),
+                buf_len,
+            })
+        })
+        .collect()
 }
 
 // External declarations for wasi-libc functions
@@ -1217,11 +1256,12 @@ impl PassthroughWasiImpl {
     ) -> WasiResult<i32> {
         let memory_guard = memory.get_memory_direct_access();
         let memory_base = memory_guard.data.as_ptr();
+        let iovecs = collect_iovecs(memory_guard, ri_data_ptr, ri_data_len)?;
 
         let wasi_errno = unsafe {
             __wasi_sock_recv(
                 fd,
-                memory_base.add(ri_data_ptr as usize) as *const WasiIovec,
+                iovecs.as_ptr(),
                 ri_data_len,
                 ri_flags,
                 memory_base.add(ro_datalen_ptr as usize) as *mut u32,
@@ -1243,11 +1283,12 @@ impl PassthroughWasiImpl {
     ) -> WasiResult<i32> {
         let memory_guard = memory.get_memory_direct_access();
         let memory_base = memory_guard.data.as_ptr();
+        let iovecs = collect_iovecs(memory_guard, si_data_ptr, si_data_len)?;
 
         let wasi_errno = unsafe {
             __wasi_sock_send(
                 fd,
-                memory_base.add(si_data_ptr as usize) as *const WasiIovec,
+                iovecs.as_ptr(),
                 si_data_len,
                 si_flags,
                 memory_base.add(so_datalen_ptr as usize) as *mut u32,

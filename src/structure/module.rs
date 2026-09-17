@@ -191,6 +191,235 @@ pub enum WasiFuncType {
     /// `wasi` module rather than `wasi_snapshot_preview1`. Handled by
     /// `src/wasi/threads.rs`, not by passthrough.
     ThreadSpawn,
+    /// A socket extension of a host runtime
+    SocketExt(SocketExt),
+}
+
+/// Socket functions WAMR and WasmEdge add under `wasi_snapshot_preview1`.
+/// Both hosts share some names with different signatures.
+#[derive(PartialEq, Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub enum SocketExt {
+    Listen,
+    OpenWamr,
+    BindWamr,
+    ConnectWamr,
+    AddrLocal,
+    AddrRemote,
+    AddrResolve,
+    RecvFromWamr,
+    SendToWamr,
+    Close,
+    SetOptWamr(WamrSockOpt),
+    GetOptWamr(WamrSockOpt),
+    OpenWasmEdge,
+    BindWasmEdge,
+    ConnectWasmEdge,
+    AcceptV1,
+    RecvFromV1,
+    RecvFromV2,
+    SendToWasmEdge,
+    GetLocalAddrV1,
+    GetLocalAddrV2,
+    GetPeerAddrV1,
+    GetPeerAddrV2,
+    GetAddrInfo,
+    SetSockOpt,
+    GetSockOpt,
+}
+
+impl SocketExt {
+    /// WAMR from libc_wasi_wrapper.c, WasmEdge from wasifunc.h.
+    pub fn func_type(&self) -> FuncType {
+        match self {
+            SocketExt::Listen => errno_func(vec![I32; 2]),
+            SocketExt::OpenWamr => errno_func(vec![I32; 4]),
+            SocketExt::BindWamr => errno_func(vec![I32; 2]),
+            SocketExt::ConnectWamr => errno_func(vec![I32; 2]),
+            SocketExt::AddrLocal => errno_func(vec![I32; 2]),
+            SocketExt::AddrRemote => errno_func(vec![I32; 2]),
+            SocketExt::AddrResolve => errno_func(vec![I32; 6]),
+            SocketExt::RecvFromWamr => errno_func(vec![I32; 6]),
+            SocketExt::SendToWamr => errno_func(vec![I32; 6]),
+            SocketExt::Close => errno_func(vec![I32; 1]),
+            SocketExt::SetOptWamr(opt) => errno_func(opt.set_params()),
+            SocketExt::GetOptWamr(opt) => errno_func(opt.get_params()),
+            SocketExt::OpenWasmEdge => errno_func(vec![I32; 3]),
+            SocketExt::BindWasmEdge => errno_func(vec![I32; 3]),
+            SocketExt::ConnectWasmEdge => errno_func(vec![I32; 3]),
+            SocketExt::AcceptV1 => errno_func(vec![I32; 2]),
+            SocketExt::RecvFromV1 => errno_func(vec![I32; 7]),
+            SocketExt::RecvFromV2 => errno_func(vec![I32; 8]),
+            SocketExt::SendToWasmEdge => errno_func(vec![I32; 7]),
+            SocketExt::GetLocalAddrV1 => errno_func(vec![I32; 4]),
+            SocketExt::GetLocalAddrV2 => errno_func(vec![I32; 3]),
+            SocketExt::GetPeerAddrV1 => errno_func(vec![I32; 4]),
+            SocketExt::GetPeerAddrV2 => errno_func(vec![I32; 3]),
+            SocketExt::GetAddrInfo => errno_func(vec![I32; 8]),
+            SocketExt::SetSockOpt => errno_func(vec![I32; 5]),
+            SocketExt::GetSockOpt => errno_func(vec![I32; 5]),
+        }
+    }
+}
+
+/// A WAMR socket option. WAMR has one import per option; WasmEdge passes the
+/// option as an argument, so it needs no counterpart.
+#[derive(PartialEq, Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub enum WamrSockOpt {
+    ReuseAddr,
+    ReusePort,
+    KeepAlive,
+    TcpNoDelay,
+    TcpQuickAck,
+    TcpFastopenConnect,
+    Broadcast,
+    IpTtl,
+    IpMulticastTtl,
+    Ipv6Only,
+    RecvBufSize,
+    SendBufSize,
+    TcpKeepIdle,
+    TcpKeepIntvl,
+    RecvTimeout,
+    SendTimeout,
+    Linger,
+    IpMulticastLoop,
+    IpAddMembership,
+    IpDropMembership,
+}
+
+impl WamrSockOpt {
+    /// Each option with its setter and, where WAMR has one, getter name.
+    pub const ALL: [(WamrSockOpt, &'static str, Option<&'static str>); 20] = [
+        (
+            WamrSockOpt::ReuseAddr,
+            "sock_set_reuse_addr",
+            Some("sock_get_reuse_addr"),
+        ),
+        (
+            WamrSockOpt::ReusePort,
+            "sock_set_reuse_port",
+            Some("sock_get_reuse_port"),
+        ),
+        (
+            WamrSockOpt::KeepAlive,
+            "sock_set_keep_alive",
+            Some("sock_get_keep_alive"),
+        ),
+        (
+            WamrSockOpt::TcpNoDelay,
+            "sock_set_tcp_no_delay",
+            Some("sock_get_tcp_no_delay"),
+        ),
+        (
+            WamrSockOpt::TcpQuickAck,
+            "sock_set_tcp_quick_ack",
+            Some("sock_get_tcp_quick_ack"),
+        ),
+        (
+            WamrSockOpt::TcpFastopenConnect,
+            "sock_set_tcp_fastopen_connect",
+            Some("sock_get_tcp_fastopen_connect"),
+        ),
+        (
+            WamrSockOpt::Broadcast,
+            "sock_set_broadcast",
+            Some("sock_get_broadcast"),
+        ),
+        (
+            WamrSockOpt::IpTtl,
+            "sock_set_ip_ttl",
+            Some("sock_get_ip_ttl"),
+        ),
+        (
+            WamrSockOpt::IpMulticastTtl,
+            "sock_set_ip_multicast_ttl",
+            Some("sock_get_ip_multicast_ttl"),
+        ),
+        (
+            WamrSockOpt::Ipv6Only,
+            "sock_set_ipv6_only",
+            Some("sock_get_ipv6_only"),
+        ),
+        (
+            WamrSockOpt::RecvBufSize,
+            "sock_set_recv_buf_size",
+            Some("sock_get_recv_buf_size"),
+        ),
+        (
+            WamrSockOpt::SendBufSize,
+            "sock_set_send_buf_size",
+            Some("sock_get_send_buf_size"),
+        ),
+        (
+            WamrSockOpt::TcpKeepIdle,
+            "sock_set_tcp_keep_idle",
+            Some("sock_get_tcp_keep_idle"),
+        ),
+        (
+            WamrSockOpt::TcpKeepIntvl,
+            "sock_set_tcp_keep_intvl",
+            Some("sock_get_tcp_keep_intvl"),
+        ),
+        (
+            WamrSockOpt::RecvTimeout,
+            "sock_set_recv_timeout",
+            Some("sock_get_recv_timeout"),
+        ),
+        (
+            WamrSockOpt::SendTimeout,
+            "sock_set_send_timeout",
+            Some("sock_get_send_timeout"),
+        ),
+        (
+            WamrSockOpt::Linger,
+            "sock_set_linger",
+            Some("sock_get_linger"),
+        ),
+        (
+            WamrSockOpt::IpMulticastLoop,
+            "sock_set_ip_multicast_loop",
+            Some("sock_get_ip_multicast_loop"),
+        ),
+        (
+            WamrSockOpt::IpAddMembership,
+            "sock_set_ip_add_membership",
+            None,
+        ),
+        (
+            WamrSockOpt::IpDropMembership,
+            "sock_set_ip_drop_membership",
+            None,
+        ),
+    ];
+
+    fn set_params(&self) -> Vec<ValueType> {
+        match self {
+            WamrSockOpt::RecvTimeout | WamrSockOpt::SendTimeout => vec![I32, I64],
+            WamrSockOpt::Linger
+            | WamrSockOpt::IpMulticastLoop
+            | WamrSockOpt::IpAddMembership
+            | WamrSockOpt::IpDropMembership => vec![I32, I32, I32],
+            _ => vec![I32, I32],
+        }
+    }
+
+    fn get_params(&self) -> Vec<ValueType> {
+        match self {
+            WamrSockOpt::Linger | WamrSockOpt::IpMulticastLoop => vec![I32, I32, I32],
+            _ => vec![I32, I32],
+        }
+    }
+}
+
+const I32: ValueType = ValueType::NumType(NumType::I32);
+const I64: ValueType = ValueType::NumType(NumType::I64);
+
+/// A WASI signature taking `params` and returning an errno.
+fn errno_func(params: Vec<ValueType>) -> FuncType {
+    FuncType {
+        params,
+        results: vec![I32],
+    }
 }
 
 impl WasiFuncType {
@@ -578,6 +807,7 @@ impl WasiFuncType {
                 params: vec![ValueType::NumType(NumType::I32)], // start_arg
                 results: vec![ValueType::NumType(NumType::I32)], // Thread id, or negative errno
             },
+            WasiFuncType::SocketExt(ext) => ext.func_type(),
         }
     }
 
