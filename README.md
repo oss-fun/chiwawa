@@ -6,8 +6,7 @@ U^ｪ^U
 
 ## Build and Run
 
-Pick a build alias based on the host Wasm runtime's tail-call support
-(see [Dispatcher Modes](#dispatcher-modes) below):
+Pick a build alias based on the host Wasm runtime's tail-call support (see [Dispatcher Modes](#dispatcher-modes) below):
 
 ```bash
 # Tail-call dispatcher
@@ -24,17 +23,15 @@ somethingWasmRuntime target/<combo>/wasm32-wasip1/release/chiwawa.wasm test.wasm
 
 ## Dispatcher Modes
 
-Chiwawa ships two dispatcher implementations selected at build time via the
-`tco` Cargo feature:
+Chiwawa ships two dispatcher implementations selected at build time via the `tco` Cargo feature:
 
 | Mode | Cargo feature | Build alias | Requirement |
 |---|---|---|---|
 | Loop dispatch | (none) | `cargo build-legacy` | Any Wasm runtime|
 | Tail-call dispatch | `tco` | `cargo build-tco` | Wasm tail-call proposal|
 
-With `tco`, each handler tail-calls (`return_call_indirect`) the next handler,
-removing the dispatch loop overhead. Use the loop dispatcher when the host
-runtime does not implement the tail-call proposal.
+With `tco`, each handler tail-calls (`return_call_indirect`) the next handler, removing the dispatch loop overhead.
+Use the loop dispatcher when the host runtime does not implement the tail-call proposal.
 
 ## Checkpoint and Restore
 
@@ -55,10 +52,8 @@ somethingWasmRuntime target/tco-threads/wasm32-wasip1-threads/release/chiwawa.wa
 ```
 ## wasi-threads
 
-Chiwawa runs multi-threaded guests on a host runtime that provides
-wasi-threads: one interpreter instance per host thread, all sharing a single
-linear memory. Needs the `wasm32-wasip1-threads` target, so the `-threads`
-build aliases enable the `threads` feature.
+Chiwawa runs multi-threaded guests on a host runtime that provides wasi-threads: one interpreter instance per host thread, all sharing a single linear memory.
+Needs the `wasm32-wasip1-threads` target, so the `-threads` build aliases enable the `threads` feature.
 
 ```bash
 # Use cargo build-legacy-threads if the host runtime lacks tail-call support.
@@ -69,8 +64,7 @@ somethingWasmRuntime target/tco-threads/wasm32-wasip1-threads/release/chiwawa.wa
 ```
 
 Without `--threads` thread creation fails and the guest runs single-threaded.
-`--cr` and `--restore` work with `--threads`; see
-[doc/migration.md](doc/migration.md) for what a checkpoint captures.
+`--cr` and `--restore` work with `--threads`; see [doc/migration.md](doc/migration.md) for what a checkpoint captures.
 
 ## Sockets (experimental)
 
@@ -85,10 +79,8 @@ cargo build-tco --features socket-wasmedge
 
 ## Tracing
 
-Tracing requires the `trace` feature to be enabled at compile time. It is
-performed only by the loop dispatcher (non-`tco`), the same as statistics: the
-tail-call dispatcher has no central loop to hook, so `--trace` is ignored with a
-warning under `tco`.
+Tracing requires the `trace` feature to be enabled at compile time.
+It is performed only by the loop dispatcher (non-`tco`), the same as statistics: the tail-call dispatcher has no central loop to hook, so `--trace` is ignored with a warning under `tco`.
 
 ```bash
 # Build with trace feature on top of the loop dispatcher
@@ -99,9 +91,8 @@ cargo build-legacy --features trace
 somethingWasmRuntime target/legacy/wasm32-wasip1/release/chiwawa.wasm test.wasm --trace --trace-events [<TRACE_EVENTS>...] --trace-resource [<TRACE_RESOURCE>...]
 ```
 
-If `--trace` is used without the feature enabled, a warning is displayed and the
-flag is ignored. The same applies when `--trace` is combined with the `tco`
-feature.
+If `--trace` is used without the feature enabled, a warning is displayed and the flag is ignored.
+The same applies when `--trace` is combined with the `tco` feature.
 
 ## Statistics
 
@@ -161,7 +152,8 @@ If `--call-graph-output` is used without the feature enabled, a warning is displ
   - Japan Community Day at KubeCon + CloudNativeCon Japan 2025
 
 ## References
-I referred to these repositories for initial implementation. I appreciate ancestor's wisdom!
+I referred to these repositories for initial implementation.
+I appreciate ancestor's wisdom!
 
 - Wasm-rs
   - [GitHub Repo](https://github.com/kgtkr/wasm-rs)
