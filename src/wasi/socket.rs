@@ -164,15 +164,14 @@ cfg_if::cfg_if! {
     }
 }
 
-/// Handles a socket extension call and returns the errno for the guest. A
-/// WASI function reports failure through its errno, never by trapping.
+/// Handles a socket extension call.
 pub(crate) fn call(
     ext: SocketExt,
     wasi: &PassthroughWasiImpl,
     memory: &MemAddr,
     params: &[Val],
-) -> i32 {
-    let result = match ext {
+) -> WasiResult<()> {
+    match ext {
         SocketExt::OpenWamr => wamr::guest::open(memory, params),
         SocketExt::BindWamr => wamr::guest::bind(memory, params),
         SocketExt::ConnectWamr => wamr::guest::connect(memory, params),
@@ -199,8 +198,7 @@ pub(crate) fn call(
         SocketExt::GetOptWamr(opt) => wamr::guest::get_opt(opt, memory, params),
         SocketExt::SetSockOpt => wasmedge::guest::setsockopt(memory, params),
         SocketExt::GetSockOpt => wasmedge::guest::getsockopt(memory, params),
-    };
-    result.map_or_else(|e| e.to_errno(), |()| 0)
+    }
 }
 
 /// `sock_listen(fd, backlog)`: the same signature on both hosts, and no
