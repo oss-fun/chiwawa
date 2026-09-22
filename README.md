@@ -72,6 +72,17 @@ Without `--threads` thread creation fails and the guest runs single-threaded.
 `--cr` and `--restore` work with `--threads`; see
 [doc/migration.md](doc/migration.md) for what a checkpoint captures.
 
+## Sockets (experimental)
+
+Chiwawa forwards the socket extensions of WAMR and WasmEdge: a guest built against either runtime's socket library runs on either host.
+The host is a build-time feature; see [doc/sockets.md](doc/sockets.md).
+
+```bash
+# One host feature at a time; works with the -threads and legacy aliases too.
+cargo build-tco --features socket-wamr
+cargo build-tco --features socket-wasmedge
+```
+
 ## Tracing
 
 Tracing requires the `trace` feature to be enabled at compile time. It is
