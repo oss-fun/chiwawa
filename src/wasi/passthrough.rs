@@ -222,51 +222,7 @@ impl PassthroughWasiImpl {
         iovs_len: Size,
         nwritten_ptr: Ptr,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-        let memory_len = memory_guard.data.len();
-
-        let mut iovecs = Vec::with_capacity(iovs_len as usize);
-
-        for i in 0..iovs_len {
-            // Each iovec is 8 bytes: buf_ptr (4 bytes) + buf_len (4 bytes)
-            let iovec_offset = iovs_ptr as usize + (i as usize * 8);
-
-            if iovec_offset + 8 > memory_len {
-                return Err(WasiError::Fault);
-            }
-
-            let buf_ptr = u32::from_le_bytes([
-                memory_guard.data[iovec_offset],
-                memory_guard.data[iovec_offset + 1],
-                memory_guard.data[iovec_offset + 2],
-                memory_guard.data[iovec_offset + 3],
-            ]);
-
-            let buf_len = u32::from_le_bytes([
-                memory_guard.data[iovec_offset + 4],
-                memory_guard.data[iovec_offset + 5],
-                memory_guard.data[iovec_offset + 6],
-                memory_guard.data[iovec_offset + 7],
-            ]);
-
-            if buf_len == 0 {
-                iovecs.push(WasiIovec {
-                    buf: std::ptr::null(),
-                    buf_len: 0,
-                });
-                continue;
-            }
-
-            if buf_ptr as usize + buf_len as usize > memory_len {
-                return Err(WasiError::Fault);
-            }
-
-            iovecs.push(WasiIovec {
-                buf: unsafe { memory_base.add(buf_ptr as usize) },
-                buf_len,
-            });
-        }
+        let iovecs = collect_iovecs(memory.get_memory_direct_access(), iovs_ptr, iovs_len)?;
 
         // Call wasi-libc fd_write function
         let mut nwritten: u32 = 0;
@@ -294,40 +250,7 @@ impl PassthroughWasiImpl {
         iovs_len: Size,
         nread_ptr: Ptr,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        let mut iovecs = Vec::with_capacity(iovs_len as usize);
-
-        for i in 0..iovs_len {
-            let iovec_offset = iovs_ptr as usize + (i as usize * 8);
-
-            let buf_ptr = u32::from_le_bytes([
-                memory_guard.data[iovec_offset],
-                memory_guard.data[iovec_offset + 1],
-                memory_guard.data[iovec_offset + 2],
-                memory_guard.data[iovec_offset + 3],
-            ]);
-
-            let buf_len = u32::from_le_bytes([
-                memory_guard.data[iovec_offset + 4],
-                memory_guard.data[iovec_offset + 5],
-                memory_guard.data[iovec_offset + 6],
-                memory_guard.data[iovec_offset + 7],
-            ]);
-
-            if buf_len == 0 {
-                iovecs.push(WasiIovec {
-                    buf: std::ptr::null(),
-                    buf_len: 0,
-                });
-            } else {
-                iovecs.push(WasiIovec {
-                    buf: unsafe { memory_base.add(buf_ptr as usize) },
-                    buf_len,
-                });
-            }
-        }
+        let iovecs = collect_iovecs(memory.get_memory_direct_access(), iovs_ptr, iovs_len)?;
 
         let mut nread: u32 = 0;
         let wasi_errno =
@@ -712,41 +635,7 @@ impl PassthroughWasiImpl {
         offset: u64,
         nread_ptr: Ptr,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        let mut iovecs = Vec::with_capacity(iovs_len as usize);
-
-        for i in 0..iovs_len {
-            // Each iovec is 8 bytes: buf_ptr (4 bytes) + buf_len (4 bytes)
-            let iovec_offset = iovs_ptr as usize + (i as usize * 8);
-
-            let buf_ptr = u32::from_le_bytes([
-                memory_guard.data[iovec_offset],
-                memory_guard.data[iovec_offset + 1],
-                memory_guard.data[iovec_offset + 2],
-                memory_guard.data[iovec_offset + 3],
-            ]);
-
-            let buf_len = u32::from_le_bytes([
-                memory_guard.data[iovec_offset + 4],
-                memory_guard.data[iovec_offset + 5],
-                memory_guard.data[iovec_offset + 6],
-                memory_guard.data[iovec_offset + 7],
-            ]);
-
-            if buf_len == 0 {
-                iovecs.push(WasiIovec {
-                    buf: std::ptr::null(),
-                    buf_len: 0,
-                });
-            } else {
-                iovecs.push(WasiIovec {
-                    buf: unsafe { memory_base.add(buf_ptr as usize) },
-                    buf_len,
-                });
-            }
-        }
+        let iovecs = collect_iovecs(memory.get_memory_direct_access(), iovs_ptr, iovs_len)?;
 
         let mut nread: u32 = 0;
         let wasi_errno = unsafe {
@@ -795,41 +684,7 @@ impl PassthroughWasiImpl {
         offset: u64,
         nwritten_ptr: Ptr,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        let mut iovecs = Vec::with_capacity(iovs_len as usize);
-
-        for i in 0..iovs_len {
-            // Each iovec is 8 bytes: buf_ptr (4 bytes) + buf_len (4 bytes)
-            let iovec_offset = iovs_ptr as usize + (i as usize * 8);
-
-            let buf_ptr = u32::from_le_bytes([
-                memory_guard.data[iovec_offset],
-                memory_guard.data[iovec_offset + 1],
-                memory_guard.data[iovec_offset + 2],
-                memory_guard.data[iovec_offset + 3],
-            ]);
-
-            let buf_len = u32::from_le_bytes([
-                memory_guard.data[iovec_offset + 4],
-                memory_guard.data[iovec_offset + 5],
-                memory_guard.data[iovec_offset + 6],
-                memory_guard.data[iovec_offset + 7],
-            ]);
-
-            if buf_len == 0 {
-                iovecs.push(WasiIovec {
-                    buf: std::ptr::null(),
-                    buf_len: 0,
-                });
-            } else {
-                iovecs.push(WasiIovec {
-                    buf: unsafe { memory_base.add(buf_ptr as usize) },
-                    buf_len,
-                });
-            }
-        }
+        let iovecs = collect_iovecs(memory.get_memory_direct_access(), iovs_ptr, iovs_len)?;
 
         let mut nwritten: u32 = 0;
         let wasi_errno = unsafe {
