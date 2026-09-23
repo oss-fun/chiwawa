@@ -23,6 +23,7 @@
 //! ## Module Organization
 //!
 //! - [`passthrough`]: WASI function implementations delegating to wasi-libc
+//! - [`socket`]: the socket extensions of WAMR and WasmEdge
 //! - [`threads`]: wasi-threads `thread-spawn`, which interposes rather than
 //!   forwarding to wasi-libc
 //! - [`types`]: WASI type definitions
@@ -30,6 +31,7 @@
 
 pub mod error;
 pub mod passthrough;
+pub mod socket;
 #[cfg(feature = "threads")]
 pub mod threads;
 pub mod types;

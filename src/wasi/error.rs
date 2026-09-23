@@ -245,6 +245,39 @@ pub enum WasiError {
     #[error("Extension: Capabilities insufficient")]
     NotCapable, // ENOTCAPABLE = 76
 
+    #[error("Address family for host not supported")]
+    AiAddrFamily, // EAI_ADDRFAMILY = 77 (WasmEdge)
+
+    #[error("Name lookup failed temporarily")]
+    AiAgain, // EAI_AGAIN = 78 (WasmEdge)
+
+    #[error("Invalid name lookup flags")]
+    AiBadFlag, // EAI_BADFLAG = 79 (WasmEdge)
+
+    #[error("Name lookup failed")]
+    AiFail, // EAI_FAIL = 80 (WasmEdge)
+
+    #[error("Address family not supported by lookup")]
+    AiFamily, // EAI_FAMILY = 81 (WasmEdge)
+
+    #[error("Name lookup out of memory")]
+    AiMemory, // EAI_MEMORY = 82 (WasmEdge)
+
+    #[error("No address for host")]
+    AiNoData, // EAI_NODATA = 83 (WasmEdge)
+
+    #[error("Host not found")]
+    AiNoName, // EAI_NONAME = 84 (WasmEdge)
+
+    #[error("Service not supported for socket type")]
+    AiService, // EAI_SERVICE = 85 (WasmEdge)
+
+    #[error("Socket type not supported by lookup")]
+    AiSockType, // EAI_SOCKTYPE = 86 (WasmEdge)
+
+    #[error("Name lookup system error")]
+    AiSystem, // EAI_SYSTEM = 87 (WasmEdge)
+
     #[error("Process exit requested with code {0}")]
     ProcessExit(i32),
 }
@@ -330,6 +363,17 @@ impl WasiError {
             74 => WasiError::TxtBsy,
             75 => WasiError::XDev,
             76 => WasiError::NotCapable,
+            77 => WasiError::AiAddrFamily,
+            78 => WasiError::AiAgain,
+            79 => WasiError::AiBadFlag,
+            80 => WasiError::AiFail,
+            81 => WasiError::AiFamily,
+            82 => WasiError::AiMemory,
+            83 => WasiError::AiNoData,
+            84 => WasiError::AiNoName,
+            85 => WasiError::AiService,
+            86 => WasiError::AiSockType,
+            87 => WasiError::AiSystem,
             _ => WasiError::Io, // Default to I/O error for unknown errno
         }
     }
@@ -414,6 +458,17 @@ impl WasiError {
             WasiError::TxtBsy => 74,
             WasiError::XDev => 75,
             WasiError::NotCapable => 76,
+            WasiError::AiAddrFamily => 77,
+            WasiError::AiAgain => 78,
+            WasiError::AiBadFlag => 79,
+            WasiError::AiFail => 80,
+            WasiError::AiFamily => 81,
+            WasiError::AiMemory => 82,
+            WasiError::AiNoData => 83,
+            WasiError::AiNoName => 84,
+            WasiError::AiService => 85,
+            WasiError::AiSockType => 86,
+            WasiError::AiSystem => 87,
             WasiError::ProcessExit(_) => 0,
         }
     }

@@ -15,6 +15,7 @@ use crate::instrument::stats::ExecutionStats;
 #[cfg(feature = "trace")]
 use crate::instrument::trace::{TraceConfig, Tracer};
 use crate::structure::module::{Func, WasiFuncType};
+use crate::wasi::socket;
 #[cfg(feature = "threads")]
 use crate::wasi::threads::ThreadContext;
 use crate::wasi::{WasiError, WasiResult};
@@ -329,15 +330,19 @@ impl Runtime {
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    eprintln!(
-                                        "WASI register function failed: {:?}, error: {:?}",
-                                        wasi_func_type, e
-                                    );
-                                    return Err(RuntimeError::ExecutionFailed(
-                                        "WASI register function failed",
-                                    ));
-                                }
+                                // A WASI function reports failure through
+                                // its errno, never by trapping.
+                                Err(e) => match result_reg {
+                                    Some(reg) => {
+                                        let errno = Val::Num(Num::I32(e.to_errno()));
+                                        self.stacks.reg_file.set_val(&reg, &errno);
+                                    }
+                                    None => {
+                                        return Err(RuntimeError::ExecutionFailed(
+                                            "WASI function without a result failed",
+                                        ))
+                                    }
+                                },
                             }
                         }
                         Some(ModuleLevelInstr::InvokeHost {
@@ -1010,6 +1015,10 @@ impl Runtime {
                 let to = params[1].to_i32().map_err(|_| WasiError::Inval)? as u32;
                 let result = wasi_impl.fd_renumber(memory, fd, to)?;
                 Ok(Some(Val::Num(Num::I32(result))))
+            }
+            WasiFuncType::SocketExt(ext) => {
+                socket::call(*ext, wasi_impl, memory, params)?;
+                Ok(Some(Val::Num(Num::I32(0))))
             }
             _ => Err(WasiError::NoSys),
         }

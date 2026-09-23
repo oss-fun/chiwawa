@@ -1,6 +1,7 @@
 # Operand Folding
 
-Operand folding removes instructions that only *carry* a value (`i32.const`, `local.get`, `local.set`) by embedding them in a neighbour's operand slot. The surviving instruction does the same work as before, so a dispatch disappears without any handler having to do more.
+Operand folding removes instructions that only *carry* a value (`i32.const`, `local.get`, `local.set`) by embedding them in a neighbour's operand slot.
+The surviving instruction does the same work as before, so a dispatch disappears without any handler having to do more.
 
 ```
 Before folding:

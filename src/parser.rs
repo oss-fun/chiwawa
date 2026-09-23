@@ -739,61 +739,109 @@ impl BlockArityCache {
     }
 }
 
-/// Mapping from WASI function names to their internal type representations.
-///
-/// Used during import section parsing to identify WASI Preview 1 functions
-/// and create the appropriate `WasiFuncType` entries for passthrough handling.
-static WASI_FUNCTION_MAP: LazyLock<FxHashMap<&'static str, WasiFuncType>> = LazyLock::new(|| {
+/// WASI imports by name, one entry per signature.
+static WASI_IMPORTS: LazyLock<FxHashMap<&'static str, Vec<WasiFuncType>>> = LazyLock::new(|| {
+    use SocketExt::*;
+    let ext = WasiFuncType::SocketExt;
+    let mut list = vec![
+        // Preview 1
+        ("proc_exit", WasiFuncType::ProcExit),
+        ("fd_write", WasiFuncType::FdWrite),
+        ("fd_read", WasiFuncType::FdRead),
+        ("random_get", WasiFuncType::RandomGet),
+        ("fd_prestat_get", WasiFuncType::FdPrestatGet),
+        ("fd_prestat_dir_name", WasiFuncType::FdPrestatDirName),
+        ("fd_close", WasiFuncType::FdClose),
+        ("environ_get", WasiFuncType::EnvironGet),
+        ("environ_sizes_get", WasiFuncType::EnvironSizesGet),
+        ("args_get", WasiFuncType::ArgsGet),
+        ("args_sizes_get", WasiFuncType::ArgsSizesGet),
+        ("clock_time_get", WasiFuncType::ClockTimeGet),
+        ("clock_res_get", WasiFuncType::ClockResGet),
+        ("sched_yield", WasiFuncType::SchedYield),
+        ("fd_fdstat_get", WasiFuncType::FdFdstatGet),
+        ("path_open", WasiFuncType::PathOpen),
+        ("fd_seek", WasiFuncType::FdSeek),
+        ("fd_tell", WasiFuncType::FdTell),
+        ("fd_sync", WasiFuncType::FdSync),
+        ("fd_filestat_get", WasiFuncType::FdFilestatGet),
+        ("fd_readdir", WasiFuncType::FdReaddir),
+        ("fd_pread", WasiFuncType::FdPread),
+        ("fd_datasync", WasiFuncType::FdDatasync),
+        ("fd_fdstat_set_flags", WasiFuncType::FdFdstatSetFlags),
+        ("fd_filestat_set_size", WasiFuncType::FdFilestatSetSize),
+        ("fd_pwrite", WasiFuncType::FdPwrite),
+        ("path_create_directory", WasiFuncType::PathCreateDirectory),
+        ("path_filestat_get", WasiFuncType::PathFilestatGet),
+        ("path_readlink", WasiFuncType::PathReadlink),
+        ("path_remove_directory", WasiFuncType::PathRemoveDirectory),
+        ("path_unlink_file", WasiFuncType::PathUnlinkFile),
+        ("poll_oneoff", WasiFuncType::PollOneoff),
+        ("proc_raise", WasiFuncType::ProcRaise),
+        ("fd_advise", WasiFuncType::FdAdvise),
+        ("fd_allocate", WasiFuncType::FdAllocate),
+        ("fd_fdstat_set_rights", WasiFuncType::FdFdstatSetRights),
+        ("fd_renumber", WasiFuncType::FdRenumber),
+        ("fd_filestat_set_times", WasiFuncType::FdFilestatSetTimes),
+        ("path_link", WasiFuncType::PathLink),
+        ("path_rename", WasiFuncType::PathRename),
+        ("path_symlink", WasiFuncType::PathSymlink),
+        ("sock_recv", WasiFuncType::SockRecv),
+        ("sock_send", WasiFuncType::SockSend),
+        ("sock_shutdown", WasiFuncType::SockShutdown),
+        (
+            "path_filestat_set_times",
+            WasiFuncType::PathFilestatSetTimes,
+        ),
+        // Socket extensions; WasmEdge also registers its V2 signatures under
+        // explicit `_v2` names.
+        ("sock_accept", WasiFuncType::SockAccept),
+        ("sock_accept", ext(AcceptV1)),
+        ("sock_accept_v2", WasiFuncType::SockAccept),
+        ("sock_recv_v2", WasiFuncType::SockRecv),
+        ("sock_send_v2", WasiFuncType::SockSend),
+        ("sock_listen", ext(Listen)),
+        ("sock_listen_v2", ext(Listen)),
+        ("sock_open", ext(OpenWamr)),
+        ("sock_open", ext(OpenWasmEdge)),
+        ("sock_open_v2", ext(OpenWasmEdge)),
+        ("sock_bind", ext(BindWamr)),
+        ("sock_bind", ext(BindWasmEdge)),
+        ("sock_bind_v2", ext(BindWasmEdge)),
+        ("sock_connect", ext(ConnectWamr)),
+        ("sock_connect", ext(ConnectWasmEdge)),
+        ("sock_connect_v2", ext(ConnectWasmEdge)),
+        ("sock_recv_from", ext(RecvFromWamr)),
+        ("sock_recv_from", ext(RecvFromV1)),
+        ("sock_recv_from", ext(RecvFromV2)),
+        ("sock_recv_from_v2", ext(RecvFromV2)),
+        ("sock_send_to", ext(SendToWamr)),
+        ("sock_send_to", ext(SendToWasmEdge)),
+        ("sock_send_to_v2", ext(SendToWasmEdge)),
+        ("sock_addr_local", ext(AddrLocal)),
+        ("sock_addr_remote", ext(AddrRemote)),
+        ("sock_addr_resolve", ext(AddrResolve)),
+        ("sock_close", ext(Close)),
+        ("sock_getlocaladdr", ext(GetLocalAddrV1)),
+        ("sock_getlocaladdr", ext(GetLocalAddrV2)),
+        ("sock_getlocaladdr_v2", ext(GetLocalAddrV2)),
+        ("sock_getpeeraddr", ext(GetPeerAddrV1)),
+        ("sock_getpeeraddr", ext(GetPeerAddrV2)),
+        ("sock_getpeeraddr_v2", ext(GetPeerAddrV2)),
+        ("sock_getaddrinfo", ext(GetAddrInfo)),
+        ("sock_setsockopt", ext(SetSockOpt)),
+        ("sock_getsockopt", ext(GetSockOpt)),
+    ];
+    for (opt, set_name, get_name) in WamrSockOpt::ALL {
+        list.push((set_name, ext(SetOptWamr(opt))));
+        if let Some(get_name) = get_name {
+            list.push((get_name, ext(GetOptWamr(opt))));
+        }
+    }
     let mut map = FxHashMap::default();
-    map.insert("proc_exit", WasiFuncType::ProcExit);
-    map.insert("fd_write", WasiFuncType::FdWrite);
-    map.insert("fd_read", WasiFuncType::FdRead);
-    map.insert("random_get", WasiFuncType::RandomGet);
-    map.insert("fd_prestat_get", WasiFuncType::FdPrestatGet);
-    map.insert("fd_prestat_dir_name", WasiFuncType::FdPrestatDirName);
-    map.insert("fd_close", WasiFuncType::FdClose);
-    map.insert("environ_get", WasiFuncType::EnvironGet);
-    map.insert("environ_sizes_get", WasiFuncType::EnvironSizesGet);
-    map.insert("args_get", WasiFuncType::ArgsGet);
-    map.insert("args_sizes_get", WasiFuncType::ArgsSizesGet);
-    map.insert("clock_time_get", WasiFuncType::ClockTimeGet);
-    map.insert("clock_res_get", WasiFuncType::ClockResGet);
-    map.insert("sched_yield", WasiFuncType::SchedYield);
-    map.insert("fd_fdstat_get", WasiFuncType::FdFdstatGet);
-    map.insert("path_open", WasiFuncType::PathOpen);
-    map.insert("fd_seek", WasiFuncType::FdSeek);
-    map.insert("fd_tell", WasiFuncType::FdTell);
-    map.insert("fd_sync", WasiFuncType::FdSync);
-    map.insert("fd_filestat_get", WasiFuncType::FdFilestatGet);
-    map.insert("fd_readdir", WasiFuncType::FdReaddir);
-    map.insert("fd_pread", WasiFuncType::FdPread);
-    map.insert("fd_datasync", WasiFuncType::FdDatasync);
-    map.insert("fd_fdstat_set_flags", WasiFuncType::FdFdstatSetFlags);
-    map.insert("fd_filestat_set_size", WasiFuncType::FdFilestatSetSize);
-    map.insert("fd_pwrite", WasiFuncType::FdPwrite);
-    map.insert("path_create_directory", WasiFuncType::PathCreateDirectory);
-    map.insert("path_filestat_get", WasiFuncType::PathFilestatGet);
-    map.insert(
-        "path_filestat_set_times",
-        WasiFuncType::PathFilestatSetTimes,
-    );
-    map.insert("path_readlink", WasiFuncType::PathReadlink);
-    map.insert("path_remove_directory", WasiFuncType::PathRemoveDirectory);
-    map.insert("path_unlink_file", WasiFuncType::PathUnlinkFile);
-    map.insert("poll_oneoff", WasiFuncType::PollOneoff);
-    map.insert("proc_raise", WasiFuncType::ProcRaise);
-    map.insert("fd_advise", WasiFuncType::FdAdvise);
-    map.insert("fd_allocate", WasiFuncType::FdAllocate);
-    map.insert("fd_fdstat_set_rights", WasiFuncType::FdFdstatSetRights);
-    map.insert("fd_renumber", WasiFuncType::FdRenumber);
-    map.insert("fd_filestat_set_times", WasiFuncType::FdFilestatSetTimes);
-    map.insert("path_link", WasiFuncType::PathLink);
-    map.insert("path_rename", WasiFuncType::PathRename);
-    map.insert("path_symlink", WasiFuncType::PathSymlink);
-    map.insert("sock_accept", WasiFuncType::SockAccept);
-    map.insert("sock_recv", WasiFuncType::SockRecv);
-    map.insert("sock_send", WasiFuncType::SockSend);
-    map.insert("sock_shutdown", WasiFuncType::SockShutdown);
+    for (name, func) in list {
+        map.entry(name).or_insert_with(Vec::new).push(func);
+    }
     map
 });
 
@@ -980,7 +1028,13 @@ fn decode_import_section(
         let import = import?;
         let desc = match import.ty {
             TypeRef::Func(type_index) => {
-                if let Some(wasi_func_type) = parse_wasi_import(&import.module, &import.name) {
+                let func_type = module
+                    .types
+                    .get(type_index as usize)
+                    .ok_or("import refers to an unknown type")?;
+                if let Some(wasi_func_type) =
+                    parse_wasi_import(&import.module, &import.name, func_type)
+                {
                     #[cfg(feature = "call_graph")]
                     if let Some(b) = cg_builder.as_mut() {
                         b.register_wasi_func();
@@ -1046,20 +1100,19 @@ fn decode_import_section(
     Ok(())
 }
 
-/// Resolves an import to a WASI function handled by passthrough, if any.
-///
-/// Preview 1 functions come from `wasi_snapshot_preview1`; the wasi-threads
-/// proposal adds `thread_spawn` under the separate `wasi` module.
-fn parse_wasi_import(module: &str, name: &str) -> Option<WasiFuncType> {
-    match module {
-        "wasi_snapshot_preview1" => WASI_FUNCTION_MAP.get(name).copied(),
+/// Resolves an import to a WASI function handled here, if any.
+fn parse_wasi_import(module: &str, name: &str, func_type: &FuncType) -> Option<WasiFuncType> {
+    let candidates: &[WasiFuncType] = match module {
+        "wasi_snapshot_preview1" => WASI_IMPORTS.get(name)?,
         // wasi-libc emitted `thread_spawn` before switching to the WIT-style
         // `thread-spawn`; accept both.
-        "wasi" if name == "thread-spawn" || name == "thread_spawn" => {
-            Some(WasiFuncType::ThreadSpawn)
-        }
-        _ => None,
-    }
+        "wasi" if name == "thread-spawn" || name == "thread_spawn" => &[WasiFuncType::ThreadSpawn],
+        _ => return None,
+    };
+    candidates
+        .iter()
+        .copied()
+        .find(|candidate| candidate.expected_func_type().type_match(func_type))
 }
 
 /// Decodes the export section.

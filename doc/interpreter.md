@@ -6,7 +6,9 @@ This document explains Chiwawa's interpreter architecture.
 
 Chiwawa's primary design goal is to minimize the overhead of dual-layer runtime execution.
 
-Since Chiwawa is a WebAssembly runtime that itself runs as WebAssembly, every guest instruction is interpreted by Chiwawa, which is then executed by the host runtime. A single guest WebAssembly instruction (e.g., `i32.add`) is handled by Chiwawa's instruction handler, which itself compiles to many host WebAssembly instructions. This instruction expansion is the primary source of overhead in self-hosted execution.
+Since Chiwawa is a WebAssembly runtime that itself runs as WebAssembly, every guest instruction is interpreted by Chiwawa, which is then executed by the host runtime.
+A single guest WebAssembly instruction (e.g., `i32.add`) is handled by Chiwawa's instruction handler, which itself compiles to many host WebAssembly instructions.
+This instruction expansion is the primary source of overhead in self-hosted execution.
 
 To minimize this overhead, Chiwawa's interpreter is optimized for:
 
@@ -36,8 +38,8 @@ Phase 5: Compaction
   Strip no-op instructions and remap branch targets
 ```
 
-Register allocation and operand folding both happen during decoding, not as
-later passes. See [folding.md](folding.md).
+Register allocation and operand folding both happen during decoding, not as later passes.
+See [folding.md](folding.md).
 
 ## Register-Based Execution
 
@@ -76,28 +78,23 @@ Threaded code (Chiwawa):
   }
 ```
 
-The handler table approach eliminates the switch dispatch overhead. Each handler is a specialized function that:
+The handler table approach eliminates the switch dispatch overhead.
+Each handler is a specialized function that:
 
 1. Reads operands from registers
 2. Performs the operation
 3. Writes results to registers
 4. Returns control to the main loop
 
-Branch instructions are optimized by pre-resolving targets during preprocessing. Instead of computing `current_pc + offset` at runtime, branch handlers jump directly to absolute positions.
+Branch instructions are optimized by pre-resolving targets during preprocessing.
+Instead of computing `current_pc + offset` at runtime, branch handlers jump directly to absolute positions.
 
 ## Dispatch Modes
 
-Chiwawa ships two interchangeable dispatcher implementations, selected at
-build time by the `tco` Cargo feature:
+Chiwawa ships two interchangeable dispatcher implementations, selected at build time by the `tco` Cargo feature:
 
-- **Loop dispatcher** (default, `cargo build-legacy`): the classic threaded
-  code loop sketched above. Works on every modern Wasm runtime, including
-  WAMR.
-- **Tail-call dispatcher** (`cargo build-tco`): each handler tail-calls the
-  next via `return_call_indirect`, removing the fetch / call / return
-  cycle. Requires a host runtime that implements the Wasm tail-call
-  proposal.
+- **Loop dispatcher** (default, `cargo build-legacy`): the classic threaded code loop sketched above. Works on every modern Wasm runtime, including WAMR.
+- **Tail-call dispatcher** (`cargo build-tco`): each handler tail-calls the next via `return_call_indirect`, removing the fetch / call / return cycle. Requires a host runtime that implements the Wasm tail-call proposal.
 
-Both modes share the same handler bodies, operand layout, and checkpoint
-protocol — only the inter-handler control transfer differs. See
-`doc/tco.md` for the design details.
+Both modes share the same handler bodies, operand layout, and checkpoint protocol — only the inter-handler control transfer differs.
+See `doc/tco.md` for the design details.
