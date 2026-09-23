@@ -26,7 +26,7 @@ Phase 1: Decode
   apply operand folding, build instruction-to-position mapping
 
 Phase 2: Branch Resolution
-  Resolve Br, BrIf, If, Else targets to absolute positions
+  Resolve Br, BrIf, If, Else targets to absolute positions in a single forward walk that maintains the control stack
 
 Phase 3: BrTable Resolution
   Handle variable-target branch tables
