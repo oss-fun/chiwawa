@@ -1905,12 +1905,7 @@ pub fn end_func(state: &mut VmState) -> Outcome {
     let ProcessedInstr::EndReg { source_regs, .. } = instr else {
         unsafe { std::hint::unreachable_unchecked() }
     };
-    let dst = state.return_result_regs_mut();
-    dst.clear();
-    for r in source_regs.iter() {
-        dst.push(*r);
-    }
-    if pop_frame(state) {
+    if pop_frame(state, source_regs) {
         Outcome::Continue
     } else {
         state.pc = state.instrs_len;
@@ -1974,6 +1969,7 @@ fn enter_frame(
         } else {
             Some(mem_ptr)
         },
+        code: code as *const Func,
     };
 
     let frames = unsafe { &mut *state.frames };
@@ -1986,38 +1982,42 @@ fn enter_frame(
     state.code = code as *const Func;
 }
 
-/// Pops the running frame, hands its results to the caller and retargets
-/// `state` at the caller. Returns false for the outermost frame, which the
-/// runtime has to finish so it can collect the values.
+/// Pops the running frame, hands the values in `result_src` to the caller
+/// and retargets `state` at the caller. Returns false for the outermost
+/// frame, whose result registers are recorded for the runtime to collect.
 #[inline]
-fn pop_frame(state: &mut VmState) -> bool {
+fn pop_frame(state: &mut VmState, result_src: &[Reg]) -> bool {
     let frames = unsafe { &mut *state.frames };
     if frames.len() == 1 {
+        let dst = &mut frames[0].return_result_regs;
+        dst.clear();
+        dst.extend(result_src.iter().copied());
         return false;
     }
-    let finished = frames.pop().unwrap();
+    frames.pop();
     let caller_idx = frames.len() - 1;
+    let caller = &mut frames[caller_idx];
 
     let regs = unsafe { &mut *state.reg_file };
-    regs.pop_frame_with_results(
-        &finished.return_result_regs,
-        &frames[caller_idx].result_regs,
-    );
-    frames[caller_idx].result_regs.clear();
+    regs.pop_frame_with_results(result_src, &caller.result_regs);
+    caller.result_regs.clear();
 
-    state.pc = frames[caller_idx].ip;
+    state.pc = caller.ip;
 
-    let module = state.module_static();
-    let func_idx = frames[caller_idx].func_idx;
-    match module.func_addrs[func_idx as usize].read_lock() {
-        FuncInst::RuntimeFunc { code, .. } => {
-            state.instrs = code.body.as_ptr();
-            state.instrs_len = code.body.len();
-            state.code = code as *const Func;
-            state.handlers = code.handlers.as_ptr();
+    // A frame restored from a checkpoint has no cached code pointer.
+    let code: &Func = if caller.code.is_null() {
+        let module = state.module_static();
+        match module.func_addrs[caller.func_idx as usize].read_lock() {
+            FuncInst::RuntimeFunc { code, .. } => code,
+            _ => unsafe { std::hint::unreachable_unchecked() },
         }
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    }
+    } else {
+        unsafe { &*caller.code }
+    };
+    state.instrs = code.body.as_ptr();
+    state.instrs_len = code.body.len();
+    state.code = code as *const Func;
+    state.handlers = code.handlers.as_ptr();
     state.sync_reg_bases();
     true
 }
@@ -2156,9 +2156,7 @@ pub fn r#return(state: &mut VmState) -> Outcome {
     let ProcessedInstr::ReturnReg { result_regs } = instr else {
         unsafe { std::hint::unreachable_unchecked() }
     };
-    let rrr: ArrayVec<Reg, 8> = result_regs.iter().copied().collect();
-    *state.return_result_regs_mut() = rrr;
-    if pop_frame(state) {
+    if pop_frame(state, result_regs) {
         Outcome::Continue
     } else {
         state.pc = state.instrs_len;
