@@ -542,8 +542,8 @@ impl RegAllocator {
             max_f64_depth: 0,
             max_ref_depth: 0,
             max_v128_depth: 0,
-            type_stack: Vec::new(),
-            local_regs: Vec::new(),
+            type_stack: Vec::with_capacity(64),
+            local_regs: Vec::with_capacity(local_types.len()),
         };
 
         // Reserve registers for local variables, recording the slot of each

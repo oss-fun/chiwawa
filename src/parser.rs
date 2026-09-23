@@ -1555,184 +1555,91 @@ fn preprocess_instructions(
     cache: &mut BlockArityCache,
 ) -> Result<(), RuntimeError> {
     // --- Phase 2: Resolve Br, BrIf, If, Else jumps ---
-
-    // Control stack stores: (pc, is_loop, block_type)
-    let mut current_control_stack_pass2: Vec<(usize, bool, wasmparser::BlockType)> = Vec::new();
-
-    for fixup_index in 0..fixups.len() {
-        let current_fixup_pc = fixups[fixup_index].pc;
-        let current_fixup_depth = fixups[fixup_index].original_wasm_depth;
-        let is_if_false_jump = fixups[fixup_index].is_if_false_jump;
-        let is_else_jump = fixups[fixup_index].is_else_jump;
-
-        let is_br_table_fixup = processed
-            .get(current_fixup_pc)
-            .map_or(false, |instr| instr.handler_index() == HANDLER_IDX_BR_TABLE);
-
-        if current_fixup_depth == usize::MAX || is_br_table_fixup {
-            continue;
+    // Fixups are in program order, so one walk resolves each at its instruction.
+    let function_end_ip = processed.len() - 1;
+    let function_end_regs: RegSlice = match processed.last() {
+        Some(ProcessedInstr::EndReg { source_regs, .. }) => source_regs.clone(),
+        _ => {
+            return Err(RuntimeError::InvalidWasm(
+                "Internal Error: function body does not terminate with EndReg",
+            ))
+        }
+    };
+    // (pc, is_loop)
+    let mut control_stack: Vec<(usize, bool)> = Vec::new();
+    let mut fixup_index = 0;
+    for pc in 0..processed.len() {
+        match processed[pc].handler_index() {
+            HANDLER_IDX_BLOCK | HANDLER_IDX_IF => control_stack.push((pc, false)),
+            HANDLER_IDX_LOOP => control_stack.push((pc, true)),
+            HANDLER_IDX_END => {
+                control_stack.pop();
+            }
+            _ => {}
         }
 
-        // --- Rebuild control stack state up to the fixup instruction ---
-        current_control_stack_pass2.clear();
-        for (pc, instr) in processed.iter().enumerate().take(current_fixup_pc + 1) {
-            match instr.handler_index() {
-                HANDLER_IDX_BLOCK | HANDLER_IDX_IF => {
-                    let block_type = block_type_map
-                        .get(&pc)
-                        .cloned()
-                        .unwrap_or(wasmparser::BlockType::Empty);
-                    current_control_stack_pass2.push((pc, false, block_type));
-                }
-                HANDLER_IDX_LOOP => {
-                    let block_type = block_type_map
-                        .get(&pc)
-                        .cloned()
-                        .unwrap_or(wasmparser::BlockType::Empty);
-                    current_control_stack_pass2.push((pc, true, block_type));
-                }
-                HANDLER_IDX_END => {
-                    if !current_control_stack_pass2.is_empty() {
-                        current_control_stack_pass2.pop();
+        // The instruction at `pc` is already on the control stack;
+        // `if` at depth 0 relies on that.
+        while fixup_index < fixups.len() && fixups[fixup_index].pc == pc {
+            let fixup = &mut fixups[fixup_index];
+            fixup_index += 1;
+            let depth = fixup.original_wasm_depth;
+            if depth == usize::MAX || matches!(processed[pc], ProcessedInstr::BrTableReg(_)) {
+                continue;
+            }
+            fixup.original_wasm_depth = usize::MAX;
+
+            if control_stack.len() <= depth {
+                // A branch past the outermost block is a return:
+                // target the final `EndReg`, copying the values into its source regs.
+                let source_regs: RegSlice =
+                    std::mem::take(&mut fixup.source_regs).into_boxed_slice();
+                match &mut processed[pc] {
+                    ProcessedInstr::BrReg {
+                        target_ip,
+                        result_copies,
                     }
+                    | ProcessedInstr::BrIfReg {
+                        target_ip,
+                        result_copies,
+                        ..
+                    } => {
+                        *target_ip = function_end_ip;
+                        *result_copies = crate::execution::ir::BranchCopies::new(
+                            source_regs,
+                            function_end_regs.clone(),
+                        );
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            let (target_start_pc, is_loop) = control_stack[control_stack.len() - 1 - depth];
+            // Note: block_end_map already stores End + 1 position (the instruction after EndReg)
+            let target_ip = if is_loop {
+                target_start_pc
+            } else {
+                *block_end_map.get(&target_start_pc).ok_or_else(|| {
+                    RuntimeError::InvalidWasm("Missing EndMarker for branch target")
+                })?
+            };
+
+            match &mut processed[pc] {
+                // If instruction's jump-on-false: target is ElseMarker+1 or EndMarker+1
+                ProcessedInstr::IfReg { else_target_ip, .. } if fixup.is_if_false_jump => {
+                    *else_target_ip = *if_else_map.get(&target_start_pc).unwrap_or(&target_ip);
+                }
+                ProcessedInstr::JumpReg { target_ip: tip } if fixup.is_else_jump => {
+                    *tip = target_ip;
+                }
+                ProcessedInstr::BrReg { target_ip: tip, .. }
+                | ProcessedInstr::BrIfReg { target_ip: tip, .. } => {
+                    *tip = target_ip;
                 }
                 _ => {}
             }
         }
-
-        if current_control_stack_pass2.len() <= current_fixup_depth {
-            // Depth exceeds control stack - this is a branch to function level
-            // (return). Target the function-level EndReg (always the last
-            // instruction): `end_func` collects the return registers and
-            // halts. The branch copies its values into the end's source regs.
-            let function_end_ip = processed.len() - 1;
-            let end_source_regs: RegSlice = match processed.last() {
-                Some(ProcessedInstr::EndReg { source_regs, .. }) => source_regs.clone(),
-                _ => {
-                    return Err(RuntimeError::InvalidWasm(
-                        "Internal Error: function body does not terminate with EndReg",
-                    ))
-                }
-            };
-            let fixup_source_regs: RegSlice =
-                fixups[fixup_index].source_regs.clone().into_boxed_slice();
-            if let Some(instr_to_patch) = processed.get_mut(current_fixup_pc) {
-                if let ProcessedInstr::BrReg {
-                    target_ip: ref mut tip,
-                    result_copies,
-                } = instr_to_patch
-                {
-                    *tip = function_end_ip;
-                    *result_copies =
-                        crate::execution::ir::BranchCopies::new(fixup_source_regs, end_source_regs);
-                } else if let ProcessedInstr::BrIfReg {
-                    target_ip: ref mut tip,
-                    result_copies,
-                    ..
-                } = instr_to_patch
-                {
-                    *tip = function_end_ip;
-                    *result_copies =
-                        crate::execution::ir::BranchCopies::new(fixup_source_regs, end_source_regs);
-                } else if is_if_false_jump {
-                    if !matches!(instr_to_patch, ProcessedInstr::IfReg { .. }) {
-                        fixups[fixup_index].original_wasm_depth = usize::MAX;
-                        continue;
-                    }
-                } else if is_else_jump {
-                    if !matches!(instr_to_patch, ProcessedInstr::JumpReg { .. }) {
-                        fixups[fixup_index].original_wasm_depth = usize::MAX;
-                        continue;
-                    }
-                } else if !matches!(
-                    instr_to_patch,
-                    ProcessedInstr::JumpReg { .. }
-                        | ProcessedInstr::IfReg { .. }
-                        | ProcessedInstr::BrReg { .. }
-                        | ProcessedInstr::BrIfReg { .. }
-                ) {
-                    fixups[fixup_index].original_wasm_depth = usize::MAX;
-                    continue;
-                }
-            }
-            fixups[fixup_index].original_wasm_depth = usize::MAX;
-            continue;
-        }
-
-        let target_stack_level = current_control_stack_pass2.len() - 1 - current_fixup_depth;
-        if target_stack_level >= current_control_stack_pass2.len() {
-            fixups[fixup_index].original_wasm_depth = usize::MAX;
-            continue;
-        }
-
-        let (target_start_pc, is_loop, _target_block_type) =
-            current_control_stack_pass2[target_stack_level];
-
-        // Calculate target IP
-        // Note: block_end_map already stores End + 1 position (the instruction after EndReg)
-        let target_ip = if is_loop {
-            target_start_pc
-        } else {
-            *block_end_map
-                .get(&target_start_pc)
-                .ok_or_else(|| RuntimeError::InvalidWasm("Missing EndMarker for branch target"))?
-        };
-
-        // Patch the instruction operand
-        if let Some(instr_to_patch) = processed.get_mut(current_fixup_pc) {
-            // Skip fixup for register-based instructions (except those that need fixup)
-            if !matches!(
-                instr_to_patch,
-                ProcessedInstr::JumpReg { .. }
-                    | ProcessedInstr::IfReg { .. }
-                    | ProcessedInstr::BrReg { .. }
-                    | ProcessedInstr::BrIfReg { .. }
-            ) {
-                fixups[fixup_index].original_wasm_depth = usize::MAX;
-                continue;
-            }
-
-            if is_if_false_jump {
-                // If instruction's jump-on-false
-                // Target is ElseMarker+1 or EndMarker+1
-                let else_target = *if_else_map.get(&target_start_pc).unwrap_or(&target_ip);
-
-                if let ProcessedInstr::IfReg {
-                    else_target_ip: ref mut tip,
-                    ..
-                } = instr_to_patch
-                {
-                    *tip = else_target;
-                }
-            } else if is_else_jump {
-                if let ProcessedInstr::JumpReg {
-                    target_ip: ref mut tip,
-                } = instr_to_patch
-                {
-                    *tip = target_ip;
-                }
-            } else {
-                // Br or BrIf instruction
-                if let ProcessedInstr::BrReg {
-                    target_ip: ref mut tip,
-                    ..
-                } = instr_to_patch
-                {
-                    *tip = target_ip;
-                } else if let ProcessedInstr::BrIfReg {
-                    target_ip: ref mut tip,
-                    ..
-                } = instr_to_patch
-                {
-                    *tip = target_ip;
-                }
-            }
-        } else {
-            return Err(RuntimeError::InvalidWasm(
-                "Internal Error: Could not find instruction to patch",
-            ));
-        }
-        fixups[fixup_index].original_wasm_depth = usize::MAX;
     }
 
     // --- Phase 3: Resolve BrTable targets ---
