@@ -249,6 +249,19 @@ impl RegFile {
         &self.cached_offsets
     }
 
+    #[inline]
+    pub fn frame_bases(&mut self) -> (*mut i32, *mut i64, *mut f32, *mut f64) {
+        let o = self.cached_offsets;
+        unsafe {
+            (
+                self.i32_regs.as_mut_ptr().add(o.i32_offset as usize),
+                self.i64_regs.as_mut_ptr().add(o.i64_offset as usize),
+                self.f32_regs.as_mut_ptr().add(o.f32_offset as usize),
+                self.f64_regs.as_mut_ptr().add(o.f64_offset as usize),
+            )
+        }
+    }
+
     /// Get frame depth
     pub fn frame_depth(&self) -> usize {
         self.frame_offsets.len()
