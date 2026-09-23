@@ -50,6 +50,7 @@ The same constraint applies while saving, so the file holds one encoded blob per
 
 Each frame records the `func_idx` of the function it runs, so the body and handler array need no reconstruction: `execute_frame` reads them from the module.
 That index also identifies the frame's function at checkpoint time, with no search over `func_addrs`.
+A frame also caches a pointer to that code so a return does not look it up; the pointer is skipped by the checkpoint and a restored frame falls back to the index.
 
 This split (serialize raw state vs. re-derive what depends on raw pointers) keeps the checkpoint small and avoids leaking host pointers into the file.
 

@@ -192,12 +192,6 @@ impl VmState {
         let frames = unsafe { &mut *self.frames };
         unsafe { frames.last_mut().unwrap_unchecked() }
     }
-
-    /// Mutable reference to the return-value register slot.
-    #[inline(always)]
-    pub fn return_result_regs_mut(&mut self) -> &mut ArrayVec<Reg, 8> {
-        &mut self.frame_mut().return_result_regs
-    }
 }
 
 /// Module-level instructions that require runtime handling outside the DTC loop.
@@ -259,6 +253,7 @@ impl Stacks {
                     result_regs: ArrayVec::new(),
                     return_result_regs: ArrayVec::new(),
                     cached_mem_ptr,
+                    code: code as *const Func,
                 };
 
                 Ok(Stacks {
@@ -297,4 +292,6 @@ pub struct FrameStack {
     pub return_result_regs: ArrayVec<Reg, 8>,
     #[serde(skip)]
     pub cached_mem_ptr: Option<*mut u8>,
+    #[serde(skip, default = "std::ptr::null")]
+    pub code: *const Func,
 }
