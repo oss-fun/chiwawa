@@ -1764,14 +1764,13 @@ macro_rules! select {
                 } => (*dst, *val1, *val2, *cond),
                 _ => unsafe { std::hint::unreachable_unchecked() },
             };
-            let regs = state.reg_file_mut();
-            let c = regs.get_i32(cond.index());
+            let c = state.get_i32(cond.index());
             let r = if c != 0 {
-                regs.$get(val1.index())
+                state.$get(val1.index())
             } else {
-                regs.$get(val2.index())
+                state.$get(val2.index())
             };
-            regs.$set(dst.index(), r);
+            state.$set(dst.index(), r);
             state.pc += 1;
             advance!(state)
         }
@@ -1808,7 +1807,7 @@ pub fn br(state: &mut VmState) -> Outcome {
     };
     let target_ip = *target_ip;
     if let Some(c) = result_copies {
-        state.reg_file_mut().copy_regs(&c.from, &c.to);
+        state.copy_regs(&c.from, &c.to);
     }
     state.pc = target_ip;
     advance!(state)
@@ -1826,13 +1825,13 @@ pub fn br_if(state: &mut VmState) -> Outcome {
     };
     let target_ip = *target_ip;
     let cond_reg = *cond_reg;
-    let cond = state.reg_file().get_i32(cond_reg.index());
+    let cond = state.get_i32(cond_reg.index());
     if cond == 0 {
         state.pc += 1;
         return advance!(state);
     }
     if let Some(c) = result_copies {
-        state.reg_file_mut().copy_regs(&c.from, &c.to);
+        state.copy_regs(&c.from, &c.to);
     }
     state.pc = target_ip;
     advance!(state)
@@ -1843,7 +1842,7 @@ pub fn br_table(state: &mut VmState) -> Outcome {
     let ProcessedInstr::BrTableReg(table) = instr else {
         unsafe { std::hint::unreachable_unchecked() }
     };
-    let idx = state.reg_file().get_i32(table.index_reg.index()) as usize;
+    let idx = state.get_i32(table.index_reg.index()) as usize;
 
     let (target_ip, target_result_regs_slice): (usize, &[Reg]) = if idx < table.targets.len() {
         let (_, ip, rs) = &table.targets[idx];
@@ -1854,9 +1853,7 @@ pub fn br_table(state: &mut VmState) -> Outcome {
     };
 
     if !table.source_regs.is_empty() && !target_result_regs_slice.is_empty() {
-        state
-            .reg_file_mut()
-            .copy_regs(&table.source_regs, target_result_regs_slice);
+        state.copy_regs(&table.source_regs, target_result_regs_slice);
     }
     state.pc = target_ip;
     advance!(state)
@@ -1872,7 +1869,7 @@ pub fn r#if(state: &mut VmState) -> Outcome {
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
 
-    let cond = state.reg_file().get_i32(cond_reg.index());
+    let cond = state.get_i32(cond_reg.index());
     state.pc = if cond != 0 {
         state.pc + 1
     } else {
@@ -1894,9 +1891,7 @@ pub fn end(state: &mut VmState) -> Outcome {
         unsafe { std::hint::unreachable_unchecked() }
     };
     if !source_regs.is_empty() && !target_result_regs.is_empty() {
-        state
-            .reg_file_mut()
-            .copy_regs(source_regs, target_result_regs);
+        state.copy_regs(source_regs, target_result_regs);
     }
     state.pc += 1;
     advance!(state)
@@ -1958,6 +1953,7 @@ fn enter_frame(
         state
             .reg_file_mut()
             .push_frame_with_params(alloc, param_regs);
+        state.sync_reg_bases();
     }
 
     let mem_ptr = state.mem_ptr;
@@ -2022,6 +2018,7 @@ fn pop_frame(state: &mut VmState) -> bool {
         }
         _ => unsafe { std::hint::unreachable_unchecked() },
     }
+    state.sync_reg_bases();
     true
 }
 
@@ -2107,7 +2104,7 @@ pub fn call_indirect(state: &mut VmState) -> Outcome {
     let table_idx = *table_idx;
     let index_reg = *index_reg;
     let module = state.module_static();
-    let i = state.reg_file().get_i32(index_reg.index());
+    let i = state.get_i32(index_reg.index());
     let table_addr = match module.table_addrs.get(table_idx.0 as usize) {
         Some(t) => t,
         None => {
@@ -2209,7 +2206,7 @@ macro_rules! global_set {
                 _ => unsafe { std::hint::unreachable_unchecked() },
             };
             let v = match src {
-                RegOrLocal::Reg(idx) => state.reg_file().$get(idx),
+                RegOrLocal::Reg(idx) => state.$get(idx),
             };
             state
                 .module()

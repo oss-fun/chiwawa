@@ -188,8 +188,13 @@ impl Runtime {
                 _ => (std::ptr::null(), 0, std::ptr::null(), std::ptr::null()),
             };
 
+        let (i32_base, i64_base, f32_base, f64_base) = self.stacks.reg_file.frame_bases();
         VmState {
             reg_file: reg_file_ptr,
+            i32_base,
+            i64_base,
+            f32_base,
+            f64_base,
             pc: frame_stack.ip,
             instrs: body_ptr,
             instrs_len: body_len,

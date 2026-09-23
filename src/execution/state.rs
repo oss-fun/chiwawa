@@ -22,6 +22,12 @@ pub struct VmState {
     // Register file (holds operand-stack registers and locals)
     pub reg_file: *mut RegFile,
 
+    /// First register of the running frame, per numeric type.
+    pub i32_base: *mut i32,
+    pub i64_base: *mut i64,
+    pub f32_base: *mut f32,
+    pub f64_base: *mut f64,
+
     // Frame's instruction stream + cached handler array
     pub pc: usize,
     pub instrs: *const ProcessedInstr,
@@ -84,6 +90,81 @@ impl VmState {
     #[inline(always)]
     pub fn reg_file_mut(&mut self) -> &mut RegFile {
         unsafe { &mut *self.reg_file }
+    }
+
+    #[inline(always)]
+    pub fn sync_reg_bases(&mut self) {
+        let regs = unsafe { &mut *self.reg_file };
+        let (i32_base, i64_base, f32_base, f64_base) = regs.frame_bases();
+        self.i32_base = i32_base;
+        self.i64_base = i64_base;
+        self.f32_base = f32_base;
+        self.f64_base = f64_base;
+    }
+
+    #[inline(always)]
+    pub fn get_i32(&self, reg: u16) -> i32 {
+        unsafe { *self.i32_base.add(reg as usize) }
+    }
+
+    #[inline(always)]
+    pub fn set_i32(&mut self, reg: u16, val: i32) {
+        unsafe { *self.i32_base.add(reg as usize) = val }
+    }
+
+    #[inline(always)]
+    pub fn get_i64(&self, reg: u16) -> i64 {
+        unsafe { *self.i64_base.add(reg as usize) }
+    }
+
+    #[inline(always)]
+    pub fn set_i64(&mut self, reg: u16, val: i64) {
+        unsafe { *self.i64_base.add(reg as usize) = val }
+    }
+
+    #[inline(always)]
+    pub fn get_f32(&self, reg: u16) -> f32 {
+        unsafe { *self.f32_base.add(reg as usize) }
+    }
+
+    #[inline(always)]
+    pub fn set_f32(&mut self, reg: u16, val: f32) {
+        unsafe { *self.f32_base.add(reg as usize) = val }
+    }
+
+    #[inline(always)]
+    pub fn get_f64(&self, reg: u16) -> f64 {
+        unsafe { *self.f64_base.add(reg as usize) }
+    }
+
+    #[inline(always)]
+    pub fn set_f64(&mut self, reg: u16, val: f64) {
+        unsafe { *self.f64_base.add(reg as usize) = val }
+    }
+
+    #[inline(always)]
+    pub fn copy_regs(&mut self, src_regs: &[Reg], dst_regs: &[Reg]) {
+        for (src, dst) in src_regs.iter().zip(dst_regs.iter()) {
+            match (src, dst) {
+                (Reg::I32(s), Reg::I32(d)) => {
+                    let v = self.get_i32(*s);
+                    self.set_i32(*d, v);
+                }
+                (Reg::I64(s), Reg::I64(d)) => {
+                    let v = self.get_i64(*s);
+                    self.set_i64(*d, v);
+                }
+                (Reg::F32(s), Reg::F32(d)) => {
+                    let v = self.get_f32(*s);
+                    self.set_f32(*d, v);
+                }
+                (Reg::F64(s), Reg::F64(d)) => {
+                    let v = self.get_f64(*s);
+                    self.set_f64(*d, v);
+                }
+                _ => self.reg_file_mut().copy_reg(src, dst),
+            }
+        }
     }
 
     /// Reference to the module instance.

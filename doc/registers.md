@@ -194,6 +194,9 @@ On function call:
 3. Copy the arguments from the caller's frame into the callee's local registers
 4. New frame accesses registers relative to its offset
 
+`VmState` also keeps a pointer to the current frame's first register of each numeric type, refreshed on every call and return.
+A handler reaches a register through that pointer with one load, instead of going through the register file and its frame offset.
+
 On function return:
 1. Copy the return values from the callee's frame into the caller's result registers
 2. Restore previous frame offsets
