@@ -58,6 +58,27 @@ After:
   i32.load (addr: const 100) -> r1
 ```
 
+## Operand Folding (Register Consumers)
+
+A `local.get` whose value goes straight into a register operand is dropped, and the consumer reads the local's own register.
+
+```
+Before:
+  local.get 2    ; r0 = local[2]
+  local.get 5    ; r1 = local[5]
+  call $f        ; params r0, r1
+
+After:
+  call $f        ; params local[2], local[5]
+```
+
+Unlike source folding, this is decided at the consumer, looking back at the copies that produced its trailing operands, not at the `local.get` looking ahead.
+A `local.get` cannot tell on its own whether it will end up as a call argument or a block result: that depends on the function type or the block type and on how many values sit between it and the consumer.
+The consumer has all of that in hand, so one check there covers every case.
+These consumers hold a plain register, not an operand slot, so only locals fold this way; a constant still needs a register write.
+It applies to call arguments (`call`, `call_indirect` with its index, WASI calls), store values, the condition of `if` and `br_if`, the values of `br`, `br_table`, `return` and `end`, the value of `local.set`, and the operands of `select`.
+The values of `br_if` and `local.tee` stay on the stack when execution continues past them, so those are left as copies.
+
 ## Implementation
 
 Folding is performed during instruction decoding using a peek-ahead mechanism:
@@ -67,6 +88,8 @@ Folding is performed during instruction decoding using a peek-ahead mechanism:
 2. **Consumer Check**: When a consuming instruction is processed, it checks the pending stack for compatible operands.
 
 3. **Destination Check**: After processing an instruction, the parser peeks ahead to check if the next instruction is `local.set`. If so, the destination is changed from register to local.
+
+4. **Look-back**: A consumer that takes plain registers checks whether the instructions just before it are the `local.get` copies feeding those registers. If so, it takes the locals' registers instead and the copies become no-ops, which compaction strips.
 
 ## Limitations
 

@@ -2273,6 +2273,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let local_type = get_local_type(param_types, locals, *local_index);
                     let local_idx = *local_index as u16;
                     let src = allocator.pop(&local_type);
+                    let src = fold_local_get_arg(&mut initial_processed_instrs, src);
                     let src_idx = src.index();
                     macro_rules! make_local_set {
                         ($instr:ident, $operand:ident) => {
@@ -5939,7 +5940,8 @@ fn decode_processed_instrs_and_fixups<'a>(
                     };
 
                     // Get the top N registers based on result types
-                    let source_regs = allocator.peek_regs_for_types(&result_type_vec);
+                    let mut source_regs = allocator.peek_regs_for_types(&result_type_vec);
+                    fold_local_get_args(&mut initial_processed_instrs, &mut source_regs);
 
                     // Get target_result_regs from ControlBlockInfo BEFORE restoring state
                     let target_result_regs = if let Some(block_info) = control_info_stack.last() {
@@ -6018,6 +6020,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 wasmparser::Operator::If { blockty } => {
                     let cond_reg = allocator.pop(&ValueType::NumType(NumType::I32));
+                    let cond_reg = fold_local_get_arg(&mut initial_processed_instrs, cond_reg);
 
                     let param_types = get_block_param_types(&blockty, module);
 
@@ -6262,7 +6265,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     // level: source regs are the top-of-stack regs matching the
                     // function result types; target regs (the function-level
                     // end's source regs) are patched during fixup.
-                    let (source_regs, target_result_regs) =
+                    let (mut source_regs, target_result_regs) =
                         if *relative_depth as usize >= control_info_stack.len() {
                             (allocator.peek_regs_for_types(result_types), Vec::new())
                         } else {
@@ -6272,6 +6275,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                                 reg_allocator.as_ref(),
                             )
                         };
+                    fold_local_get_args(&mut initial_processed_instrs, &mut source_regs);
 
                     let instr = ProcessedInstr::BrReg {
                         target_ip: usize::MAX, // Will be set by fixup
@@ -6296,6 +6300,9 @@ fn decode_processed_instrs_and_fixups<'a>(
                         .peek(&ValueType::NumType(NumType::I32))
                         .unwrap_or(Reg::I32(0)); // Use dummy register in unreachable code
                     allocator.pop(&ValueType::NumType(NumType::I32));
+                    // Only the condition: the values stay on the stack when
+                    // the branch is not taken.
+                    let cond_reg = fold_local_get_arg(&mut initial_processed_instrs, cond_reg);
 
                     // Compute source and target registers for branch
                     // Function-level depth: source regs from the function
@@ -6359,7 +6366,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     // Compute source and target registers for default target.
                     // Function-level depth: source regs from the function
                     // result types; target regs patched during fixup.
-                    let (source_regs, default_result_regs) =
+                    let (mut source_regs, default_result_regs) =
                         if targets.default() as usize >= control_info_stack.len() {
                             (allocator.peek_regs_for_types(result_types), Vec::new())
                         } else {
@@ -6369,6 +6376,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                                 Some(&*allocator),
                             )
                         };
+                    // The index sits above the values on the stack.
+                    source_regs.push(index_reg);
+                    fold_local_get_args(&mut initial_processed_instrs, &mut source_regs);
+                    let index_reg = source_regs.pop().unwrap();
                     let default_target = (
                         targets.default(),
                         usize::MAX,
@@ -6396,10 +6407,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                 }
                 wasmparser::Operator::Return => {
                     // Get result registers based on function result types
-                    let result_regs = allocator.peek_regs_for_types(result_types);
+                    let mut result_regs = allocator.peek_regs_for_types(result_types);
                     for result_type in result_types.iter().rev() {
                         allocator.pop(result_type);
                     }
+                    fold_local_get_args(&mut initial_processed_instrs, &mut result_regs);
 
                     let instr = ProcessedInstr::ReturnReg {
                         result_regs: result_regs.into_boxed_slice(),
@@ -7652,6 +7664,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let value = fold_local_get_arg(&mut initial_processed_instrs, value);
                     (
                         Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I32_STORE,
@@ -7667,6 +7680,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let value = fold_local_get_arg(&mut initial_processed_instrs, value);
                     (
                         Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_STORE,
@@ -7682,6 +7696,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let value = fold_local_get_arg(&mut initial_processed_instrs, value);
                     (
                         Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_F32_STORE,
@@ -7697,6 +7712,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let value = fold_local_get_arg(&mut initial_processed_instrs, value);
                     (
                         Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_F64_STORE,
@@ -7712,6 +7728,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let value = fold_local_get_arg(&mut initial_processed_instrs, value);
                     (
                         Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I32_STORE8,
@@ -7727,6 +7744,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let value = fold_local_get_arg(&mut initial_processed_instrs, value);
                     (
                         Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I32_STORE16,
@@ -7742,6 +7760,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let value = fold_local_get_arg(&mut initial_processed_instrs, value);
                     (
                         Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_STORE8,
@@ -7757,6 +7776,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let value = fold_local_get_arg(&mut initial_processed_instrs, value);
                     (
                         Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_STORE16,
@@ -7772,6 +7792,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let value = fold_local_get_arg(&mut initial_processed_instrs, value);
                     (
                         Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_STORE32,
@@ -7992,6 +8013,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let value = fold_local_get_arg(&mut initial_processed_instrs, value);
                     (
                         Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I32_ATOMIC_STORE,
@@ -8007,6 +8029,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let value = fold_local_get_arg(&mut initial_processed_instrs, value);
                     (
                         Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_ATOMIC_STORE,
@@ -8022,6 +8045,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let value = fold_local_get_arg(&mut initial_processed_instrs, value);
                     (
                         Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I32_ATOMIC_STORE8,
@@ -8037,6 +8061,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let value = fold_local_get_arg(&mut initial_processed_instrs, value);
                     (
                         Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I32_ATOMIC_STORE16,
@@ -8052,6 +8077,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let value = fold_local_get_arg(&mut initial_processed_instrs, value);
                     (
                         Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_ATOMIC_STORE8,
@@ -8067,6 +8093,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let value = fold_local_get_arg(&mut initial_processed_instrs, value);
                     (
                         Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_ATOMIC_STORE16,
@@ -8082,6 +8109,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
                     let addr =
                         take_i32_operand(&mut pending_operands, addr_reg.index(), &local_regs);
+                    let value = fold_local_get_arg(&mut initial_processed_instrs, value);
                     (
                         Some(ProcessedInstr::MemoryStoreReg {
                             handler_index: HANDLER_IDX_I64_ATOMIC_STORE32,
@@ -9045,6 +9073,9 @@ fn decode_processed_instrs_and_fixups<'a>(
                     let cond = allocator.pop(&ValueType::NumType(NumType::I32));
                     let val2 = allocator.pop(&val_type);
                     let val1 = allocator.pop(&val_type);
+                    let mut operands = [val1, val2, cond];
+                    fold_local_get_args(&mut initial_processed_instrs, &mut operands);
+                    let [val1, val2, cond] = operands;
                     let dst = allocator.push(val_type);
 
                     let handler_index = match &val_type {
@@ -9086,6 +9117,9 @@ fn decode_processed_instrs_and_fixups<'a>(
 
                     let val2 = allocator.pop(&val_type);
                     let val1 = allocator.pop(&val_type);
+                    let mut operands = [val1, val2, cond];
+                    fold_local_get_args(&mut initial_processed_instrs, &mut operands);
+                    let [val1, val2, cond] = operands;
                     let dst = allocator.push(val_type);
 
                     (
@@ -9312,6 +9346,12 @@ fn decode_processed_instrs_and_fixups<'a>(
         block_result_regs_map,
         const_pool,
     ))
+}
+
+fn fold_local_get_arg(instrs: &mut [ProcessedInstr], reg: Reg) -> Reg {
+    let mut regs = [reg];
+    fold_local_get_args(instrs, &mut regs);
+    regs[0]
 }
 
 fn fold_local_get_args(instrs: &mut [ProcessedInstr], regs: &mut [Reg]) {
