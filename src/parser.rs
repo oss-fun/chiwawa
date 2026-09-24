@@ -6107,11 +6107,12 @@ fn decode_processed_instrs_and_fixups<'a>(
                         let result_types = func_type.results;
 
                         // Get the top N registers for params based on types
-                        let param_regs = allocator.peek_regs_for_types(&param_types);
+                        let mut param_regs = allocator.peek_regs_for_types(&param_types);
 
                         for param_type in param_types.iter().rev() {
                             allocator.pop(&param_type);
                         }
+                        fold_local_get_args(&mut initial_processed_instrs, &mut param_regs);
 
                         let result_reg = if let Some(result_type) = result_types.first() {
                             Some(allocator.push(*result_type))
@@ -6174,6 +6175,7 @@ fn decode_processed_instrs_and_fixups<'a>(
                                 }
                                 allocator.pop(param_type);
                             }
+                            fold_local_get_args(&mut initial_processed_instrs, &mut param_regs);
 
                             // Push result types to allocator and collect result_regs
                             let mut result_regs = Vec::new();
@@ -6227,6 +6229,10 @@ fn decode_processed_instrs_and_fixups<'a>(
                         }
                         allocator.pop(param_type);
                     }
+                    // The index sits above the params on the stack.
+                    param_regs.push(index_reg);
+                    fold_local_get_args(&mut initial_processed_instrs, &mut param_regs);
+                    let index_reg = param_regs.pop().unwrap();
 
                     // Push result types to allocator and collect result_regs
                     let mut result_regs = Vec::new();
@@ -9306,6 +9312,57 @@ fn decode_processed_instrs_and_fixups<'a>(
         block_result_regs_map,
         const_pool,
     ))
+}
+
+fn fold_local_get_args(instrs: &mut [ProcessedInstr], regs: &mut [Reg]) {
+    let mut at = instrs.len();
+    for reg in regs.iter_mut().rev() {
+        if at == 0 {
+            break;
+        }
+        let local = match (&instrs[at - 1], *reg) {
+            (
+                ProcessedInstr::I32Reg {
+                    handler_index: HANDLER_IDX_LOCAL_GET,
+                    dst: I32RegOperand::Reg(d),
+                    src1: I32RegOperand::Reg(l),
+                    ..
+                },
+                Reg::I32(r),
+            ) if *d == r => Reg::I32(*l),
+            (
+                ProcessedInstr::I64Reg {
+                    handler_index: HANDLER_IDX_LOCAL_GET,
+                    dst: I64RegOperand::Reg(d),
+                    src1: I64RegOperand::Reg(l),
+                    ..
+                },
+                Reg::I64(r),
+            ) if *d == r => Reg::I64(*l),
+            (
+                ProcessedInstr::F32Reg {
+                    handler_index: HANDLER_IDX_LOCAL_GET,
+                    dst: F32RegOperand::Reg(d),
+                    src1: F32RegOperand::Reg(l),
+                    ..
+                },
+                Reg::F32(r),
+            ) if *d == r => Reg::F32(*l),
+            (
+                ProcessedInstr::F64Reg {
+                    handler_index: HANDLER_IDX_LOCAL_GET,
+                    dst: F64RegOperand::Reg(d),
+                    src1: F64RegOperand::Reg(l),
+                    ..
+                },
+                Reg::F64(r),
+            ) if *d == r => Reg::F64(*l),
+            _ => break,
+        };
+        *reg = local;
+        at -= 1;
+        instrs[at] = ProcessedInstr::NopReg;
+    }
 }
 
 /// Compute source_regs and target_result_regs for branch instructions
