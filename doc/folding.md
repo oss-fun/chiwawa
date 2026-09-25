@@ -1,6 +1,6 @@
 # Operand Folding
 
-Operand folding removes instructions that only *carry* a value (`i32.const`, `local.get`, `local.set`) by embedding them in a neighbour's operand slot.
+Operand folding removes instructions that only *carry* a value (`i32.const`, `local.get`, `local.set`) by embedding them in a neighbour.
 The surviving instruction does the same work as before, so a dispatch disappears without any handler having to do more.
 
 ```
@@ -14,25 +14,22 @@ After folding:
 
 ## Source Folding
 
-Folds constant values and local.get operations into consuming instructions.
+A constant or a `local.get` becomes an operand of the instruction that consumes it.
+This includes the address of a load or store.
 
 ```
 Before:
   i32.const 10   ; r0 = 10
-  i32.const 20   ; r1 = 20
+  local.get 3    ; r1 = local[3]
   i32.add        ; r2 = r0 + r1
 
 After:
-  i32.add (const 10), (const 20) -> r0
+  i32.add (const 10), local[3] -> r0
 ```
-
-Supported source operands:
-- `i32.const`, `i64.const`, `f32.const`, `f64.const`
-- `local.get` (typed: i32, i64, f32, f64)
 
 ## Destination Folding
 
-Folds `local.set` into the preceding instruction that produces the value.
+A `local.set` disappears, and the instruction that produces the value writes the local's register directly.
 
 ```
 Before:
@@ -40,37 +37,39 @@ Before:
   local.set 0    ; local[0] = r0
 
 After:
-  i32.add -> local[0]  ; result directly to local
+  i32.add -> local[0]
 ```
 
-When destination folding is applied, the instruction uses `RegOrLocal::Local` instead of `RegOrLocal::Reg` for its destination.
+## Register Consumers
 
-## Address Folding (Memory Operations)
-
-For memory load/store operations, folds constant addresses.
+Call arguments, store values, branch conditions and values, and `select` operands are plain registers, not operand slots.
+A `local.get` feeding one of them is dropped and the consumer reads the local's register; a constant still needs its copy.
 
 ```
 Before:
-  i32.const 100  ; r0 = 100 (address)
-  i32.load       ; r1 = memory[r0]
+  local.get 2    ; r0 = local[2]
+  local.get 5    ; r1 = local[5]
+  call $f        ; params r0, r1
 
 After:
-  i32.load (addr: const 100) -> r1
+  call $f        ; params local[2], local[5]
 ```
+
+The values of `br_if` and `local.tee` stay on the stack when execution continues past them, so those keep their copies.
 
 ## Implementation
 
-Folding is performed during instruction decoding using a peek-ahead mechanism:
+Every fold is decided at the consumer, which looks back at the instructions emitted just before it.
+A `local.get` cannot tell on its own whether it will end up as an `i32.add` operand, a call argument or a block result; the consumer knows.
 
-1. **Pending Operand Stack**: When a foldable source instruction (const, local.get) is encountered, it is pushed to a pending stack instead of generating a register instruction.
-
-2. **Consumer Check**: When a consuming instruction is processed, it checks the pending stack for compatible operands.
-
-3. **Destination Check**: After processing an instruction, the parser peeks ahead to check if the next instruction is `local.set`. If so, the destination is changed from register to local.
+1. `local.get` and the constants always emit a copy into a fresh register.
+2. A consumer walks back from the last emitted instruction, one operand at a time from the top of the stack down.
+   A copy that wrote the operand's register becomes the operand and is turned into a no-op.
+3. `local.set` points the previous instruction's destination at the local instead, unless a `drop` came between them.
+4. Compaction strips the no-ops and remaps branch targets.
 
 ## Limitations
 
-- Folding only occurs for immediately adjacent instructions
+- A copy folds only into the instruction that consumes it next; anything in between stops the walk
 - Control flow instructions (block, loop, if) break folding chains
 - Reference types (funcref, externref) are not folded
-- Type mismatch between pending operand and consumer prevents folding
