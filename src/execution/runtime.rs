@@ -92,37 +92,7 @@ impl Runtime {
         config: RuntimeConfig,
     ) -> Result<Self, RuntimeError> {
         let stacks = Stacks::new(func_addr, params)?;
-
-        #[cfg(feature = "trace")]
-        let tracer = if let Some(trace_config) = config.trace_config {
-            match Tracer::new(trace_config) {
-                Ok(tracer) => Some(tracer),
-                Err(e) => {
-                    eprintln!("Failed to create tracer: {:?}", e);
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        Ok(Runtime {
-            module_inst,
-            stacks,
-            #[cfg(feature = "stats")]
-            execution_stats: if config.enable_stats {
-                Some(ExecutionStats::new())
-            } else {
-                None
-            },
-            #[cfg(feature = "trace")]
-            tracer,
-            #[cfg(feature = "stats")]
-            enable_stats: config.enable_stats,
-            enable_checkpoint: config.enable_checkpoint,
-            #[cfg(feature = "threads")]
-            thread_ctx: config.thread_ctx,
-        })
+        Ok(Self::build_runtime(module_inst, stacks, config))
     }
 
     /// Creates a runtime restored from a checkpoint.
@@ -133,28 +103,28 @@ impl Runtime {
         stacks: Stacks,
         config: RuntimeConfig,
     ) -> Self {
+        Self::build_runtime(module_inst, stacks, config)
+    }
+
+    /// Assembles the runtime over `module_inst` and `stacks`, creating the
+    /// stats collector and tracer that `config` asks for.
+    fn build_runtime(module_inst: Rc<ModuleInst>, stacks: Stacks, config: RuntimeConfig) -> Self {
         #[cfg(feature = "trace")]
-        let tracer = if let Some(trace_config) = config.trace_config {
-            match Tracer::new(trace_config) {
+        let tracer = config
+            .trace_config
+            .and_then(|trace_config| match Tracer::new(trace_config) {
                 Ok(tracer) => Some(tracer),
                 Err(e) => {
                     eprintln!("Failed to create tracer: {:?}", e);
                     None
                 }
-            }
-        } else {
-            None
-        };
+            });
 
         Runtime {
             module_inst,
             stacks,
             #[cfg(feature = "stats")]
-            execution_stats: if config.enable_stats {
-                Some(ExecutionStats::new())
-            } else {
-                None
-            },
+            execution_stats: config.enable_stats.then(ExecutionStats::new),
             #[cfg(feature = "trace")]
             tracer,
             #[cfg(feature = "stats")]
