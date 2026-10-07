@@ -74,12 +74,6 @@ impl VmState {
         unsafe { &*self.instrs.add(self.pc) }
     }
 
-    /// Handler function pointer at the given `pc`.
-    #[inline(always)]
-    pub fn handler_at(&self, pc: usize) -> Handler {
-        unsafe { *self.handlers.add(pc) }
-    }
-
     /// Shared reference to the register file.
     #[inline(always)]
     pub fn reg_file(&self) -> &RegFile {
@@ -261,13 +255,10 @@ impl Stacks {
                     activation_frame_stack: vec![initial_frame],
                 })
             }
-            FuncInst::HostFunc { .. } => Err(RuntimeError::UnimplementedHostFunction),
-            FuncInst::WasiFunc { .. } => Err(RuntimeError::UnimplementedHostFunction),
+            FuncInst::HostFunc { .. } | FuncInst::WasiFunc { .. } => {
+                Err(RuntimeError::UnimplementedHostFunction)
+            }
         }
-    }
-
-    pub fn get_reg_file_and_frames(&mut self) -> (&mut RegFile, &mut Vec<FrameStack>) {
-        (&mut self.reg_file, &mut self.activation_frame_stack)
     }
 }
 

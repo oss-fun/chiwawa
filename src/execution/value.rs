@@ -199,15 +199,6 @@ impl Externval {
         }
     }
 
-    /// Extracts WASI function address if this is a WasiFunc variant.
-    pub fn as_wasi_func(self) -> Option<WasiFuncAddr> {
-        if let Externval::WasiFunc(x) = self {
-            Some(x)
-        } else {
-            None
-        }
-    }
-
     /// Extracts memory address if this is a Mem variant.
     pub fn as_mem(self) -> Option<MemAddr> {
         if let Externval::Mem(x) = self {
