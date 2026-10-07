@@ -244,16 +244,7 @@ impl ModuleInst {
         let arc_module_inst = Rc::new(module_inst);
 
         for (base, func) in module.funcs.iter().enumerate() {
-            let index = base
-                + module
-                    .imports
-                    .iter()
-                    .map(|i| match i.desc {
-                        ImportDesc::Func(_) => 1,
-                        ImportDesc::WasiFunc(_) => 1,
-                        _ => 0,
-                    })
-                    .sum::<usize>();
+            let index = module.num_imported_funcs + base;
             arc_module_inst.func_addrs[index].replace(
                 func.clone(),
                 Rc::downgrade(&arc_module_inst),
