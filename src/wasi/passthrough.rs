@@ -57,6 +57,29 @@ pub(crate) fn collect_iovecs(
         .collect()
 }
 
+fn host_ptr<T>(memory: &MemAddr, ptr: Ptr) -> *mut T {
+    unsafe { memory.data_ptr().add(ptr as usize) as *mut T }
+}
+
+fn nul_terminated(bytes: &[u8]) -> Vec<u8> {
+    let mut path = bytes.to_vec();
+    path.push(0);
+    path
+}
+
+fn guest_path(memory: &MemAddr, ptr: Ptr, len: Size) -> Vec<u8> {
+    let bytes = unsafe { std::slice::from_raw_parts(host_ptr::<u8>(memory, ptr), len as usize) };
+    nul_terminated(bytes)
+}
+
+fn store_u32(memory: &MemAddr, ptr: Ptr, value: u32) {
+    memory.store_bytes(ptr as i32, &value.to_le_bytes());
+}
+
+fn store_u64(memory: &MemAddr, ptr: Ptr, value: u64) {
+    memory.store_bytes(ptr as i32, &value.to_le_bytes());
+}
+
 // External declarations for wasi-libc functions
 extern "C" {
     fn __wasi_fd_write(fd: u32, iovs: *const WasiIovec, iovs_len: u32, nwritten: *mut u32) -> u16;
@@ -190,28 +213,13 @@ impl PassthroughWasiImpl {
         PassthroughWasiImpl { argv }
     }
 
-    /// Check if a file exists without memory allocation
-    /// Used for checkpoint trigger detection
+    /// Whether `path` exists, by a `path_filestat_get` on the current
+    /// directory. Used for checkpoint trigger detection.
     pub fn check_file_exists(&self, path: &str) -> bool {
-        // Create null-terminated path
-        let mut path_vec = path.as_bytes().to_vec();
-        path_vec.push(0);
-
-        // Dummy buffer for filestat (required by some WASI implementations)
-        let mut dummy_stat: [u8; 64] = [0; 64];
-
-        // Call path_filestat_get
-        let wasi_errno = unsafe {
-            __wasi_path_filestat_get(
-                3, // fd: current directory (AT_FDCWD)
-                0, // flags: 0
-                path_vec.as_ptr(),
-                dummy_stat.as_mut_ptr(),
-            )
-        };
-
-        // Return true if file exists (errno == 0)
-        wasi_errno == 0
+        let path = nul_terminated(path.as_bytes());
+        let mut stat = [0u8; 64];
+        let errno = unsafe { __wasi_path_filestat_get(3, 0, path.as_ptr(), stat.as_mut_ptr()) };
+        errno == 0
     }
 
     pub fn fd_write(
@@ -223,23 +231,12 @@ impl PassthroughWasiImpl {
         nwritten_ptr: Ptr,
     ) -> WasiResult<i32> {
         let iovecs = collect_iovecs(memory.get_memory_direct_access(), iovs_ptr, iovs_len)?;
-
-        // Call wasi-libc fd_write function
         let mut nwritten: u32 = 0;
-        let wasi_errno = unsafe {
-            __wasi_fd_write(
-                fd as u32,
-                iovecs.as_ptr(),
-                iovs_len,
-                &mut nwritten as *mut u32,
-            )
-        };
-
-        if wasi_errno == 0 {
-            memory.store(0, nwritten_ptr as i32, nwritten);
+        let errno = unsafe { __wasi_fd_write(fd as u32, iovecs.as_ptr(), iovs_len, &mut nwritten) };
+        if errno == 0 {
+            store_u32(memory, nwritten_ptr, nwritten);
         }
-
-        Ok(wasi_errno as i32)
+        Ok(errno as i32)
     }
 
     pub fn fd_read(
@@ -251,43 +248,29 @@ impl PassthroughWasiImpl {
         nread_ptr: Ptr,
     ) -> WasiResult<i32> {
         let iovecs = collect_iovecs(memory.get_memory_direct_access(), iovs_ptr, iovs_len)?;
-
         let mut nread: u32 = 0;
-        let wasi_errno =
-            unsafe { __wasi_fd_read(fd as u32, iovecs.as_ptr(), iovs_len, &mut nread as *mut u32) };
-
-        if wasi_errno == 0 {
-            memory.store(0, nread_ptr as i32, nread);
+        let errno = unsafe { __wasi_fd_read(fd as u32, iovecs.as_ptr(), iovs_len, &mut nread) };
+        if errno == 0 {
+            store_u32(memory, nread_ptr, nread);
         }
-
-        Ok(wasi_errno as i32)
+        Ok(errno as i32)
     }
 
+    /// Never returns.
     pub fn proc_exit(&self, exit_code: ExitCode) -> WasiResult<i32> {
-        unsafe {
-            __wasi_proc_exit(exit_code as u32);
-        }
-        // This function never returns
+        unsafe { __wasi_proc_exit(exit_code as u32) }
     }
 
     pub fn random_get(&self, memory: &MemAddr, buf_ptr: Ptr, buf_len: Size) -> WasiResult<i32> {
         if buf_len == 0 {
             return Ok(0);
         }
-
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        let wasi_errno =
-            unsafe { __wasi_random_get(memory_base.add(buf_ptr as usize) as *mut u8, buf_len) };
-
-        Ok(wasi_errno as i32)
+        let errno = unsafe { __wasi_random_get(host_ptr(memory, buf_ptr), buf_len) };
+        Ok(errno as i32)
     }
 
     pub fn fd_close(&self, fd: Fd) -> WasiResult<i32> {
-        let wasi_errno = unsafe { __wasi_fd_close(fd as u32) };
-
-        Ok(wasi_errno as i32)
+        Ok(unsafe { __wasi_fd_close(fd as u32) } as i32)
     }
 
     pub fn environ_get(
@@ -298,46 +281,35 @@ impl PassthroughWasiImpl {
     ) -> WasiResult<i32> {
         let mut environ_count: u32 = 0;
         let mut environ_buf_size: u32 = 0;
-
-        let wasi_errno =
-            unsafe { __wasi_environ_sizes_get(&mut environ_count, &mut environ_buf_size) };
-
-        if wasi_errno != 0 {
-            return Ok(wasi_errno as i32);
+        let errno = unsafe { __wasi_environ_sizes_get(&mut environ_count, &mut environ_buf_size) };
+        if errno != 0 {
+            return Ok(errno as i32);
         }
 
         let mut environ_buf = vec![0u8; environ_buf_size as usize];
         let mut environ_ptrs = vec![std::ptr::null_mut::<u8>(); environ_count as usize];
-
-        // Call wasi-libc environ_get function
-        let wasi_errno =
+        let errno =
             unsafe { __wasi_environ_get(environ_ptrs.as_mut_ptr(), environ_buf.as_mut_ptr()) };
-
-        if wasi_errno != 0 {
-            return Ok(wasi_errno as i32);
+        if errno != 0 {
+            return Ok(errno as i32);
         }
 
-        // Calculate pointer offsets relative to environ_buf_ptr
+        // The pointer array, rebased from the host buffer to the guest's, and
+        // NUL-terminated.
         let mut ptr_data = Vec::with_capacity((environ_count as usize + 1) * 4);
-        for i in 0..environ_count as usize {
-            if !environ_ptrs[i].is_null() {
-                // Calculate offset from the start of environ_buf
-                let offset = unsafe { environ_ptrs[i].offset_from(environ_buf.as_ptr()) };
-                let string_addr = environ_buf_ptr.wrapping_add(offset as u32);
-                ptr_data.extend_from_slice(&string_addr.to_le_bytes());
+        for ptr in &environ_ptrs {
+            let string_addr = if ptr.is_null() {
+                0
             } else {
-                ptr_data.extend_from_slice(&0u32.to_le_bytes());
-            }
+                let offset = unsafe { ptr.offset_from(environ_buf.as_ptr()) };
+                environ_buf_ptr.wrapping_add(offset as u32)
+            };
+            ptr_data.extend_from_slice(&string_addr.to_le_bytes());
         }
-        // Null terminator for environ array
         ptr_data.extend_from_slice(&0u32.to_le_bytes());
 
-        // Write pointer array to WebAssembly memory
         memory.store_bytes(environ_ptr as i32, &ptr_data);
-
-        // Write environment strings to WebAssembly memory
         memory.store_bytes(environ_buf_ptr as i32, &environ_buf);
-
         Ok(0)
     }
 
@@ -349,52 +321,33 @@ impl PassthroughWasiImpl {
     ) -> WasiResult<i32> {
         let mut environ_count: u32 = 0;
         let mut environ_buf_size: u32 = 0;
-
-        let wasi_errno =
-            unsafe { __wasi_environ_sizes_get(&mut environ_count, &mut environ_buf_size) };
-
-        if wasi_errno != 0 {
-            return Ok(wasi_errno as i32);
+        let errno = unsafe { __wasi_environ_sizes_get(&mut environ_count, &mut environ_buf_size) };
+        if errno != 0 {
+            return Ok(errno as i32);
         }
-
-        // Write environment variable count
-        memory.store(0, environ_count_ptr as i32, environ_count);
-
-        // Write total buffer size needed
-        memory.store(0, environ_buf_size_ptr as i32, environ_buf_size);
-
+        store_u32(memory, environ_count_ptr, environ_count);
+        store_u32(memory, environ_buf_size_ptr, environ_buf_size);
         Ok(0)
     }
 
     pub fn args_get(&self, memory: &MemAddr, argv_ptr: Ptr, argv_buf_ptr: Ptr) -> WasiResult<i32> {
         let args = &self.argv;
-
-        // Calculate total buffer size needed for all argument strings (including null terminators)
         let total_len: usize = args.iter().map(|arg| arg.len() + 1).sum();
 
-        // Build the argument buffer and pointer array
+        // The strings, each NUL-terminated, and the pointer array into them,
+        // itself NUL-terminated.
         let mut argv_buf = Vec::with_capacity(total_len);
-        let mut ptr_data = Vec::with_capacity((args.len() + 1) * 4); // +1 for null terminator
-
+        let mut ptr_data = Vec::with_capacity((args.len() + 1) * 4);
         for arg in args {
-            // Store pointer to current position in buffer (relative to argv_buf_ptr)
             let string_addr = argv_buf_ptr + argv_buf.len() as u32;
             ptr_data.extend_from_slice(&string_addr.to_le_bytes());
-
-            // Add the string to the buffer
             argv_buf.extend_from_slice(arg.as_bytes());
-            argv_buf.push(0); // null terminator
+            argv_buf.push(0);
         }
-
-        // Add null terminator for the argv array
         ptr_data.extend_from_slice(&0u32.to_le_bytes());
 
-        // Write pointer array to WebAssembly memory
         memory.store_bytes(argv_ptr as i32, &ptr_data);
-
-        // Write argument strings to WebAssembly memory
         memory.store_bytes(argv_buf_ptr as i32, &argv_buf);
-
         Ok(0)
     }
 
@@ -405,19 +358,9 @@ impl PassthroughWasiImpl {
         argv_buf_size_ptr: Ptr,
     ) -> WasiResult<i32> {
         let args = &self.argv;
-
-        // Calculate argument count
-        let argc = args.len() as u32;
-
-        // Calculate total buffer size needed (sum of string lengths + null terminators)
         let argv_buf_size: u32 = args.iter().map(|arg| arg.len() + 1).sum::<usize>() as u32;
-
-        // Write argument count to WebAssembly memory
-        memory.store(0, argc_ptr as i32, argc);
-
-        // Write total buffer size needed to WebAssembly memory
-        memory.store(0, argv_buf_size_ptr as i32, argv_buf_size);
-
+        store_u32(memory, argc_ptr, args.len() as u32);
+        store_u32(memory, argv_buf_size_ptr, argv_buf_size);
         Ok(0)
     }
 
@@ -429,18 +372,11 @@ impl PassthroughWasiImpl {
         time_ptr: Ptr,
     ) -> WasiResult<i32> {
         let mut time: u64 = 0;
-
-        let wasi_errno =
-            unsafe { __wasi_clock_time_get(clock_id as u32, precision as u64, &mut time) };
-
-        if wasi_errno != 0 {
-            return Ok(wasi_errno as i32);
+        let errno = unsafe { __wasi_clock_time_get(clock_id as u32, precision as u64, &mut time) };
+        if errno == 0 {
+            store_u64(memory, time_ptr, time);
         }
-
-        // Write timestamp (64-bit nanoseconds) to memory using store_bytes
-        memory.store_bytes(time_ptr as i32, &time.to_le_bytes());
-
-        Ok(wasi_errno as i32)
+        Ok(errno as i32)
     }
 
     pub fn clock_res_get(
@@ -450,28 +386,16 @@ impl PassthroughWasiImpl {
         resolution_ptr: Ptr,
     ) -> WasiResult<i32> {
         let mut resolution: u64 = 0;
-
-        let wasi_errno = unsafe { __wasi_clock_res_get(clock_id as u32, &mut resolution) };
-
-        if wasi_errno != 0 {
-            return Ok(wasi_errno as i32);
+        let errno = unsafe { __wasi_clock_res_get(clock_id as u32, &mut resolution) };
+        if errno == 0 {
+            store_u64(memory, resolution_ptr, resolution);
         }
-
-        // Write resolution (64-bit nanoseconds) to memory using store_bytes
-        memory.store_bytes(resolution_ptr as i32, &resolution.to_le_bytes());
-
-        Ok(wasi_errno as i32)
+        Ok(errno as i32)
     }
 
     pub fn fd_prestat_get(&self, memory: &MemAddr, fd: Fd, prestat_ptr: Ptr) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        let wasi_errno = unsafe {
-            __wasi_fd_prestat_get(fd as u32, memory_base.add(prestat_ptr as usize) as *mut u8)
-        };
-
-        Ok(wasi_errno as i32)
+        let errno = unsafe { __wasi_fd_prestat_get(fd as u32, host_ptr(memory, prestat_ptr)) };
+        Ok(errno as i32)
     }
 
     pub fn fd_prestat_dir_name(
@@ -481,35 +405,18 @@ impl PassthroughWasiImpl {
         path_ptr: Ptr,
         path_len: Size,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        let wasi_errno = unsafe {
-            __wasi_fd_prestat_dir_name(
-                fd as u32,
-                memory_base.add(path_ptr as usize) as *mut u8,
-                path_len,
-            )
-        };
-
-        Ok(wasi_errno as i32)
+        let errno =
+            unsafe { __wasi_fd_prestat_dir_name(fd as u32, host_ptr(memory, path_ptr), path_len) };
+        Ok(errno as i32)
     }
 
     pub fn sched_yield(&self) -> WasiResult<i32> {
-        let wasi_errno = unsafe { __wasi_sched_yield() };
-
-        Ok(wasi_errno as i32)
+        Ok(unsafe { __wasi_sched_yield() } as i32)
     }
 
     pub fn fd_fdstat_get(&self, memory: &MemAddr, fd: Fd, stat_ptr: Ptr) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        let wasi_errno = unsafe {
-            __wasi_fd_fdstat_get(fd as u32, memory_base.add(stat_ptr as usize) as *mut u8)
-        };
-
-        Ok(wasi_errno as i32)
+        let errno = unsafe { __wasi_fd_fdstat_get(fd as u32, host_ptr(memory, stat_ptr)) };
+        Ok(errno as i32)
     }
 
     pub fn path_open(
@@ -525,30 +432,20 @@ impl PassthroughWasiImpl {
         fdflags: u32,
         opened_fd_ptr: Ptr,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        // Create null-terminated string from path
-        let path_slice = unsafe {
-            std::slice::from_raw_parts(memory_base.add(path_ptr as usize), path_len as usize)
-        };
-        let mut path_vec = path_slice.to_vec();
-        path_vec.push(0); // Add null terminator
-
-        let wasi_errno = unsafe {
+        let path = guest_path(memory, path_ptr, path_len);
+        let errno = unsafe {
             __wasi_path_open(
                 fd as u32,
                 dirflags,
-                path_vec.as_ptr(),
+                path.as_ptr(),
                 oflags as u16,
                 fs_rights_base,
                 fs_rights_inheriting,
                 fdflags as u16,
-                memory_base.add(opened_fd_ptr as usize) as *mut u32,
+                host_ptr(memory, opened_fd_ptr),
             )
         };
-
-        Ok(wasi_errno as i32)
+        Ok(errno as i32)
     }
 
     pub fn fd_seek(
@@ -559,46 +456,23 @@ impl PassthroughWasiImpl {
         whence: u32,
         newoffset_ptr: Ptr,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        let wasi_errno = unsafe {
-            __wasi_fd_seek(
-                fd as u32,
-                offset,
-                whence,
-                memory_base.add(newoffset_ptr as usize) as *mut u64,
-            )
-        };
-
-        Ok(wasi_errno as i32)
+        let errno =
+            unsafe { __wasi_fd_seek(fd as u32, offset, whence, host_ptr(memory, newoffset_ptr)) };
+        Ok(errno as i32)
     }
 
     pub fn fd_tell(&self, memory: &MemAddr, fd: Fd, offset_ptr: Ptr) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        let wasi_errno =
-            unsafe { __wasi_fd_tell(fd as u32, memory_base.add(offset_ptr as usize) as *mut u64) };
-
-        Ok(wasi_errno as i32)
+        let errno = unsafe { __wasi_fd_tell(fd as u32, host_ptr(memory, offset_ptr)) };
+        Ok(errno as i32)
     }
 
     pub fn fd_sync(&self, fd: Fd) -> WasiResult<i32> {
-        let wasi_errno = unsafe { __wasi_fd_sync(fd as u32) };
-
-        Ok(wasi_errno as i32)
+        Ok(unsafe { __wasi_fd_sync(fd as u32) } as i32)
     }
 
     pub fn fd_filestat_get(&self, memory: &MemAddr, fd: Fd, filestat_ptr: Ptr) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        let wasi_errno = unsafe {
-            __wasi_fd_filestat_get(fd as u32, memory_base.add(filestat_ptr as usize) as *mut u8)
-        };
-
-        Ok(wasi_errno as i32)
+        let errno = unsafe { __wasi_fd_filestat_get(fd as u32, host_ptr(memory, filestat_ptr)) };
+        Ok(errno as i32)
     }
 
     pub fn fd_readdir(
@@ -610,20 +484,16 @@ impl PassthroughWasiImpl {
         cookie: u64,
         buf_used_ptr: Ptr,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        let wasi_errno = unsafe {
+        let errno = unsafe {
             __wasi_fd_readdir(
                 fd as u32,
-                memory_base.add(buf_ptr as usize) as *mut u8,
+                host_ptr(memory, buf_ptr),
                 buf_len,
                 cookie,
-                memory_base.add(buf_used_ptr as usize) as *mut u32,
+                host_ptr(memory, buf_used_ptr),
             )
         };
-
-        Ok(wasi_errno as i32)
+        Ok(errno as i32)
     }
 
     pub fn fd_pread(
@@ -636,43 +506,25 @@ impl PassthroughWasiImpl {
         nread_ptr: Ptr,
     ) -> WasiResult<i32> {
         let iovecs = collect_iovecs(memory.get_memory_direct_access(), iovs_ptr, iovs_len)?;
-
         let mut nread: u32 = 0;
-        let wasi_errno = unsafe {
-            __wasi_fd_pread(
-                fd as u32,
-                iovecs.as_ptr(),
-                iovs_len,
-                offset,
-                &mut nread as *mut u32,
-            )
-        };
-
-        if wasi_errno != 0 {
-            return Ok(wasi_errno as i32);
+        let errno =
+            unsafe { __wasi_fd_pread(fd as u32, iovecs.as_ptr(), iovs_len, offset, &mut nread) };
+        if errno == 0 {
+            store_u32(memory, nread_ptr, nread);
         }
-
-        memory.store(0, nread_ptr as i32, nread);
-
-        Ok(0)
+        Ok(errno as i32)
     }
 
     pub fn fd_datasync(&self, fd: Fd) -> WasiResult<i32> {
-        let wasi_errno = unsafe { __wasi_fd_datasync(fd as u32) };
-
-        Ok(wasi_errno as i32)
+        Ok(unsafe { __wasi_fd_datasync(fd as u32) } as i32)
     }
 
     pub fn fd_fdstat_set_flags(&self, fd: Fd, flags: u32) -> WasiResult<i32> {
-        let wasi_errno = unsafe { __wasi_fd_fdstat_set_flags(fd as u32, flags) };
-
-        Ok(wasi_errno as i32)
+        Ok(unsafe { __wasi_fd_fdstat_set_flags(fd as u32, flags) } as i32)
     }
 
     pub fn fd_filestat_set_size(&self, fd: Fd, size: u64) -> WasiResult<i32> {
-        let wasi_errno = unsafe { __wasi_fd_filestat_set_size(fd as u32, size) };
-
-        Ok(wasi_errno as i32)
+        Ok(unsafe { __wasi_fd_filestat_set_size(fd as u32, size) } as i32)
     }
 
     pub fn fd_pwrite(
@@ -685,25 +537,14 @@ impl PassthroughWasiImpl {
         nwritten_ptr: Ptr,
     ) -> WasiResult<i32> {
         let iovecs = collect_iovecs(memory.get_memory_direct_access(), iovs_ptr, iovs_len)?;
-
         let mut nwritten: u32 = 0;
-        let wasi_errno = unsafe {
-            __wasi_fd_pwrite(
-                fd as u32,
-                iovecs.as_ptr(),
-                iovs_len,
-                offset,
-                &mut nwritten as *mut u32,
-            )
+        let errno = unsafe {
+            __wasi_fd_pwrite(fd as u32, iovecs.as_ptr(), iovs_len, offset, &mut nwritten)
         };
-
-        if wasi_errno != 0 {
-            return Ok(wasi_errno as i32);
+        if errno == 0 {
+            store_u32(memory, nwritten_ptr, nwritten);
         }
-
-        memory.store(0, nwritten_ptr as i32, nwritten);
-
-        Ok(0)
+        Ok(errno as i32)
     }
 
     pub fn path_create_directory(
@@ -713,19 +554,8 @@ impl PassthroughWasiImpl {
         path_ptr: Ptr,
         path_len: Size,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        // Create null-terminated string from path
-        let path_slice = unsafe {
-            std::slice::from_raw_parts(memory_base.add(path_ptr as usize), path_len as usize)
-        };
-        let mut path_vec = path_slice.to_vec();
-        path_vec.push(0); // Add null terminator
-
-        let wasi_errno = unsafe { __wasi_path_create_directory(fd as u32, path_vec.as_ptr()) };
-
-        Ok(wasi_errno as i32)
+        let path = guest_path(memory, path_ptr, path_len);
+        Ok(unsafe { __wasi_path_create_directory(fd as u32, path.as_ptr()) } as i32)
     }
 
     pub fn path_filestat_get(
@@ -737,26 +567,16 @@ impl PassthroughWasiImpl {
         path_len: Size,
         filestat_ptr: Ptr,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        // Create null-terminated string from path
-        let path_slice = unsafe {
-            std::slice::from_raw_parts(memory_base.add(path_ptr as usize), path_len as usize)
-        };
-        let mut path_vec = path_slice.to_vec();
-        path_vec.push(0); // null terminate
-
-        let wasi_errno = unsafe {
+        let path = guest_path(memory, path_ptr, path_len);
+        let errno = unsafe {
             __wasi_path_filestat_get(
                 fd as u32,
                 flags,
-                path_vec.as_ptr(),
-                memory_base.add(filestat_ptr as usize) as *mut u8,
+                path.as_ptr(),
+                host_ptr(memory, filestat_ptr),
             )
         };
-
-        Ok(wasi_errno as i32)
+        Ok(errno as i32)
     }
 
     pub fn path_filestat_set_times(
@@ -770,28 +590,11 @@ impl PassthroughWasiImpl {
         mtim: u64,
         fst_flags: u32,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        // Create null-terminated string from path
-        let path_slice = unsafe {
-            std::slice::from_raw_parts(memory_base.add(path_ptr as usize), path_len as usize)
+        let path = guest_path(memory, path_ptr, path_len);
+        let errno = unsafe {
+            __wasi_path_filestat_set_times(fd as u32, flags, path.as_ptr(), atim, mtim, fst_flags)
         };
-        let mut path_vec = path_slice.to_vec();
-        path_vec.push(0);
-
-        let wasi_errno = unsafe {
-            __wasi_path_filestat_set_times(
-                fd as u32,
-                flags,
-                path_vec.as_ptr(),
-                atim,
-                mtim,
-                fst_flags,
-            )
-        };
-
-        Ok(wasi_errno as i32)
+        Ok(errno as i32)
     }
 
     pub fn path_readlink(
@@ -804,27 +607,17 @@ impl PassthroughWasiImpl {
         buf_len: Size,
         buf_used_ptr: Ptr,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        // Create null-terminated string from path
-        let path_slice = unsafe {
-            std::slice::from_raw_parts(memory_base.add(path_ptr as usize), path_len as usize)
-        };
-        let mut path_vec = path_slice.to_vec();
-        path_vec.push(0);
-
-        let wasi_errno = unsafe {
+        let path = guest_path(memory, path_ptr, path_len);
+        let errno = unsafe {
             __wasi_path_readlink(
                 fd as u32,
-                path_vec.as_ptr(),
-                memory_base.add(buf_ptr as usize) as *mut u8,
+                path.as_ptr(),
+                host_ptr(memory, buf_ptr),
                 buf_len,
-                memory_base.add(buf_used_ptr as usize) as *mut u32,
+                host_ptr(memory, buf_used_ptr),
             )
         };
-
-        Ok(wasi_errno as i32)
+        Ok(errno as i32)
     }
 
     pub fn path_remove_directory(
@@ -834,19 +627,8 @@ impl PassthroughWasiImpl {
         path_ptr: Ptr,
         path_len: Size,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        // Create null-terminated string from path
-        let path_slice = unsafe {
-            std::slice::from_raw_parts(memory_base.add(path_ptr as usize), path_len as usize)
-        };
-        let mut path_vec = path_slice.to_vec();
-        path_vec.push(0); // Add null terminator
-
-        let wasi_errno = unsafe { __wasi_path_remove_directory(fd as u32, path_vec.as_ptr()) };
-
-        Ok(wasi_errno as i32)
+        let path = guest_path(memory, path_ptr, path_len);
+        Ok(unsafe { __wasi_path_remove_directory(fd as u32, path.as_ptr()) } as i32)
     }
 
     pub fn path_unlink_file(
@@ -856,18 +638,8 @@ impl PassthroughWasiImpl {
         path_ptr: Ptr,
         path_len: Size,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        let path_slice = unsafe {
-            std::slice::from_raw_parts(memory_base.add(path_ptr as usize), path_len as usize)
-        };
-        let mut path_vec = path_slice.to_vec();
-        path_vec.push(0);
-
-        let wasi_errno = unsafe { __wasi_path_unlink_file(fd as u32, path_vec.as_ptr()) };
-
-        Ok(wasi_errno as i32)
+        let path = guest_path(memory, path_ptr, path_len);
+        Ok(unsafe { __wasi_path_unlink_file(fd as u32, path.as_ptr()) } as i32)
     }
 
     pub fn poll_oneoff(
@@ -878,82 +650,52 @@ impl PassthroughWasiImpl {
         nsubscriptions: Size,
         nevents_ptr: Ptr,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        let wasi_errno = unsafe {
+        let errno = unsafe {
             __wasi_poll_oneoff(
-                memory_base.add(in_ptr as usize),
-                memory_base.add(out_ptr as usize) as *mut u8,
+                host_ptr(memory, in_ptr),
+                host_ptr(memory, out_ptr),
                 nsubscriptions,
-                memory_base.add(nevents_ptr as usize) as *mut u32,
+                host_ptr(memory, nevents_ptr),
             )
         };
-
-        Ok(wasi_errno as i32)
+        Ok(errno as i32)
     }
 
-    pub fn proc_raise(&self, _memory: &MemAddr, signal: u32) -> WasiResult<i32> {
-        let wasi_errno = unsafe { __wasi_proc_raise(signal) };
-
-        Ok(wasi_errno as i32)
+    pub fn proc_raise(&self, signal: u32) -> WasiResult<i32> {
+        Ok(unsafe { __wasi_proc_raise(signal) } as i32)
     }
 
-    pub fn fd_advise(
-        &self,
-        _memory: &MemAddr,
-        fd: u32,
-        offset: u64,
-        len: u64,
-        advice: u32,
-    ) -> WasiResult<i32> {
-        let wasi_errno = unsafe { __wasi_fd_advise(fd, offset, len, advice as u8) };
-
-        Ok(wasi_errno as i32)
+    pub fn fd_advise(&self, fd: u32, offset: u64, len: u64, advice: u32) -> WasiResult<i32> {
+        Ok(unsafe { __wasi_fd_advise(fd, offset, len, advice as u8) } as i32)
     }
 
-    pub fn fd_allocate(
-        &self,
-        _memory: &MemAddr,
-        fd: u32,
-        offset: u64,
-        len: u64,
-    ) -> WasiResult<i32> {
-        let wasi_errno = unsafe { __wasi_fd_allocate(fd as i32, offset, len) };
-
-        Ok(wasi_errno as i32)
+    pub fn fd_allocate(&self, fd: u32, offset: u64, len: u64) -> WasiResult<i32> {
+        Ok(unsafe { __wasi_fd_allocate(fd as i32, offset, len) } as i32)
     }
 
     pub fn fd_fdstat_set_rights(
         &self,
-        _memory: &MemAddr,
         fd: u32,
         fs_rights_base: u64,
         fs_rights_inheriting: u64,
     ) -> WasiResult<i32> {
-        let wasi_errno =
+        let errno =
             unsafe { __wasi_fd_fdstat_set_rights(fd, fs_rights_base, fs_rights_inheriting) };
-
-        Ok(wasi_errno as i32)
+        Ok(errno as i32)
     }
 
-    pub fn fd_renumber(&self, _memory: &MemAddr, fd: u32, to: u32) -> WasiResult<i32> {
-        let wasi_errno = unsafe { __wasi_fd_renumber(fd as i32, to as i32) };
-
-        Ok(wasi_errno as i32)
+    pub fn fd_renumber(&self, fd: u32, to: u32) -> WasiResult<i32> {
+        Ok(unsafe { __wasi_fd_renumber(fd as i32, to as i32) } as i32)
     }
 
     pub fn fd_filestat_set_times(
         &self,
-        _memory: &MemAddr,
         fd: u32,
         atim: u64,
         mtim: u64,
         fst_flags: u32,
     ) -> WasiResult<i32> {
-        let wasi_errno = unsafe { __wasi_fd_filestat_set_times(fd, atim, mtim, fst_flags) };
-
-        Ok(wasi_errno as i32)
+        Ok(unsafe { __wasi_fd_filestat_set_times(fd, atim, mtim, fst_flags) } as i32)
     }
 
     pub fn path_link(
@@ -967,39 +709,18 @@ impl PassthroughWasiImpl {
         new_path_ptr: Ptr,
         new_path_len: Size,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        // Create null-terminated strings from paths
-        let old_path_slice = unsafe {
-            std::slice::from_raw_parts(
-                memory_base.add(old_path_ptr as usize),
-                old_path_len as usize,
-            )
-        };
-        let mut old_path_vec = old_path_slice.to_vec();
-        old_path_vec.push(0); // Add null terminator
-
-        let new_path_slice = unsafe {
-            std::slice::from_raw_parts(
-                memory_base.add(new_path_ptr as usize),
-                new_path_len as usize,
-            )
-        };
-        let mut new_path_vec = new_path_slice.to_vec();
-        new_path_vec.push(0); // Add null terminator
-
-        let wasi_errno = unsafe {
+        let old_path = guest_path(memory, old_path_ptr, old_path_len);
+        let new_path = guest_path(memory, new_path_ptr, new_path_len);
+        let errno = unsafe {
             __wasi_path_link(
                 old_fd,
                 old_flags,
-                old_path_vec.as_ptr(),
+                old_path.as_ptr(),
                 new_fd,
-                new_path_vec.as_ptr(),
+                new_path.as_ptr(),
             )
         };
-
-        Ok(wasi_errno as i32)
+        Ok(errno as i32)
     }
 
     pub fn path_rename(
@@ -1012,38 +733,11 @@ impl PassthroughWasiImpl {
         new_path_ptr: Ptr,
         new_path_len: Size,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        // Create null-terminated strings for old and new paths
-        let old_path_slice = unsafe {
-            std::slice::from_raw_parts(
-                memory_base.add(old_path_ptr as usize),
-                old_path_len as usize,
-            )
-        };
-        let new_path_slice = unsafe {
-            std::slice::from_raw_parts(
-                memory_base.add(new_path_ptr as usize),
-                new_path_len as usize,
-            )
-        };
-
-        let mut old_path_cstr = old_path_slice.to_vec();
-        old_path_cstr.push(0);
-        let mut new_path_cstr = new_path_slice.to_vec();
-        new_path_cstr.push(0);
-
-        let wasi_errno = unsafe {
-            __wasi_path_rename(
-                old_fd,
-                old_path_cstr.as_ptr(),
-                new_fd,
-                new_path_cstr.as_ptr(),
-            )
-        };
-
-        Ok(wasi_errno as i32)
+        let old_path = guest_path(memory, old_path_ptr, old_path_len);
+        let new_path = guest_path(memory, new_path_ptr, new_path_len);
+        let errno =
+            unsafe { __wasi_path_rename(old_fd, old_path.as_ptr(), new_fd, new_path.as_ptr()) };
+        Ok(errno as i32)
     }
 
     pub fn path_symlink(
@@ -1055,32 +749,10 @@ impl PassthroughWasiImpl {
         new_path_ptr: Ptr,
         new_path_len: Size,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        let old_path_slice = unsafe {
-            std::slice::from_raw_parts(
-                memory_base.add(old_path_ptr as usize),
-                old_path_len as usize,
-            )
-        };
-        let new_path_slice = unsafe {
-            std::slice::from_raw_parts(
-                memory_base.add(new_path_ptr as usize),
-                new_path_len as usize,
-            )
-        };
-
-        // null terminate
-        let mut old_path_vec = old_path_slice.to_vec();
-        old_path_vec.push(0);
-        let mut new_path_vec = new_path_slice.to_vec();
-        new_path_vec.push(0);
-
-        let wasi_errno =
-            unsafe { __wasi_path_symlink(old_path_vec.as_ptr(), fd, new_path_vec.as_ptr()) };
-
-        Ok(wasi_errno as i32)
+        let old_path = guest_path(memory, old_path_ptr, old_path_len);
+        let new_path = guest_path(memory, new_path_ptr, new_path_len);
+        let errno = unsafe { __wasi_path_symlink(old_path.as_ptr(), fd, new_path.as_ptr()) };
+        Ok(errno as i32)
     }
 
     pub fn sock_accept(
@@ -1090,13 +762,8 @@ impl PassthroughWasiImpl {
         flags: u32,
         fd_ptr: Ptr,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-
-        let wasi_errno =
-            unsafe { __wasi_sock_accept(fd, flags, memory_base.add(fd_ptr as usize) as *mut u32) };
-
-        Ok(wasi_errno as i32)
+        let errno = unsafe { __wasi_sock_accept(fd, flags, host_ptr(memory, fd_ptr)) };
+        Ok(errno as i32)
     }
 
     pub fn sock_recv(
@@ -1109,22 +776,18 @@ impl PassthroughWasiImpl {
         ro_datalen_ptr: Ptr,
         ro_flags_ptr: Ptr,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-        let iovecs = collect_iovecs(memory_guard, ri_data_ptr, ri_data_len)?;
-
-        let wasi_errno = unsafe {
+        let iovecs = collect_iovecs(memory.get_memory_direct_access(), ri_data_ptr, ri_data_len)?;
+        let errno = unsafe {
             __wasi_sock_recv(
                 fd,
                 iovecs.as_ptr(),
                 ri_data_len,
                 ri_flags,
-                memory_base.add(ro_datalen_ptr as usize) as *mut u32,
-                memory_base.add(ro_flags_ptr as usize) as *mut u32,
+                host_ptr(memory, ro_datalen_ptr),
+                host_ptr(memory, ro_flags_ptr),
             )
         };
-
-        Ok(wasi_errno as i32)
+        Ok(errno as i32)
     }
 
     pub fn sock_send(
@@ -1136,26 +799,20 @@ impl PassthroughWasiImpl {
         si_flags: u32,
         so_datalen_ptr: Ptr,
     ) -> WasiResult<i32> {
-        let memory_guard = memory.get_memory_direct_access();
-        let memory_base = memory_guard.data.as_ptr();
-        let iovecs = collect_iovecs(memory_guard, si_data_ptr, si_data_len)?;
-
-        let wasi_errno = unsafe {
+        let iovecs = collect_iovecs(memory.get_memory_direct_access(), si_data_ptr, si_data_len)?;
+        let errno = unsafe {
             __wasi_sock_send(
                 fd,
                 iovecs.as_ptr(),
                 si_data_len,
                 si_flags,
-                memory_base.add(so_datalen_ptr as usize) as *mut u32,
+                host_ptr(memory, so_datalen_ptr),
             )
         };
-
-        Ok(wasi_errno as i32)
+        Ok(errno as i32)
     }
 
-    pub fn sock_shutdown(&self, _memory: &MemAddr, fd: u32, how: u32) -> WasiResult<i32> {
-        let wasi_errno = unsafe { __wasi_sock_shutdown(fd, how) };
-
-        Ok(wasi_errno as i32)
+    pub fn sock_shutdown(&self, fd: u32, how: u32) -> WasiResult<i32> {
+        Ok(unsafe { __wasi_sock_shutdown(fd, how) } as i32)
     }
 }
