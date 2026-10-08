@@ -25,7 +25,7 @@ pub type RegSlice = Box<[Reg]>;
 /// In the loop-style dispatcher, handlers return `Continue` to indicate the outer loop should fetch the next instruction.
 /// In the tail-call dispatcher, handlers tail-call the next handler directly and `Continue` is normally not seen by the dispatcher driver.
 ///
-/// Trap conditions store the error in `state.trap`. 
+/// Trap conditions store the error in `state.trap`.
 /// Function-level yields (call/return/wasi) store the `ModuleLevelInstr` in `state.yielded`.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

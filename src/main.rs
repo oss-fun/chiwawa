@@ -152,7 +152,7 @@ fn main() -> Result<()> {
         eprintln!("         Rebuild with: cargo build --features trace");
     }
 
-    // Warn if --trace is combined with the tco feature: the tail-call dispatcher has no central loop to hook, 
+    // Warn if --trace is combined with the tco feature: the tail-call dispatcher has no central loop to hook,
     // so tracing is unsupported there.
     #[cfg(all(feature = "trace", feature = "tco"))]
     if cli.enable_trace {
@@ -190,7 +190,7 @@ fn main() -> Result<()> {
         wasm_argv.extend(additional_args);
     }
 
-    // With wasi-threads every thread gets its own instance of the module, 
+    // With wasi-threads every thread gets its own instance of the module,
     // all bound to the one memory the context owns -- this one included.
     #[cfg(feature = "threads")]
     let thread_ctx = if cli.enable_threads {

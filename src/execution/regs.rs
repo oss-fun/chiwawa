@@ -137,8 +137,8 @@ impl RegFile {
 
     /// Restore offsets to previous frame, truncating register vectors to reclaim space.
     ///
-    /// The popped frame's offset values were recorded as `Vec::len()` at the time `save_offsets` was called, 
-    /// so truncating to them restores the vectors to the state before that frame was pushed. 
+    /// The popped frame's offset values were recorded as `Vec::len()` at the time `save_offsets` was called,
+    /// so truncating to them restores the vectors to the state before that frame was pushed.
     /// Capacity is preserved for reuse.
     pub fn restore_offsets(&mut self) {
         if let Some(popped) = self.frame_offsets.pop() {
@@ -403,7 +403,7 @@ impl RegFile {
     }
 
     /// Write function parameters into their local registers for the current frame.
-    /// `local_regs[i]` is the register slot of wasm local `i`; 
+    /// `local_regs[i]` is the register slot of wasm local `i`;
     /// the first `params.len()` locals are the function parameters.
     #[inline]
     pub fn write_params(&mut self, params: &[Val], local_regs: &[Reg]) {

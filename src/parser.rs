@@ -7,7 +7,7 @@
 //! Each function body goes through three phases:
 //!
 //! ### Phase 1: Decode
-//! Parse WebAssembly instructions using `wasmparser`, assign operands to typed registers, 
+//! Parse WebAssembly instructions using `wasmparser`, assign operands to typed registers,
 //! apply operand folding, and record where each block ends.
 //!
 //! ### Phase 2: Branch Resolution
@@ -18,7 +18,7 @@
 //!
 //! ## Register-Based Execution
 //!
-//! Instructions are converted to use a register-based model where operands are pre-allocated registers rather than implicit stack positions. 
+//! Instructions are converted to use a register-based model where operands are pre-allocated registers rather than implicit stack positions.
 //! This enables more efficient execution by avoiding redundant stack operations.
 
 use std::fs::File;
@@ -39,7 +39,7 @@ use std::sync::LazyLock;
 #[cfg(feature = "call_graph")]
 use crate::instrument::call_graph::{CallGraph, CallGraphBuilder};
 
-/// Builds a function's `wide_consts`. Equal values share a slot, 
+/// Builds a function's `wide_consts`. Equal values share a slot,
 /// so an instruction only carries the slot number.
 #[derive(Default)]
 struct ConstPool {
@@ -798,8 +798,8 @@ fn is_noop_instr(instr: &ProcessedInstr) -> bool {
 /// Phase 3: Removes no-op instructions from the stream and remaps all branch targets
 /// (`BrReg`, `BrIfReg`, `BrTableReg`, `IfReg`, `JumpReg`) to the compacted indices.
 ///
-/// A jump to a removed instruction lands on the next kept instruction at or after it, 
-/// which is semantically identical because removed instructions do nothing. 
+/// A jump to a removed instruction lands on the next kept instruction at or after it,
+/// which is semantically identical because removed instructions do nothing.
 /// `remap[i]` = number of kept instructions before old index `i`, which is exactly that target.
 fn compact_instruction_stream(processed: Vec<ProcessedInstr>) -> Vec<ProcessedInstr> {
     let old_len = processed.len();
@@ -2570,7 +2570,7 @@ fn fold_local_get_args(instrs: &mut [ProcessedInstr], at: &mut usize, regs: &mut
     }
 }
 
-/// The registers a branch of `depth` copies: the values on top of the operand stack, 
+/// The registers a branch of `depth` copies: the values on top of the operand stack,
 /// and the target's result registers.
 /// A loop takes its parameters where they already are, so it needs no copy.
 /// Past the outermost block the target is the function end, whose registers the fixup fills in.

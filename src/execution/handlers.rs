@@ -376,8 +376,8 @@ pub const HANDLER_IDX_CMPXCHG_I64_32: usize = 0x147;
 #[cfg(feature = "tco")]
 macro_rules! advance {
     ($state:expr) => {{
-        // Single tail-call site. The next handler is selected by `next_handler`, 
-        // which either returns the dispatched handler at `pc` or the checkpoint-trap sentinel. 
+        // Single tail-call site. The next handler is selected by `next_handler`,
+        // which either returns the dispatched handler at `pc` or the checkpoint-trap sentinel.
         // Keeping h(state) as the only return path preserves LLVM's `return_call_indirect` emission.
         let h = unsafe { crate::execution::handlers::next_handler($state) };
         h($state)
@@ -407,7 +407,7 @@ pub fn unaligned_trap(state: &mut VmState) -> Outcome {
     Outcome::Trap
 }
 
-/// Sentinel handler reporting a checkpoint request. 
+/// Sentinel handler reporting a checkpoint request.
 /// Reached by handler-array patching, by `next_handler` under `tco`, and by an interrupted atomic wait.
 #[inline(never)]
 pub fn checkpoint_trap(state: &mut VmState) -> Outcome {
@@ -415,7 +415,7 @@ pub fn checkpoint_trap(state: &mut VmState) -> Outcome {
     Outcome::Trap
 }
 
-/// Picks the next handler to dispatch. Returns the checkpoint-trap sentinel when `poll_checkpoint` signals a request, otherwise the indexed handler at `state.pc`. 
+/// Picks the next handler to dispatch. Returns the checkpoint-trap sentinel when `poll_checkpoint` signals a request, otherwise the indexed handler at `state.pc`.
 /// The returned function pointer is then tail-called from the `advance!` macro, so this helper itself must not break tail-call optimization at its call site.
 #[cfg(feature = "tco")]
 #[inline(always)]
@@ -1202,7 +1202,7 @@ atomic_store!(atomic_store_i64_8, AtomicU8, read_reg_i64, u8);
 atomic_store!(atomic_store_i64_16, AtomicU16, read_reg_i64, u16);
 atomic_store!(atomic_store_i64_32, AtomicU32, read_reg_i64, u32);
 
-/// `i32.atomic.rmw*` / `i64.atomic.rmw*`: apply the operation at the address and yield the value that was there before, indivisibly. 
+/// `i32.atomic.rmw*` / `i64.atomic.rmw*`: apply the operation at the address and yield the value that was there before, indivisibly.
 /// The two macros differ only in the register bank the operand and result live in.
 macro_rules! atomic_rmw {
     ($name:ident, $atomic:ty, $prim:ty, $op:ident, $read:ident, $set:ident, $to:ty) => {
