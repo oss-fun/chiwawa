@@ -19,6 +19,18 @@ pub enum Reg {
 }
 
 impl Reg {
+    fn new(vtype: &ValueType, index: usize) -> Reg {
+        let index = index as u16;
+        match vtype {
+            ValueType::NumType(NumType::I32) => Reg::I32(index),
+            ValueType::NumType(NumType::I64) => Reg::I64(index),
+            ValueType::NumType(NumType::F32) => Reg::F32(index),
+            ValueType::NumType(NumType::F64) => Reg::F64(index),
+            ValueType::RefType(_) => Reg::Ref(index),
+            ValueType::VecType(_) => Reg::V128(index),
+        }
+    }
+
     /// Get register index
     #[inline(always)]
     pub fn index(&self) -> u16 {
@@ -69,8 +81,7 @@ pub struct RegFile {
 }
 
 impl RegFile {
-    /// Create a new empty global register file
-    pub fn new_global() -> Self {
+    pub fn new() -> Self {
         Self {
             i32_regs: Vec::with_capacity(256),
             i64_regs: Vec::with_capacity(64),
@@ -83,45 +94,7 @@ impl RegFile {
         }
     }
 
-    /// Create a new register file with specified capacities (legacy, for single frame)
-    pub fn new(
-        i32_count: usize,
-        i64_count: usize,
-        f32_count: usize,
-        f64_count: usize,
-        ref_count: usize,
-        v128_count: usize,
-    ) -> Self {
-        let default_offsets = FrameRegOffsets::default();
-        let mut sf = Self {
-            i32_regs: vec![0; i32_count],
-            i64_regs: vec![0; i64_count],
-            f32_regs: vec![0.0; f32_count],
-            f64_regs: vec![0.0; f64_count],
-            ref_regs: vec![Ref::RefNull; ref_count],
-            v128_regs: vec![0; v128_count],
-            frame_offsets: Vec::new(),
-            cached_offsets: default_offsets.clone(),
-        };
-        // Push initial frame offset at 0
-        sf.frame_offsets.push(default_offsets);
-        sf
-    }
-
-    /// Create a new register file from RegAllocation
-    pub fn from_allocation(allocation: &RegAllocation) -> Self {
-        Self::new(
-            allocation.i32_count,
-            allocation.i64_count,
-            allocation.f32_count,
-            allocation.f64_count,
-            allocation.ref_count,
-            allocation.v128_count,
-        )
-    }
-
-    /// Save current offsets and advance to a new frame
-    /// Only resizes register arrays if they overflow (pre-allocated capacity is preferred)
+    /// Save current offsets and advance to a new frame Only resizes register arrays if they overflow (pre-allocated capacity is preferred)
     pub fn save_offsets(&mut self, allocation: &RegAllocation) {
         let i32_new_end = self.i32_regs.len() + allocation.i32_count;
         let i64_new_end = self.i64_regs.len() + allocation.i64_count;
@@ -164,9 +137,9 @@ impl RegFile {
 
     /// Restore offsets to previous frame, truncating register vectors to reclaim space.
     ///
-    /// The popped frame's offset values were recorded as `Vec::len()` at the time
-    /// `save_offsets` was called, so truncating to them restores the vectors to
-    /// the state before that frame was pushed. Capacity is preserved for reuse.
+    /// The popped frame's offset values were recorded as `Vec::len()` at the time `save_offsets` was called,
+    /// so truncating to them restores the vectors to the state before that frame was pushed.
+    /// Capacity is preserved for reuse.
     pub fn restore_offsets(&mut self) {
         if let Some(popped) = self.frame_offsets.pop() {
             self.i32_regs.truncate(popped.i32_offset as usize);
@@ -276,11 +249,6 @@ impl RegFile {
                 self.f64_regs.as_mut_ptr().add(o.f64_offset as usize),
             )
         }
-    }
-
-    /// Get frame depth
-    pub fn frame_depth(&self) -> usize {
-        self.frame_offsets.len()
     }
 
     /// Get/set methods for each type (with frame offset)
@@ -400,58 +368,6 @@ impl RegFile {
         }
     }
 
-    /// Copy values from source registers to destination registers.
-    #[inline]
-    pub fn copy_regs(&mut self, src_regs: &[Reg], dst_regs: &[Reg]) {
-        for (src, dst) in src_regs.iter().zip(dst_regs.iter()) {
-            self.copy_reg(src, dst);
-        }
-    }
-
-    /// Get i32 registers slice for current frame
-    #[inline(always)]
-    pub fn get_i32_regs(&mut self) -> &mut [i32] {
-        let offset = self.current_offsets().i32_offset as usize;
-        &mut self.i32_regs[offset..]
-    }
-
-    /// Get i64 registers slice for current frame
-    #[inline(always)]
-    pub fn get_i64_regs(&mut self) -> &mut [i64] {
-        let offset = self.current_offsets().i64_offset as usize;
-        &mut self.i64_regs[offset..]
-    }
-
-    /// Get both i32 and i64 registers for current frame (for i64 comparison operations)
-    #[inline(always)]
-    pub fn get_i32_and_i64_regs(&mut self) -> (&mut [i32], &mut [i64]) {
-        let i32_offset = self.current_offsets().i32_offset as usize;
-        let i64_offset = self.current_offsets().i64_offset as usize;
-        let i32_ptr = &mut self.i32_regs[i32_offset..] as *mut [i32];
-        let i64_ptr = &mut self.i64_regs[i64_offset..] as *mut [i64];
-        unsafe { (&mut *i32_ptr, &mut *i64_ptr) }
-    }
-
-    /// Get both i32 and f32 registers for current frame.
-    #[inline(always)]
-    pub fn get_i32_and_f32_regs(&mut self) -> (&mut [i32], &mut [f32]) {
-        let i32_offset = self.current_offsets().i32_offset as usize;
-        let f32_offset = self.current_offsets().f32_offset as usize;
-        let i32_ptr = &mut self.i32_regs[i32_offset..] as *mut [i32];
-        let f32_ptr = &mut self.f32_regs[f32_offset..] as *mut [f32];
-        unsafe { (&mut *i32_ptr, &mut *f32_ptr) }
-    }
-
-    /// Get both i32 and f64 registers for current frame.
-    #[inline(always)]
-    pub fn get_i32_and_f64_regs(&mut self) -> (&mut [i32], &mut [f64]) {
-        let i32_offset = self.current_offsets().i32_offset as usize;
-        let f64_offset = self.current_offsets().f64_offset as usize;
-        let i32_ptr = &mut self.i32_regs[i32_offset..] as *mut [i32];
-        let f64_ptr = &mut self.f64_regs[f64_offset..] as *mut [f64];
-        unsafe { (&mut *i32_ptr, &mut *f64_ptr) }
-    }
-
     /// Get value from register as Val
     #[inline(always)]
     pub fn get_val(&self, reg: &Reg) -> Val {
@@ -486,29 +402,14 @@ impl RegFile {
         }
     }
 
-    /// Write function parameters into their local registers for the current
-    /// frame. `local_regs[i]` is the register slot of wasm local `i`; the
-    /// first `params.len()` locals are the function parameters.
+    /// Write function parameters into their local registers for the current frame.
+    /// `local_regs[i]` is the register slot of wasm local `i`;
+    /// the first `params.len()` locals are the function parameters.
     #[inline]
     pub fn write_params(&mut self, params: &[Val], local_regs: &[Reg]) {
         for (val, reg) in params.iter().zip(local_regs.iter()) {
             self.set_val(reg, val);
         }
-    }
-
-    /// Write values from value_stack to registers (stack_to_regs operation)
-    /// Returns the number of values consumed from value_stack
-    #[inline]
-    pub fn write_from_stack(&mut self, stack_to_regs: &[Reg], value_stack: &[Val]) -> usize {
-        let reg_count = stack_to_regs.len();
-        let stack_len = value_stack.len();
-        if reg_count == 0 || stack_len < reg_count {
-            return 0;
-        }
-        for (i, reg) in stack_to_regs.iter().enumerate() {
-            self.set_val(reg, &value_stack[stack_len - reg_count + i]);
-        }
-        reg_count
     }
 }
 
@@ -526,23 +427,26 @@ pub struct RegAllocation {
     pub local_regs: Vec<Reg>,
 }
 
+/// The register types, in `Reg` variant order: i32, i64, f32, f64, ref, v128.
+const REG_TYPES: usize = 6;
+
+fn reg_type(vtype: &ValueType) -> usize {
+    match vtype {
+        ValueType::NumType(NumType::I32) => 0,
+        ValueType::NumType(NumType::I64) => 1,
+        ValueType::NumType(NumType::F32) => 2,
+        ValueType::NumType(NumType::F64) => 3,
+        ValueType::RefType(_) => 4,
+        ValueType::VecType(_) => 5,
+    }
+}
+
 /// Register allocator - tracks stack depth to assign virtual registers
 pub struct RegAllocator {
-    // Current stack depth per type
-    i32_depth: usize,
-    i64_depth: usize,
-    f32_depth: usize,
-    f64_depth: usize,
-    ref_depth: usize,
-    v128_depth: usize,
-
-    // Maximum depth reached (used to determine register file size)
-    max_i32_depth: usize,
-    max_i64_depth: usize,
-    max_f32_depth: usize,
-    max_f64_depth: usize,
-    max_ref_depth: usize,
-    max_v128_depth: usize,
+    /// Operand-stack depth of each register type.
+    depth: [usize; REG_TYPES],
+    /// Deepest the stack has been for each register type; sizes the register file.
+    max_depth: [usize; REG_TYPES],
 
     // Type stack to track push order.
     // Since depths are tracked per-type, we cannot determine which type is on top
@@ -555,149 +459,46 @@ pub struct RegAllocator {
 }
 
 impl RegAllocator {
-    /// Create a new allocator
-    /// local_types: List of function local variable types
+    /// Create a new allocator local_types: List of function local variable types
     pub fn new(local_types: &[(u32, ValueType)]) -> Self {
         let mut allocator = Self {
-            i32_depth: 0,
-            i64_depth: 0,
-            f32_depth: 0,
-            f64_depth: 0,
-            ref_depth: 0,
-            v128_depth: 0,
-            max_i32_depth: 0,
-            max_i64_depth: 0,
-            max_f32_depth: 0,
-            max_f64_depth: 0,
-            max_ref_depth: 0,
-            max_v128_depth: 0,
+            depth: [0; REG_TYPES],
+            max_depth: [0; REG_TYPES],
             type_stack: Vec::with_capacity(64),
             local_regs: Vec::with_capacity(local_types.len()),
         };
 
-        // Reserve registers for local variables, recording the slot of each
-        // wasm local index so locals can be addressed directly as registers.
+        // Reserve registers for local variables, recording the slot of each wasm local index so locals can be addressed directly as registers.
         for (count, vtype) in local_types {
             for _ in 0..*count {
-                let reg = match vtype {
-                    ValueType::NumType(NumType::I32) => {
-                        let r = Reg::I32(allocator.i32_depth as u16);
-                        allocator.i32_depth += 1;
-                        r
-                    }
-                    ValueType::NumType(NumType::I64) => {
-                        let r = Reg::I64(allocator.i64_depth as u16);
-                        allocator.i64_depth += 1;
-                        r
-                    }
-                    ValueType::NumType(NumType::F32) => {
-                        let r = Reg::F32(allocator.f32_depth as u16);
-                        allocator.f32_depth += 1;
-                        r
-                    }
-                    ValueType::NumType(NumType::F64) => {
-                        let r = Reg::F64(allocator.f64_depth as u16);
-                        allocator.f64_depth += 1;
-                        r
-                    }
-                    ValueType::RefType(_) => {
-                        let r = Reg::Ref(allocator.ref_depth as u16);
-                        allocator.ref_depth += 1;
-                        r
-                    }
-                    ValueType::VecType(_) => {
-                        let r = Reg::V128(allocator.v128_depth as u16);
-                        allocator.v128_depth += 1;
-                        r
-                    }
-                };
+                let reg = allocator.alloc(vtype);
                 allocator.local_regs.push(reg);
             }
         }
-
-        // Initialize max depths
-        allocator.max_i32_depth = allocator.i32_depth;
-        allocator.max_i64_depth = allocator.i64_depth;
-        allocator.max_f32_depth = allocator.f32_depth;
-        allocator.max_f64_depth = allocator.f64_depth;
-        allocator.max_ref_depth = allocator.ref_depth;
-        allocator.max_v128_depth = allocator.v128_depth;
-
         allocator
+    }
+
+    /// Takes the next register specialized for `vtype`.
+    fn alloc(&mut self, vtype: &ValueType) -> Reg {
+        let ty = reg_type(vtype);
+        let reg = Reg::new(vtype, self.depth[ty]);
+        self.depth[ty] += 1;
+        self.max_depth[ty] = self.max_depth[ty].max(self.depth[ty]);
+        reg
     }
 
     /// Push a value onto the stack (allocate a new register)
     pub fn push(&mut self, vtype: ValueType) -> Reg {
         self.type_stack.push(vtype);
-        match vtype {
-            ValueType::NumType(NumType::I32) => {
-                let reg = Reg::I32(self.i32_depth as u16);
-                self.i32_depth += 1;
-                self.max_i32_depth = self.max_i32_depth.max(self.i32_depth);
-                reg
-            }
-            ValueType::NumType(NumType::I64) => {
-                let reg = Reg::I64(self.i64_depth as u16);
-                self.i64_depth += 1;
-                self.max_i64_depth = self.max_i64_depth.max(self.i64_depth);
-                reg
-            }
-            ValueType::NumType(NumType::F32) => {
-                let reg = Reg::F32(self.f32_depth as u16);
-                self.f32_depth += 1;
-                self.max_f32_depth = self.max_f32_depth.max(self.f32_depth);
-                reg
-            }
-            ValueType::NumType(NumType::F64) => {
-                let reg = Reg::F64(self.f64_depth as u16);
-                self.f64_depth += 1;
-                self.max_f64_depth = self.max_f64_depth.max(self.f64_depth);
-                reg
-            }
-            ValueType::RefType(_) => {
-                let reg = Reg::Ref(self.ref_depth as u16);
-                self.ref_depth += 1;
-                self.max_ref_depth = self.max_ref_depth.max(self.ref_depth);
-                reg
-            }
-            ValueType::VecType(_) => {
-                let reg = Reg::V128(self.v128_depth as u16);
-                self.v128_depth += 1;
-                self.max_v128_depth = self.max_v128_depth.max(self.v128_depth);
-                reg
-            }
-        }
+        self.alloc(&vtype)
     }
 
     /// Pop a value from the stack (decrease depth and return the register)
     pub fn pop(&mut self, vtype: &ValueType) -> Reg {
         self.type_stack.pop();
-        match vtype {
-            ValueType::NumType(NumType::I32) => {
-                self.i32_depth = self.i32_depth.saturating_sub(1);
-                Reg::I32(self.i32_depth as u16)
-            }
-            ValueType::NumType(NumType::I64) => {
-                self.i64_depth = self.i64_depth.saturating_sub(1);
-                Reg::I64(self.i64_depth as u16)
-            }
-            ValueType::NumType(NumType::F32) => {
-                self.f32_depth = self.f32_depth.saturating_sub(1);
-                Reg::F32(self.f32_depth as u16)
-            }
-            ValueType::NumType(NumType::F64) => {
-                self.f64_depth = self.f64_depth.saturating_sub(1);
-                Reg::F64(self.f64_depth as u16)
-            }
-            ValueType::RefType(_) => {
-                self.ref_depth = self.ref_depth.saturating_sub(1);
-                Reg::Ref(self.ref_depth as u16)
-            }
-            ValueType::VecType(_) => {
-                self.v128_depth = self.v128_depth.saturating_sub(1);
-                Reg::V128(self.v128_depth as u16)
-            }
-        }
+        let ty = reg_type(vtype);
+        self.depth[ty] = self.depth[ty].saturating_sub(1);
+        Reg::new(vtype, self.depth[ty])
     }
 
     /// Register slots for each wasm local index (params first, then locals).
@@ -718,135 +519,53 @@ impl RegAllocator {
 
     /// Peek at the current stack top (without popping)
     pub fn peek(&self, vtype: &ValueType) -> Option<Reg> {
-        match vtype {
-            ValueType::NumType(NumType::I32) if self.i32_depth > 0 => {
-                Some(Reg::I32((self.i32_depth - 1) as u16))
-            }
-            ValueType::NumType(NumType::I64) if self.i64_depth > 0 => {
-                Some(Reg::I64((self.i64_depth - 1) as u16))
-            }
-            ValueType::NumType(NumType::F32) if self.f32_depth > 0 => {
-                Some(Reg::F32((self.f32_depth - 1) as u16))
-            }
-            ValueType::NumType(NumType::F64) if self.f64_depth > 0 => {
-                Some(Reg::F64((self.f64_depth - 1) as u16))
-            }
-            ValueType::RefType(_) if self.ref_depth > 0 => {
-                Some(Reg::Ref((self.ref_depth - 1) as u16))
-            }
-            ValueType::VecType(_) if self.v128_depth > 0 => {
-                Some(Reg::V128((self.v128_depth - 1) as u16))
-            }
-            _ => None,
-        }
+        let depth = self.depth[reg_type(vtype)];
+        (depth > 0).then(|| Reg::new(vtype, depth - 1))
     }
 
-    /// Peek registers for given types from the top of the stack
-    /// Returns registers in the same order as the input types
+    /// The registers holding the top values of `types`, in the same order:
+    /// each type's values are its last `count` registers, in push order.
     pub fn peek_regs_for_types(&self, types: &[ValueType]) -> Vec<Reg> {
-        if types.is_empty() {
-            return Vec::new();
+        let mut count = [0usize; REG_TYPES];
+        for vtype in types {
+            count[reg_type(vtype)] += 1;
         }
-
-        let mut result = Vec::with_capacity(types.len());
-
-        // Count how many of each type in the input, then calculate starting indices
-        let (mut i32_idx, mut i64_idx, mut f32_idx, mut f64_idx, mut ref_idx, mut v128_idx) = {
-            let (mut i32_c, mut i64_c, mut f32_c, mut f64_c, mut ref_c, mut v128_c) =
-                (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
-            for vtype in types.iter() {
-                match vtype {
-                    ValueType::NumType(NumType::I32) => i32_c += 1,
-                    ValueType::NumType(NumType::I64) => i64_c += 1,
-                    ValueType::NumType(NumType::F32) => f32_c += 1,
-                    ValueType::NumType(NumType::F64) => f64_c += 1,
-                    ValueType::RefType(_) => ref_c += 1,
-                    ValueType::VecType(_) => v128_c += 1,
-                }
-            }
-            (
-                self.i32_depth.saturating_sub(i32_c),
-                self.i64_depth.saturating_sub(i64_c),
-                self.f32_depth.saturating_sub(f32_c),
-                self.f64_depth.saturating_sub(f64_c),
-                self.ref_depth.saturating_sub(ref_c),
-                self.v128_depth.saturating_sub(v128_c),
-            )
-        };
-
-        // Iterate and assign registers
-        for vtype in types.iter() {
-            let reg = match vtype {
-                ValueType::NumType(NumType::I32) => {
-                    let s = Reg::I32(i32_idx as u16);
-                    i32_idx += 1;
-                    s
-                }
-                ValueType::NumType(NumType::I64) => {
-                    let s = Reg::I64(i64_idx as u16);
-                    i64_idx += 1;
-                    s
-                }
-                ValueType::NumType(NumType::F32) => {
-                    let s = Reg::F32(f32_idx as u16);
-                    f32_idx += 1;
-                    s
-                }
-                ValueType::NumType(NumType::F64) => {
-                    let s = Reg::F64(f64_idx as u16);
-                    f64_idx += 1;
-                    s
-                }
-                ValueType::RefType(_) => {
-                    let s = Reg::Ref(ref_idx as u16);
-                    ref_idx += 1;
-                    s
-                }
-                ValueType::VecType(_) => {
-                    let s = Reg::V128(v128_idx as u16);
-                    v128_idx += 1;
-                    s
-                }
-            };
-            result.push(reg);
-        }
-
-        result
+        let mut next: [usize; REG_TYPES] =
+            std::array::from_fn(|b| self.depth[b].saturating_sub(count[b]));
+        types
+            .iter()
+            .map(|vtype| {
+                let ty = reg_type(vtype);
+                let reg = Reg::new(vtype, next[ty]);
+                next[ty] += 1;
+                reg
+            })
+            .collect()
     }
 
     /// Save current stack state for block entry
     pub fn save_state(&self) -> RegAllocatorState {
         RegAllocatorState {
-            i32_depth: self.i32_depth,
-            i64_depth: self.i64_depth,
-            f32_depth: self.f32_depth,
-            f64_depth: self.f64_depth,
-            ref_depth: self.ref_depth,
-            v128_depth: self.v128_depth,
+            depth: self.depth,
             type_stack_len: self.type_stack.len(),
         }
     }
 
     /// Restore stack state for block exit (keeps max depths intact)
     pub fn restore_state(&mut self, state: &RegAllocatorState) {
-        self.i32_depth = state.i32_depth;
-        self.i64_depth = state.i64_depth;
-        self.f32_depth = state.f32_depth;
-        self.f64_depth = state.f64_depth;
-        self.ref_depth = state.ref_depth;
-        self.v128_depth = state.v128_depth;
+        self.depth = state.depth;
         self.type_stack.truncate(state.type_stack_len);
     }
 
     /// Finalize and return allocation information
     pub fn finalize(self) -> RegAllocation {
         RegAllocation {
-            i32_count: self.max_i32_depth,
-            i64_count: self.max_i64_depth,
-            f32_count: self.max_f32_depth,
-            f64_count: self.max_f64_depth,
-            ref_count: self.max_ref_depth,
-            v128_count: self.max_v128_depth,
+            i32_count: self.max_depth[0],
+            i64_count: self.max_depth[1],
+            f32_count: self.max_depth[2],
+            f64_count: self.max_depth[3],
+            ref_count: self.max_depth[4],
+            v128_count: self.max_depth[5],
             local_regs: self.local_regs,
         }
     }
@@ -855,49 +574,16 @@ impl RegAllocator {
 /// Saved state of RegAllocator at block entry
 #[derive(Clone, Debug)]
 pub struct RegAllocatorState {
-    pub i32_depth: usize,
-    pub i64_depth: usize,
-    pub f32_depth: usize,
-    pub f64_depth: usize,
-    pub ref_depth: usize,
-    pub v128_depth: usize,
-    pub type_stack_len: usize,
+    depth: [usize; REG_TYPES],
+    type_stack_len: usize,
 }
 
 impl RegAllocatorState {
     /// Increment depth for a type and return the register at that position
     pub fn next_reg_for_type(&mut self, vtype: &ValueType) -> Reg {
-        match vtype {
-            ValueType::NumType(NumType::I32) => {
-                let reg = Reg::I32(self.i32_depth as u16);
-                self.i32_depth += 1;
-                reg
-            }
-            ValueType::NumType(NumType::I64) => {
-                let reg = Reg::I64(self.i64_depth as u16);
-                self.i64_depth += 1;
-                reg
-            }
-            ValueType::NumType(NumType::F32) => {
-                let reg = Reg::F32(self.f32_depth as u16);
-                self.f32_depth += 1;
-                reg
-            }
-            ValueType::NumType(NumType::F64) => {
-                let reg = Reg::F64(self.f64_depth as u16);
-                self.f64_depth += 1;
-                reg
-            }
-            ValueType::RefType(_) => {
-                let reg = Reg::Ref(self.ref_depth as u16);
-                self.ref_depth += 1;
-                reg
-            }
-            ValueType::VecType(_) => {
-                let reg = Reg::V128(self.v128_depth as u16);
-                self.v128_depth += 1;
-                reg
-            }
-        }
+        let ty = reg_type(vtype);
+        let reg = Reg::new(vtype, self.depth[ty]);
+        self.depth[ty] += 1;
+        reg
     }
 }

@@ -25,10 +25,12 @@ use crate::error::RuntimeError;
 use crate::execution::atomics;
 use crate::execution::func::{FuncAddr, FuncInst};
 use crate::execution::ir::{Handler, Outcome, ProcessedInstr, RegOrLocal};
+use crate::execution::mem::MemAddr;
 use crate::execution::module::GetInstanceByIdx;
 use crate::execution::operand;
 use crate::execution::regs::Reg;
 use crate::execution::state::{Frame, FrameStack, ModuleLevelInstr, VmState};
+use crate::execution::table::TableAddr;
 use crate::execution::value::Val;
 use crate::structure::module::Func;
 use arrayvec::ArrayVec;
@@ -375,9 +377,8 @@ pub const HANDLER_IDX_CMPXCHG_I64_32: usize = 0x147;
 macro_rules! advance {
     ($state:expr) => {{
         // Single tail-call site. The next handler is selected by `next_handler`,
-        // which either returns the dispatched handler at `pc` or the
-        // checkpoint-trap sentinel. Keeping h(state) as the only return path
-        // preserves LLVM's `return_call_indirect` emission.
+        // which either returns the dispatched handler at `pc` or the checkpoint-trap sentinel.
+        // Keeping h(state) as the only return path preserves LLVM's `return_call_indirect` emission.
         let h = unsafe { crate::execution::handlers::next_handler($state) };
         h($state)
     }};
@@ -406,19 +407,16 @@ pub fn unaligned_trap(state: &mut VmState) -> Outcome {
     Outcome::Trap
 }
 
-/// Sentinel handler reporting a checkpoint request. Reached by handler-array
-/// patching, by `next_handler` under `tco`, and by an interrupted atomic wait.
+/// Sentinel handler reporting a checkpoint request.
+/// Reached by handler-array patching, by `next_handler` under `tco`, and by an interrupted atomic wait.
 #[inline(never)]
 pub fn checkpoint_trap(state: &mut VmState) -> Outcome {
     state.trap = Some(crate::error::RuntimeError::CheckpointRequested);
     Outcome::Trap
 }
 
-/// Picks the next handler to dispatch. Returns the checkpoint-trap sentinel
-/// when `poll_checkpoint` signals a request, otherwise the indexed handler
-/// at `state.pc`. The returned function pointer is then tail-called from
-/// the `advance!` macro, so this helper itself must not break tail-call
-/// optimization at its call site.
+/// Picks the next handler to dispatch. Returns the checkpoint-trap sentinel when `poll_checkpoint` signals a request, otherwise the indexed handler at `state.pc`.
+/// The returned function pointer is then tail-called from the `advance!` macro, so this helper itself must not break tail-call optimization at its call site.
 #[cfg(feature = "tco")]
 #[inline(always)]
 pub unsafe fn next_handler(state: &mut VmState) -> Handler {
@@ -440,50 +438,114 @@ pub fn invalid(state: &mut VmState) -> Outcome {
     trap(state)
 }
 
-// ============================================================================
-// I32 arithmetic / comparison / unary handlers
-// ============================================================================
+/// Copies the named fields out of the current instruction, which the parser guarantees is a `$variant`.
+macro_rules! fields {
+    ($state:expr, $variant:ident { $($field:ident),+ }) => {
+        match $state.current_instr() {
+            ProcessedInstr::$variant { $($field,)+ .. } => ($(*$field,)+),
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        }
+    };
+}
+
+macro_rules! binop {
+    ($name:ident, $variant:ident, $read:ident, $write:ident, $op:expr) => {
+        pub fn $name(state: &mut VmState) -> Outcome {
+            let (dst, src1, src2) = fields!(state, $variant { dst, src1, src2 });
+            // SAFETY: the parser sets `src2` on every binary operation.
+            let src2 = unsafe { src2.unwrap_unchecked() };
+            let a = operand::$read(state, &src1);
+            let b = operand::$read(state, &src2);
+            operand::$write(state, &dst, $op(a, b));
+            state.pc += 1;
+            advance!(state)
+        }
+    };
+}
+
+macro_rules! unop {
+    ($name:ident, $variant:ident, $read:ident, $write:ident, $op:expr) => {
+        pub fn $name(state: &mut VmState) -> Outcome {
+            let (dst, src1) = fields!(state, $variant { dst, src1 });
+            let a = operand::$read(state, &src1);
+            operand::$write(state, &dst, $op(a));
+            state.pc += 1;
+            advance!(state)
+        }
+    };
+}
 
 macro_rules! i32_binop {
     ($name:ident, $op:expr) => {
-        pub fn $name(state: &mut VmState) -> Outcome {
-            // SAFETY: parser guarantees this is an I32Reg with src2 = Some.
-            let (dst, src1, src2) = match state.current_instr() {
-                ProcessedInstr::I32Reg {
-                    dst, src1, src2, ..
-                } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
-            let a = operand::read_i32(state, &src1);
-            let b = operand::read_i32(state, &src2);
-            operand::write_i32(state, &dst, $op(a, b));
-            state.pc += 1;
-            advance!(state)
-        }
+        binop!($name, I32Reg, read_i32, write_i32, $op);
     };
 }
-
 macro_rules! i32_unop {
     ($name:ident, $op:expr) => {
-        pub fn $name(state: &mut VmState) -> Outcome {
-            let (dst, src1) = match state.current_instr() {
-                ProcessedInstr::I32Reg { dst, src1, .. } => (*dst, *src1),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
-            let a = operand::read_i32(state, &src1);
-            operand::write_i32(state, &dst, $op(a));
-            state.pc += 1;
-            advance!(state)
-        }
+        unop!($name, I32Reg, read_i32, write_i32, $op);
+    };
+}
+macro_rules! i64_binop {
+    ($name:ident, $op:expr) => {
+        binop!($name, I64Reg, read_i64, write_i64, $op);
+    };
+}
+/// i64 comparison: i64 inputs, i32 result.
+macro_rules! i64_cmp {
+    ($name:ident, $op:expr) => {
+        binop!($name, I64Reg, read_i64, write_i64dst_i32, $op);
+    };
+}
+macro_rules! i64_unop {
+    ($name:ident, $op:expr) => {
+        unop!($name, I64Reg, read_i64, write_i64, $op);
+    };
+}
+macro_rules! f32_binop {
+    ($name:ident, $op:expr) => {
+        binop!($name, F32Reg, read_f32, write_f32, $op);
+    };
+}
+macro_rules! f32_cmp {
+    ($name:ident, $op:expr) => {
+        binop!($name, F32Reg, read_f32, write_f32dst_i32, $op);
+    };
+}
+macro_rules! f32_unop {
+    ($name:ident, $op:expr) => {
+        unop!($name, F32Reg, read_f32, write_f32, $op);
+    };
+}
+macro_rules! f64_binop {
+    ($name:ident, $op:expr) => {
+        binop!($name, F64Reg, read_f64, write_f64, $op);
+    };
+}
+macro_rules! f64_cmp {
+    ($name:ident, $op:expr) => {
+        binop!($name, F64Reg, read_f64, write_f64dst_i32, $op);
+    };
+}
+macro_rules! f64_unop {
+    ($name:ident, $op:expr) => {
+        unop!($name, F64Reg, read_f64, write_f64, $op);
     };
 }
 
-// local.get / local.set / i32.const all reduce to "read src1, write dst" (identity copy).
 i32_unop!(i32_local_get, |a: i32| a);
 i32_unop!(i32_local_set, |a: i32| a);
 i32_unop!(i32_const, |a: i32| a);
+i64_unop!(i64_local_get, |a: i64| a);
+i64_unop!(i64_local_set, |a: i64| a);
+i64_unop!(i64_const, |a: i64| a);
+f32_unop!(f32_local_get, |a: f32| a);
+f32_unop!(f32_local_set, |a: f32| a);
+f32_unop!(f32_const, |a: f32| a);
+f64_unop!(f64_local_get, |a: f64| a);
+f64_unop!(f64_local_set, |a: f64| a);
+f64_unop!(f64_const, |a: f64| a);
 
-// Binary
+// i32
 i32_binop!(i32_add, |a: i32, b: i32| a.wrapping_add(b));
 i32_binop!(i32_sub, |a: i32, b: i32| a.wrapping_sub(b));
 i32_binop!(i32_mul, |a: i32, b: i32| a.wrapping_mul(b));
@@ -498,8 +560,10 @@ i32_binop!(
 );
 i32_binop!(i32_rotl, |a: i32, b: i32| a.rotate_left(b as u32));
 i32_binop!(i32_rotr, |a: i32, b: i32| a.rotate_right(b as u32));
-
-// Comparisons (closure returns i32 0 or 1)
+i32_binop!(i32_div_s, |a: i32, b: i32| a / b);
+i32_binop!(i32_div_u, |a: i32, b: i32| ((a as u32) / (b as u32)) as i32);
+i32_binop!(i32_rem_s, |a: i32, b: i32| a.wrapping_rem(b));
+i32_binop!(i32_rem_u, |a: i32, b: i32| ((a as u32) % (b as u32)) as i32);
 i32_binop!(i32_eq, |a: i32, b: i32| (a == b) as i32);
 i32_binop!(i32_ne, |a: i32, b: i32| (a != b) as i32);
 i32_binop!(i32_lt_s, |a: i32, b: i32| (a < b) as i32);
@@ -510,8 +574,6 @@ i32_binop!(i32_gt_s, |a: i32, b: i32| (a > b) as i32);
 i32_binop!(i32_gt_u, |a: i32, b: i32| ((a as u32) > (b as u32)) as i32);
 i32_binop!(i32_ge_s, |a: i32, b: i32| (a >= b) as i32);
 i32_binop!(i32_ge_u, |a: i32, b: i32| ((a as u32) >= (b as u32)) as i32);
-
-// Unary
 i32_unop!(i32_clz, |a: i32| a.leading_zeros() as i32);
 i32_unop!(i32_ctz, |a: i32| a.trailing_zeros() as i32);
 i32_unop!(i32_popcnt, |a: i32| a.count_ones() as i32);
@@ -519,126 +581,7 @@ i32_unop!(i32_eqz, |a: i32| (a == 0) as i32);
 i32_unop!(i32_extend8_s, |a: i32| (a as i8) as i32);
 i32_unop!(i32_extend16_s, |a: i32| (a as i16) as i32);
 
-// Division / remainder: delegate divide-by-zero and signed overflow traps to
-// the host runtime. On wasm32, plain `/` and `%` emit `i32.div_s` / `i32.rem_s`
-// which trap on host; `wrapping_rem` preserves Wasm-spec `MIN % -1 = 0`.
-pub fn i32_div_s(state: &mut VmState) -> Outcome {
-    let (dst, src1, src2) = match state.current_instr() {
-        ProcessedInstr::I32Reg {
-            dst, src1, src2, ..
-        } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let a = operand::read_i32(state, &src1);
-    let b = operand::read_i32(state, &src2);
-    operand::write_i32(state, &dst, a / b);
-    state.pc += 1;
-    advance!(state)
-}
-
-pub fn i32_div_u(state: &mut VmState) -> Outcome {
-    let (dst, src1, src2) = match state.current_instr() {
-        ProcessedInstr::I32Reg {
-            dst, src1, src2, ..
-        } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let a = operand::read_i32(state, &src1);
-    let b = operand::read_i32(state, &src2) as u32;
-    operand::write_i32(state, &dst, ((a as u32) / b) as i32);
-    state.pc += 1;
-    advance!(state)
-}
-
-pub fn i32_rem_s(state: &mut VmState) -> Outcome {
-    let (dst, src1, src2) = match state.current_instr() {
-        ProcessedInstr::I32Reg {
-            dst, src1, src2, ..
-        } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let a = operand::read_i32(state, &src1);
-    let b = operand::read_i32(state, &src2);
-    operand::write_i32(state, &dst, a.wrapping_rem(b));
-    state.pc += 1;
-    advance!(state)
-}
-
-pub fn i32_rem_u(state: &mut VmState) -> Outcome {
-    let (dst, src1, src2) = match state.current_instr() {
-        ProcessedInstr::I32Reg {
-            dst, src1, src2, ..
-        } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let a = operand::read_i32(state, &src1);
-    let b = operand::read_i32(state, &src2) as u32;
-    operand::write_i32(state, &dst, ((a as u32) % b) as i32);
-    state.pc += 1;
-    advance!(state)
-}
-
-// ============================================================================
-// I64 arithmetic / comparison / unary handlers
-// ============================================================================
-
-macro_rules! i64_binop {
-    ($name:ident, $op:expr) => {
-        pub fn $name(state: &mut VmState) -> Outcome {
-            let (dst, src1, src2) = match state.current_instr() {
-                ProcessedInstr::I64Reg {
-                    dst, src1, src2, ..
-                } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
-            let a = operand::read_i64(state, &src1);
-            let b = operand::read_i64(state, &src2);
-            operand::write_i64(state, &dst, $op(a, b));
-            state.pc += 1;
-            advance!(state)
-        }
-    };
-}
-
-/// I64 comparison: i64 inputs, i32 result (written via i32_regs route)
-macro_rules! i64_cmp {
-    ($name:ident, $op:expr) => {
-        pub fn $name(state: &mut VmState) -> Outcome {
-            let (dst, src1, src2) = match state.current_instr() {
-                ProcessedInstr::I64Reg {
-                    dst, src1, src2, ..
-                } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
-            let a = operand::read_i64(state, &src1);
-            let b = operand::read_i64(state, &src2);
-            operand::write_i64dst_i32(state, &dst, $op(a, b));
-            state.pc += 1;
-            advance!(state)
-        }
-    };
-}
-
-macro_rules! i64_unop {
-    ($name:ident, $op:expr) => {
-        pub fn $name(state: &mut VmState) -> Outcome {
-            let (dst, src1) = match state.current_instr() {
-                ProcessedInstr::I64Reg { dst, src1, .. } => (*dst, *src1),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
-            let a = operand::read_i64(state, &src1);
-            operand::write_i64(state, &dst, $op(a));
-            state.pc += 1;
-            advance!(state)
-        }
-    };
-}
-
-i64_unop!(i64_local_get, |a: i64| a);
-i64_unop!(i64_local_set, |a: i64| a);
-i64_unop!(i64_const, |a: i64| a);
-
-// Binary
+// i64
 i64_binop!(i64_add, |a: i64, b: i64| a.wrapping_add(b));
 i64_binop!(i64_sub, |a: i64, b: i64| a.wrapping_sub(b));
 i64_binop!(i64_mul, |a: i64, b: i64| a.wrapping_mul(b));
@@ -653,8 +596,10 @@ i64_binop!(
 );
 i64_binop!(i64_rotl, |a: i64, b: i64| a.rotate_left(b as u32));
 i64_binop!(i64_rotr, |a: i64, b: i64| a.rotate_right(b as u32));
-
-// Comparison (i32 result)
+i64_binop!(i64_div_s, |a: i64, b: i64| a / b);
+i64_binop!(i64_div_u, |a: i64, b: i64| ((a as u64) / (b as u64)) as i64);
+i64_binop!(i64_rem_s, |a: i64, b: i64| a.wrapping_rem(b));
+i64_binop!(i64_rem_u, |a: i64, b: i64| ((a as u64) % (b as u64)) as i64);
 i64_cmp!(i64_eq, |a: i64, b: i64| (a == b) as i32);
 i64_cmp!(i64_ne, |a: i64, b: i64| (a != b) as i32);
 i64_cmp!(i64_lt_s, |a: i64, b: i64| (a < b) as i32);
@@ -665,149 +610,26 @@ i64_cmp!(i64_gt_s, |a: i64, b: i64| (a > b) as i32);
 i64_cmp!(i64_gt_u, |a: i64, b: i64| ((a as u64) > (b as u64)) as i32);
 i64_cmp!(i64_ge_s, |a: i64, b: i64| (a >= b) as i32);
 i64_cmp!(i64_ge_u, |a: i64, b: i64| ((a as u64) >= (b as u64)) as i32);
-
-// Unary
 i64_unop!(i64_clz, |a: i64| a.leading_zeros() as i64);
 i64_unop!(i64_ctz, |a: i64| a.trailing_zeros() as i64);
 i64_unop!(i64_popcnt, |a: i64| a.count_ones() as i64);
 i64_unop!(i64_extend8_s, |a: i64| (a as i8) as i64);
 i64_unop!(i64_extend16_s, |a: i64| (a as i16) as i64);
 i64_unop!(i64_extend32_s, |a: i64| (a as i32) as i64);
+unop!(
+    i64_eqz,
+    I64Reg,
+    read_i64,
+    write_i64dst_i32,
+    |a: i64| (a == 0) as i32
+);
 
-// i64.eqz: i64 input, i32 result (custom path because of mismatched types)
-pub fn i64_eqz(state: &mut VmState) -> Outcome {
-    let (dst, src1) = match state.current_instr() {
-        ProcessedInstr::I64Reg { dst, src1, .. } => (*dst, *src1),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let a = operand::read_i64(state, &src1);
-    operand::write_i64dst_i32(state, &dst, (a == 0) as i32);
-    state.pc += 1;
-    advance!(state)
-}
-
-// I64 division / remainder: host runtime traps divide-by-zero and div_s overflow.
-pub fn i64_div_s(state: &mut VmState) -> Outcome {
-    let (dst, src1, src2) = match state.current_instr() {
-        ProcessedInstr::I64Reg {
-            dst, src1, src2, ..
-        } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let a = operand::read_i64(state, &src1);
-    let b = operand::read_i64(state, &src2);
-    operand::write_i64(state, &dst, a / b);
-    state.pc += 1;
-    advance!(state)
-}
-
-pub fn i64_div_u(state: &mut VmState) -> Outcome {
-    let (dst, src1, src2) = match state.current_instr() {
-        ProcessedInstr::I64Reg {
-            dst, src1, src2, ..
-        } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let a = operand::read_i64(state, &src1);
-    let b = operand::read_i64(state, &src2) as u64;
-    operand::write_i64(state, &dst, ((a as u64) / b) as i64);
-    state.pc += 1;
-    advance!(state)
-}
-
-pub fn i64_rem_s(state: &mut VmState) -> Outcome {
-    let (dst, src1, src2) = match state.current_instr() {
-        ProcessedInstr::I64Reg {
-            dst, src1, src2, ..
-        } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let a = operand::read_i64(state, &src1);
-    let b = operand::read_i64(state, &src2);
-    operand::write_i64(state, &dst, a.wrapping_rem(b));
-    state.pc += 1;
-    advance!(state)
-}
-
-pub fn i64_rem_u(state: &mut VmState) -> Outcome {
-    let (dst, src1, src2) = match state.current_instr() {
-        ProcessedInstr::I64Reg {
-            dst, src1, src2, ..
-        } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let a = operand::read_i64(state, &src1);
-    let b = operand::read_i64(state, &src2) as u64;
-    operand::write_i64(state, &dst, ((a as u64) % b) as i64);
-    state.pc += 1;
-    advance!(state)
-}
-
-// ============================================================================
-// F32 handlers
-// ============================================================================
-
-macro_rules! f32_binop {
-    ($name:ident, $op:expr) => {
-        pub fn $name(state: &mut VmState) -> Outcome {
-            let (dst, src1, src2) = match state.current_instr() {
-                ProcessedInstr::F32Reg {
-                    dst, src1, src2, ..
-                } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
-            let a = operand::read_f32(state, &src1);
-            let b = operand::read_f32(state, &src2);
-            operand::write_f32(state, &dst, $op(a, b));
-            state.pc += 1;
-            advance!(state)
-        }
-    };
-}
-
-macro_rules! f32_cmp {
-    ($name:ident, $op:expr) => {
-        pub fn $name(state: &mut VmState) -> Outcome {
-            let (dst, src1, src2) = match state.current_instr() {
-                ProcessedInstr::F32Reg {
-                    dst, src1, src2, ..
-                } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
-            let a = operand::read_f32(state, &src1);
-            let b = operand::read_f32(state, &src2);
-            operand::write_f32dst_i32(state, &dst, $op(a, b));
-            state.pc += 1;
-            advance!(state)
-        }
-    };
-}
-
-macro_rules! f32_unop {
-    ($name:ident, $op:expr) => {
-        pub fn $name(state: &mut VmState) -> Outcome {
-            let (dst, src1) = match state.current_instr() {
-                ProcessedInstr::F32Reg { dst, src1, .. } => (*dst, *src1),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
-            let a = operand::read_f32(state, &src1);
-            operand::write_f32(state, &dst, $op(a));
-            state.pc += 1;
-            advance!(state)
-        }
-    };
-}
-
-f32_unop!(f32_local_get, |a: f32| a);
-f32_unop!(f32_local_set, |a: f32| a);
-f32_unop!(f32_const, |a: f32| a);
-
-// Binary
+// f32
 f32_binop!(f32_add, |a: f32, b: f32| a + b);
 f32_binop!(f32_sub, |a: f32, b: f32| a - b);
 f32_binop!(f32_mul, |a: f32, b: f32| a * b);
 f32_binop!(f32_div, |a: f32, b: f32| a / b);
-// Wasm-spec f32.min: NaN propagates, signed-zero preserves negative.
+// Wasm-spec min/max: NaN propagates, and -0 orders below +0.
 f32_binop!(f32_min, |a: f32, b: f32| {
     if a.is_nan() || b.is_nan() {
         f32::NAN
@@ -835,8 +657,6 @@ f32_binop!(f32_max, |a: f32, b: f32| {
     }
 });
 f32_binop!(f32_copysign, |a: f32, b: f32| a.copysign(b));
-
-// Unary
 f32_unop!(f32_abs, |a: f32| a.abs());
 f32_unop!(f32_neg, |a: f32| -a);
 f32_unop!(f32_ceil, |a: f32| a.ceil());
@@ -844,8 +664,6 @@ f32_unop!(f32_floor, |a: f32| a.floor());
 f32_unop!(f32_trunc, |a: f32| a.trunc());
 f32_unop!(f32_nearest, |a: f32| a.round_ties_even());
 f32_unop!(f32_sqrt, |a: f32| a.sqrt());
-
-// Comparison (i32 result)
 f32_cmp!(f32_eq, |a: f32, b: f32| (a == b) as i32);
 f32_cmp!(f32_ne, |a: f32, b: f32| (a != b) as i32);
 f32_cmp!(f32_lt, |a: f32, b: f32| (a < b) as i32);
@@ -853,66 +671,7 @@ f32_cmp!(f32_gt, |a: f32, b: f32| (a > b) as i32);
 f32_cmp!(f32_le, |a: f32, b: f32| (a <= b) as i32);
 f32_cmp!(f32_ge, |a: f32, b: f32| (a >= b) as i32);
 
-// ============================================================================
-// F64 handlers
-// ============================================================================
-
-macro_rules! f64_binop {
-    ($name:ident, $op:expr) => {
-        pub fn $name(state: &mut VmState) -> Outcome {
-            let (dst, src1, src2) = match state.current_instr() {
-                ProcessedInstr::F64Reg {
-                    dst, src1, src2, ..
-                } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
-            let a = operand::read_f64(state, &src1);
-            let b = operand::read_f64(state, &src2);
-            operand::write_f64(state, &dst, $op(a, b));
-            state.pc += 1;
-            advance!(state)
-        }
-    };
-}
-
-macro_rules! f64_cmp {
-    ($name:ident, $op:expr) => {
-        pub fn $name(state: &mut VmState) -> Outcome {
-            let (dst, src1, src2) = match state.current_instr() {
-                ProcessedInstr::F64Reg {
-                    dst, src1, src2, ..
-                } => (*dst, *src1, unsafe { (*src2).unwrap_unchecked() }),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
-            let a = operand::read_f64(state, &src1);
-            let b = operand::read_f64(state, &src2);
-            operand::write_f64dst_i32(state, &dst, $op(a, b));
-            state.pc += 1;
-            advance!(state)
-        }
-    };
-}
-
-macro_rules! f64_unop {
-    ($name:ident, $op:expr) => {
-        pub fn $name(state: &mut VmState) -> Outcome {
-            let (dst, src1) = match state.current_instr() {
-                ProcessedInstr::F64Reg { dst, src1, .. } => (*dst, *src1),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
-            let a = operand::read_f64(state, &src1);
-            operand::write_f64(state, &dst, $op(a));
-            state.pc += 1;
-            advance!(state)
-        }
-    };
-}
-
-f64_unop!(f64_local_get, |a: f64| a);
-f64_unop!(f64_local_set, |a: f64| a);
-f64_unop!(f64_const, |a: f64| a);
-
-// Binary
+// f64
 f64_binop!(f64_add, |a: f64, b: f64| a + b);
 f64_binop!(f64_sub, |a: f64, b: f64| a - b);
 f64_binop!(f64_mul, |a: f64, b: f64| a * b);
@@ -944,8 +703,6 @@ f64_binop!(f64_max, |a: f64, b: f64| {
     }
 });
 f64_binop!(f64_copysign, |a: f64, b: f64| a.copysign(b));
-
-// Unary
 f64_unop!(f64_abs, |a: f64| a.abs());
 f64_unop!(f64_neg, |a: f64| -a);
 f64_unop!(f64_ceil, |a: f64| a.ceil());
@@ -953,8 +710,6 @@ f64_unop!(f64_floor, |a: f64| a.floor());
 f64_unop!(f64_trunc, |a: f64| a.trunc());
 f64_unop!(f64_nearest, |a: f64| a.round_ties_even());
 f64_unop!(f64_sqrt, |a: f64| a.sqrt());
-
-// Comparison (i32 result)
 f64_cmp!(f64_eq, |a: f64, b: f64| (a == b) as i32);
 f64_cmp!(f64_ne, |a: f64, b: f64| (a != b) as i32);
 f64_cmp!(f64_lt, |a: f64, b: f64| (a < b) as i32);
@@ -966,14 +721,11 @@ f64_cmp!(f64_ge, |a: f64, b: f64| (a >= b) as i32);
 // Conversion handlers
 // ============================================================================
 
-/// Macro for non-trapping conversions (extend, reinterpret, sat trunc, int↔float).
+/// Non-trapping conversion (extend, reinterpret, saturating trunc, int<->float).
 macro_rules! conv {
     ($name:ident, $read:ident, $write:ident, $body:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            let (src, dst) = match state.current_instr() {
-                ProcessedInstr::ConversionReg { src, dst, .. } => (*src, *dst),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
+            let (src, dst) = fields!(state, ConversionReg { src, dst });
             let v = operand::$read(state, &src);
             operand::$write(state, &dst, $body(v));
             state.pc += 1;
@@ -1210,21 +962,18 @@ conv!(
     |v: i64| f64::from_bits(v as u64)
 );
 
-// Trapping float→int converters — branch + trap sentinel tail-call.
+/// Trapping float→int: NaN and, per `$overflow` of the truncated value, out-of-range inputs trap instead of wrapping.
 macro_rules! conv_trap {
-    ($name:ident, $read:ident, $write:ident, $ty:ty, $min:expr, $max:expr, $cast:expr) => {
+    ($name:ident, $read:ident, $write:ident, $overflow:expr, $cast:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            let (src, dst) = match state.current_instr() {
-                ProcessedInstr::ConversionReg { src, dst, .. } => (*src, *dst),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
+            let (src, dst) = fields!(state, ConversionReg { src, dst });
             let v = operand::$read(state, &src);
             if v.is_nan() {
                 state.trap = Some(RuntimeError::InvalidConversionToInt);
                 return trap(state);
             }
             let t = v.trunc();
-            if t < $min || t > $max {
+            if $overflow(t) {
                 state.trap = Some(RuntimeError::IntegerOverflow);
                 return trap(state);
             }
@@ -1239,132 +988,68 @@ conv_trap!(
     conv_i32_trunc_f32_s,
     read_reg_f32,
     write_dst_i32,
-    f32,
-    i32::MIN as f32,
-    i32::MAX as f32,
+    |t: f32| t < i32::MIN as f32 || t > i32::MAX as f32,
     |t: f32| t as i32
 );
 conv_trap!(
     conv_i32_trunc_f32_u,
     read_reg_f32,
     write_dst_i32,
-    f32,
-    0.0_f32,
-    u32::MAX as f32,
+    |t: f32| t < 0.0 || t > u32::MAX as f32,
     |t: f32| (t as u32) as i32
 );
 conv_trap!(
     conv_i32_trunc_f64_s,
     read_reg_f64,
     write_dst_i32,
-    f64,
-    i32::MIN as f64,
-    i32::MAX as f64,
+    |t: f64| t < i32::MIN as f64 || t > i32::MAX as f64,
     |t: f64| t as i32
 );
 conv_trap!(
     conv_i32_trunc_f64_u,
     read_reg_f64,
     write_dst_i32,
-    f64,
-    0.0_f64,
-    u32::MAX as f64,
+    |t: f64| t < 0.0 || t > u32::MAX as f64,
     |t: f64| (t as u32) as i32
 );
-
-// i64 trunc has different bound check (>= for max), so write explicit functions
-pub fn conv_i64_trunc_f32_s(state: &mut VmState) -> Outcome {
-    let (src, dst) = match state.current_instr() {
-        ProcessedInstr::ConversionReg { src, dst, .. } => (*src, *dst),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let v = operand::read_reg_f32(state, &src);
-    if v.is_nan() {
-        state.trap = Some(RuntimeError::InvalidConversionToInt);
-        return trap(state);
-    }
-    let t = v.trunc();
-    if t < (i64::MIN as f32) || t >= (i64::MAX as f32) {
-        state.trap = Some(RuntimeError::IntegerOverflow);
-        return trap(state);
-    }
-    operand::write_dst_i64(state, &dst, t as i64);
-    state.pc += 1;
-    advance!(state)
-}
-pub fn conv_i64_trunc_f32_u(state: &mut VmState) -> Outcome {
-    let (src, dst) = match state.current_instr() {
-        ProcessedInstr::ConversionReg { src, dst, .. } => (*src, *dst),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let v = operand::read_reg_f32(state, &src);
-    if v.is_nan() {
-        state.trap = Some(RuntimeError::InvalidConversionToInt);
-        return trap(state);
-    }
-    let t = v.trunc();
-    if t < 0.0 || t >= (u64::MAX as f32) {
-        state.trap = Some(RuntimeError::IntegerOverflow);
-        return trap(state);
-    }
-    operand::write_dst_i64(state, &dst, (t as u64) as i64);
-    state.pc += 1;
-    advance!(state)
-}
-pub fn conv_i64_trunc_f64_s(state: &mut VmState) -> Outcome {
-    let (src, dst) = match state.current_instr() {
-        ProcessedInstr::ConversionReg { src, dst, .. } => (*src, *dst),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let v = operand::read_reg_f64(state, &src);
-    if v.is_nan() {
-        state.trap = Some(RuntimeError::InvalidConversionToInt);
-        return trap(state);
-    }
-    let t = v.trunc();
-    if t < (i64::MIN as f64) || t >= (i64::MAX as f64) {
-        state.trap = Some(RuntimeError::IntegerOverflow);
-        return trap(state);
-    }
-    operand::write_dst_i64(state, &dst, t as i64);
-    state.pc += 1;
-    advance!(state)
-}
-pub fn conv_i64_trunc_f64_u(state: &mut VmState) -> Outcome {
-    let (src, dst) = match state.current_instr() {
-        ProcessedInstr::ConversionReg { src, dst, .. } => (*src, *dst),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let v = operand::read_reg_f64(state, &src);
-    if v.is_nan() {
-        state.trap = Some(RuntimeError::InvalidConversionToInt);
-        return trap(state);
-    }
-    let t = v.trunc();
-    if t < 0.0 || t >= (u64::MAX as f64) {
-        state.trap = Some(RuntimeError::IntegerOverflow);
-        return trap(state);
-    }
-    operand::write_dst_i64(state, &dst, (t as u64) as i64);
-    state.pc += 1;
-    advance!(state)
-}
+conv_trap!(
+    conv_i64_trunc_f32_s,
+    read_reg_f32,
+    write_dst_i64,
+    |t: f32| t < i64::MIN as f32 || t >= i64::MAX as f32,
+    |t: f32| t as i64
+);
+conv_trap!(
+    conv_i64_trunc_f32_u,
+    read_reg_f32,
+    write_dst_i64,
+    |t: f32| t < 0.0 || t >= u64::MAX as f32,
+    |t: f32| (t as u64) as i64
+);
+conv_trap!(
+    conv_i64_trunc_f64_s,
+    read_reg_f64,
+    write_dst_i64,
+    |t: f64| t < i64::MIN as f64 || t >= i64::MAX as f64,
+    |t: f64| t as i64
+);
+conv_trap!(
+    conv_i64_trunc_f64_u,
+    read_reg_f64,
+    write_dst_i64,
+    |t: f64| t < 0.0 || t >= u64::MAX as f64,
+    |t: f64| (t as u64) as i64
+);
 
 // ============================================================================
-// Memory load handlers
+// Memory load / store handlers
 // ============================================================================
 
-/// Macro for memory load — N-byte read from `mem_ptr + addr + offset`,
-/// extended/converted, written to RegOrLocal dst.
+/// N-byte read from `mem_ptr + addr + offset`, converted, written to `dst`.
 macro_rules! mem_load {
     ($name:ident, $ty:ty, $cast_to:ty, $write:ident, $convert:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            let (addr, dst, offset) = match state.current_instr() {
-                ProcessedInstr::MemoryLoadReg {
-                    addr, dst, offset, ..
-                } => (*addr, *dst, *offset),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
+            let (addr, dst, offset) = fields!(state, MemoryLoadReg { addr, dst, offset });
             let p = operand::read_i32(state, &addr);
             let v: $ty = unsafe {
                 let raw_ptr = state.mem_ptr.add((p as usize) + (offset as usize)) as *const $ty;
@@ -1393,22 +1078,17 @@ mem_load!(mem_load_i64_16u, u16, i64, write_dst_i64, |v: u16| v as i64);
 mem_load!(mem_load_i64_32s, i32, i64, write_dst_i64, |v: i32| v as i64);
 mem_load!(mem_load_i64_32u, u32, i64, write_dst_i64, |v: u32| v as i64);
 
-// ============================================================================
-// Memory store handlers
-// ============================================================================
-
 macro_rules! mem_store {
     ($name:ident, $read:ident, $store_ty:ty, $cast:expr) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            let (addr, value, offset) = match state.current_instr() {
-                ProcessedInstr::MemoryStoreReg {
+            let (addr, value, offset) = fields!(
+                state,
+                MemoryStoreReg {
                     addr,
                     value,
-                    offset,
-                    ..
-                } => (*addr, *value, *offset),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
+                    offset
+                }
+            );
             let p = operand::read_i32(state, &addr);
             let v = operand::$read(state, &value);
             unsafe {
@@ -1434,9 +1114,9 @@ mem_store!(mem_store_i64_32, read_reg_i64, u32, |v: i64| v as u32);
 // ============================================================================
 // Atomic handlers (threads proposal)
 //
-// Every access is sequentially consistent and must be naturally aligned. The
-// alignment check is not optional the way the bounds checks are: the spec traps
-// on a misaligned access, and Rust's atomic types make it UB.
+// Every access is sequentially consistent and must be naturally aligned.
+// The alignment check is not optional the way the bounds checks are:
+// the spec traps on a misaligned access, and Rust's atomic types make it UB.
 // ============================================================================
 
 #[cfg(feature = "tco")]
@@ -1465,12 +1145,7 @@ macro_rules! advance_or_trap {
 macro_rules! atomic_load {
     ($name:ident, $atomic:ty, $write:ident, $to:ty) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            let (addr, dst, offset) = match state.current_instr() {
-                ProcessedInstr::MemoryLoadReg {
-                    addr, dst, offset, ..
-                } => (*addr, *dst, *offset),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
+            let (addr, dst, offset) = fields!(state, MemoryLoadReg { addr, dst, offset });
             let pos = (operand::read_i32(state, &addr) as usize) + (offset as usize);
             let misaligned = pos % std::mem::align_of::<$atomic>() != 0;
             if !misaligned {
@@ -1496,15 +1171,14 @@ atomic_load!(atomic_load_i64_32u, AtomicU32, write_dst_i64, i64);
 macro_rules! atomic_store {
     ($name:ident, $atomic:ty, $read:ident, $to:ty) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            let (addr, value, offset) = match state.current_instr() {
-                ProcessedInstr::MemoryStoreReg {
+            let (addr, value, offset) = fields!(
+                state,
+                MemoryStoreReg {
                     addr,
                     value,
-                    offset,
-                    ..
-                } => (*addr, *value, *offset),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
+                    offset
+                }
+            );
             let pos = (operand::read_i32(state, &addr) as usize) + (offset as usize);
             let misaligned = pos % std::mem::align_of::<$atomic>() != 0;
             if !misaligned {
@@ -1528,22 +1202,20 @@ atomic_store!(atomic_store_i64_8, AtomicU8, read_reg_i64, u8);
 atomic_store!(atomic_store_i64_16, AtomicU16, read_reg_i64, u16);
 atomic_store!(atomic_store_i64_32, AtomicU32, read_reg_i64, u32);
 
-/// `i32.atomic.rmw*` / `i64.atomic.rmw*`: apply the operation at the address and
-/// yield the value that was there before, indivisibly. The two macros differ
-/// only in the register bank the operand and result live in.
+/// `i32.atomic.rmw*` / `i64.atomic.rmw*`: apply the operation at the address and yield the value that was there before, indivisibly.
+/// The two macros differ only in the register bank the operand and result live in.
 macro_rules! atomic_rmw {
     ($name:ident, $atomic:ty, $prim:ty, $op:ident, $read:ident, $set:ident, $to:ty) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            let (dst, addr, value, offset) = match state.current_instr() {
-                ProcessedInstr::AtomicRmwReg {
+            let (dst, addr, value, offset) = fields!(
+                state,
+                AtomicRmwReg {
                     dst,
                     addr,
                     value,
-                    offset,
-                    ..
-                } => (*dst, *addr, *value, *offset),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
+                    offset
+                }
+            );
             let pos = (operand::read_i32(state, &addr) as usize) + (offset as usize);
             let misaligned = pos % std::mem::align_of::<$atomic>() != 0;
             if !misaligned {
@@ -1615,17 +1287,11 @@ atomic_rmw_i64!(rmw_i64_8_xchg, AtomicU8, u8, swap);
 atomic_rmw_i64!(rmw_i64_16_xchg, AtomicU16, u16, swap);
 atomic_rmw_i64!(rmw_i64_32_xchg, AtomicU32, u32, swap);
 
-/// `i32/i64.atomic.rmw*.cmpxchg*`: swaps in the replacement only when the
-/// address still holds the expected value, and yields what it found either way.
+/// `i32/i64.atomic.rmw*.cmpxchg*`: swaps in the replacement only when the address still holds the expected value, and yields what it found either way.
 macro_rules! atomic_cmpxchg {
     ($name:ident, $atomic:ty, $prim:ty, $read:ident, $set:ident, $to:ty) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            let (dst, args, offset) = match state.current_instr() {
-                ProcessedInstr::AtomicCmpxchgReg {
-                    dst, args, offset, ..
-                } => (*dst, *args, *offset),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
+            let (dst, args, offset) = fields!(state, AtomicCmpxchgReg { dst, args, offset });
             let pos = (state.reg_file().get_i32(args[0].index()) as usize) + (offset as usize);
             let misaligned = pos % std::mem::align_of::<$atomic>() != 0;
             if !misaligned {
@@ -1676,18 +1342,12 @@ pub fn atomic_fence(state: &mut VmState) -> Outcome {
 }
 
 pub fn memory_atomic_notify(state: &mut VmState) -> Outcome {
-    let (dst, args, offset) = match state.current_instr() {
-        ProcessedInstr::AtomicWaitReg {
-            dst, args, offset, ..
-        } => (*dst, *args, *offset),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
+    let (dst, args, offset) = fields!(state, AtomicWaitReg { dst, args, offset });
     let pos = (state.reg_file().get_i32(args[0].index()) as usize) + (offset as usize);
     let misaligned = pos % std::mem::align_of::<AtomicU32>() != 0;
     if !misaligned {
         let count = state.reg_file().get_i32(args[1].index()) as u32;
-        // The parking table keys on the host address, which is unique across
-        // memories and identical in every thread's instance of a shared one.
+        // The parking table keys on the host address, which is unique across memories and identical in every thread's instance of a shared one.
         let addr = unsafe { state.mem_ptr.add(pos) as usize };
         let woken = atomics::notify(addr, count);
         state.reg_file_mut().set_i32(dst.index(), woken as i32);
@@ -1696,17 +1356,11 @@ pub fn memory_atomic_notify(state: &mut VmState) -> Outcome {
     advance_or_trap!(state, misaligned, unaligned_trap)
 }
 
-/// `memory.atomic.wait32/64`. Both park on the same table; they differ only in
-/// the width they compare.
+/// `memory.atomic.wait32/64`. Both park on the same table; they differ only in the width they compare.
 macro_rules! atomic_wait {
     ($name:ident, $atomic:ty, $read:ident) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            let (dst, args, offset) = match state.current_instr() {
-                ProcessedInstr::AtomicWaitReg {
-                    dst, args, offset, ..
-                } => (*dst, *args, *offset),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
+            let (dst, args, offset) = fields!(state, AtomicWaitReg { dst, args, offset });
             // Waiting on a memory no other thread can reach would never end.
             match state.module().mem_addrs.first() {
                 Some(mem) if mem.is_shared() => {}
@@ -1754,16 +1408,15 @@ atomic_wait!(memory_atomic_wait64, AtomicU64, get_i64);
 macro_rules! select {
     ($name:ident, $get:ident, $set:ident) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            let (dst, val1, val2, cond) = match state.current_instr() {
-                ProcessedInstr::SelectReg {
+            let (dst, val1, val2, cond) = fields!(
+                state,
+                SelectReg {
                     dst,
                     val1,
                     val2,
-                    cond,
-                    ..
-                } => (*dst, *val1, *val2, *cond),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
+                    cond
+                }
+            );
             let c = state.get_i32(cond.index());
             let r = if c != 0 {
                 state.$get(val1.index())
@@ -1783,7 +1436,7 @@ select!(select_f32, get_f32, set_f32);
 select!(select_f64, get_f64, set_f64);
 
 // ============================================================================
-// Nop / Unreachable
+// Control handlers
 // ============================================================================
 
 pub fn nop(state: &mut VmState) -> Outcome {
@@ -1844,31 +1497,23 @@ pub fn br_table(state: &mut VmState) -> Outcome {
     };
     let idx = state.get_i32(table.index_reg.index()) as usize;
 
-    let (target_ip, target_result_regs_slice): (usize, &[Reg]) = if idx < table.targets.len() {
-        let (_, ip, rs) = &table.targets[idx];
-        (*ip, &rs[..])
-    } else {
-        let (_, ip, rs) = &table.default_target;
-        (*ip, &rs[..])
-    };
-
-    if !table.source_regs.is_empty() && !target_result_regs_slice.is_empty() {
-        state.copy_regs(&table.source_regs, target_result_regs_slice);
+    let (_, target_ip, target_result_regs) =
+        table.targets.get(idx).unwrap_or(&table.default_target);
+    if !table.source_regs.is_empty() && !target_result_regs.is_empty() {
+        state.copy_regs(&table.source_regs, target_result_regs);
     }
-    state.pc = target_ip;
+    state.pc = *target_ip;
     advance!(state)
 }
 
 pub fn r#if(state: &mut VmState) -> Outcome {
-    let (cond_reg, else_target_ip) = match state.current_instr() {
-        ProcessedInstr::IfReg {
+    let (cond_reg, else_target_ip) = fields!(
+        state,
+        IfReg {
             cond_reg,
-            else_target_ip,
-            ..
-        } => (*cond_reg, *else_target_ip),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-
+            else_target_ip
+        }
+    );
     let cond = state.get_i32(cond_reg.index());
     state.pc = if cond != 0 {
         state.pc + 1
@@ -1878,8 +1523,7 @@ pub fn r#if(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
-/// Inner (block-level) `end`: copies block results to the block's result
-/// registers and falls through.
+/// Inner (block-level) `end`: copies block results to the block's result registers and falls through.
 pub fn end(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::EndReg {
@@ -1897,20 +1541,22 @@ pub fn end(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
-/// Function-level `end`: records the return-value registers and halts the
-/// frame. Also the target of function-level `br`/`br_if`/`br_table` (which
-/// copy their values into this end's source registers before jumping).
+/// Function-level `end`: returns the registers it names. Also the target of function-level `br`/`br_if`/`br_table`,
+/// which copy their values into its source registers before jumping.
 pub fn end_func(state: &mut VmState) -> Outcome {
     let instr = unsafe { &*state.instrs.add(state.pc) };
     let ProcessedInstr::EndReg { source_regs, .. } = instr else {
         unsafe { std::hint::unreachable_unchecked() }
     };
-    if pop_frame(state, source_regs) {
-        Outcome::Continue
-    } else {
-        state.pc = state.instrs_len;
-        Outcome::Halt
-    }
+    pop_frame(state, source_regs)
+}
+
+pub fn r#return(state: &mut VmState) -> Outcome {
+    let instr = unsafe { &*state.instrs.add(state.pc) };
+    let ProcessedInstr::ReturnReg { result_regs } = instr else {
+        unsafe { std::hint::unreachable_unchecked() }
+    };
+    pop_frame(state, result_regs)
 }
 
 pub fn jump(state: &mut VmState) -> Outcome {
@@ -1923,17 +1569,13 @@ pub fn jump(state: &mut VmState) -> Outcome {
 }
 
 // ============================================================================
-// Call / Return / CallIndirect / CallWasi (yield to runtime)
+// Call / Return / CallIndirect / CallWasi
 // ============================================================================
 //
-// These handlers prepare a `ModuleLevelInstr` in `state.yielded` and return
-// `Outcome::Yield`. The dispatcher driver (in runtime.rs) handles frame
-// transitions. State.pc is advanced to the post-call position so resume
-// continues correctly.
+// A call into Wasm code enters the callee's frame without leaving the dispatcher.
+// A call into a host or WASI function prepares a `ModuleLevelInstr` in `state.yielded` and returns `Outcome::Yield` for the runtime, with `state.pc` already past the call so resume continues there.
 
-/// Enters `code` in a fresh frame without leaving the dispatcher: opens the
-/// callee's registers, records where its results go, pushes its frame, and
-/// retargets `state` at it.
+/// Enters `code` in a fresh frame: opens the callee's registers, records where its results go, pushes its frame, and retargets `state` at it.
 #[inline]
 fn enter_frame(
     state: &mut VmState,
@@ -1982,17 +1624,17 @@ fn enter_frame(
     state.code = code as *const Func;
 }
 
-/// Pops the running frame, hands the values in `result_src` to the caller
-/// and retargets `state` at the caller. Returns false for the outermost
-/// frame, whose result registers are recorded for the runtime to collect.
+/// Pops the running frame, hands the values in `result_src` to the caller and retargets `state` at the caller.
+/// The outermost frame halts instead, leaving its result registers for the runtime to collect.
 #[inline]
-fn pop_frame(state: &mut VmState, result_src: &[Reg]) -> bool {
+fn pop_frame(state: &mut VmState, result_src: &[Reg]) -> Outcome {
     let frames = unsafe { &mut *state.frames };
     if frames.len() == 1 {
         let dst = &mut frames[0].return_result_regs;
         dst.clear();
         dst.extend(result_src.iter().copied());
-        return false;
+        state.pc = state.instrs_len;
+        return Outcome::Halt;
     }
     frames.pop();
     let caller_idx = frames.len() - 1;
@@ -2019,43 +1661,17 @@ fn pop_frame(state: &mut VmState, result_src: &[Reg]) -> bool {
     state.code = code as *const Func;
     state.handlers = code.handlers.as_ptr();
     state.sync_reg_bases();
-    true
+    Outcome::Continue
 }
 
-pub fn call(state: &mut VmState) -> Outcome {
-    let instr = unsafe { &*state.instrs.add(state.pc) };
-    let ProcessedInstr::CallReg {
-        func_idx,
-        param_regs,
-        result_regs,
-    } = instr
-    else {
-        unsafe { std::hint::unreachable_unchecked() }
-    };
-    let func_idx = *func_idx;
-    let module = state.module_static();
-    let func_addr = match module.func_addrs.get(func_idx.0 as usize) {
-        Some(fa) => fa,
-        None => {
-            state.trap = Some(RuntimeError::ExportFuncNotFound);
-            return trap(state);
-        }
-    };
-    state.pc += 1;
-    if enter_or_yield(state, func_addr, param_regs, result_regs) {
-        Outcome::Continue
-    } else {
-        Outcome::Yield
-    }
-}
-
+/// Enters a Wasm callee's frame, or yields a host call to the runtime.
 #[inline]
 fn enter_or_yield(
     state: &mut VmState,
     func_addr: &FuncAddr,
     param_regs: &[Reg],
     result_regs: &[Reg],
-) -> bool {
+) -> Outcome {
     match func_addr.read_lock() {
         FuncInst::RuntimeFunc {
             type_,
@@ -2073,7 +1689,7 @@ fn enter_or_yield(
                 result_regs,
                 handlers,
             );
-            true
+            Outcome::Continue
         }
         _ => {
             let regs = state.reg_file();
@@ -2083,9 +1699,28 @@ fn enter_or_yield(
                 params,
                 result_regs: result_regs.iter().copied().collect(),
             });
-            false
+            Outcome::Yield
         }
     }
+}
+
+pub fn call(state: &mut VmState) -> Outcome {
+    let instr = unsafe { &*state.instrs.add(state.pc) };
+    let ProcessedInstr::CallReg {
+        func_idx,
+        param_regs,
+        result_regs,
+    } = instr
+    else {
+        unsafe { std::hint::unreachable_unchecked() }
+    };
+    let module = state.module_static();
+    let Some(func_addr) = module.func_addrs.get(func_idx.0 as usize) else {
+        state.trap = Some(RuntimeError::ExportFuncNotFound);
+        return trap(state);
+    };
+    state.pc += 1;
+    enter_or_yield(state, func_addr, param_regs, result_regs)
 }
 
 pub fn call_indirect(state: &mut VmState) -> Outcome {
@@ -2100,18 +1735,10 @@ pub fn call_indirect(state: &mut VmState) -> Outcome {
     else {
         unsafe { std::hint::unreachable_unchecked() }
     };
-    let type_idx = *type_idx;
-    let table_idx = *table_idx;
-    let index_reg = *index_reg;
-    let module = state.module_static();
-    let i = state.get_i32(index_reg.index());
-    let table_addr = match module.table_addrs.get(table_idx.0 as usize) {
-        Some(t) => t,
-        None => {
-            state.trap = Some(RuntimeError::TableNotFound);
-            return trap(state);
-        }
+    let Some(table_addr) = table_or_trap(state, table_idx.0 as usize) else {
+        return trap(state);
     };
+    let i = state.get_i32(index_reg.index());
     // Out-of-bounds index / null reference: delegate to host via Rust panic.
     let func_addr = table_addr.borrow_func_addr(i as usize).unwrap();
     let actual_type = func_addr.func_type();
@@ -2121,11 +1748,7 @@ pub fn call_indirect(state: &mut VmState) -> Outcome {
         return trap(state);
     }
     state.pc += 1;
-    if enter_or_yield(state, &func_addr, param_regs, result_regs) {
-        Outcome::Continue
-    } else {
-        Outcome::Yield
-    }
+    enter_or_yield(state, &func_addr, param_regs, result_regs)
 }
 
 pub fn call_wasi(state: &mut VmState) -> Outcome {
@@ -2151,19 +1774,6 @@ pub fn call_wasi(state: &mut VmState) -> Outcome {
     Outcome::Yield
 }
 
-pub fn r#return(state: &mut VmState) -> Outcome {
-    let instr = unsafe { &*state.instrs.add(state.pc) };
-    let ProcessedInstr::ReturnReg { result_regs } = instr else {
-        unsafe { std::hint::unreachable_unchecked() }
-    };
-    if pop_frame(state, result_regs) {
-        Outcome::Continue
-    } else {
-        state.pc = state.instrs_len;
-        Outcome::Halt
-    }
-}
-
 // ============================================================================
 // Global get/set
 // ============================================================================
@@ -2171,12 +1781,7 @@ pub fn r#return(state: &mut VmState) -> Outcome {
 macro_rules! global_get {
     ($name:ident, $to:ident, $write:ident) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            let (dst, global_index) = match state.current_instr() {
-                ProcessedInstr::GlobalGetReg {
-                    dst, global_index, ..
-                } => (*dst, *global_index),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
+            let (dst, global_index) = fields!(state, GlobalGetReg { dst, global_index });
             let v = state
                 .module()
                 .global_addrs
@@ -2197,15 +1802,9 @@ global_get!(global_get_f64, get_f64, write_dst_f64);
 macro_rules! global_set {
     ($name:ident, $get:ident, $set:ident) => {
         pub fn $name(state: &mut VmState) -> Outcome {
-            let (src, global_index) = match state.current_instr() {
-                ProcessedInstr::GlobalSetReg {
-                    src, global_index, ..
-                } => (*src, *global_index),
-                _ => unsafe { std::hint::unreachable_unchecked() },
-            };
-            let v = match src {
-                RegOrLocal::Reg(idx) => state.$get(idx),
-            };
+            let (src, global_index) = fields!(state, GlobalSetReg { src, global_index });
+            let RegOrLocal::Reg(src) = src;
+            let v = state.$get(src);
             state
                 .module()
                 .global_addrs
@@ -2223,7 +1822,7 @@ global_set!(global_set_f32, get_f32, set_f32);
 global_set!(global_set_f64, get_f64, set_f64);
 
 // ============================================================================
-// DataDrop
+// Reference / table handlers
 // ============================================================================
 
 pub fn data_drop(state: &mut VmState) -> Outcome {
@@ -2239,15 +1838,8 @@ pub fn data_drop(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
-// ============================================================================
-// Ref local.get / local.set
-// ============================================================================
-
 pub fn ref_local_get(state: &mut VmState) -> Outcome {
-    let (dst, local_reg) = match state.current_instr() {
-        ProcessedInstr::RefLocalReg { dst, local_idx, .. } => (*dst, *local_idx),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
+    let (dst, local_reg) = fields!(state, RefLocalReg { dst, local_idx });
     let r = state.reg_file().get_ref(local_reg);
     state.reg_file_mut().set_ref(dst, r);
     state.pc += 1;
@@ -2255,19 +1847,12 @@ pub fn ref_local_get(state: &mut VmState) -> Outcome {
 }
 
 pub fn ref_local_set(state: &mut VmState) -> Outcome {
-    let (src, local_reg) = match state.current_instr() {
-        ProcessedInstr::RefLocalReg { src, local_idx, .. } => (*src, *local_idx),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
+    let (src, local_reg) = fields!(state, RefLocalReg { src, local_idx });
     let ref_val = state.reg_file().get_ref(src);
     state.reg_file_mut().set_ref(local_reg, ref_val);
     state.pc += 1;
     advance!(state)
 }
-
-// ============================================================================
-// Table / ref ops (ref.null / ref.is_null / table.get / table.set / table.fill)
-// ============================================================================
 
 pub fn ref_null(state: &mut VmState) -> Outcome {
     let regs = match state.current_instr() {
@@ -2294,24 +1879,33 @@ pub fn ref_is_null(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
+/// The module's table `idx`, or `None` with the trap recorded.
+#[inline(always)]
+fn table_or_trap(state: &mut VmState, idx: usize) -> Option<&'static TableAddr> {
+    let table = state.module_static().table_addrs.get(idx);
+    if table.is_none() {
+        state.trap = Some(RuntimeError::TableNotFound);
+    }
+    table
+}
+
+/// The module's memory, or `None` with the trap recorded.
+#[inline(always)]
+fn mem_or_trap(state: &mut VmState) -> Option<&'static MemAddr> {
+    let mem = state.module_static().mem_addrs.first();
+    if mem.is_none() {
+        state.trap = Some(RuntimeError::MemoryNotFound);
+    }
+    mem
+}
+
 pub fn table_get(state: &mut VmState) -> Outcome {
-    let (table_idx, regs) = match state.current_instr() {
-        ProcessedInstr::TableRefReg {
-            table_idx, regs, ..
-        } => (*table_idx, *regs),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let module = state.module_static();
-    let table_addr = match module.table_addrs.get(table_idx as usize) {
-        Some(t) => t,
-        None => {
-            state.trap = Some(RuntimeError::TableNotFound);
-            return trap(state);
-        }
+    let (table_idx, regs) = fields!(state, TableRefReg { table_idx, regs });
+    let Some(table_addr) = table_or_trap(state, table_idx as usize) else {
+        return trap(state);
     };
     let index = state.reg_file().get_i32(regs[1]) as usize;
-    let val = table_addr.get(index);
-    match val {
+    match table_addr.get(index) {
         Val::Ref(r) => {
             state.reg_file_mut().set_ref(regs[0], r);
             state.pc += 1;
@@ -2325,19 +1919,9 @@ pub fn table_get(state: &mut VmState) -> Outcome {
 }
 
 pub fn table_set(state: &mut VmState) -> Outcome {
-    let (table_idx, regs) = match state.current_instr() {
-        ProcessedInstr::TableRefReg {
-            table_idx, regs, ..
-        } => (*table_idx, *regs),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let module = state.module_static();
-    let table_addr = match module.table_addrs.get(table_idx as usize) {
-        Some(t) => t,
-        None => {
-            state.trap = Some(RuntimeError::TableNotFound);
-            return trap(state);
-        }
+    let (table_idx, regs) = fields!(state, TableRefReg { table_idx, regs });
+    let Some(table_addr) = table_or_trap(state, table_idx as usize) else {
+        return trap(state);
     };
     let rf = state.reg_file();
     let index = rf.get_i32(regs[0]) as usize;
@@ -2348,19 +1932,9 @@ pub fn table_set(state: &mut VmState) -> Outcome {
 }
 
 pub fn table_fill(state: &mut VmState) -> Outcome {
-    let (table_idx, regs) = match state.current_instr() {
-        ProcessedInstr::TableRefReg {
-            table_idx, regs, ..
-        } => (*table_idx, *regs),
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let module = state.module_static();
-    let table_addr = match module.table_addrs.get(table_idx as usize) {
-        Some(t) => t,
-        None => {
-            state.trap = Some(RuntimeError::TableNotFound);
-            return trap(state);
-        }
+    let (table_idx, regs) = fields!(state, TableRefReg { table_idx, regs });
+    let Some(table_addr) = table_or_trap(state, table_idx as usize) else {
+        return trap(state);
     };
     let rf = state.reg_file();
     let i = rf.get_i32(regs[0]) as usize;
@@ -2380,12 +1954,8 @@ pub fn mem_size(state: &mut VmState) -> Outcome {
         ProcessedInstr::MemoryOpsReg { dst, .. } => *dst,
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
-    let mem_addr = match state.module().mem_addrs.first() {
-        Some(m) => m,
-        None => {
-            state.trap = Some(RuntimeError::MemoryNotFound);
-            return trap(state);
-        }
+    let Some(mem_addr) = mem_or_trap(state) else {
+        return trap(state);
     };
     let size = mem_addr.mem_size();
     if let Some(d) = dst {
@@ -2400,22 +1970,13 @@ pub fn mem_grow(state: &mut VmState) -> Outcome {
     let ProcessedInstr::MemoryOpsReg { dst, args, .. } = instr else {
         unsafe { std::hint::unreachable_unchecked() }
     };
-
-    let module = state.module_static();
-    let mem_addr = match module.mem_addrs.first() {
-        Some(m) => m,
-        None => {
-            state.trap = Some(RuntimeError::MemoryNotFound);
-            return trap(state);
-        }
+    let Some(mem_addr) = mem_or_trap(state) else {
+        return trap(state);
     };
     let delta = state.reg_file().get_i32(args[0].index());
-    let delta_u32: u32 = match delta.try_into() {
-        Ok(v) => v,
-        Err(_) => {
-            state.trap = Some(RuntimeError::InvalidParameterCount);
-            return trap(state);
-        }
+    let Ok(delta_u32) = u32::try_from(delta) else {
+        state.trap = Some(RuntimeError::InvalidParameterCount);
+        return trap(state);
     };
     let prev_size = mem_addr.mem_grow(delta_u32 as i32);
     if let Some(d) = dst {
@@ -2431,12 +1992,8 @@ pub fn mem_copy(state: &mut VmState) -> Outcome {
     let ProcessedInstr::MemoryOpsReg { args, .. } = instr else {
         unsafe { std::hint::unreachable_unchecked() }
     };
-    let mem_addr = match state.module().mem_addrs.first() {
-        Some(m) => m,
-        None => {
-            state.trap = Some(RuntimeError::MemoryNotFound);
-            return trap(state);
-        }
+    let Some(mem_addr) = mem_or_trap(state) else {
+        return trap(state);
     };
     let regs = state.reg_file();
     let dest = regs.get_i32(args[0].index());
@@ -2455,14 +2012,10 @@ pub fn mem_init(state: &mut VmState) -> Outcome {
     else {
         unsafe { std::hint::unreachable_unchecked() }
     };
-    let module_inst = state.module();
-    let mem_addr = match module_inst.mem_addrs.first() {
-        Some(m) => m,
-        None => {
-            state.trap = Some(RuntimeError::MemoryNotFound);
-            return trap(state);
-        }
+    let Some(mem_addr) = mem_or_trap(state) else {
+        return trap(state);
     };
+    let module_inst = state.module();
     if (*data_index as usize) >= module_inst.data_addrs.len() {
         state.trap = Some(RuntimeError::InvalidDataSegmentIndex);
         return trap(state);
@@ -2484,12 +2037,8 @@ pub fn mem_fill(state: &mut VmState) -> Outcome {
     let ProcessedInstr::MemoryOpsReg { args, .. } = instr else {
         unsafe { std::hint::unreachable_unchecked() }
     };
-    let mem_addr = match state.module().mem_addrs.first() {
-        Some(m) => m,
-        None => {
-            state.trap = Some(RuntimeError::MemoryNotFound);
-            return trap(state);
-        }
+    let Some(mem_addr) = mem_or_trap(state) else {
+        return trap(state);
     };
     let regs = state.reg_file();
     let dest = regs.get_i32(args[0].index());
@@ -2822,7 +2371,7 @@ pub fn select_handler(instr: &ProcessedInstr) -> Handler {
         ProcessedInstr::CallWasiReg { .. } => call_wasi,
         ProcessedInstr::ReturnReg { .. } => r#return,
         ProcessedInstr::JumpReg { .. } => jump,
-        // BlockReg never survives compaction (Phase 5); trap if one leaks.
+        // BlockReg never survives compaction (Phase 3); trap if one leaks.
         ProcessedInstr::BlockReg { .. } => invalid,
         ProcessedInstr::IfReg { .. } => r#if,
         ProcessedInstr::EndReg {

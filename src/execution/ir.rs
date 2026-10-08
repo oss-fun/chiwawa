@@ -22,13 +22,11 @@ pub type RegSlice = Box<[Reg]>;
 
 /// Outcome of a handler invocation.
 ///
-/// In the loop-style dispatcher, handlers return `Continue` to indicate the
-/// outer loop should fetch the next instruction. In the tail-call dispatcher,
-/// handlers tail-call the next handler directly and `Continue` is normally
-/// not seen by the dispatcher driver.
+/// In the loop-style dispatcher, handlers return `Continue` to indicate the outer loop should fetch the next instruction.
+/// In the tail-call dispatcher, handlers tail-call the next handler directly and `Continue` is normally not seen by the dispatcher driver.
 ///
-/// Trap conditions store the error in `state.trap`. Function-level yields
-/// (call/return/wasi) store the `ModuleLevelInstr` in `state.yielded`.
+/// Trap conditions store the error in `state.trap`.
+/// Function-level yields (call/return/wasi) store the `ModuleLevelInstr` in `state.yielded`.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -42,28 +40,11 @@ pub enum Outcome {
     Yield = 3,
 }
 
-/// All v2 dispatcher handlers share this signature so the function pointer
-/// type matches identically — required for `return_call_indirect` in the
-/// TCO dispatcher.
+/// All v2 dispatcher handlers share this signature so the function pointer type matches identically — required for `return_call_indirect` in the TCO dispatcher.
 pub type Handler = fn(&mut VmState) -> Outcome;
 
-/// Branch target descriptor used as a temporary holder during the parser's
-/// BrTable resolution pass before being flattened into `BrTableReg`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Operand {
-    LabelIdx {
-        target_ip: usize,
-        arity: usize,
-        original_wasm_depth: usize,
-        is_loop: bool,
-        source_regs: Vec<Reg>,
-        target_result_regs: Vec<Reg>,
-        cond_reg: Option<Reg>,
-    },
-}
-
-/// Destination that is a register. Locals live in the register file, so dst
-/// folding into a local resolves to its register slot at parse time.
+/// Destination that is a register. Locals live in the register file,
+/// so dst folding into a local resolves to its register slot at parse time.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum RegOrLocal {
     Reg(u16),

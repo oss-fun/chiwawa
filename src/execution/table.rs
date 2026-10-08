@@ -5,7 +5,6 @@ use super::{
     module::*,
     value::{self, Val},
 };
-use crate::error::RuntimeError;
 use crate::structure::types::*;
 use std::cell::{Ref, RefCell};
 use std::rc::Rc;
@@ -62,40 +61,11 @@ impl TableAddr {
         }
     }
 
-    /// Gets function address at index for call_indirect.
-    /// Out-of-bounds panics; returns None for non-FuncAddr references (e.g. RefNull),
-    /// caller is expected to delegate the null-reference trap to the host via panic.
-    pub fn get_func_addr(&self, i: usize) -> Option<FuncAddr> {
-        let inst = self.0.borrow();
-        match &inst.elem[i] {
-            Val::Ref(value::Ref::FuncAddr(func_addr)) => Some(func_addr.clone()),
-            _ => None,
-        }
-    }
-
     pub fn borrow_func_addr(&self, i: usize) -> Option<Ref<'_, FuncAddr>> {
         Ref::filter_map(self.0.borrow(), |inst| match &inst.elem[i] {
             Val::Ref(value::Ref::FuncAddr(func_addr)) => Some(func_addr),
             _ => None,
         })
         .ok()
-    }
-
-    /// Replaces all elements (used during restore).
-    pub fn set_elements(&self, elems: Vec<Option<FuncAddr>>) -> Result<(), RuntimeError> {
-        let mut guard = self.0.borrow_mut();
-        guard.elem = elems
-            .into_iter()
-            .map(|opt_func| match opt_func {
-                Some(func_addr) => Val::Ref(value::Ref::FuncAddr(func_addr)),
-                None => Val::Ref(value::Ref::RefNull),
-            })
-            .collect();
-        Ok(())
-    }
-
-    /// Returns a borrow of the underlying table instance.
-    pub fn read_lock(&self) -> Ref<TableInst> {
-        self.0.borrow()
     }
 }

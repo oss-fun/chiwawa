@@ -1,49 +1,25 @@
 //! WebAssembly bytecode parsing and instruction preprocessing.
 //!
-//! This module transforms WebAssembly binary modules into an optimized intermediate
-//! representation suitable for efficient interpretation.
+//! This module transforms WebAssembly binary modules into an optimized intermediate representation suitable for efficient interpretation.
 //!
 //! ## Preprocessing Pipeline
 //!
-//! The parser implements a multi-phase preprocessing pipeline:
+//! Each function body goes through three phases:
 //!
-//! ```text
-//! +----------------+     +----------------+     +----------------+
-//! | Wasm Bytecode  | --> |   wasmparser   | --> |  Decode Phase  |
-//! | (binary .wasm) |     |   (parsing)    |     | (build maps)   |
-//! +----------------+     +----------------+     +----------------+
-//!                                                       |
-//!                                                       v
-//! +----------------+     +----------------+     +----------------+
-//! |  ProcessedInstr| <-- | Fold + Compact | <-- |  Fixup Phase   |
-//! | (exec ready)   |     | (strip, remap) |     | (resolve PCs)  |
-//! +----------------+     +----------------+     +----------------+
-//! ```
-//!
-//! ### Phase 1: Decode and Map Building
-//! Parse WebAssembly instructions using `wasmparser`, assign operands to typed
-//! registers, apply operand folding, and build a mapping from original
-//! instruction indices to processed instruction positions.
+//! ### Phase 1: Decode
+//! Parse WebAssembly instructions using `wasmparser`, assign operands to typed registers,
+//! apply operand folding, and record where each block ends.
 //!
 //! ### Phase 2: Branch Resolution
-//! Resolve branch targets (Br, BrIf, If, Else) by calculating absolute program
-//! counter values from the instruction map.
+//! Resolve every branch target (`br`, `br_if`, `br_table`, `if`, `else`) to an absolute program counter in one forward walk over the stream.
 //!
-//! ### Phase 3: BrTable Resolution
-//! Resolve BrTable targets which require special handling due to their variable
-//! number of branch destinations.
-//!
-//! ### Phase 4: Fixup Check
-//! Verify that every recorded fixup was resolved.
-//!
-//! ### Phase 5: Compaction
+//! ### Phase 3: Compaction
 //! Strip no-op instructions and remap every branch target to the new indices.
 //!
 //! ## Register-Based Execution
 //!
-//! Instructions are converted to use a register-based model where operands are
-//! pre-allocated registers rather than implicit stack positions. This enables
-//! more efficient execution by avoiding redundant stack operations.
+//! Instructions are converted to use a register-based model where operands are pre-allocated registers rather than implicit stack positions.
+//! This enables more efficient execution by avoiding redundant stack operations.
 
 use std::fs::File;
 use std::io::Read;
@@ -54,7 +30,7 @@ use wasmparser::{
 use crate::error::{ParserError, RuntimeError};
 use crate::execution::handlers::*;
 use crate::execution::ir::*;
-use crate::execution::regs::{Reg, RegAllocator};
+use crate::execution::regs::{Reg, RegAllocation, RegAllocator, RegAllocatorState};
 use crate::shared::Shared;
 use crate::structure::{instructions::*, module::*, types::*};
 use rustc_hash::FxHashMap;
@@ -63,8 +39,8 @@ use std::sync::LazyLock;
 #[cfg(feature = "call_graph")]
 use crate::instrument::call_graph::{CallGraph, CallGraphBuilder};
 
-/// Builds a function's `wide_consts`. Equal values share a slot, so an
-/// instruction only carries the slot number.
+/// Builds a function's `wide_consts`. Equal values share a slot,
+/// so an instruction only carries the slot number.
 #[derive(Default)]
 struct ConstPool {
     consts: Vec<u64>,
@@ -196,68 +172,14 @@ fn fold_dst_into_local(
     true
 }
 
-/// Control block information tracked during instruction decoding.
-///
-/// Each control structure (block, loop, if) pushes an entry onto the control
-/// stack during parsing. This tracks the block's type signature and the
-/// registers allocated for its parameters and results.
+/// An open block, loop or `if` while its body is decoded.
 #[derive(Debug, Clone)]
 struct ControlBlockInfo {
-    /// The block's type signature (empty, single type, or function type index).
     block_type: wasmparser::BlockType,
-    /// Whether this is a loop (affects branch target calculation).
+    /// A branch to a loop lands on its start, not after its end.
     is_loop: bool,
-    /// Registers allocated for the block's result values.
+    /// Where a branch to this block leaves the block's results.
     result_regs: Vec<Reg>,
-    /// Registers allocated for the block's parameter values.
-    param_regs: Vec<Reg>,
-}
-
-/// Cache key for block type arity calculations.
-///
-/// Used to memoize the number of parameters and results for block types,
-/// avoiding repeated lookups in the type section.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum BlockTypeKey {
-    /// Block with no parameters or results.
-    Empty,
-    /// Block with a single result type (no parameters).
-    SingleType(ValueType),
-    /// Block with a function type signature (may have multiple params/results).
-    FuncType(TypeIdx),
-}
-
-impl From<&wasmparser::BlockType> for BlockTypeKey {
-    fn from(block_type: &wasmparser::BlockType) -> Self {
-        match block_type {
-            wasmparser::BlockType::Empty => BlockTypeKey::Empty,
-            wasmparser::BlockType::Type(val_type) => {
-                BlockTypeKey::SingleType(match_value_type(*val_type))
-            }
-            wasmparser::BlockType::FuncType(type_idx) => BlockTypeKey::FuncType(TypeIdx(*type_idx)),
-        }
-    }
-}
-
-/// Cache for block type arity calculations.
-///
-/// Stores precomputed result counts for blocks and parameter counts for loops,
-/// reducing redundant type section lookups during instruction decoding.
-struct BlockArityCache {
-    /// Maps block types to their result arity (number of return values).
-    block_arity_cache: FxHashMap<BlockTypeKey, usize>,
-    /// Maps block types to their parameter arity (for loop continuation).
-    loop_parameter_arity_cache: FxHashMap<BlockTypeKey, usize>,
-}
-
-impl BlockArityCache {
-    /// Creates a new empty arity cache.
-    fn new() -> Self {
-        Self {
-            block_arity_cache: FxHashMap::default(),
-            loop_parameter_arity_cache: FxHashMap::default(),
-        }
-    }
 }
 
 /// WASI imports by name, one entry per signature.
@@ -391,68 +313,6 @@ fn types_to_vec(types: &[ValType], vec: &mut Vec<ValueType>) {
     }
 }
 
-/// Calculates the result arity (number of return values) for a block type.
-///
-/// Uses the cache to avoid repeated lookups. For blocks and if/else, this
-/// determines how many values are left on the stack when the block completes.
-fn calculate_block_arity(
-    block_type: &wasmparser::BlockType,
-    module: &Module,
-    cache: &mut BlockArityCache,
-) -> usize {
-    let key = BlockTypeKey::from(block_type);
-
-    if let Some(&arity) = cache.block_arity_cache.get(&key) {
-        return arity;
-    }
-
-    let arity = match block_type {
-        wasmparser::BlockType::Empty => 0,
-        wasmparser::BlockType::Type(_) => 1,
-        wasmparser::BlockType::FuncType(type_idx) => {
-            if let Some(func_type) = module.types.get(*type_idx as usize) {
-                func_type.results.len()
-            } else {
-                0 // Fallback to 0 if invalid type index
-            }
-        }
-    };
-
-    cache.block_arity_cache.insert(key, arity);
-    arity
-}
-
-/// Calculates the parameter arity for loop continuation.
-///
-/// When branching to a loop, the branch target is the loop header, so we need
-/// the parameter count (not result count) to know how many values to pass.
-fn calculate_loop_parameter_arity(
-    block_type: &wasmparser::BlockType,
-    module: &Module,
-    cache: &mut BlockArityCache,
-) -> usize {
-    let key = BlockTypeKey::from(block_type);
-
-    if let Some(&arity) = cache.loop_parameter_arity_cache.get(&key) {
-        return arity;
-    }
-
-    let arity = match block_type {
-        wasmparser::BlockType::Empty => 0,
-        wasmparser::BlockType::Type(_) => 0, // Single type means no parameters for loop
-        wasmparser::BlockType::FuncType(type_idx) => {
-            if let Some(func_type) = module.types.get(*type_idx as usize) {
-                func_type.params.len() // For loops, we want parameter count, not result count
-            } else {
-                0 // Fallback to 0 if invalid type index
-            }
-        }
-    };
-
-    cache.loop_parameter_arity_cache.insert(key, arity);
-    arity
-}
-
 /// Returns the result types for a block type.
 fn get_block_result_types(block_type: &wasmparser::BlockType, module: &Module) -> Vec<ValueType> {
     match block_type {
@@ -507,8 +367,8 @@ fn decode_type_section(
 
 /// Decodes the function section, creating stub entries for each function.
 ///
-/// The function section only contains type indices; the actual code bodies
-/// are decoded separately from the code section.
+/// The function section only contains type indices;
+/// the actual code bodies are decoded separately from the code section.
 fn decode_func_section(
     body: SectionLimited<'_, u32>,
     module: &mut Module,
@@ -538,8 +398,7 @@ fn decode_func_section(
 
 /// Decodes the import section, handling functions, tables, memories, and globals.
 ///
-/// WASI Preview 1 function imports from `wasi_snapshot_preview1` are identified
-/// and stored with their specific `WasiFuncType` for passthrough handling.
+/// WASI Preview 1 function imports from `wasi_snapshot_preview1` are identified and stored with their specific `WasiFuncType` for passthrough handling.
 fn decode_import_section(
     body: SectionLimited<'_, wasmparser::Import<'_>>,
     module: &mut Module,
@@ -625,8 +484,7 @@ fn decode_import_section(
 fn parse_wasi_import(module: &str, name: &str, func_type: &FuncType) -> Option<WasiFuncType> {
     let candidates: &[WasiFuncType] = match module {
         "wasi_snapshot_preview1" => WASI_IMPORTS.get(name)?,
-        // wasi-libc emitted `thread_spawn` before switching to the WIT-style
-        // `thread-spawn`; accept both.
+        // wasi-libc emitted `thread_spawn` before switching to the WIT-style `thread-spawn`; accept both.
         "wasi" if name == "thread-spawn" || name == "thread_spawn" => &[WasiFuncType::ThreadSpawn],
         _ => return None,
     };
@@ -860,124 +718,67 @@ fn decode_data_section(
     Ok(())
 }
 
-/// Decodes a single function's code section entry.
-///
-/// This is the core of instruction preprocessing:
-/// 1. Parses locals and instructions
-/// 2. Allocates registers for operands
-/// 3. Builds branch target maps
-/// 4. Resolves all branch destinations
+/// Decodes one function body: registers are allocated for the operands,
+/// branch targets resolved, and the handler table built.
 fn decode_code_section(
     body: FunctionBody<'_>,
     module: &mut Module,
     func_index: usize,
-    cache: &mut BlockArityCache,
     #[cfg(feature = "call_graph")] mut cg_builder: Option<&mut CallGraphBuilder>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut locals: Vec<(u32, ValueType)> = Vec::new();
     for pair in body.get_locals_reader()? {
         let (cnt, ty) = pair?;
-        let ty = match_value_type(ty);
-        locals.push((cnt, ty));
+        locals.push((cnt, match_value_type(ty)));
     }
+    let ops_iter = body.get_operators_reader()?.into_iter_with_offsets();
+    let func_type = get_func_type(module, func_index as u32);
 
-    let ops_reader = body.get_operators_reader()?;
-    let ops_iter = ops_reader.into_iter_with_offsets();
-
-    // Get the function's parameter and result types for register allocation
-    let relative_func_index_pre = func_index - module.num_imported_funcs;
-    let (param_types, result_types): (Vec<ValueType>, Vec<ValueType>) =
-        if let Some(func) = module.funcs.get(relative_func_index_pre) {
-            if let Some(func_type) = module.types.get(func.type_.0 as usize) {
-                (func_type.params.clone(), func_type.results.clone())
-            } else {
-                (Vec::new(), Vec::new())
-            }
-        } else {
-            (Vec::new(), Vec::new())
-        };
-
-    // Phase 1: Decode instructions and get necessary info for preprocessing
-    let (
-        mut processed_instrs,
-        mut fixups,
+    let DecodedBody {
+        mut instrs,
+        fixups,
         block_end_map,
         if_else_map,
-        block_type_map,
         reg_allocation,
-        block_result_regs_map,
         const_pool,
-    ) = decode_processed_instrs_and_fixups(
+    } = decode_processed_instrs_and_fixups(
         ops_iter,
         module,
         &locals,
-        &param_types,
-        &result_types,
+        &func_type.params,
+        &func_type.results,
         #[cfg(feature = "call_graph")]
         cg_builder.as_mut().map(|x| &mut **x),
         #[cfg(feature = "call_graph")]
         func_index,
     )?;
+    preprocess_instructions(&mut instrs, fixups, &block_end_map, &if_else_map)?;
+    let instrs = compact_instruction_stream(instrs);
 
-    let relative_func_index = func_index - module.num_imported_funcs;
-    if let Some(func) = module.funcs.get_mut(relative_func_index) {
-        func.locals = locals;
-    } else {
-        return Err(Box::new(RuntimeError::InvalidWasm(
+    // Parallel to the body, plus a halt sentinel so an out-of-range dispatch in TCO mode terminates safely.
+    let mut handlers: Vec<Handler> = instrs.iter().map(select_handler).collect();
+    handlers.push(halt);
+
+    let local_index = func_index - module.num_imported_funcs;
+    let func = module
+        .funcs
+        .get_mut(local_index)
+        .ok_or(RuntimeError::InvalidWasm(
             "Invalid function index during code decoding",
-        )) as Box<dyn std::error::Error>);
-    }
-    // Phase 2 & 3: Preprocess instructions for this function
-    preprocess_instructions(
-        &mut processed_instrs,
-        &mut fixups,
-        &block_end_map,
-        &if_else_map,
-        &block_type_map,
-        &block_result_regs_map,
-        module,
-        cache,
-    )
-    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-
-    // Phase 5: Strip no-op instructions (block/loop, nop, no-op inner end)
-    // and remap all branch targets to the compacted indices.
-    let processed_instrs = compact_instruction_stream(processed_instrs);
-
-    let body_rc = Shared::new(processed_instrs);
-
-    // v2 dispatcher handler array: parallel to body + halt sentinel at end
-    // for safe out-of-range dispatch in TCO mode.
-    let mut handlers_vec: Vec<crate::execution::ir::Handler> = body_rc
-        .iter()
-        .map(crate::execution::handlers::select_handler)
-        .collect();
-    handlers_vec.push(crate::execution::handlers::halt);
-    let handlers_rc = Shared::new(HandlerTable::new(handlers_vec));
-
-    // Store function body and metadata in module
-    if let Some(func) = module.funcs.get_mut(relative_func_index) {
-        func.body = body_rc;
-        // Store register mode metadata (None for stack mode)
-        func.reg_allocation = reg_allocation.clone();
-        func.handlers = handlers_rc;
-        func.wide_consts = const_pool.consts.into_boxed_slice();
-    } else {
-        return Err(Box::new(RuntimeError::InvalidWasm(
-            "Invalid function index when storing body",
-        )) as Box<dyn std::error::Error>);
-    }
-
+        ))?;
+    func.locals = locals;
+    func.body = Shared::new(instrs);
+    func.reg_allocation = Some(reg_allocation);
+    func.handlers = Shared::new(HandlerTable::new(handlers));
+    func.wide_consts = const_pool.consts.into_boxed_slice();
     Ok(())
 }
 
-/// Returns true for instructions with no runtime effect, removable once all
-/// branch targets are resolved to absolute IPs:
+/// Returns true for instructions with no runtime effect, removable once all branch targets are resolved to absolute IPs:
 /// - `BlockReg` (block/loop): labels are fully static, the handler is a no-op.
 /// - `NopReg`: explicit nops and unreachable-code placeholders.
-/// - Inner `EndReg` whose register copy does nothing (either side empty or
-///   source == target). The function-level end is always kept: it collects
-///   the return registers and is the target of function-level branches.
+/// - Inner `EndReg` whose register copy does nothing (either side empty or source == target).
+///   The function-level end is always kept: it collects the return registers and is the target of function-level branches.
 fn is_noop_instr(instr: &ProcessedInstr) -> bool {
     match instr {
         ProcessedInstr::BlockReg { .. } | ProcessedInstr::NopReg => true,
@@ -994,14 +795,12 @@ fn is_noop_instr(instr: &ProcessedInstr) -> bool {
     }
 }
 
-/// Phase 5: Removes no-op instructions from the stream and remaps all branch
-/// targets (`BrReg`, `BrIfReg`, `BrTableReg`, `IfReg`, `JumpReg`) to the
-/// compacted indices.
+/// Phase 3: Removes no-op instructions from the stream and remaps all branch targets
+/// (`BrReg`, `BrIfReg`, `BrTableReg`, `IfReg`, `JumpReg`) to the compacted indices.
 ///
-/// A jump to a removed instruction lands on the next kept instruction at or
-/// after it, which is semantically identical because removed instructions do
-/// nothing. `remap[i]` = number of kept instructions before old index `i`,
-/// which is exactly that target.
+/// A jump to a removed instruction lands on the next kept instruction at or after it,
+/// which is semantically identical because removed instructions do nothing.
+/// `remap[i]` = number of kept instructions before old index `i`, which is exactly that target.
 fn compact_instruction_stream(processed: Vec<ProcessedInstr>) -> Vec<ProcessedInstr> {
     let old_len = processed.len();
     let mut remap: Vec<usize> = Vec::with_capacity(old_len + 1);
@@ -1040,43 +839,52 @@ fn compact_instruction_stream(processed: Vec<ProcessedInstr>) -> Vec<ProcessedIn
     kept
 }
 
-/// Information needed to fix up a branch instruction's target address.
-///
-/// During initial instruction decoding, branch targets are unknown because
-/// the destination block's end position hasn't been seen yet. FixupInfo
-/// records what needs to be patched once all blocks are parsed.
+/// A branch whose target is still open when it is decoded,
+/// so the target's position is patched in once the whole body is known.
 #[derive(Debug, Clone)]
 struct FixupInfo {
-    /// Program counter of the instruction needing fixup.
+    /// Program counter of the instruction to patch.
     pc: usize,
-    /// Original WebAssembly branch depth (relative to control stack).
-    original_wasm_depth: usize,
-    /// True if this is an If instruction's false-branch jump.
-    is_if_false_jump: bool,
-    /// True if this is an Else instruction's end-of-then-branch jump.
-    is_else_jump: bool,
-    /// Source registers for multi-value branch results.
+    /// Relative depth of the target label.
+    depth: usize,
+    /// The values a function-level branch returns.
+    /// It copies them into the function end's registers, which are known only after the body.
     source_regs: Vec<Reg>,
 }
 
-/// Resolves branch targets after initial instruction decoding (Phase 2 & 3).
-///
-/// Phase 1 is performed by [`decode_processed_instrs_and_fixups`].
-///
-/// - **Phase 2**: Resolves Br, BrIf, If, Else jumps using the block-end map.
-/// - **Phase 3**: Resolves BrTable jumps which have multiple targets.
+/// Where a branch of `depth` lands: a loop's start,
+/// or the pc after a block's `end`. `None` past the outermost block, which is a return.
+fn branch_target(
+    control_stack: &[(usize, bool)],
+    depth: usize,
+    block_end_map: &FxHashMap<usize, usize>,
+) -> Result<Option<usize>, RuntimeError> {
+    let Some(&(start_pc, is_loop)) = control_stack
+        .len()
+        .checked_sub(1 + depth)
+        .map(|i| &control_stack[i])
+    else {
+        return Ok(None);
+    };
+    if is_loop {
+        return Ok(Some(start_pc));
+    }
+    block_end_map
+        .get(&start_pc)
+        .map(|end| Some(*end))
+        .ok_or(RuntimeError::InvalidWasm(
+            "Missing EndMarker for branch target",
+        ))
+}
+
+/// Phase 2: resolves every branch target. One walk rebuilds the control stack and patches each fixup at its own instruction;
+/// `br_table` carries its depths itself and is patched in the same walk.
 fn preprocess_instructions(
-    processed: &mut Vec<ProcessedInstr>,
-    fixups: &mut Vec<FixupInfo>,
+    processed: &mut [ProcessedInstr],
+    fixups: Vec<FixupInfo>,
     block_end_map: &FxHashMap<usize, usize>,
     if_else_map: &FxHashMap<usize, usize>,
-    block_type_map: &FxHashMap<usize, wasmparser::BlockType>,
-    block_result_regs_map: &FxHashMap<usize, (Vec<Reg>, bool)>,
-    module: &Module,
-    cache: &mut BlockArityCache,
 ) -> Result<(), RuntimeError> {
-    // --- Phase 2: Resolve Br, BrIf, If, Else jumps ---
-    // Fixups are in program order, so one walk resolves each at its instruction.
     let function_end_ip = processed.len() - 1;
     let function_end_regs: RegSlice = match processed.last() {
         Some(ProcessedInstr::EndReg { source_regs, .. }) => source_regs.clone(),
@@ -1086,9 +894,9 @@ fn preprocess_instructions(
             ))
         }
     };
-    // (pc, is_loop)
+    // (start pc, is_loop) of each open block.
     let mut control_stack: Vec<(usize, bool)> = Vec::new();
-    let mut fixup_index = 0;
+    let mut fixups = fixups.into_iter().peekable();
     for pc in 0..processed.len() {
         match processed[pc].handler_index() {
             HANDLER_IDX_BLOCK | HANDLER_IDX_IF => control_stack.push((pc, false)),
@@ -1099,23 +907,31 @@ fn preprocess_instructions(
             _ => {}
         }
 
-        // The instruction at `pc` is already on the control stack;
-        // `if` at depth 0 relies on that.
-        while fixup_index < fixups.len() && fixups[fixup_index].pc == pc {
-            let fixup = &mut fixups[fixup_index];
-            fixup_index += 1;
-            let depth = fixup.original_wasm_depth;
-            if depth == usize::MAX || matches!(processed[pc], ProcessedInstr::BrTableReg(_)) {
-                continue;
+        if let ProcessedInstr::BrTableReg(table) = &mut processed[pc] {
+            let default = std::iter::once(&mut table.default_target);
+            for (depth, target_ip, regs) in table.targets.iter_mut().chain(default) {
+                match branch_target(&control_stack, *depth as usize, block_end_map)? {
+                    Some(ip) => *target_ip = ip,
+                    None => {
+                        *target_ip = function_end_ip;
+                        *regs = function_end_regs.clone();
+                    }
+                }
             }
-            fixup.original_wasm_depth = usize::MAX;
+        }
 
-            if control_stack.len() <= depth {
-                // A branch past the outermost block is a return:
-                // target the final `EndReg`, copying the values into its source regs.
-                let source_regs: RegSlice =
-                    std::mem::take(&mut fixup.source_regs).into_boxed_slice();
-                match &mut processed[pc] {
+        // The instruction at `pc` is already on the control stack, which an `if` at depth 0 relies on.
+        while let Some(fixup) = fixups.next_if(|fixup| fixup.pc == pc) {
+            let target = branch_target(&control_stack, fixup.depth, block_end_map)?;
+            match (&mut processed[pc], target) {
+                // Jump on false lands after `else`, or after `end` without one.
+                (ProcessedInstr::IfReg { else_target_ip, .. }, Some(end_ip)) => {
+                    *else_target_ip = *if_else_map.get(&pc).unwrap_or(&end_ip);
+                }
+                (ProcessedInstr::JumpReg { target_ip }, Some(ip))
+                | (ProcessedInstr::BrReg { target_ip, .. }, Some(ip))
+                | (ProcessedInstr::BrIfReg { target_ip, .. }, Some(ip)) => *target_ip = ip,
+                (
                     ProcessedInstr::BrReg {
                         target_ip,
                         result_copies,
@@ -1124,359 +940,35 @@ fn preprocess_instructions(
                         target_ip,
                         result_copies,
                         ..
-                    } => {
-                        *target_ip = function_end_ip;
-                        *result_copies = crate::execution::ir::BranchCopies::new(
-                            source_regs,
-                            function_end_regs.clone(),
-                        );
-                    }
-                    _ => {}
+                    },
+                    None,
+                ) => {
+                    *target_ip = function_end_ip;
+                    *result_copies = BranchCopies::new(
+                        fixup.source_regs.into_boxed_slice(),
+                        function_end_regs.clone(),
+                    );
                 }
-                continue;
-            }
-
-            let (target_start_pc, is_loop) = control_stack[control_stack.len() - 1 - depth];
-            // Note: block_end_map already stores End + 1 position (the instruction after EndReg)
-            let target_ip = if is_loop {
-                target_start_pc
-            } else {
-                *block_end_map.get(&target_start_pc).ok_or_else(|| {
-                    RuntimeError::InvalidWasm("Missing EndMarker for branch target")
-                })?
-            };
-
-            match &mut processed[pc] {
-                // If instruction's jump-on-false: target is ElseMarker+1 or EndMarker+1
-                ProcessedInstr::IfReg { else_target_ip, .. } if fixup.is_if_false_jump => {
-                    *else_target_ip = *if_else_map.get(&target_start_pc).unwrap_or(&target_ip);
-                }
-                ProcessedInstr::JumpReg { target_ip: tip } if fixup.is_else_jump => {
-                    *tip = target_ip;
-                }
-                ProcessedInstr::BrReg { target_ip: tip, .. }
-                | ProcessedInstr::BrIfReg { target_ip: tip, .. } => {
-                    *tip = target_ip;
-                }
-                _ => {}
-            }
-        }
-    }
-
-    // --- Phase 3: Resolve BrTable targets ---
-    // Reuse control stack simulation logic, including runtime index tracking
-    let mut current_control_stack_pass3: Vec<(usize, bool, wasmparser::BlockType)> = Vec::new();
-
-    for pc in 0..processed.len() {
-        if let Some(instr) = processed.get(pc) {
-            match instr.handler_index() {
-                HANDLER_IDX_BLOCK | HANDLER_IDX_IF => {
-                    let block_type = block_type_map
-                        .get(&pc)
-                        .cloned()
-                        .unwrap_or(wasmparser::BlockType::Empty);
-                    current_control_stack_pass3.push((pc, false, block_type));
-                }
-                HANDLER_IDX_LOOP => {
-                    let block_type = block_type_map
-                        .get(&pc)
-                        .cloned()
-                        .unwrap_or(wasmparser::BlockType::Empty);
-                    current_control_stack_pass3.push((pc, true, block_type));
-                }
-                HANDLER_IDX_END => {
-                    if !current_control_stack_pass3.is_empty() {
-                        current_control_stack_pass3.pop();
-                    }
-                }
-                _ => {}
-            }
-
-            // Check if it's a BrTable needing resolution *after* simulating stack for current pc
-            let needs_br_table_resolution = matches!(instr, ProcessedInstr::BrTableReg { .. });
-
-            if needs_br_table_resolution {
-                // Handle BrTableReg directly without using fixups
-                if matches!(instr, ProcessedInstr::BrTableReg { .. }) {
-                    // Clone targets to get relative depths and existing result_regs
-                    let (targets_clone, default_info) =
-                        if let ProcessedInstr::BrTableReg(table) = instr {
-                            (table.targets.clone(), table.default_target.clone())
-                        } else {
-                            continue;
-                        };
-                    let default_depth = default_info.0 as usize;
-                    let default_result_regs = default_info.2;
-
-                    // Function-level targets branch to the function-level
-                    // EndReg (always the last instruction), copying their
-                    // values into its source regs.
-                    let function_end_ip = processed.len() - 1;
-                    let function_end_regs: RegSlice = match processed.last() {
-                        Some(ProcessedInstr::EndReg { source_regs, .. }) => source_regs.clone(),
-                        _ => {
-                            return Err(RuntimeError::InvalidWasm(
-                                "Internal Error: function body does not terminate with EndReg",
-                            ))
-                        }
-                    };
-
-                    // Compute target_ip for each target (keeping existing result_regs)
-                    let mut resolved_reg_targets: Vec<(u32, usize, RegSlice)> = Vec::new();
-                    for (rel_depth, _, result_regs) in targets_clone.iter() {
-                        let depth = *rel_depth as usize;
-                        if current_control_stack_pass3.len() <= depth {
-                            // Function-level target (acts as return)
-                            resolved_reg_targets.push((
-                                *rel_depth,
-                                function_end_ip,
-                                function_end_regs.clone(),
-                            ));
-                            continue;
-                        }
-                        let target_stack_level = current_control_stack_pass3.len() - 1 - depth;
-                        let (target_start_pc, is_loop, _) =
-                            current_control_stack_pass3[target_stack_level];
-                        // Note: block_end_map already stores End + 1 position
-                        let target_ip = if is_loop {
-                            target_start_pc
-                        } else {
-                            *block_end_map.get(&target_start_pc).unwrap_or(&0)
-                        };
-                        resolved_reg_targets.push((*rel_depth, target_ip, result_regs.clone()));
-                    }
-
-                    // Compute target_ip and result regs for default target
-                    // Note: block_end_map already stores End + 1 position
-                    let (default_target_ip, default_result_regs) =
-                        if current_control_stack_pass3.len() <= default_depth {
-                            // Function-level default target (acts as return)
-                            (function_end_ip, function_end_regs)
-                        } else {
-                            let target_stack_level =
-                                current_control_stack_pass3.len() - 1 - default_depth;
-                            let (target_start_pc, is_loop, _) =
-                                current_control_stack_pass3[target_stack_level];
-                            let ip = if is_loop {
-                                target_start_pc
-                            } else {
-                                *block_end_map.get(&target_start_pc).unwrap_or(&0)
-                            };
-                            (ip, default_result_regs)
-                        };
-
-                    // Update BrTableReg
-                    if let Some(instr_to_patch) = processed.get_mut(pc) {
-                        if let ProcessedInstr::BrTableReg(table) = instr_to_patch {
-                            let (reg_targets, reg_default) =
-                                (&mut table.targets, &mut table.default_target);
-                            *reg_targets = resolved_reg_targets;
-                            *reg_default =
-                                (default_depth as u32, default_target_ip, default_result_regs);
-                        }
-                    }
-                    // Mark the fixup as processed
-                    for fixup in fixups.iter_mut() {
-                        if fixup.pc == pc && fixup.original_wasm_depth != usize::MAX {
-                            fixup.original_wasm_depth = usize::MAX;
-                        }
-                    }
-                    continue;
-                }
-
-                // Find fixup indices associated *only* with this BrTable pc that haven't been processed yet
-                let mut fixup_indices_for_this_br_table = fixups
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, fixup)| fixup.pc == pc && fixup.original_wasm_depth != usize::MAX)
-                    .map(|(idx, _)| idx)
-                    .collect::<Vec<_>>();
-
-                if fixup_indices_for_this_br_table.is_empty() {
-                    continue;
-                }
-
-                // --- Default Target Resolution ---
-                let default_fixup_idx = fixup_indices_for_this_br_table.pop().unwrap();
-                let default_target_operand = {
-                    let fixup_depth = fixups[default_fixup_idx].original_wasm_depth;
-                    if current_control_stack_pass3.len() <= fixup_depth {
-                        return Err(RuntimeError::InvalidWasm(
-                            "Invalid relative depth for BrTable default target",
-                        ));
-                    }
-                    let target_stack_level = current_control_stack_pass3.len() - 1 - fixup_depth;
-
-                    // Defensive check for calculated level
-                    if target_stack_level >= current_control_stack_pass3.len() {
-                        return Err(RuntimeError::InvalidWasm("Internal Error: Invalid stack level calculated for BrTable default target"));
-                    }
-
-                    let (target_start_pc, is_loop, target_block_type) =
-                        current_control_stack_pass3[target_stack_level];
-
-                    // Note: block_end_map already stores End + 1 position
-                    let target_ip = if is_loop {
-                        target_start_pc
-                    } else {
-                        *block_end_map.get(&target_start_pc).ok_or_else(|| {
-                            RuntimeError::InvalidWasm(
-                                "Missing EndMarker for BrTable default target",
-                            )
-                        })?
-                    };
-                    let target_arity = if is_loop {
-                        // For loops: Branch provides parameters (input types)
-                        calculate_loop_parameter_arity(&target_block_type, module, cache)
-                    } else {
-                        // For blocks: Branch provides results (output types)
-                        calculate_block_arity(&target_block_type, module, cache)
-                    };
-
-                    // Get source_regs from fixup (computed at BrTable creation time)
-                    let source_regs = fixups[default_fixup_idx].source_regs.clone();
-                    // Get target_result_regs from block_result_regs_map
-                    let target_result_regs = block_result_regs_map
-                        .get(&target_start_pc)
-                        .map(|(regs, _)| regs.clone())
-                        .unwrap_or_default();
-
-                    fixups[default_fixup_idx].original_wasm_depth = usize::MAX;
-
-                    Operand::LabelIdx {
-                        target_ip,
-                        arity: target_arity,
-                        original_wasm_depth: fixup_depth,
-                        is_loop: is_loop, // Use default target's loop/block information
-                        source_regs,
-                        target_result_regs,
-                        cond_reg: None,
-                    }
-                };
-
-                // --- Remaining Targets Resolution ---
-                let mut resolved_targets: Vec<Operand> =
-                    Vec::with_capacity(fixup_indices_for_this_br_table.len());
-                for fixup_idx in fixup_indices_for_this_br_table {
-                    let target_operand = {
-                        let fixup_depth = fixups[fixup_idx].original_wasm_depth;
-                        if current_control_stack_pass3.len() <= fixup_depth {
-                            return Err(RuntimeError::InvalidWasm(
-                                "Invalid relative depth for BrTable target",
-                            ));
-                        }
-                        let target_stack_level =
-                            current_control_stack_pass3.len() - 1 - fixup_depth;
-
-                        if target_stack_level >= current_control_stack_pass3.len() {
-                            return Err(RuntimeError::InvalidWasm(
-                                "Internal Error: Invalid stack level calculated for BrTable target",
-                            ));
-                        }
-
-                        let (target_start_pc, is_loop, target_block_type) =
-                            current_control_stack_pass3[target_stack_level];
-                        // Note: block_end_map already stores End + 1 position
-                        let target_ip = if is_loop {
-                            target_start_pc
-                        } else {
-                            *block_end_map.get(&target_start_pc).ok_or_else(|| {
-                                RuntimeError::InvalidWasm("Missing EndMarker for BrTable target")
-                            })?
-                        };
-                        let target_arity = if is_loop {
-                            calculate_loop_parameter_arity(&target_block_type, module, cache)
-                        } else {
-                            calculate_block_arity(&target_block_type, module, cache)
-                        };
-
-                        // Get source_regs from fixup (computed at BrTable creation time)
-                        let source_regs = fixups[fixup_idx].source_regs.clone();
-                        // Get target_result_regs from block_result_regs_map
-                        let target_result_regs = block_result_regs_map
-                            .get(&target_start_pc)
-                            .map(|(regs, _)| regs.clone())
-                            .unwrap_or_default();
-
-                        fixups[fixup_idx].original_wasm_depth = usize::MAX;
-
-                        Operand::LabelIdx {
-                            target_ip,
-                            arity: target_arity,
-                            original_wasm_depth: fixup_depth,
-                            is_loop: is_loop,
-                            source_regs,
-                            target_result_regs,
-                            cond_reg: None,
-                        }
-                    };
-                    resolved_targets.push(target_operand);
-                }
-
-                // --- Patch BrTable Instruction ---
-                if let Some(instr_to_patch) = processed.get_mut(pc) {
-                    if let ProcessedInstr::BrTableReg(table) = instr_to_patch {
-                        let (reg_targets, reg_default) =
-                            (&mut table.targets, &mut table.default_target);
-                        // Extract target_ip and target_result_regs from resolved_targets (Operand::LabelIdx)
-                        for (i, operand) in resolved_targets.iter().enumerate() {
-                            let Operand::LabelIdx {
-                                target_ip,
-                                original_wasm_depth,
-                                target_result_regs,
-                                ..
-                            } = operand;
-                            if i < reg_targets.len() {
-                                reg_targets[i] = (
-                                    *original_wasm_depth as u32,
-                                    *target_ip,
-                                    target_result_regs.clone().into_boxed_slice(),
-                                );
-                            }
-                        }
-                        // Set default target
-                        let Operand::LabelIdx {
-                            target_ip,
-                            original_wasm_depth,
-                            target_result_regs,
-                            ..
-                        } = &default_target_operand;
-                        *reg_default = (
-                            *original_wasm_depth as u32,
-                            *target_ip,
-                            target_result_regs.clone().into_boxed_slice(),
-                        );
-                    }
-                } else {
+                _ => {
                     return Err(RuntimeError::InvalidWasm(
-                        "Internal Error: Could not find BrTable instruction to patch",
-                    ));
+                        "Internal Error: fixup on an instruction without a branch target",
+                    ))
                 }
             }
-        } else {
-            return Err(RuntimeError::InvalidWasm(
-                "Internal Error: Invalid program counter during preprocessing",
-            ));
         }
     }
-
-    // --- Phase 4: Sanity check - Ensure all fixups were processed ---
-    for (_idx, fixup) in fixups.iter().enumerate() {
-        if fixup.original_wasm_depth != usize::MAX {
-            return Err(RuntimeError::InvalidWasm(
-                "Internal Error: Unprocessed fixup after preprocessing",
-            ));
-        }
+    if fixups.next().is_some() {
+        return Err(RuntimeError::InvalidWasm(
+            "Internal Error: Unprocessed fixup after preprocessing",
+        ));
     }
-
     Ok(())
 }
 
 /// Returns the type of a local variable by index.
 ///
 /// WebAssembly local indices include function parameters first (indices 0..n-1),
-/// followed by declared locals. The `locals` parameter uses compressed format
-/// where each entry is (count, type).
+/// followed by declared locals. The `locals` parameter uses compressed format where each entry is (count, type).
 fn get_local_type(
     params: &[ValueType],
     locals: &[(u32, ValueType)],
@@ -1505,8 +997,7 @@ fn get_local_type(
 
 /// Returns the import declaring the function at `func_index`.
 ///
-/// Function indices count only function imports, so a module that also imports
-/// a memory or table cannot index `module.imports` directly.
+/// Function indices count only function imports, so a module that also imports a memory or table cannot index `module.imports` directly.
 fn get_imported_func_desc(module: &Module, func_index: u32) -> Option<&ImportDesc> {
     module
         .imports
@@ -1563,25 +1054,192 @@ fn get_table_element_type(module: &Module, table_index: u32) -> ValueType {
     ValueType::RefType(RefType::FuncRef)
 }
 
-/// Decodes WebAssembly instructions into register-based processed instructions.
+/// What Phase 1 produces for one function body.
+struct DecodedBody {
+    instrs: Vec<ProcessedInstr>,
+    fixups: Vec<FixupInfo>,
+    /// Start pc of each block to the pc after its `end`.
+    block_end_map: FxHashMap<usize, usize>,
+    /// Start pc of each `if` to the pc after its `else`, or after its `end` when it has none.
+    if_else_map: FxHashMap<usize, usize>,
+    reg_allocation: RegAllocation,
+    const_pool: ConstPool,
+}
+
+const SELECT_HANDLERS: [usize; 4] = [
+    HANDLER_IDX_SELECT_I32,
+    HANDLER_IDX_SELECT_I64,
+    HANDLER_IDX_SELECT_F32,
+    HANDLER_IDX_SELECT_F64,
+];
+const GLOBAL_GET_HANDLERS: [usize; 4] = [
+    HANDLER_IDX_GLOBAL_GET_I32,
+    HANDLER_IDX_GLOBAL_GET_I64,
+    HANDLER_IDX_GLOBAL_GET_F32,
+    HANDLER_IDX_GLOBAL_GET_F64,
+];
+const GLOBAL_SET_HANDLERS: [usize; 4] = [
+    HANDLER_IDX_GLOBAL_SET_I32,
+    HANDLER_IDX_GLOBAL_SET_I64,
+    HANDLER_IDX_GLOBAL_SET_F32,
+    HANDLER_IDX_GLOBAL_SET_F64,
+];
+
+/// The handler for the numeric type `ty`, from `[i32, i64, f32, f64]`.
+fn numeric_handler(ty: ValueType, handlers: [usize; 4]) -> usize {
+    match ty {
+        ValueType::I32 => handlers[0],
+        ValueType::I64 => handlers[1],
+        ValueType::F32 => handlers[2],
+        ValueType::F64 => handlers[3],
+        _ => panic!("Unsupported numeric type: {:?}", ty),
+    }
+}
+
+/// A copy between registers of `ty`: `local.get`, `local.set` and `local.tee` all reduce to it.
+/// References have an instruction of their own.
+fn local_copy(ty: ValueType, handler_index: usize, dst: u16, src: u16) -> ProcessedInstr {
+    match ty {
+        ValueType::I32 => ProcessedInstr::I32Reg {
+            handler_index,
+            dst: I32RegOperand::Reg(dst),
+            src1: I32RegOperand::Reg(src),
+            src2: None,
+        },
+        ValueType::I64 => ProcessedInstr::I64Reg {
+            handler_index,
+            dst: I64RegOperand::Reg(dst),
+            src1: I64RegOperand::Reg(src),
+            src2: None,
+        },
+        ValueType::F32 => ProcessedInstr::F32Reg {
+            handler_index,
+            dst: F32RegOperand::Reg(dst),
+            src1: F32RegOperand::Reg(src),
+            src2: None,
+        },
+        ValueType::F64 => ProcessedInstr::F64Reg {
+            handler_index,
+            dst: F64RegOperand::Reg(dst),
+            src1: F64RegOperand::Reg(src),
+            src2: None,
+        },
+        ValueType::RefType(_) if handler_index == HANDLER_IDX_LOCAL_GET => {
+            ProcessedInstr::RefLocalReg {
+                handler_index: HANDLER_IDX_REF_LOCAL_GET,
+                dst,
+                src: 0,
+                local_idx: src,
+            }
+        }
+        ValueType::RefType(_) => ProcessedInstr::RefLocalReg {
+            handler_index: HANDLER_IDX_REF_LOCAL_SET,
+            dst: 0,
+            src,
+            local_idx: dst,
+        },
+        ValueType::VecType(_) => panic!("Unsupported type for local access: {:?}", ty),
+    }
+}
+
+/// The type of the function at `func_index`, imported or defined.
+fn get_func_type(module: &Module, func_index: u32) -> FuncType {
+    let type_idx = if (func_index as usize) < module.num_imported_funcs {
+        match get_imported_func_desc(module, func_index) {
+            Some(ImportDesc::Func(type_idx)) => Some(*type_idx),
+            _ => None,
+        }
+    } else {
+        module
+            .funcs
+            .get(func_index as usize - module.num_imported_funcs)
+            .map(|func| func.type_)
+    };
+    type_idx
+        .and_then(|idx| module.types.get(idx.0 as usize))
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Pops the values of `types`, returning their registers.
+fn pop_values(allocator: &mut RegAllocator, types: &[ValueType]) -> Vec<Reg> {
+    let regs = allocator.peek_regs_for_types(types);
+    for ty in types.iter().rev() {
+        allocator.pop(ty);
+    }
+    regs
+}
+
+/// Pushes a value of each of `types`, returning their registers.
+fn push_values(allocator: &mut RegAllocator, types: &[ValueType]) -> RegSlice {
+    types.iter().map(|ty| allocator.push(*ty)).collect()
+}
+
+/// Pops `N` i32 values, bottom first.
+fn pop_i32s<const N: usize>(allocator: &mut RegAllocator) -> [Reg; N] {
+    let mut regs = [Reg::I32(0); N];
+    for reg in regs.iter_mut().rev() {
+        *reg = allocator.pop(&ValueType::I32);
+    }
+    regs
+}
+
+/// Opens a block: saves the allocator state under the block's params and reserves the block's result registers at that depth.
+fn enter_block(
+    allocator: &mut RegAllocator,
+    allocator_state_stack: &mut Vec<RegAllocatorState>,
+    control_info_stack: &mut Vec<ControlBlockInfo>,
+    block_type: wasmparser::BlockType,
+    module: &Module,
+    is_loop: bool,
+) {
+    let param_types = get_block_param_types(&block_type, module);
+    for ty in param_types.iter().rev() {
+        allocator.pop(ty);
+    }
+    let saved_state = allocator.save_state();
+    let mut state = saved_state.clone();
+    let result_regs = get_block_result_types(&block_type, module)
+        .iter()
+        .map(|ty| state.next_reg_for_type(ty))
+        .collect();
+    allocator_state_stack.push(saved_state);
+    push_values(allocator, &param_types);
+    control_info_stack.push(ControlBlockInfo {
+        block_type,
+        is_loop,
+        result_regs,
+    });
+}
+
+/// `select`: `cond` is already popped, so that untyped `select` can look at the stack to learn the value type first.
+fn select_instr(
+    allocator: &mut RegAllocator,
+    instrs: &mut [ProcessedInstr],
+    at: &mut usize,
+    cond: Reg,
+    val_type: ValueType,
+    handler_index: usize,
+) -> ProcessedInstr {
+    let val2 = allocator.pop(&val_type);
+    let val1 = allocator.pop(&val_type);
+    let mut operands = [val1, val2, cond];
+    fold_local_get_args(instrs, at, &mut operands);
+    let [val1, val2, cond] = operands;
+    let dst = allocator.push(val_type);
+    ProcessedInstr::SelectReg {
+        handler_index,
+        dst,
+        val1,
+        val2,
+        cond,
+    }
+}
+
+/// Phase 1: decodes a function body into register-based instructions.
 ///
-/// This is the first phase of instruction preprocessing (Phase 1). It:
-/// - Converts stack-based WebAssembly instructions to register-based format
-/// - Allocates registers for operands and results
-/// - Builds maps for block boundaries (block_end_map, if_else_map)
-/// - Records fixup information for branch instructions
-///
-/// # Returns
-///
-/// A tuple containing:
-/// - Processed instructions (with placeholder branch targets)
-/// - Fixup information for branch resolution
-/// - Block-end position map
-/// - If-else position map
-/// - Block type map
-/// - Register allocation metadata
-/// - Function result register
-/// - Block result registers map (for BrTable resolution)
+/// The operand stack is simulated to assign typed registers, `local.get` and constants are folded into their consumers,
+/// and branches get placeholder targets plus the fixups Phase 2 resolves.
 fn decode_processed_instrs_and_fixups<'a>(
     ops_iter: wasmparser::OperatorsIteratorWithOffsets<'a>,
     module: &Module,
@@ -1590,5801 +1248,1255 @@ fn decode_processed_instrs_and_fixups<'a>(
     result_types: &[ValueType],
     #[cfg(feature = "call_graph")] mut cg_builder: Option<&mut CallGraphBuilder>,
     #[cfg(feature = "call_graph")] func_index: usize,
-) -> Result<
-    (
-        Vec<ProcessedInstr>,
-        Vec<FixupInfo>,
-        FxHashMap<usize, usize>,
-        FxHashMap<usize, usize>,
-        FxHashMap<usize, wasmparser::BlockType>,
-        Option<crate::execution::regs::RegAllocation>,
-        FxHashMap<usize, (Vec<Reg>, bool)>,
-        ConstPool,
-    ),
-    Box<dyn std::error::Error>,
-> {
+) -> Result<DecodedBody, Box<dyn std::error::Error>> {
     let mut ops = ops_iter.peekable();
     let mut const_pool = ConstPool::default();
-    let mut initial_processed_instrs = Vec::new();
-    let mut initial_fixups = Vec::new();
-    let mut current_processed_pc = 0;
-    // Control block stack with result registers
+    let mut instrs: Vec<ProcessedInstr> = Vec::new();
+    let mut fixups: Vec<FixupInfo> = Vec::new();
     let mut control_info_stack: Vec<ControlBlockInfo> = Vec::new();
-
     let mut block_end_map: FxHashMap<usize, usize> = FxHashMap::default();
     let mut if_else_map: FxHashMap<usize, usize> = FxHashMap::default();
-    let mut block_type_map: FxHashMap<usize, wasmparser::BlockType> = FxHashMap::default();
-    let mut control_stack_for_map_building: Vec<(usize, bool, Option<usize>)> = Vec::new();
-    // Map from block_start_pc to (result_regs, is_loop) for BrTable resolution in Pass 3
-    let mut block_result_regs_map: FxHashMap<usize, (Vec<Reg>, bool)> = FxHashMap::default();
+    // (start pc, is_if, pc after `else`) of each open block.
+    let mut open_blocks: Vec<(usize, bool, Option<usize>)> = Vec::new();
 
-    // Initialize register allocator (always used since Legacy mode is removed).
-    // The wasm local index space is params first, then declared locals, so we
-    // reserve register slots for both. `local_regs[idx]` maps a wasm local
-    // index to its type-specialized register slot.
-    use crate::execution::regs::RegAllocator;
-    let combined_local_types: Vec<(u32, ValueType)> = param_types
+    // The wasm local index space is params first, then declared locals;
+    // `local_regs[i]` is the register slot of local `i`.
+    let local_types: Vec<(u32, ValueType)> = param_types
         .iter()
         .map(|ty| (1u32, *ty))
         .chain(locals.iter().copied())
         .collect();
-    let reg_allocator_inner = RegAllocator::new(&combined_local_types);
-    let local_regs: Vec<Reg> = reg_allocator_inner.local_regs().to_vec();
-    let mut reg_allocator = Some(reg_allocator_inner);
+    let mut allocator = RegAllocator::new(&local_types);
+    let local_regs: Vec<Reg> = allocator.local_regs().to_vec();
+    let mut allocator_state_stack: Vec<RegAllocatorState> = Vec::new();
 
-    // Track allocator state at block entry for proper restoration on block exit
-    let mut allocator_state_stack: Vec<crate::execution::regs::RegAllocatorState> = Vec::new();
-
-    // Track unreachable code depth (after br, return, unreachable, br_table)
+    // Block nesting inside code that follows br, br_table, return or unreachable.
     let mut unreachable_depth: usize = 0;
-
     // Set by `drop`; a `local.set` then leaves the producer's dst alone.
     let mut dropped_since_emit = false;
+    // The operand folders walk back from the instruction emitted last.
+    let mut look_back: usize;
 
-    loop {
-        if ops.peek().is_none() {
-            break;
-        }
-
-        let (op, _offset) = match ops.next() {
-            Some(Ok(op_offset)) => op_offset,
-            Some(Err(e)) => return Err(Box::new(e)),
-            None => break,
+    // `dst = op(src1, src2)` on `$ty` values, leaving a `$result`.
+    // The sources are folded operands: a `local.get` or constant that produced them is consumed into the instruction.
+    macro_rules! binop {
+        ($variant:ident, $operand:ident, $take:ident, $ty:ident, $result:ident, $handler:expr) => {{
+            let src2_reg = allocator.pop(&ValueType::$ty);
+            let src1_reg = allocator.pop(&ValueType::$ty);
+            let src2 = $take(&mut instrs, &mut look_back, src2_reg.index());
+            let src1 = $take(&mut instrs, &mut look_back, src1_reg.index());
+            let dst = allocator.push(ValueType::$result);
+            ProcessedInstr::$variant {
+                handler_index: $handler,
+                dst: $operand::Reg(dst.index()),
+                src1,
+                src2: Some(src2),
+            }
+        }};
+    }
+    macro_rules! unop {
+        ($variant:ident, $operand:ident, $take:ident, $ty:ident, $result:ident, $handler:expr) => {{
+            let src1_reg = allocator.pop(&ValueType::$ty);
+            let src1 = $take(&mut instrs, &mut look_back, src1_reg.index());
+            let dst = allocator.push(ValueType::$result);
+            ProcessedInstr::$variant {
+                handler_index: $handler,
+                dst: $operand::Reg(dst.index()),
+                src1,
+                src2: None,
+            }
+        }};
+    }
+    macro_rules! i32_binop {
+        ($h:expr) => {
+            binop!(I32Reg, I32RegOperand, take_i32_operand, I32, I32, $h)
         };
+    }
+    macro_rules! i32_unop {
+        ($h:expr) => {
+            unop!(I32Reg, I32RegOperand, take_i32_operand, I32, I32, $h)
+        };
+    }
+    macro_rules! i64_binop {
+        ($h:expr) => {
+            binop!(I64Reg, I64RegOperand, take_i64_operand, I64, I64, $h)
+        };
+    }
+    macro_rules! i64_cmp {
+        ($h:expr) => {
+            binop!(I64Reg, I64RegOperand, take_i64_operand, I64, I32, $h)
+        };
+    }
+    macro_rules! i64_unop {
+        ($h:expr) => {
+            unop!(I64Reg, I64RegOperand, take_i64_operand, I64, I64, $h)
+        };
+    }
+    macro_rules! f32_binop {
+        ($h:expr) => {
+            binop!(F32Reg, F32RegOperand, take_f32_operand, F32, F32, $h)
+        };
+    }
+    macro_rules! f32_cmp {
+        ($h:expr) => {
+            binop!(F32Reg, F32RegOperand, take_f32_operand, F32, I32, $h)
+        };
+    }
+    macro_rules! f32_unop {
+        ($h:expr) => {
+            unop!(F32Reg, F32RegOperand, take_f32_operand, F32, F32, $h)
+        };
+    }
+    macro_rules! f64_binop {
+        ($h:expr) => {
+            binop!(F64Reg, F64RegOperand, take_f64_operand, F64, F64, $h)
+        };
+    }
+    macro_rules! f64_cmp {
+        ($h:expr) => {
+            binop!(F64Reg, F64RegOperand, take_f64_operand, F64, I32, $h)
+        };
+    }
+    macro_rules! f64_unop {
+        ($h:expr) => {
+            unop!(F64Reg, F64RegOperand, take_f64_operand, F64, F64, $h)
+        };
+    }
+    // `dst = convert(src)` from `$from` to `$to`.
+    macro_rules! conv {
+        ($from:ident, $to:ident, $handler:expr) => {{
+            let src = allocator.pop(&ValueType::$from);
+            let dst = allocator.push(ValueType::$to);
+            ProcessedInstr::ConversionReg {
+                handler_index: $handler,
+                dst: RegOrLocal::Reg(dst.index()),
+                src,
+            }
+        }};
+    }
+    // The address operand of a memory access.
+    macro_rules! pop_addr {
+        () => {{
+            let addr = allocator.pop(&ValueType::I32);
+            take_i32_operand(&mut instrs, &mut look_back, addr.index())
+        }};
+    }
+    macro_rules! load {
+        ($to:ident, $handler:expr, $memarg:expr) => {{
+            let addr = pop_addr!();
+            let dst = allocator.push(ValueType::$to);
+            ProcessedInstr::MemoryLoadReg {
+                handler_index: $handler,
+                dst: RegOrLocal::Reg(dst.index()),
+                addr,
+                offset: $memarg.offset,
+            }
+        }};
+    }
+    macro_rules! store {
+        ($ty:ident, $handler:expr, $memarg:expr) => {{
+            let value = allocator.pop(&ValueType::$ty);
+            let value = fold_local_get_arg(&mut instrs, &mut look_back, value);
+            let addr = pop_addr!();
+            ProcessedInstr::MemoryStoreReg {
+                handler_index: $handler,
+                addr,
+                value,
+                offset: $memarg.offset,
+            }
+        }};
+    }
+    macro_rules! rmw {
+        ($ty:ident, $handler:expr, $memarg:expr) => {{
+            let value = allocator.pop(&ValueType::$ty);
+            let addr = pop_addr!();
+            let dst = allocator.push(ValueType::$ty);
+            ProcessedInstr::AtomicRmwReg {
+                handler_index: $handler,
+                dst,
+                addr,
+                value,
+                offset: $memarg.offset,
+            }
+        }};
+    }
+    macro_rules! cmpxchg {
+        ($ty:ident, $handler:expr, $memarg:expr) => {{
+            let replacement = allocator.pop(&ValueType::$ty);
+            let expected = allocator.pop(&ValueType::$ty);
+            let addr = allocator.pop(&ValueType::I32);
+            let dst = allocator.push(ValueType::$ty);
+            ProcessedInstr::AtomicCmpxchgReg {
+                handler_index: $handler,
+                dst,
+                args: [addr, expected, replacement],
+                offset: $memarg.offset,
+            }
+        }};
+    }
+    macro_rules! wait {
+        ($ty:ident, $handler:expr, $memarg:expr) => {{
+            let timeout = allocator.pop(&ValueType::I64);
+            let expected = allocator.pop(&ValueType::$ty);
+            let addr = allocator.pop(&ValueType::I32);
+            let dst = allocator.push(ValueType::I32);
+            ProcessedInstr::AtomicWaitReg {
+                handler_index: $handler,
+                dst,
+                args: [addr, expected, timeout],
+                offset: $memarg.offset,
+            }
+        }};
+    }
 
-        // Handle unreachable code
+    while let Some(op) = ops.next() {
+        let (op, _offset) = op?;
+
+        // Code after an unconditional branch is dead until its block ends;
+        // nested blocks are skipped whole.
+        // An `else` at depth 1 reopens an `if` whose then-branch ended in one.
         if unreachable_depth > 0 {
             match &op {
                 wasmparser::Operator::Block { .. }
                 | wasmparser::Operator::Loop { .. }
-                | wasmparser::Operator::If { .. } => {
-                    unreachable_depth += 1;
-                }
-                wasmparser::Operator::End => {
-                    unreachable_depth -= 1;
-                }
-                wasmparser::Operator::Else => {
-                    if unreachable_depth == 1 {
-                        // Else at depth 1 means the then-branch was unreachable but else might be reachable
-                        unreachable_depth = 0;
-                    }
-                }
+                | wasmparser::Operator::If { .. } => unreachable_depth += 1,
+                wasmparser::Operator::End => unreachable_depth -= 1,
+                wasmparser::Operator::Else if unreachable_depth == 1 => unreachable_depth = 0,
                 _ => {}
             }
             if unreachable_depth > 0 {
-                initial_processed_instrs.push(ProcessedInstr::NopReg);
-                current_processed_pc += 1;
+                instrs.push(ProcessedInstr::NopReg);
                 continue;
             }
         }
 
-        // The consumers below walk back from the instruction emitted last.
-        let mut look_back = initial_processed_instrs.len();
+        let pc = instrs.len();
+        look_back = pc;
 
-        // Get the processed instruction based on execution mode
-        let (processed_instr, fixup_info_opt) = if let Some(ref mut allocator) = reg_allocator {
-            // Register-based mode: convert i32 instructions to register format
-            match &op {
-                wasmparser::Operator::LocalGet { local_index } => {
-                    let local_type = get_local_type(param_types, locals, *local_index);
-                    match local_type {
-                        ValueType::NumType(NumType::I32) => {
-                            let dst = allocator.push(local_type);
-                            (
-                                Some(ProcessedInstr::I32Reg {
-                                    handler_index: HANDLER_IDX_LOCAL_GET,
-                                    dst: I32RegOperand::Reg(dst.index()),
-                                    src1: I32RegOperand::Reg(
-                                        local_regs[*local_index as usize].index(),
-                                    ),
-                                    src2: None,
-                                }),
-                                None,
-                            )
-                        }
-                        ValueType::NumType(NumType::I64) => {
-                            let dst = allocator.push(local_type);
-                            (
-                                Some(ProcessedInstr::I64Reg {
-                                    handler_index: HANDLER_IDX_LOCAL_GET,
-                                    dst: I64RegOperand::Reg(dst.index()),
-                                    src1: I64RegOperand::Reg(
-                                        local_regs[*local_index as usize].index(),
-                                    ),
-                                    src2: None,
-                                }),
-                                None,
-                            )
-                        }
-                        ValueType::NumType(NumType::F32) => {
-                            let dst = allocator.push(local_type);
-                            (
-                                Some(ProcessedInstr::F32Reg {
-                                    handler_index: HANDLER_IDX_LOCAL_GET,
-                                    dst: F32RegOperand::Reg(dst.index()),
-                                    src1: F32RegOperand::Reg(
-                                        local_regs[*local_index as usize].index(),
-                                    ),
-                                    src2: None,
-                                }),
-                                None,
-                            )
-                        }
-                        ValueType::NumType(NumType::F64) => {
-                            let dst = allocator.push(local_type);
-                            (
-                                Some(ProcessedInstr::F64Reg {
-                                    handler_index: HANDLER_IDX_LOCAL_GET,
-                                    dst: F64RegOperand::Reg(dst.index()),
-                                    src1: F64RegOperand::Reg(
-                                        local_regs[*local_index as usize].index(),
-                                    ),
-                                    src2: None,
-                                }),
-                                None,
-                            )
-                        }
-                        ValueType::RefType(_) => {
-                            // For RefType, use RefLocalReg (no folding for ref types)
-                            let dst = allocator.push(local_type);
-                            (
-                                Some(ProcessedInstr::RefLocalReg {
-                                    handler_index: HANDLER_IDX_REF_LOCAL_GET,
-                                    dst: dst.index(),
-                                    src: 0, // unused for get
-                                    local_idx: local_regs[*local_index as usize].index(),
-                                }),
-                                None,
-                            )
-                        }
-                        _ => {
-                            panic!("Unsupported type for LocalGet: {:?}", local_type);
-                        }
-                    }
-                }
-                wasmparser::Operator::LocalSet { local_index } => {
-                    let local_type = get_local_type(param_types, locals, *local_index);
-                    let local_idx = *local_index as u16;
-                    let src = allocator.pop(&local_type);
-                    let src_idx = src.index();
-                    let folded = !dropped_since_emit
-                        && !matches!(local_type, ValueType::RefType(_))
-                        && fold_dst_into_local(
-                            &mut initial_processed_instrs,
-                            &mut look_back,
-                            src,
-                            local_regs[local_idx as usize],
-                        );
-                    if folded {
-                        (None, None)
-                    } else {
-                        macro_rules! make_local_set {
-                            ($instr:ident, $operand:ident) => {
-                                (
-                                    Some(ProcessedInstr::$instr {
-                                        handler_index: HANDLER_IDX_LOCAL_SET,
-                                        dst: $operand::Reg(local_regs[local_idx as usize].index()),
-                                        src1: $operand::Reg(src_idx),
-                                        src2: None,
-                                    }),
-                                    None,
-                                )
-                            };
-                        }
-                        match local_type {
-                            ValueType::NumType(NumType::I32) => (
-                                Some(ProcessedInstr::I32Reg {
-                                    handler_index: HANDLER_IDX_LOCAL_SET,
-                                    dst: I32RegOperand::Reg(local_regs[local_idx as usize].index()),
-                                    src1: I32RegOperand::Reg(src_idx),
-                                    src2: None,
-                                }),
-                                None,
-                            ),
-                            ValueType::NumType(NumType::I64) => {
-                                make_local_set!(I64Reg, I64RegOperand)
-                            }
-                            ValueType::NumType(NumType::F32) => {
-                                make_local_set!(F32Reg, F32RegOperand)
-                            }
-                            ValueType::NumType(NumType::F64) => {
-                                make_local_set!(F64Reg, F64RegOperand)
-                            }
-                            ValueType::RefType(_) => {
-                                (
-                                    Some(ProcessedInstr::RefLocalReg {
-                                        handler_index: HANDLER_IDX_REF_LOCAL_SET,
-                                        dst: 0, // unused for set
-                                        src: src_idx,
-                                        local_idx: local_regs[local_idx as usize].index(),
-                                    }),
-                                    None,
-                                )
-                            }
-                            _ => {
-                                panic!("Unsupported type for LocalSet: {:?}", local_type);
-                            }
-                        }
-                    }
-                }
-                wasmparser::Operator::LocalTee { local_index } => {
-                    // LocalTee: copy value to local, value stays on stack
-                    let local_type = get_local_type(param_types, locals, *local_index);
-                    let local_idx = *local_index as u16;
-                    // Peek the top register (don't pop - value stays on stack)
-                    let src_idx = allocator.peek(&local_type).unwrap().index();
-                    macro_rules! make_local_tee {
-                        ($instr:ident, $operand:ident) => {
-                            (
-                                Some(ProcessedInstr::$instr {
-                                    handler_index: HANDLER_IDX_LOCAL_TEE, // Same runtime as local.set, distinct label
-                                    dst: $operand::Reg(local_regs[local_idx as usize].index()),
-                                    src1: $operand::Reg(src_idx),
-                                    src2: None,
-                                }),
-                                None,
-                            )
-                        };
-                    }
-                    match local_type {
-                        ValueType::NumType(NumType::I32) => (
-                            Some(ProcessedInstr::I32Reg {
-                                handler_index: HANDLER_IDX_LOCAL_SET,
-                                dst: I32RegOperand::Reg(local_regs[local_idx as usize].index()),
-                                src1: I32RegOperand::Reg(src_idx),
-                                src2: None,
-                            }),
-                            None,
-                        ),
-                        ValueType::NumType(NumType::I64) => {
-                            make_local_tee!(I64Reg, I64RegOperand)
-                        }
-                        ValueType::NumType(NumType::F32) => {
-                            make_local_tee!(F32Reg, F32RegOperand)
-                        }
-                        ValueType::NumType(NumType::F64) => {
-                            make_local_tee!(F64Reg, F64RegOperand)
-                        }
-                        ValueType::RefType(_) => {
-                            (
-                                Some(ProcessedInstr::RefLocalReg {
-                                    handler_index: HANDLER_IDX_REF_LOCAL_SET,
-                                    dst: 0, // unused for set
-                                    src: src_idx,
-                                    local_idx: local_regs[local_idx as usize].index(),
-                                }),
-                                None,
-                            )
-                        }
-                        _ => {
-                            panic!("Unsupported type for LocalTee: {:?}", local_type);
-                        }
-                    }
-                }
-                wasmparser::Operator::GlobalGet { global_index } => {
-                    let global_type = get_global_type(module, *global_index);
-                    match global_type {
-                        ValueType::NumType(NumType::I32) => {
-                            let dst = allocator.push(ValueType::NumType(NumType::I32));
-                            (
-                                Some(ProcessedInstr::GlobalGetReg {
-                                    handler_index: HANDLER_IDX_GLOBAL_GET_I32,
-                                    dst: RegOrLocal::Reg(dst.index()),
-                                    global_index: *global_index,
-                                }),
-                                None,
-                            )
-                        }
-                        ValueType::NumType(NumType::I64) => {
-                            let dst = allocator.push(ValueType::NumType(NumType::I64));
-                            (
-                                Some(ProcessedInstr::GlobalGetReg {
-                                    handler_index: HANDLER_IDX_GLOBAL_GET_I64,
-                                    dst: RegOrLocal::Reg(dst.index()),
-                                    global_index: *global_index,
-                                }),
-                                None,
-                            )
-                        }
-                        ValueType::NumType(NumType::F32) => {
-                            let dst = allocator.push(ValueType::NumType(NumType::F32));
-                            (
-                                Some(ProcessedInstr::GlobalGetReg {
-                                    handler_index: HANDLER_IDX_GLOBAL_GET_F32,
-                                    dst: RegOrLocal::Reg(dst.index()),
-                                    global_index: *global_index,
-                                }),
-                                None,
-                            )
-                        }
-                        ValueType::NumType(NumType::F64) => {
-                            let dst = allocator.push(ValueType::NumType(NumType::F64));
-                            (
-                                Some(ProcessedInstr::GlobalGetReg {
-                                    handler_index: HANDLER_IDX_GLOBAL_GET_F64,
-                                    dst: RegOrLocal::Reg(dst.index()),
-                                    global_index: *global_index,
-                                }),
-                                None,
-                            )
-                        }
-                        _ => {
-                            panic!("Unsupported type for GlobalGet: {:?}", global_type);
-                        }
-                    }
-                }
-                wasmparser::Operator::GlobalSet { global_index } => {
-                    let global_type = get_global_type(module, *global_index);
-                    match global_type {
-                        ValueType::NumType(NumType::I32) => {
-                            let src_reg = allocator.pop(&global_type);
-                            let operand = take_i32_operand(
-                                &mut initial_processed_instrs,
-                                &mut look_back,
-                                src_reg.index(),
-                            );
-                            let src = match operand {
-                                I32RegOperand::Reg(idx) => RegOrLocal::Reg(idx),
-                                _ => RegOrLocal::Reg(src_reg.index()),
-                            };
-                            (
-                                Some(ProcessedInstr::GlobalSetReg {
-                                    handler_index: HANDLER_IDX_GLOBAL_SET_I32,
-                                    src,
-                                    global_index: *global_index,
-                                }),
-                                None,
-                            )
-                        }
-                        ValueType::NumType(NumType::I64) => {
-                            let src_reg = allocator.pop(&global_type);
-                            let operand = take_i64_operand(
-                                &mut initial_processed_instrs,
-                                &mut look_back,
-                                src_reg.index(),
-                            );
-                            let src = match operand {
-                                I64RegOperand::Reg(idx) => RegOrLocal::Reg(idx),
-                                _ => RegOrLocal::Reg(src_reg.index()),
-                            };
-                            (
-                                Some(ProcessedInstr::GlobalSetReg {
-                                    handler_index: HANDLER_IDX_GLOBAL_SET_I64,
-                                    src,
-                                    global_index: *global_index,
-                                }),
-                                None,
-                            )
-                        }
-                        ValueType::NumType(NumType::F32) => {
-                            let src_reg = allocator.pop(&global_type);
-                            let operand = take_f32_operand(
-                                &mut initial_processed_instrs,
-                                &mut look_back,
-                                src_reg.index(),
-                            );
-                            let src = match operand {
-                                F32RegOperand::Reg(idx) => RegOrLocal::Reg(idx),
-                                _ => RegOrLocal::Reg(src_reg.index()),
-                            };
-                            (
-                                Some(ProcessedInstr::GlobalSetReg {
-                                    handler_index: HANDLER_IDX_GLOBAL_SET_F32,
-                                    src,
-                                    global_index: *global_index,
-                                }),
-                                None,
-                            )
-                        }
-                        ValueType::NumType(NumType::F64) => {
-                            let src_reg = allocator.pop(&global_type);
-                            let operand = take_f64_operand(
-                                &mut initial_processed_instrs,
-                                &mut look_back,
-                                src_reg.index(),
-                            );
-                            let src = match operand {
-                                F64RegOperand::Reg(idx) => RegOrLocal::Reg(idx),
-                                _ => RegOrLocal::Reg(src_reg.index()),
-                            };
-                            (
-                                Some(ProcessedInstr::GlobalSetReg {
-                                    handler_index: HANDLER_IDX_GLOBAL_SET_F64,
-                                    src,
-                                    global_index: *global_index,
-                                }),
-                                None,
-                            )
-                        }
-                        _ => {
-                            panic!("Unsupported type for GlobalSet: {:?}", global_type);
-                        }
-                    }
-                }
-                wasmparser::Operator::I32Const { value } => {
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_CONST,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1: I32RegOperand::Const(*value),
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                // Binary operations - macro to reduce repetition
-                wasmparser::Operator::I32Add => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_ADD,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Sub => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_SUB,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Mul => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_MUL,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32DivS => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_DIV_S,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32DivU => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_DIV_U,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32RemS => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_REM_S,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32RemU => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_REM_U,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32And => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_AND,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Or => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_OR,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Xor => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_XOR,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Shl => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_SHL,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32ShrS => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_SHR_S,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32ShrU => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_SHR_U,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Rotl => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_ROTL,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Rotr => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_ROTR,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                // Comparison operations
-                wasmparser::Operator::I32Eq => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_EQ,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Ne => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_NE,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32LtS => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_LT_S,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32LtU => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_LT_U,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32LeS => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_LE_S,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32LeU => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_LE_U,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32GtS => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_GT_S,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32GtU => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_GT_U,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32GeS => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_GE_S,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32GeU => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src2 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_GE_U,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                // Unary operations
-                wasmparser::Operator::I32Clz => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_CLZ,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Ctz => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_CTZ,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Popcnt => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_POPCNT,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Eqz => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_EQZ,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Extend8S => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_EXTEND8_S,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Extend16S => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src1 = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I32Reg {
-                            handler_index: HANDLER_IDX_I32_EXTEND16_S,
-                            dst: I32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                // ============================================================================
-                // I64 Register-based instructions
-                // ============================================================================
-                wasmparser::Operator::I64Const { value } => {
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_CONST,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1: I64RegOperand::Const(const_pool.add_i64(*value)),
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                // I64 Binary arithmetic operations
-                wasmparser::Operator::I64Add => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_ADD,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Sub => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_SUB,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Mul => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_MUL,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64DivS => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_DIV_S,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64DivU => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_DIV_U,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64RemS => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_REM_S,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64RemU => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_REM_U,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                // I64 Binary bitwise operations
-                wasmparser::Operator::I64And => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_AND,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Or => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_OR,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Xor => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_XOR,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Shl => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_SHL,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64ShrS => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_SHR_S,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64ShrU => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_SHR_U,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Rotl => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_ROTL,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Rotr => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_ROTR,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                // I64 Unary operations
-                wasmparser::Operator::I64Clz => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_CLZ,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Ctz => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_CTZ,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Popcnt => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_POPCNT,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Extend8S => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_EXTEND8_S,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Extend16S => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_EXTEND16_S,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Extend32S => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_EXTEND32_S,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                // I64 Comparison operations (return i32)
-                wasmparser::Operator::I64Eqz => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_EQZ,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Eq => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_EQ,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Ne => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_NE,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64LtS => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_LT_S,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64LtU => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_LT_U,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64GtS => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_GT_S,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64GtU => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_GT_U,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64LeS => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_LE_S,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64LeU => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_LE_U,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64GeS => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_GE_S,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64GeU => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let src2 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_i64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::I64Reg {
-                            handler_index: HANDLER_IDX_I64_GE_U,
-                            dst: I64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                // F32 Const
-                wasmparser::Operator::F32Const { value } => {
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_CONST,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1: F32RegOperand::Const(f32::from_bits(value.bits())),
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                // F32 Binary arithmetic operations
-                wasmparser::Operator::F32Add => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src2 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_ADD,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Sub => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src2 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_SUB,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Mul => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src2 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_MUL,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Div => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src2 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_DIV,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Min => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src2 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_MIN,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Max => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src2 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_MAX,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Copysign => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src2 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_COPYSIGN,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                // F32 Unary operations
-                wasmparser::Operator::F32Abs => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_ABS,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Neg => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_NEG,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Ceil => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_CEIL,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Floor => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_FLOOR,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Trunc => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_TRUNC,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Nearest => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_NEAREST,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Sqrt => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_SQRT,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                // F32 Comparison operations (return i32)
-                wasmparser::Operator::F32Eq => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src2 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_EQ,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Ne => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src2 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_NE,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Lt => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src2 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_LT,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Gt => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src2 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_GT,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Le => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src2 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_LE,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Ge => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let src2 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::F32Reg {
-                            handler_index: HANDLER_IDX_F32_GE,
-                            dst: F32RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                // F64 Const
-                wasmparser::Operator::F64Const { value } => {
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_CONST,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1: F64RegOperand::Const(
-                                const_pool.add_f64(f64::from_bits(value.bits())),
-                            ),
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                // F64 Binary arithmetic operations
-                wasmparser::Operator::F64Add => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src2 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_ADD,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Sub => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src2 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_SUB,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Mul => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src2 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_MUL,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Div => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src2 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_DIV,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Min => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src2 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_MIN,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Max => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src2 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_MAX,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Copysign => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src2 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_COPYSIGN,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                // F64 Unary operations
-                wasmparser::Operator::F64Abs => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_ABS,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Neg => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_NEG,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Ceil => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_CEIL,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Floor => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_FLOOR,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Trunc => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_TRUNC,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Nearest => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_NEAREST,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Sqrt => {
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_SQRT,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: None,
-                        }),
-                        None,
-                    )
-                }
-                // F64 Comparison operations (return i32)
-                wasmparser::Operator::F64Eq => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src2 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_EQ,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Ne => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src2 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_NE,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Lt => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src2 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_LT,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Gt => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src2 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_GT,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Le => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src2 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_LE,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Ge => {
-                    let src2_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src1_reg = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let src2 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src2_reg.index(),
-                    );
-                    let src1 = take_f64_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        src1_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::F64Reg {
-                            handler_index: HANDLER_IDX_F64_GE,
-                            dst: F64RegOperand::Reg(dst.index()),
-                            src1,
-                            src2: Some(src2),
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::End => {
-                    // Empty control stack means this is the function-level end.
-                    let is_function_end = control_info_stack.is_empty();
-                    let result_type_vec = if let Some(block_info) = control_info_stack.last() {
-                        get_block_result_types(&block_info.block_type, module)
-                    } else {
-                        result_types.to_vec()
-                    };
+        let instr: Option<ProcessedInstr> = match &op {
+            wasmparser::Operator::LocalGet { local_index } => {
+                let ty = get_local_type(param_types, locals, *local_index);
+                let dst = allocator.push(ty);
+                let local = local_regs[*local_index as usize];
+                Some(local_copy(
+                    ty,
+                    HANDLER_IDX_LOCAL_GET,
+                    dst.index(),
+                    local.index(),
+                ))
+            }
+            wasmparser::Operator::LocalSet { local_index } => {
+                let ty = get_local_type(param_types, locals, *local_index);
+                let local = local_regs[*local_index as usize];
+                let src = allocator.pop(&ty);
+                let folded = !dropped_since_emit
+                    && !matches!(ty, ValueType::RefType(_))
+                    && fold_dst_into_local(&mut instrs, &mut look_back, src, local);
+                if folded {
+                    None
+                } else {
+                    Some(local_copy(
+                        ty,
+                        HANDLER_IDX_LOCAL_SET,
+                        local.index(),
+                        src.index(),
+                    ))
+                }
+            }
+            wasmparser::Operator::LocalTee { local_index } => {
+                // The value stays on the stack, so it is copied, not popped.
+                let ty = get_local_type(param_types, locals, *local_index);
+                let local = local_regs[*local_index as usize];
+                let src = allocator.peek(&ty).unwrap();
+                Some(local_copy(
+                    ty,
+                    HANDLER_IDX_LOCAL_TEE,
+                    local.index(),
+                    src.index(),
+                ))
+            }
+            wasmparser::Operator::GlobalGet { global_index } => {
+                let ty = get_global_type(module, *global_index);
+                let dst = allocator.push(ty);
+                Some(ProcessedInstr::GlobalGetReg {
+                    handler_index: numeric_handler(ty, GLOBAL_GET_HANDLERS),
+                    dst: RegOrLocal::Reg(dst.index()),
+                    global_index: *global_index,
+                })
+            }
+            wasmparser::Operator::GlobalSet { global_index } => {
+                let ty = get_global_type(module, *global_index);
+                let src = allocator.pop(&ty);
+                let src = fold_local_get_arg(&mut instrs, &mut look_back, src);
+                Some(ProcessedInstr::GlobalSetReg {
+                    handler_index: numeric_handler(ty, GLOBAL_SET_HANDLERS),
+                    src: RegOrLocal::Reg(src.index()),
+                    global_index: *global_index,
+                })
+            }
+            wasmparser::Operator::I32Const { value } => {
+                let dst = allocator.push(ValueType::I32);
+                Some(ProcessedInstr::I32Reg {
+                    handler_index: HANDLER_IDX_I32_CONST,
+                    dst: I32RegOperand::Reg(dst.index()),
+                    src1: I32RegOperand::Const(*value),
+                    src2: None,
+                })
+            }
+            wasmparser::Operator::I64Const { value } => {
+                let dst = allocator.push(ValueType::I64);
+                Some(ProcessedInstr::I64Reg {
+                    handler_index: HANDLER_IDX_I64_CONST,
+                    dst: I64RegOperand::Reg(dst.index()),
+                    src1: I64RegOperand::Const(const_pool.add_i64(*value)),
+                    src2: None,
+                })
+            }
+            wasmparser::Operator::F32Const { value } => {
+                let dst = allocator.push(ValueType::F32);
+                Some(ProcessedInstr::F32Reg {
+                    handler_index: HANDLER_IDX_F32_CONST,
+                    dst: F32RegOperand::Reg(dst.index()),
+                    src1: F32RegOperand::Const(f32::from_bits(value.bits())),
+                    src2: None,
+                })
+            }
+            wasmparser::Operator::F64Const { value } => {
+                let dst = allocator.push(ValueType::F64);
+                Some(ProcessedInstr::F64Reg {
+                    handler_index: HANDLER_IDX_F64_CONST,
+                    dst: F64RegOperand::Reg(dst.index()),
+                    src1: F64RegOperand::Const(const_pool.add_f64(f64::from_bits(value.bits()))),
+                    src2: None,
+                })
+            }
 
-                    // Get the top N registers based on result types
-                    let mut source_regs = allocator.peek_regs_for_types(&result_type_vec);
-                    fold_local_get_args(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        &mut source_regs,
+            // i32
+            wasmparser::Operator::I32Add => Some(i32_binop!(HANDLER_IDX_I32_ADD)),
+            wasmparser::Operator::I32Sub => Some(i32_binop!(HANDLER_IDX_I32_SUB)),
+            wasmparser::Operator::I32Mul => Some(i32_binop!(HANDLER_IDX_I32_MUL)),
+            wasmparser::Operator::I32DivS => Some(i32_binop!(HANDLER_IDX_I32_DIV_S)),
+            wasmparser::Operator::I32DivU => Some(i32_binop!(HANDLER_IDX_I32_DIV_U)),
+            wasmparser::Operator::I32RemS => Some(i32_binop!(HANDLER_IDX_I32_REM_S)),
+            wasmparser::Operator::I32RemU => Some(i32_binop!(HANDLER_IDX_I32_REM_U)),
+            wasmparser::Operator::I32And => Some(i32_binop!(HANDLER_IDX_I32_AND)),
+            wasmparser::Operator::I32Or => Some(i32_binop!(HANDLER_IDX_I32_OR)),
+            wasmparser::Operator::I32Xor => Some(i32_binop!(HANDLER_IDX_I32_XOR)),
+            wasmparser::Operator::I32Shl => Some(i32_binop!(HANDLER_IDX_I32_SHL)),
+            wasmparser::Operator::I32ShrS => Some(i32_binop!(HANDLER_IDX_I32_SHR_S)),
+            wasmparser::Operator::I32ShrU => Some(i32_binop!(HANDLER_IDX_I32_SHR_U)),
+            wasmparser::Operator::I32Rotl => Some(i32_binop!(HANDLER_IDX_I32_ROTL)),
+            wasmparser::Operator::I32Rotr => Some(i32_binop!(HANDLER_IDX_I32_ROTR)),
+            wasmparser::Operator::I32Eq => Some(i32_binop!(HANDLER_IDX_I32_EQ)),
+            wasmparser::Operator::I32Ne => Some(i32_binop!(HANDLER_IDX_I32_NE)),
+            wasmparser::Operator::I32LtS => Some(i32_binop!(HANDLER_IDX_I32_LT_S)),
+            wasmparser::Operator::I32LtU => Some(i32_binop!(HANDLER_IDX_I32_LT_U)),
+            wasmparser::Operator::I32LeS => Some(i32_binop!(HANDLER_IDX_I32_LE_S)),
+            wasmparser::Operator::I32LeU => Some(i32_binop!(HANDLER_IDX_I32_LE_U)),
+            wasmparser::Operator::I32GtS => Some(i32_binop!(HANDLER_IDX_I32_GT_S)),
+            wasmparser::Operator::I32GtU => Some(i32_binop!(HANDLER_IDX_I32_GT_U)),
+            wasmparser::Operator::I32GeS => Some(i32_binop!(HANDLER_IDX_I32_GE_S)),
+            wasmparser::Operator::I32GeU => Some(i32_binop!(HANDLER_IDX_I32_GE_U)),
+            wasmparser::Operator::I32Clz => Some(i32_unop!(HANDLER_IDX_I32_CLZ)),
+            wasmparser::Operator::I32Ctz => Some(i32_unop!(HANDLER_IDX_I32_CTZ)),
+            wasmparser::Operator::I32Popcnt => Some(i32_unop!(HANDLER_IDX_I32_POPCNT)),
+            wasmparser::Operator::I32Eqz => Some(i32_unop!(HANDLER_IDX_I32_EQZ)),
+            wasmparser::Operator::I32Extend8S => Some(i32_unop!(HANDLER_IDX_I32_EXTEND8_S)),
+            wasmparser::Operator::I32Extend16S => Some(i32_unop!(HANDLER_IDX_I32_EXTEND16_S)),
+
+            // i64
+            wasmparser::Operator::I64Add => Some(i64_binop!(HANDLER_IDX_I64_ADD)),
+            wasmparser::Operator::I64Sub => Some(i64_binop!(HANDLER_IDX_I64_SUB)),
+            wasmparser::Operator::I64Mul => Some(i64_binop!(HANDLER_IDX_I64_MUL)),
+            wasmparser::Operator::I64DivS => Some(i64_binop!(HANDLER_IDX_I64_DIV_S)),
+            wasmparser::Operator::I64DivU => Some(i64_binop!(HANDLER_IDX_I64_DIV_U)),
+            wasmparser::Operator::I64RemS => Some(i64_binop!(HANDLER_IDX_I64_REM_S)),
+            wasmparser::Operator::I64RemU => Some(i64_binop!(HANDLER_IDX_I64_REM_U)),
+            wasmparser::Operator::I64And => Some(i64_binop!(HANDLER_IDX_I64_AND)),
+            wasmparser::Operator::I64Or => Some(i64_binop!(HANDLER_IDX_I64_OR)),
+            wasmparser::Operator::I64Xor => Some(i64_binop!(HANDLER_IDX_I64_XOR)),
+            wasmparser::Operator::I64Shl => Some(i64_binop!(HANDLER_IDX_I64_SHL)),
+            wasmparser::Operator::I64ShrS => Some(i64_binop!(HANDLER_IDX_I64_SHR_S)),
+            wasmparser::Operator::I64ShrU => Some(i64_binop!(HANDLER_IDX_I64_SHR_U)),
+            wasmparser::Operator::I64Rotl => Some(i64_binop!(HANDLER_IDX_I64_ROTL)),
+            wasmparser::Operator::I64Rotr => Some(i64_binop!(HANDLER_IDX_I64_ROTR)),
+            wasmparser::Operator::I64Clz => Some(i64_unop!(HANDLER_IDX_I64_CLZ)),
+            wasmparser::Operator::I64Ctz => Some(i64_unop!(HANDLER_IDX_I64_CTZ)),
+            wasmparser::Operator::I64Popcnt => Some(i64_unop!(HANDLER_IDX_I64_POPCNT)),
+            wasmparser::Operator::I64Extend8S => Some(i64_unop!(HANDLER_IDX_I64_EXTEND8_S)),
+            wasmparser::Operator::I64Extend16S => Some(i64_unop!(HANDLER_IDX_I64_EXTEND16_S)),
+            wasmparser::Operator::I64Extend32S => Some(i64_unop!(HANDLER_IDX_I64_EXTEND32_S)),
+            // Comparisons leave an i32.
+            wasmparser::Operator::I64Eqz => Some(unop!(
+                I64Reg,
+                I64RegOperand,
+                take_i64_operand,
+                I64,
+                I32,
+                HANDLER_IDX_I64_EQZ
+            )),
+            wasmparser::Operator::I64Eq => Some(i64_cmp!(HANDLER_IDX_I64_EQ)),
+            wasmparser::Operator::I64Ne => Some(i64_cmp!(HANDLER_IDX_I64_NE)),
+            wasmparser::Operator::I64LtS => Some(i64_cmp!(HANDLER_IDX_I64_LT_S)),
+            wasmparser::Operator::I64LtU => Some(i64_cmp!(HANDLER_IDX_I64_LT_U)),
+            wasmparser::Operator::I64GtS => Some(i64_cmp!(HANDLER_IDX_I64_GT_S)),
+            wasmparser::Operator::I64GtU => Some(i64_cmp!(HANDLER_IDX_I64_GT_U)),
+            wasmparser::Operator::I64LeS => Some(i64_cmp!(HANDLER_IDX_I64_LE_S)),
+            wasmparser::Operator::I64LeU => Some(i64_cmp!(HANDLER_IDX_I64_LE_U)),
+            wasmparser::Operator::I64GeS => Some(i64_cmp!(HANDLER_IDX_I64_GE_S)),
+            wasmparser::Operator::I64GeU => Some(i64_cmp!(HANDLER_IDX_I64_GE_U)),
+
+            // f32
+            wasmparser::Operator::F32Add => Some(f32_binop!(HANDLER_IDX_F32_ADD)),
+            wasmparser::Operator::F32Sub => Some(f32_binop!(HANDLER_IDX_F32_SUB)),
+            wasmparser::Operator::F32Mul => Some(f32_binop!(HANDLER_IDX_F32_MUL)),
+            wasmparser::Operator::F32Div => Some(f32_binop!(HANDLER_IDX_F32_DIV)),
+            wasmparser::Operator::F32Min => Some(f32_binop!(HANDLER_IDX_F32_MIN)),
+            wasmparser::Operator::F32Max => Some(f32_binop!(HANDLER_IDX_F32_MAX)),
+            wasmparser::Operator::F32Copysign => Some(f32_binop!(HANDLER_IDX_F32_COPYSIGN)),
+            wasmparser::Operator::F32Abs => Some(f32_unop!(HANDLER_IDX_F32_ABS)),
+            wasmparser::Operator::F32Neg => Some(f32_unop!(HANDLER_IDX_F32_NEG)),
+            wasmparser::Operator::F32Ceil => Some(f32_unop!(HANDLER_IDX_F32_CEIL)),
+            wasmparser::Operator::F32Floor => Some(f32_unop!(HANDLER_IDX_F32_FLOOR)),
+            wasmparser::Operator::F32Trunc => Some(f32_unop!(HANDLER_IDX_F32_TRUNC)),
+            wasmparser::Operator::F32Nearest => Some(f32_unop!(HANDLER_IDX_F32_NEAREST)),
+            wasmparser::Operator::F32Sqrt => Some(f32_unop!(HANDLER_IDX_F32_SQRT)),
+            wasmparser::Operator::F32Eq => Some(f32_cmp!(HANDLER_IDX_F32_EQ)),
+            wasmparser::Operator::F32Ne => Some(f32_cmp!(HANDLER_IDX_F32_NE)),
+            wasmparser::Operator::F32Lt => Some(f32_cmp!(HANDLER_IDX_F32_LT)),
+            wasmparser::Operator::F32Gt => Some(f32_cmp!(HANDLER_IDX_F32_GT)),
+            wasmparser::Operator::F32Le => Some(f32_cmp!(HANDLER_IDX_F32_LE)),
+            wasmparser::Operator::F32Ge => Some(f32_cmp!(HANDLER_IDX_F32_GE)),
+
+            // f64
+            wasmparser::Operator::F64Add => Some(f64_binop!(HANDLER_IDX_F64_ADD)),
+            wasmparser::Operator::F64Sub => Some(f64_binop!(HANDLER_IDX_F64_SUB)),
+            wasmparser::Operator::F64Mul => Some(f64_binop!(HANDLER_IDX_F64_MUL)),
+            wasmparser::Operator::F64Div => Some(f64_binop!(HANDLER_IDX_F64_DIV)),
+            wasmparser::Operator::F64Min => Some(f64_binop!(HANDLER_IDX_F64_MIN)),
+            wasmparser::Operator::F64Max => Some(f64_binop!(HANDLER_IDX_F64_MAX)),
+            wasmparser::Operator::F64Copysign => Some(f64_binop!(HANDLER_IDX_F64_COPYSIGN)),
+            wasmparser::Operator::F64Abs => Some(f64_unop!(HANDLER_IDX_F64_ABS)),
+            wasmparser::Operator::F64Neg => Some(f64_unop!(HANDLER_IDX_F64_NEG)),
+            wasmparser::Operator::F64Ceil => Some(f64_unop!(HANDLER_IDX_F64_CEIL)),
+            wasmparser::Operator::F64Floor => Some(f64_unop!(HANDLER_IDX_F64_FLOOR)),
+            wasmparser::Operator::F64Trunc => Some(f64_unop!(HANDLER_IDX_F64_TRUNC)),
+            wasmparser::Operator::F64Nearest => Some(f64_unop!(HANDLER_IDX_F64_NEAREST)),
+            wasmparser::Operator::F64Sqrt => Some(f64_unop!(HANDLER_IDX_F64_SQRT)),
+            wasmparser::Operator::F64Eq => Some(f64_cmp!(HANDLER_IDX_F64_EQ)),
+            wasmparser::Operator::F64Ne => Some(f64_cmp!(HANDLER_IDX_F64_NE)),
+            wasmparser::Operator::F64Lt => Some(f64_cmp!(HANDLER_IDX_F64_LT)),
+            wasmparser::Operator::F64Gt => Some(f64_cmp!(HANDLER_IDX_F64_GT)),
+            wasmparser::Operator::F64Le => Some(f64_cmp!(HANDLER_IDX_F64_LE)),
+            wasmparser::Operator::F64Ge => Some(f64_cmp!(HANDLER_IDX_F64_GE)),
+
+            // Conversions
+            wasmparser::Operator::I64ExtendI32S => {
+                Some(conv!(I32, I64, HANDLER_IDX_I64_EXTEND_I32_S))
+            }
+            wasmparser::Operator::I64ExtendI32U => {
+                Some(conv!(I32, I64, HANDLER_IDX_I64_EXTEND_I32_U))
+            }
+            wasmparser::Operator::I32WrapI64 => Some(conv!(I64, I32, HANDLER_IDX_I32_WRAP_I64)),
+            wasmparser::Operator::I32TruncF32S => {
+                Some(conv!(F32, I32, HANDLER_IDX_I32_TRUNC_F32_S))
+            }
+            wasmparser::Operator::I32TruncF32U => {
+                Some(conv!(F32, I32, HANDLER_IDX_I32_TRUNC_F32_U))
+            }
+            wasmparser::Operator::I32TruncF64S => {
+                Some(conv!(F64, I32, HANDLER_IDX_I32_TRUNC_F64_S))
+            }
+            wasmparser::Operator::I32TruncF64U => {
+                Some(conv!(F64, I32, HANDLER_IDX_I32_TRUNC_F64_U))
+            }
+            wasmparser::Operator::I64TruncF32S => {
+                Some(conv!(F32, I64, HANDLER_IDX_I64_TRUNC_F32_S))
+            }
+            wasmparser::Operator::I64TruncF32U => {
+                Some(conv!(F32, I64, HANDLER_IDX_I64_TRUNC_F32_U))
+            }
+            wasmparser::Operator::I64TruncF64S => {
+                Some(conv!(F64, I64, HANDLER_IDX_I64_TRUNC_F64_S))
+            }
+            wasmparser::Operator::I64TruncF64U => {
+                Some(conv!(F64, I64, HANDLER_IDX_I64_TRUNC_F64_U))
+            }
+            wasmparser::Operator::I32TruncSatF32S => {
+                Some(conv!(F32, I32, HANDLER_IDX_I32_TRUNC_SAT_F32_S))
+            }
+            wasmparser::Operator::I32TruncSatF32U => {
+                Some(conv!(F32, I32, HANDLER_IDX_I32_TRUNC_SAT_F32_U))
+            }
+            wasmparser::Operator::I32TruncSatF64S => {
+                Some(conv!(F64, I32, HANDLER_IDX_I32_TRUNC_SAT_F64_S))
+            }
+            wasmparser::Operator::I32TruncSatF64U => {
+                Some(conv!(F64, I32, HANDLER_IDX_I32_TRUNC_SAT_F64_U))
+            }
+            wasmparser::Operator::I64TruncSatF32S => {
+                Some(conv!(F32, I64, HANDLER_IDX_I64_TRUNC_SAT_F32_S))
+            }
+            wasmparser::Operator::I64TruncSatF32U => {
+                Some(conv!(F32, I64, HANDLER_IDX_I64_TRUNC_SAT_F32_U))
+            }
+            wasmparser::Operator::I64TruncSatF64S => {
+                Some(conv!(F64, I64, HANDLER_IDX_I64_TRUNC_SAT_F64_S))
+            }
+            wasmparser::Operator::I64TruncSatF64U => {
+                Some(conv!(F64, I64, HANDLER_IDX_I64_TRUNC_SAT_F64_U))
+            }
+            wasmparser::Operator::F32ConvertI32S => {
+                Some(conv!(I32, F32, HANDLER_IDX_F32_CONVERT_I32_S))
+            }
+            wasmparser::Operator::F32ConvertI32U => {
+                Some(conv!(I32, F32, HANDLER_IDX_F32_CONVERT_I32_U))
+            }
+            wasmparser::Operator::F32ConvertI64S => {
+                Some(conv!(I64, F32, HANDLER_IDX_F32_CONVERT_I64_S))
+            }
+            wasmparser::Operator::F32ConvertI64U => {
+                Some(conv!(I64, F32, HANDLER_IDX_F32_CONVERT_I64_U))
+            }
+            wasmparser::Operator::F64ConvertI32S => {
+                Some(conv!(I32, F64, HANDLER_IDX_F64_CONVERT_I32_S))
+            }
+            wasmparser::Operator::F64ConvertI32U => {
+                Some(conv!(I32, F64, HANDLER_IDX_F64_CONVERT_I32_U))
+            }
+            wasmparser::Operator::F64ConvertI64S => {
+                Some(conv!(I64, F64, HANDLER_IDX_F64_CONVERT_I64_S))
+            }
+            wasmparser::Operator::F64ConvertI64U => {
+                Some(conv!(I64, F64, HANDLER_IDX_F64_CONVERT_I64_U))
+            }
+            wasmparser::Operator::F32DemoteF64 => Some(conv!(F64, F32, HANDLER_IDX_F32_DEMOTE_F64)),
+            wasmparser::Operator::F64PromoteF32 => {
+                Some(conv!(F32, F64, HANDLER_IDX_F64_PROMOTE_F32))
+            }
+            wasmparser::Operator::I32ReinterpretF32 => {
+                Some(conv!(F32, I32, HANDLER_IDX_I32_REINTERPRET_F32))
+            }
+            wasmparser::Operator::I64ReinterpretF64 => {
+                Some(conv!(F64, I64, HANDLER_IDX_I64_REINTERPRET_F64))
+            }
+            wasmparser::Operator::F32ReinterpretI32 => {
+                Some(conv!(I32, F32, HANDLER_IDX_F32_REINTERPRET_I32))
+            }
+            wasmparser::Operator::F64ReinterpretI64 => {
+                Some(conv!(I64, F64, HANDLER_IDX_F64_REINTERPRET_I64))
+            }
+
+            // Loads
+            wasmparser::Operator::I32Load { memarg } => {
+                Some(load!(I32, HANDLER_IDX_I32_LOAD, memarg))
+            }
+            wasmparser::Operator::I64Load { memarg } => {
+                Some(load!(I64, HANDLER_IDX_I64_LOAD, memarg))
+            }
+            wasmparser::Operator::F32Load { memarg } => {
+                Some(load!(F32, HANDLER_IDX_F32_LOAD, memarg))
+            }
+            wasmparser::Operator::F64Load { memarg } => {
+                Some(load!(F64, HANDLER_IDX_F64_LOAD, memarg))
+            }
+            wasmparser::Operator::I32Load8S { memarg } => {
+                Some(load!(I32, HANDLER_IDX_I32_LOAD8_S, memarg))
+            }
+            wasmparser::Operator::I32Load8U { memarg } => {
+                Some(load!(I32, HANDLER_IDX_I32_LOAD8_U, memarg))
+            }
+            wasmparser::Operator::I32Load16S { memarg } => {
+                Some(load!(I32, HANDLER_IDX_I32_LOAD16_S, memarg))
+            }
+            wasmparser::Operator::I32Load16U { memarg } => {
+                Some(load!(I32, HANDLER_IDX_I32_LOAD16_U, memarg))
+            }
+            wasmparser::Operator::I64Load8S { memarg } => {
+                Some(load!(I64, HANDLER_IDX_I64_LOAD8_S, memarg))
+            }
+            wasmparser::Operator::I64Load8U { memarg } => {
+                Some(load!(I64, HANDLER_IDX_I64_LOAD8_U, memarg))
+            }
+            wasmparser::Operator::I64Load16S { memarg } => {
+                Some(load!(I64, HANDLER_IDX_I64_LOAD16_S, memarg))
+            }
+            wasmparser::Operator::I64Load16U { memarg } => {
+                Some(load!(I64, HANDLER_IDX_I64_LOAD16_U, memarg))
+            }
+            wasmparser::Operator::I64Load32S { memarg } => {
+                Some(load!(I64, HANDLER_IDX_I64_LOAD32_S, memarg))
+            }
+            wasmparser::Operator::I64Load32U { memarg } => {
+                Some(load!(I64, HANDLER_IDX_I64_LOAD32_U, memarg))
+            }
+            wasmparser::Operator::I32AtomicLoad { memarg } => {
+                Some(load!(I32, HANDLER_IDX_I32_ATOMIC_LOAD, memarg))
+            }
+            wasmparser::Operator::I64AtomicLoad { memarg } => {
+                Some(load!(I64, HANDLER_IDX_I64_ATOMIC_LOAD, memarg))
+            }
+            wasmparser::Operator::I32AtomicLoad8U { memarg } => {
+                Some(load!(I32, HANDLER_IDX_I32_ATOMIC_LOAD8_U, memarg))
+            }
+            wasmparser::Operator::I32AtomicLoad16U { memarg } => {
+                Some(load!(I32, HANDLER_IDX_I32_ATOMIC_LOAD16_U, memarg))
+            }
+            wasmparser::Operator::I64AtomicLoad8U { memarg } => {
+                Some(load!(I64, HANDLER_IDX_I64_ATOMIC_LOAD8_U, memarg))
+            }
+            wasmparser::Operator::I64AtomicLoad16U { memarg } => {
+                Some(load!(I64, HANDLER_IDX_I64_ATOMIC_LOAD16_U, memarg))
+            }
+            wasmparser::Operator::I64AtomicLoad32U { memarg } => {
+                Some(load!(I64, HANDLER_IDX_I64_ATOMIC_LOAD32_U, memarg))
+            }
+
+            // Stores
+            wasmparser::Operator::I32Store { memarg } => {
+                Some(store!(I32, HANDLER_IDX_I32_STORE, memarg))
+            }
+            wasmparser::Operator::I64Store { memarg } => {
+                Some(store!(I64, HANDLER_IDX_I64_STORE, memarg))
+            }
+            wasmparser::Operator::F32Store { memarg } => {
+                Some(store!(F32, HANDLER_IDX_F32_STORE, memarg))
+            }
+            wasmparser::Operator::F64Store { memarg } => {
+                Some(store!(F64, HANDLER_IDX_F64_STORE, memarg))
+            }
+            wasmparser::Operator::I32Store8 { memarg } => {
+                Some(store!(I32, HANDLER_IDX_I32_STORE8, memarg))
+            }
+            wasmparser::Operator::I32Store16 { memarg } => {
+                Some(store!(I32, HANDLER_IDX_I32_STORE16, memarg))
+            }
+            wasmparser::Operator::I64Store8 { memarg } => {
+                Some(store!(I64, HANDLER_IDX_I64_STORE8, memarg))
+            }
+            wasmparser::Operator::I64Store16 { memarg } => {
+                Some(store!(I64, HANDLER_IDX_I64_STORE16, memarg))
+            }
+            wasmparser::Operator::I64Store32 { memarg } => {
+                Some(store!(I64, HANDLER_IDX_I64_STORE32, memarg))
+            }
+            wasmparser::Operator::I32AtomicStore { memarg } => {
+                Some(store!(I32, HANDLER_IDX_I32_ATOMIC_STORE, memarg))
+            }
+            wasmparser::Operator::I64AtomicStore { memarg } => {
+                Some(store!(I64, HANDLER_IDX_I64_ATOMIC_STORE, memarg))
+            }
+            wasmparser::Operator::I32AtomicStore8 { memarg } => {
+                Some(store!(I32, HANDLER_IDX_I32_ATOMIC_STORE8, memarg))
+            }
+            wasmparser::Operator::I32AtomicStore16 { memarg } => {
+                Some(store!(I32, HANDLER_IDX_I32_ATOMIC_STORE16, memarg))
+            }
+            wasmparser::Operator::I64AtomicStore8 { memarg } => {
+                Some(store!(I64, HANDLER_IDX_I64_ATOMIC_STORE8, memarg))
+            }
+            wasmparser::Operator::I64AtomicStore16 { memarg } => {
+                Some(store!(I64, HANDLER_IDX_I64_ATOMIC_STORE16, memarg))
+            }
+            wasmparser::Operator::I64AtomicStore32 { memarg } => {
+                Some(store!(I64, HANDLER_IDX_I64_ATOMIC_STORE32, memarg))
+            }
+
+            // Atomic read-modify-write
+            wasmparser::Operator::I32AtomicRmwAdd { memarg } => {
+                Some(rmw!(I32, HANDLER_IDX_RMW_I32_ADD, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmw8AddU { memarg } => {
+                Some(rmw!(I32, HANDLER_IDX_RMW_I32_8_ADD, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmw16AddU { memarg } => {
+                Some(rmw!(I32, HANDLER_IDX_RMW_I32_16_ADD, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmwAdd { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_ADD, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw8AddU { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_8_ADD, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw16AddU { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_16_ADD, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw32AddU { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_32_ADD, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmwSub { memarg } => {
+                Some(rmw!(I32, HANDLER_IDX_RMW_I32_SUB, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmw8SubU { memarg } => {
+                Some(rmw!(I32, HANDLER_IDX_RMW_I32_8_SUB, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmw16SubU { memarg } => {
+                Some(rmw!(I32, HANDLER_IDX_RMW_I32_16_SUB, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmwSub { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_SUB, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw8SubU { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_8_SUB, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw16SubU { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_16_SUB, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw32SubU { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_32_SUB, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmwAnd { memarg } => {
+                Some(rmw!(I32, HANDLER_IDX_RMW_I32_AND, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmw8AndU { memarg } => {
+                Some(rmw!(I32, HANDLER_IDX_RMW_I32_8_AND, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmw16AndU { memarg } => {
+                Some(rmw!(I32, HANDLER_IDX_RMW_I32_16_AND, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmwAnd { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_AND, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw8AndU { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_8_AND, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw16AndU { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_16_AND, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw32AndU { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_32_AND, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmwOr { memarg } => {
+                Some(rmw!(I32, HANDLER_IDX_RMW_I32_OR, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmw8OrU { memarg } => {
+                Some(rmw!(I32, HANDLER_IDX_RMW_I32_8_OR, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmw16OrU { memarg } => {
+                Some(rmw!(I32, HANDLER_IDX_RMW_I32_16_OR, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmwOr { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_OR, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw8OrU { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_8_OR, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw16OrU { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_16_OR, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw32OrU { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_32_OR, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmwXor { memarg } => {
+                Some(rmw!(I32, HANDLER_IDX_RMW_I32_XOR, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmw8XorU { memarg } => {
+                Some(rmw!(I32, HANDLER_IDX_RMW_I32_8_XOR, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmw16XorU { memarg } => {
+                Some(rmw!(I32, HANDLER_IDX_RMW_I32_16_XOR, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmwXor { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_XOR, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw8XorU { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_8_XOR, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw16XorU { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_16_XOR, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw32XorU { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_32_XOR, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmwXchg { memarg } => {
+                Some(rmw!(I32, HANDLER_IDX_RMW_I32_XCHG, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmw8XchgU { memarg } => {
+                Some(rmw!(I32, HANDLER_IDX_RMW_I32_8_XCHG, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmw16XchgU { memarg } => {
+                Some(rmw!(I32, HANDLER_IDX_RMW_I32_16_XCHG, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmwXchg { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_XCHG, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw8XchgU { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_8_XCHG, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw16XchgU { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_16_XCHG, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw32XchgU { memarg } => {
+                Some(rmw!(I64, HANDLER_IDX_RMW_I64_32_XCHG, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmwCmpxchg { memarg } => {
+                Some(cmpxchg!(I32, HANDLER_IDX_CMPXCHG_I32, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmw8CmpxchgU { memarg } => {
+                Some(cmpxchg!(I32, HANDLER_IDX_CMPXCHG_I32_8, memarg))
+            }
+            wasmparser::Operator::I32AtomicRmw16CmpxchgU { memarg } => {
+                Some(cmpxchg!(I32, HANDLER_IDX_CMPXCHG_I32_16, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmwCmpxchg { memarg } => {
+                Some(cmpxchg!(I64, HANDLER_IDX_CMPXCHG_I64, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw8CmpxchgU { memarg } => {
+                Some(cmpxchg!(I64, HANDLER_IDX_CMPXCHG_I64_8, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw16CmpxchgU { memarg } => {
+                Some(cmpxchg!(I64, HANDLER_IDX_CMPXCHG_I64_16, memarg))
+            }
+            wasmparser::Operator::I64AtomicRmw32CmpxchgU { memarg } => {
+                Some(cmpxchg!(I64, HANDLER_IDX_CMPXCHG_I64_32, memarg))
+            }
+            wasmparser::Operator::MemoryAtomicNotify { memarg } => {
+                let count = allocator.pop(&ValueType::I32);
+                let addr = allocator.pop(&ValueType::I32);
+                let dst = allocator.push(ValueType::I32);
+                Some(ProcessedInstr::AtomicWaitReg {
+                    handler_index: HANDLER_IDX_MEMORY_ATOMIC_NOTIFY,
+                    dst,
+                    args: [addr, count, count],
+                    offset: memarg.offset,
+                })
+            }
+            wasmparser::Operator::MemoryAtomicWait32 { memarg } => {
+                Some(wait!(I32, HANDLER_IDX_MEMORY_ATOMIC_WAIT32, memarg))
+            }
+            wasmparser::Operator::MemoryAtomicWait64 { memarg } => {
+                Some(wait!(I64, HANDLER_IDX_MEMORY_ATOMIC_WAIT64, memarg))
+            }
+            wasmparser::Operator::AtomicFence => Some(ProcessedInstr::MemoryOpsReg {
+                handler_index: HANDLER_IDX_ATOMIC_FENCE,
+                dst: None,
+                args: Box::new([]),
+                data_index: 0,
+            }),
+
+            // Memory management
+            wasmparser::Operator::MemorySize { .. } => {
+                let dst = allocator.push(ValueType::I32);
+                Some(ProcessedInstr::MemoryOpsReg {
+                    handler_index: HANDLER_IDX_MEMORY_SIZE,
+                    dst: Some(dst),
+                    args: Box::new([]),
+                    data_index: 0,
+                })
+            }
+            wasmparser::Operator::MemoryGrow { .. } => {
+                let delta = allocator.pop(&ValueType::I32);
+                let dst = allocator.push(ValueType::I32);
+                Some(ProcessedInstr::MemoryOpsReg {
+                    handler_index: HANDLER_IDX_MEMORY_GROW,
+                    dst: Some(dst),
+                    args: Box::new([delta]),
+                    data_index: 0,
+                })
+            }
+            wasmparser::Operator::MemoryCopy { .. } => Some(ProcessedInstr::MemoryOpsReg {
+                handler_index: HANDLER_IDX_MEMORY_COPY,
+                dst: None,
+                args: Box::new(pop_i32s::<3>(&mut allocator)),
+                data_index: 0,
+            }),
+            wasmparser::Operator::MemoryInit { data_index, .. } => {
+                Some(ProcessedInstr::MemoryOpsReg {
+                    handler_index: HANDLER_IDX_MEMORY_INIT,
+                    dst: None,
+                    args: Box::new(pop_i32s::<3>(&mut allocator)),
+                    data_index: *data_index,
+                })
+            }
+            wasmparser::Operator::MemoryFill { .. } => Some(ProcessedInstr::MemoryOpsReg {
+                handler_index: HANDLER_IDX_MEMORY_FILL,
+                dst: None,
+                args: Box::new(pop_i32s::<3>(&mut allocator)),
+                data_index: 0,
+            }),
+            wasmparser::Operator::DataDrop { data_index } => Some(ProcessedInstr::DataDropReg {
+                data_index: *data_index,
+            }),
+
+            // Control
+            wasmparser::Operator::Block { blockty } | wasmparser::Operator::Loop { blockty } => {
+                let is_loop = matches!(op, wasmparser::Operator::Loop { .. });
+                enter_block(
+                    &mut allocator,
+                    &mut allocator_state_stack,
+                    &mut control_info_stack,
+                    *blockty,
+                    module,
+                    is_loop,
+                );
+                Some(ProcessedInstr::BlockReg { is_loop })
+            }
+            wasmparser::Operator::If { blockty } => {
+                let cond_reg = allocator.pop(&ValueType::I32);
+                let cond_reg = fold_local_get_arg(&mut instrs, &mut look_back, cond_reg);
+                enter_block(
+                    &mut allocator,
+                    &mut allocator_state_stack,
+                    &mut control_info_stack,
+                    *blockty,
+                    module,
+                    false,
+                );
+                fixups.push(FixupInfo {
+                    pc,
+                    depth: 0,
+                    source_regs: Vec::new(),
+                });
+                Some(ProcessedInstr::IfReg {
+                    cond_reg,
+                    else_target_ip: usize::MAX,
+                })
+            }
+            wasmparser::Operator::Else => {
+                // The else-branch starts from the if's entry state, params included.
+                if let Some(state) = allocator_state_stack.last() {
+                    allocator.restore_state(state);
+                }
+                if let Some(block) = control_info_stack.last() {
+                    push_values(
+                        &mut allocator,
+                        &get_block_param_types(&block.block_type, module),
                     );
-
-                    // Get target_result_regs from ControlBlockInfo BEFORE restoring state
-                    let target_result_regs = if let Some(block_info) = control_info_stack.last() {
-                        block_info.result_regs.clone()
-                    } else {
-                        Vec::new()
-                    };
-
-                    // Get block result types before popping control_info_stack
-                    let block_result_types_to_push = control_info_stack
-                        .last()
-                        .map(|info| get_block_result_types(&info.block_type, module))
-                        .unwrap_or_default();
-
-                    // Pop control_info_stack
-                    control_info_stack.pop();
-
-                    // Restore allocator state to block entry, then push results
-                    let mut stack_to_regs = Vec::new();
-                    if let Some(saved_state) = allocator_state_stack.pop() {
-                        allocator.restore_state(&saved_state);
-                        // Push result types to allocator (at the restored depth)
-                        for vtype in block_result_types_to_push {
-                            let reg = allocator.push(vtype);
-                            stack_to_regs.push(reg);
-                        }
-                    }
-
-                    // Use EndReg for register-based execution
-                    let instr = ProcessedInstr::EndReg {
-                        source_regs: source_regs.into_boxed_slice(),
-                        target_result_regs: target_result_regs.into_boxed_slice(),
-                        is_function_end,
-                    };
-                    (Some(instr), None)
                 }
-                wasmparser::Operator::Block { blockty }
-                | wasmparser::Operator::Loop { blockty } => {
-                    let param_types = get_block_param_types(&blockty, module);
-                    let is_loop = matches!(op, wasmparser::Operator::Loop { .. });
-
-                    // Pop params from allocator to get state BEFORE params
-                    for vtype in param_types.iter().rev() {
-                        allocator.pop(&vtype);
-                    }
-
-                    // Save allocator state BEFORE params
-                    let saved_state = allocator.save_state();
-                    allocator_state_stack.push(saved_state.clone());
-
-                    // Calculate result_regs at block entry depth
-                    let result_types = get_block_result_types(&blockty, module);
-                    let result_regs: Vec<Reg> = {
-                        let mut state = saved_state;
-                        result_types
-                            .iter()
-                            .map(|vtype| state.next_reg_for_type(vtype))
-                            .collect()
-                    };
-
-                    // Push params back - they're still on the stack inside the block
-                    for vtype in param_types.iter() {
-                        allocator.push(*vtype);
-                    }
-
-                    // Push to control_info_stack for End to use
-                    control_info_stack.push(ControlBlockInfo {
-                        block_type: *blockty,
-                        is_loop,
-                        result_regs: result_regs.into(),
-                        param_regs: Vec::new(),
-                    });
-
-                    let instr = ProcessedInstr::BlockReg { is_loop };
-                    (Some(instr), None)
+                fixups.push(FixupInfo {
+                    pc,
+                    depth: 0,
+                    source_regs: Vec::new(),
+                });
+                Some(ProcessedInstr::JumpReg {
+                    target_ip: usize::MAX,
+                })
+            }
+            wasmparser::Operator::End => {
+                let block = control_info_stack.pop();
+                let is_function_end = block.is_none();
+                let result_type_vec = match &block {
+                    Some(block) => get_block_result_types(&block.block_type, module),
+                    None => result_types.to_vec(),
+                };
+                let mut source_regs = allocator.peek_regs_for_types(&result_type_vec);
+                fold_local_get_args(&mut instrs, &mut look_back, &mut source_regs);
+                let target_result_regs = block.map(|block| block.result_regs).unwrap_or_default();
+                // Back to the depth at block entry, with the results on top.
+                if let Some(saved_state) = allocator_state_stack.pop() {
+                    allocator.restore_state(&saved_state);
+                    push_values(&mut allocator, &result_type_vec);
                 }
-                wasmparser::Operator::If { blockty } => {
-                    let cond_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let cond_reg =
-                        fold_local_get_arg(&mut initial_processed_instrs, &mut look_back, cond_reg);
-
-                    let param_types = get_block_param_types(&blockty, module);
-
-                    for vtype in param_types.iter().rev() {
-                        allocator.pop(&vtype);
-                    }
-
-                    let saved_state = allocator.save_state();
-                    allocator_state_stack.push(saved_state.clone());
-
-                    // Calculate result_regs at block entry depth
-                    let result_types = get_block_result_types(&blockty, module);
-                    let result_regs: Vec<Reg> = {
-                        let mut state = saved_state;
-                        result_types
-                            .iter()
-                            .map(|vtype| state.next_reg_for_type(vtype))
-                            .collect()
-                    };
-
-                    for vtype in param_types.iter() {
-                        allocator.push(*vtype);
-                    }
-
-                    // Push to control_info_stack for End to use
-                    control_info_stack.push(ControlBlockInfo {
-                        block_type: *blockty,
-                        is_loop: false,
-                        result_regs: result_regs.into(),
-                        param_regs: Vec::new(),
-                    });
-
-                    let instr = ProcessedInstr::IfReg {
-                        cond_reg,
-                        else_target_ip: usize::MAX, // Will be fixed up
-                    };
-                    let fixup = Some(FixupInfo {
-                        pc: current_processed_pc,
-                        original_wasm_depth: 0,
-                        is_if_false_jump: true,
-                        is_else_jump: false,
-                        source_regs: Vec::new(),
-                    });
-                    (Some(instr), fixup)
-                }
-                wasmparser::Operator::Else => {
-                    if let Some(state) = allocator_state_stack.last() {
-                        allocator.restore_state(state);
-                    }
-
-                    // Get the If's block type from control_info_stack and push params back
-                    if let Some(block_info) = control_info_stack.last() {
-                        let param_types = get_block_param_types(&block_info.block_type, module);
-                        for vtype in param_types.iter() {
-                            allocator.push(*vtype);
-                        }
-                    }
-
-                    // Generate JumpReg (target_ip will be fixed up later)
-                    let instr = ProcessedInstr::JumpReg {
-                        target_ip: usize::MAX, // Will be fixed up
-                    };
-                    let fixup = Some(FixupInfo {
-                        pc: current_processed_pc,
-                        original_wasm_depth: 0,
-                        is_if_false_jump: false,
-                        is_else_jump: true,
-                        source_regs: Vec::new(),
-                    });
-                    (Some(instr), fixup)
-                }
-
-                wasmparser::Operator::Call { function_index } => {
-                    let wasi_func_type = match get_imported_func_desc(module, *function_index) {
-                        Some(ImportDesc::WasiFunc(wasi_type)) => Some(*wasi_type),
-                        _ => None,
-                    };
-
-                    #[cfg(feature = "call_graph")]
-                    if let Some(b) = cg_builder.as_mut() {
-                        b.record_call(FuncIdx(func_index as u32), FuncIdx(*function_index));
-                    }
-
-                    if let Some(wasi_type) = wasi_func_type {
-                        let func_type = wasi_type.expected_func_type();
-                        let param_types = func_type.params;
-                        let result_types = func_type.results;
-
-                        // Get the top N registers for params based on types
-                        let mut param_regs = allocator.peek_regs_for_types(&param_types);
-
-                        for param_type in param_types.iter().rev() {
-                            allocator.pop(&param_type);
-                        }
-                        fold_local_get_args(
-                            &mut initial_processed_instrs,
-                            &mut look_back,
-                            &mut param_regs,
-                        );
-
-                        let result_reg = if let Some(result_type) = result_types.first() {
-                            Some(allocator.push(*result_type))
-                        } else {
-                            None
-                        };
-
-                        (
-                            Some(ProcessedInstr::CallWasiReg {
-                                wasi_func_type: wasi_type,
-                                param_regs: param_regs.into_boxed_slice(),
-                                result_reg,
-                            }),
-                            None,
-                        )
-                    } else {
-                        let (param_types, result_types) = if (*function_index as usize)
-                            < module.num_imported_funcs
-                        {
-                            match get_imported_func_desc(module, *function_index) {
-                                Some(ImportDesc::Func(type_idx)) => {
-                                    match module.types.get(type_idx.0 as usize) {
-                                        Some(func_type) => {
-                                            (func_type.params.clone(), func_type.results.clone())
-                                        }
-                                        None => (Vec::new(), Vec::new()),
-                                    }
-                                }
-                                _ => (Vec::new(), Vec::new()),
-                            }
-                        } else {
-                            let local_idx = *function_index as usize - module.num_imported_funcs;
-                            if let Some(func) = module.funcs.get(local_idx) {
-                                if let Some(func_type) = module.types.get(func.type_.0 as usize) {
-                                    (func_type.params.clone(), func_type.results.clone())
-                                } else {
-                                    (Vec::new(), Vec::new())
-                                }
-                            } else {
-                                (Vec::new(), Vec::new())
-                            }
-                        };
-
-                        if param_types.is_empty() && result_types.is_empty() {
-                            // No params/results - still use CallReg with empty registers
-                            (
-                                Some(ProcessedInstr::CallReg {
-                                    func_idx: FuncIdx(*function_index),
-                                    param_regs: Box::new([]),
-                                    result_regs: Box::new([]),
-                                }),
-                                None,
-                            )
-                        } else {
-                            // Get param registers before popping
-                            let mut param_regs = Vec::new();
-                            for param_type in param_types.iter().rev() {
-                                if let Some(reg) = allocator.peek(param_type) {
-                                    param_regs.insert(0, reg);
-                                }
-                                allocator.pop(param_type);
-                            }
-                            fold_local_get_args(
-                                &mut initial_processed_instrs,
-                                &mut look_back,
-                                &mut param_regs,
-                            );
-
-                            // Push result types to allocator and collect result_regs
-                            let mut result_regs = Vec::new();
-                            for result_type in &result_types {
-                                let reg = allocator.push(*result_type);
-                                result_regs.push(reg);
-                            }
-
-                            // Use CallReg for register-based execution
-                            let instr = ProcessedInstr::CallReg {
-                                func_idx: FuncIdx(*function_index),
-                                param_regs: param_regs.into_boxed_slice(),
-                                result_regs: result_regs.into_boxed_slice(),
-                            };
-                            (Some(instr), None)
-                        }
-                    }
-                }
-
-                wasmparser::Operator::CallIndirect {
-                    type_index,
-                    table_index,
-                    ..
-                } => {
-                    // Get function type from type_index
-                    let (param_types, result_types_vec) =
-                        if let Some(func_type) = module.types.get(*type_index as usize) {
-                            (func_type.params.clone(), func_type.results.clone())
-                        } else {
-                            (Vec::new(), Vec::new())
-                        };
-
-                    // Pop index_reg first (i32) - this is the table index
-                    let index_reg = allocator.peek(&ValueType::NumType(NumType::I32)).unwrap();
-                    allocator.pop(&ValueType::NumType(NumType::I32));
-
-                    // Get param registers (in order, from bottom to top)
-                    // We need to collect the param registers before popping them
-                    let mut param_regs = Vec::new();
-                    for param_type in param_types.iter() {
-                        if let Some(reg) = allocator.peek(param_type) {
-                            param_regs.push(reg);
-                        }
-                    }
-                    // Actually, we need to get the registers that will be consumed
-                    // Recalculate: peek each param type from the current state
-                    param_regs.clear();
-                    for param_type in param_types.iter().rev() {
-                        if let Some(reg) = allocator.peek(param_type) {
-                            param_regs.insert(0, reg);
-                        }
-                        allocator.pop(param_type);
-                    }
-                    // The index sits above the params on the stack.
-                    param_regs.push(index_reg);
-                    fold_local_get_args(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        &mut param_regs,
-                    );
-                    let index_reg = param_regs.pop().unwrap();
-
-                    // Push result types to allocator and collect result_regs
-                    let mut result_regs = Vec::new();
-                    for result_type in &result_types_vec {
-                        let reg = allocator.push(*result_type);
-                        result_regs.push(reg);
-                    }
-
-                    // Use CallIndirectReg for register-based execution
-                    let instr = ProcessedInstr::CallIndirectReg {
-                        type_idx: TypeIdx(*type_index),
-                        table_idx: TableIdx(*table_index),
-                        index_reg,
-                        param_regs: param_regs.into_boxed_slice(),
-                        result_regs: result_regs.into_boxed_slice(),
-                    };
-                    #[cfg(feature = "call_graph")]
-                    if let Some(b) = cg_builder.as_mut() {
-                        b.record_call_indirect(FuncIdx(func_index as u32), TypeIdx(*type_index));
-                    }
-                    (Some(instr), None)
-                }
-
-                wasmparser::Operator::Br { relative_depth } => {
-                    // Compute source and target registers for branch.
-                    // A depth at/beyond the control stack targets the function
-                    // level: source regs are the top-of-stack regs matching the
-                    // function result types; target regs (the function-level
-                    // end's source regs) are patched during fixup.
-                    let (mut source_regs, target_result_regs) =
-                        if *relative_depth as usize >= control_info_stack.len() {
-                            (allocator.peek_regs_for_types(result_types), Vec::new())
-                        } else {
-                            compute_branch_regs(
-                                &control_info_stack,
-                                *relative_depth as usize,
-                                reg_allocator.as_ref(),
-                            )
-                        };
-                    fold_local_get_args(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        &mut source_regs,
-                    );
-
-                    let instr = ProcessedInstr::BrReg {
-                        target_ip: usize::MAX, // Will be set by fixup
-                        result_copies: crate::execution::ir::BranchCopies::new(
-                            source_regs.clone().into_boxed_slice(),
-                            target_result_regs.into_boxed_slice(),
-                        ),
-                    };
-                    let fixup = FixupInfo {
-                        pc: current_processed_pc,
-                        original_wasm_depth: *relative_depth as usize,
-                        is_if_false_jump: false,
-                        is_else_jump: false,
-                        source_regs,
-                    };
-                    (Some(instr), Some(fixup))
-                }
-                wasmparser::Operator::BrIf { relative_depth } => {
-                    // Pop condition register
-                    // In unreachable code after br/return, allocator may be empty
-                    let cond_reg = allocator
-                        .peek(&ValueType::NumType(NumType::I32))
-                        .unwrap_or(Reg::I32(0)); // Use dummy register in unreachable code
-                    allocator.pop(&ValueType::NumType(NumType::I32));
-                    // Only the condition: the values stay on the stack when
-                    // the branch is not taken.
-                    let cond_reg =
-                        fold_local_get_arg(&mut initial_processed_instrs, &mut look_back, cond_reg);
-
-                    // Compute source and target registers for branch
-                    // Function-level depth: source regs from the function
-                    // result types; target regs patched during fixup.
-                    let (source_regs, target_result_regs) =
-                        if *relative_depth as usize >= control_info_stack.len() {
-                            (allocator.peek_regs_for_types(result_types), Vec::new())
-                        } else {
-                            compute_branch_regs(
-                                &control_info_stack,
-                                *relative_depth as usize,
-                                reg_allocator.as_ref(),
-                            )
-                        };
-
-                    let instr = ProcessedInstr::BrIfReg {
-                        target_ip: usize::MAX, // Will be set by fixup
-                        cond_reg,
-                        result_copies: crate::execution::ir::BranchCopies::new(
-                            source_regs.clone().into_boxed_slice(),
-                            target_result_regs.into_boxed_slice(),
-                        ),
-                    };
-                    let fixup = FixupInfo {
-                        pc: current_processed_pc,
-                        original_wasm_depth: *relative_depth as usize,
-                        is_if_false_jump: false,
-                        is_else_jump: false,
-                        source_regs,
-                    };
-                    (Some(instr), Some(fixup))
-                }
-                wasmparser::Operator::BrTable { ref targets } => {
-                    // Pop index register
-                    // In unreachable code after br/return, allocator may be empty
-                    let index_reg = allocator
-                        .peek(&ValueType::NumType(NumType::I32))
-                        .unwrap_or(Reg::I32(0)); // Use dummy register in unreachable code
-                    allocator.pop(&ValueType::NumType(NumType::I32));
-
-                    // Collect target depths with placeholder target_ip and compute target_result_regs for each
-                    let target_depths: Vec<u32> =
-                        targets.targets().collect::<Result<Vec<_>, _>>()?;
-
-                    let mut table_targets: Vec<(u32, usize, RegSlice)> =
-                        Vec::with_capacity(target_depths.len());
-                    for depth in target_depths.iter() {
-                        let (_, target_result_regs) = compute_branch_regs(
+                Some(ProcessedInstr::EndReg {
+                    source_regs: source_regs.into_boxed_slice(),
+                    target_result_regs: target_result_regs.into_boxed_slice(),
+                    is_function_end,
+                })
+            }
+            wasmparser::Operator::Br { relative_depth } => {
+                let depth = *relative_depth as usize;
+                let (mut source_regs, target_result_regs) =
+                    branch_regs(&control_info_stack, depth, &allocator, result_types);
+                fold_local_get_args(&mut instrs, &mut look_back, &mut source_regs);
+                fixups.push(FixupInfo {
+                    pc,
+                    depth,
+                    source_regs: source_regs.clone(),
+                });
+                Some(ProcessedInstr::BrReg {
+                    target_ip: usize::MAX,
+                    result_copies: BranchCopies::new(
+                        source_regs.into_boxed_slice(),
+                        target_result_regs.into_boxed_slice(),
+                    ),
+                })
+            }
+            wasmparser::Operator::BrIf { relative_depth } => {
+                let depth = *relative_depth as usize;
+                // Only the condition is folded: the values stay on the stack
+                // when the branch is not taken.
+                let cond_reg = allocator.pop(&ValueType::I32);
+                let cond_reg = fold_local_get_arg(&mut instrs, &mut look_back, cond_reg);
+                let (source_regs, target_result_regs) =
+                    branch_regs(&control_info_stack, depth, &allocator, result_types);
+                fixups.push(FixupInfo {
+                    pc,
+                    depth,
+                    source_regs: source_regs.clone(),
+                });
+                Some(ProcessedInstr::BrIfReg {
+                    target_ip: usize::MAX,
+                    cond_reg,
+                    result_copies: BranchCopies::new(
+                        source_regs.into_boxed_slice(),
+                        target_result_regs.into_boxed_slice(),
+                    ),
+                })
+            }
+            wasmparser::Operator::BrTable { targets } => {
+                let index_reg = allocator.pop(&ValueType::I32);
+                let depths: Vec<u32> = targets.targets().collect::<Result<_, _>>()?;
+                let table_targets = depths
+                    .iter()
+                    .map(|depth| {
+                        let (_, target_result_regs) = branch_regs(
                             &control_info_stack,
                             *depth as usize,
-                            Some(&*allocator),
+                            &allocator,
+                            result_types,
                         );
-                        table_targets.push((
-                            *depth,
-                            usize::MAX,
-                            target_result_regs.into_boxed_slice(),
-                        ));
-                        // target_ip will be set by fixup
-                    }
-
-                    // Compute source and target registers for default target.
-                    // Function-level depth: source regs from the function
-                    // result types; target regs patched during fixup.
-                    let (mut source_regs, default_result_regs) =
-                        if targets.default() as usize >= control_info_stack.len() {
-                            (allocator.peek_regs_for_types(result_types), Vec::new())
-                        } else {
-                            compute_branch_regs(
-                                &control_info_stack,
-                                targets.default() as usize,
-                                Some(&*allocator),
-                            )
-                        };
-                    // The index sits above the values on the stack.
-                    source_regs.push(index_reg);
-                    fold_local_get_args(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        &mut source_regs,
-                    );
-                    let index_reg = source_regs.pop().unwrap();
-                    let default_target = (
+                        (*depth, usize::MAX, target_result_regs.into_boxed_slice())
+                    })
+                    .collect();
+                let (mut source_regs, default_result_regs) = branch_regs(
+                    &control_info_stack,
+                    targets.default() as usize,
+                    &allocator,
+                    result_types,
+                );
+                // The index sits above the values on the stack.
+                source_regs.push(index_reg);
+                fold_local_get_args(&mut instrs, &mut look_back, &mut source_regs);
+                let index_reg = source_regs.pop().unwrap();
+                Some(ProcessedInstr::BrTableReg(Box::new(BrTableData {
+                    targets: table_targets,
+                    default_target: (
                         targets.default(),
                         usize::MAX,
                         default_result_regs.into_boxed_slice(),
-                    ); // target_ip will be set by fixup
-
-                    let instr =
-                        ProcessedInstr::BrTableReg(Box::new(crate::execution::ir::BrTableData {
-                            targets: table_targets.clone(),
-                            default_target,
-                            index_reg,
-                            source_regs: source_regs.clone().into_boxed_slice(),
-                        }));
-
-                    // Create fixups for each target and default
-                    // The fixup system will handle BrTableReg specially
-                    let fixup = FixupInfo {
-                        pc: current_processed_pc,
-                        original_wasm_depth: targets.default() as usize,
-                        is_if_false_jump: false,
-                        is_else_jump: false,
-                        source_regs,
-                    };
-                    (Some(instr), Some(fixup))
-                }
-                wasmparser::Operator::Return => {
-                    // Get result registers based on function result types
-                    let mut result_regs = allocator.peek_regs_for_types(result_types);
-                    for result_type in result_types.iter().rev() {
-                        allocator.pop(result_type);
-                    }
-                    fold_local_get_args(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        &mut result_regs,
-                    );
-
-                    let instr = ProcessedInstr::ReturnReg {
-                        result_regs: result_regs.into_boxed_slice(),
-                    };
-                    (Some(instr), None)
-                }
-                wasmparser::Operator::Nop => (None, None),
-                wasmparser::Operator::Unreachable => (Some(ProcessedInstr::UnreachableReg), None),
-                wasmparser::Operator::Drop => {
-                    // Pop from type_stack to keep it in sync, but no runtime operation needed
-                    allocator.pop_any();
-                    dropped_since_emit = true;
-                    (None, None)
-                }
-                // Conversion instructions - use ConversionReg
-                wasmparser::Operator::I64ExtendI32S => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I64_EXTEND_I32_S,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64ExtendI32U => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I64_EXTEND_I32_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32WrapI64 => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I32_WRAP_I64,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32TruncF32S => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I32_TRUNC_F32_S,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32TruncF32U => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I32_TRUNC_F32_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32TruncF64S => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I32_TRUNC_F64_S,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32TruncF64U => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I32_TRUNC_F64_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64TruncF32S => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I64_TRUNC_F32_S,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64TruncF32U => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I64_TRUNC_F32_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64TruncF64S => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I64_TRUNC_F64_S,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64TruncF64U => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I64_TRUNC_F64_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32TruncSatF32S => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I32_TRUNC_SAT_F32_S,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32TruncSatF32U => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I32_TRUNC_SAT_F32_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32TruncSatF64S => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I32_TRUNC_SAT_F64_S,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32TruncSatF64U => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I32_TRUNC_SAT_F64_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64TruncSatF32S => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I64_TRUNC_SAT_F32_S,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64TruncSatF32U => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I64_TRUNC_SAT_F32_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64TruncSatF64S => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I64_TRUNC_SAT_F64_S,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64TruncSatF64U => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I64_TRUNC_SAT_F64_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32ConvertI32S => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_F32_CONVERT_I32_S,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32ConvertI32U => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_F32_CONVERT_I32_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32ConvertI64S => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_F32_CONVERT_I64_S,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32ConvertI64U => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_F32_CONVERT_I64_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64ConvertI32S => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_F64_CONVERT_I32_S,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64ConvertI32U => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_F64_CONVERT_I32_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64ConvertI64S => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_F64_CONVERT_I64_S,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64ConvertI64U => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_F64_CONVERT_I64_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32DemoteF64 => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_F32_DEMOTE_F64,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64PromoteF32 => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_F64_PROMOTE_F32,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32ReinterpretF32 => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I32_REINTERPRET_F32,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64ReinterpretF64 => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_I64_REINTERPRET_F64,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32ReinterpretI32 => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_F32_REINTERPRET_I32,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64ReinterpretI64 => {
-                    let src = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::ConversionReg {
-                            handler_index: HANDLER_IDX_F64_REINTERPRET_I64,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            src,
-                        }),
-                        None,
-                    )
-                }
-                // Memory Load instructions
-                wasmparser::Operator::I32Load { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I32_LOAD,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Load { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I64_LOAD,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Load { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F32));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_F32_LOAD,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Load { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::F64));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_F64_LOAD,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Load8S { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I32_LOAD8_S,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Load8U { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I32_LOAD8_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Load16S { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I32_LOAD16_S,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Load16U { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I32_LOAD16_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Load8S { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I64_LOAD8_S,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Load8U { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I64_LOAD8_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Load16S { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I64_LOAD16_S,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Load16U { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I64_LOAD16_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Load32S { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I64_LOAD32_S,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Load32U { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I64_LOAD32_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                // Memory Store instructions
-                wasmparser::Operator::I32Store { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let value =
-                        fold_local_get_arg(&mut initial_processed_instrs, &mut look_back, value);
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    (
-                        Some(ProcessedInstr::MemoryStoreReg {
-                            handler_index: HANDLER_IDX_I32_STORE,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Store { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let value =
-                        fold_local_get_arg(&mut initial_processed_instrs, &mut look_back, value);
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    (
-                        Some(ProcessedInstr::MemoryStoreReg {
-                            handler_index: HANDLER_IDX_I64_STORE,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F32Store { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::F32));
-                    let value =
-                        fold_local_get_arg(&mut initial_processed_instrs, &mut look_back, value);
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    (
-                        Some(ProcessedInstr::MemoryStoreReg {
-                            handler_index: HANDLER_IDX_F32_STORE,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::F64Store { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::F64));
-                    let value =
-                        fold_local_get_arg(&mut initial_processed_instrs, &mut look_back, value);
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    (
-                        Some(ProcessedInstr::MemoryStoreReg {
-                            handler_index: HANDLER_IDX_F64_STORE,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Store8 { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let value =
-                        fold_local_get_arg(&mut initial_processed_instrs, &mut look_back, value);
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    (
-                        Some(ProcessedInstr::MemoryStoreReg {
-                            handler_index: HANDLER_IDX_I32_STORE8,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32Store16 { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let value =
-                        fold_local_get_arg(&mut initial_processed_instrs, &mut look_back, value);
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    (
-                        Some(ProcessedInstr::MemoryStoreReg {
-                            handler_index: HANDLER_IDX_I32_STORE16,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Store8 { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let value =
-                        fold_local_get_arg(&mut initial_processed_instrs, &mut look_back, value);
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    (
-                        Some(ProcessedInstr::MemoryStoreReg {
-                            handler_index: HANDLER_IDX_I64_STORE8,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Store16 { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let value =
-                        fold_local_get_arg(&mut initial_processed_instrs, &mut look_back, value);
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    (
-                        Some(ProcessedInstr::MemoryStoreReg {
-                            handler_index: HANDLER_IDX_I64_STORE16,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64Store32 { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let value =
-                        fold_local_get_arg(&mut initial_processed_instrs, &mut look_back, value);
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    (
-                        Some(ProcessedInstr::MemoryStoreReg {
-                            handler_index: HANDLER_IDX_I64_STORE32,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-
-                // Memory Ops instructions (size, grow, copy, init, fill)
-                wasmparser::Operator::I32AtomicLoad { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I32_ATOMIC_LOAD,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicLoad { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I64_ATOMIC_LOAD,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicLoad8U { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I32_ATOMIC_LOAD8_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicLoad16U { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I32_ATOMIC_LOAD16_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicLoad8U { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I64_ATOMIC_LOAD8_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicLoad16U { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I64_ATOMIC_LOAD16_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicLoad32U { memarg } => {
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::MemoryLoadReg {
-                            handler_index: HANDLER_IDX_I64_ATOMIC_LOAD32_U,
-                            dst: RegOrLocal::Reg(dst.index()),
-                            addr,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicStore { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let value =
-                        fold_local_get_arg(&mut initial_processed_instrs, &mut look_back, value);
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    (
-                        Some(ProcessedInstr::MemoryStoreReg {
-                            handler_index: HANDLER_IDX_I32_ATOMIC_STORE,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicStore { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let value =
-                        fold_local_get_arg(&mut initial_processed_instrs, &mut look_back, value);
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    (
-                        Some(ProcessedInstr::MemoryStoreReg {
-                            handler_index: HANDLER_IDX_I64_ATOMIC_STORE,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicStore8 { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let value =
-                        fold_local_get_arg(&mut initial_processed_instrs, &mut look_back, value);
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    (
-                        Some(ProcessedInstr::MemoryStoreReg {
-                            handler_index: HANDLER_IDX_I32_ATOMIC_STORE8,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicStore16 { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let value =
-                        fold_local_get_arg(&mut initial_processed_instrs, &mut look_back, value);
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    (
-                        Some(ProcessedInstr::MemoryStoreReg {
-                            handler_index: HANDLER_IDX_I32_ATOMIC_STORE16,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicStore8 { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let value =
-                        fold_local_get_arg(&mut initial_processed_instrs, &mut look_back, value);
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    (
-                        Some(ProcessedInstr::MemoryStoreReg {
-                            handler_index: HANDLER_IDX_I64_ATOMIC_STORE8,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicStore16 { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let value =
-                        fold_local_get_arg(&mut initial_processed_instrs, &mut look_back, value);
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    (
-                        Some(ProcessedInstr::MemoryStoreReg {
-                            handler_index: HANDLER_IDX_I64_ATOMIC_STORE16,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicStore32 { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let value =
-                        fold_local_get_arg(&mut initial_processed_instrs, &mut look_back, value);
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    (
-                        Some(ProcessedInstr::MemoryStoreReg {
-                            handler_index: HANDLER_IDX_I64_ATOMIC_STORE32,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmwAdd { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I32_ADD,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmw8AddU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I32_8_ADD,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmw16AddU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I32_16_ADD,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmwAdd { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_ADD,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw8AddU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_8_ADD,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw16AddU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_16_ADD,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw32AddU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_32_ADD,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmwSub { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I32_SUB,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmw8SubU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I32_8_SUB,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmw16SubU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I32_16_SUB,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmwSub { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_SUB,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw8SubU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_8_SUB,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw16SubU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_16_SUB,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw32SubU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_32_SUB,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmwAnd { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I32_AND,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmw8AndU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I32_8_AND,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmw16AndU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I32_16_AND,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmwAnd { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_AND,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw8AndU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_8_AND,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw16AndU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_16_AND,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw32AndU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_32_AND,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmwOr { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I32_OR,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmw8OrU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I32_8_OR,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmw16OrU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I32_16_OR,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmwOr { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_OR,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw8OrU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_8_OR,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw16OrU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_16_OR,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw32OrU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_32_OR,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmwXor { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I32_XOR,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmw8XorU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I32_8_XOR,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmw16XorU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I32_16_XOR,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmwXor { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_XOR,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw8XorU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_8_XOR,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw16XorU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_16_XOR,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw32XorU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_32_XOR,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmwXchg { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I32_XCHG,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmw8XchgU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I32_8_XCHG,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmw16XchgU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I32_16_XCHG,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmwXchg { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_XCHG,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw8XchgU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_8_XCHG,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw16XchgU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_16_XCHG,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw32XchgU { memarg } => {
-                    let value = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr_reg = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = take_i32_operand(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        addr_reg.index(),
-                    );
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicRmwReg {
-                            handler_index: HANDLER_IDX_RMW_I64_32_XCHG,
-                            dst,
-                            addr,
-                            value,
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmwCmpxchg { memarg } => {
-                    let replacement = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let expected = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicCmpxchgReg {
-                            handler_index: HANDLER_IDX_CMPXCHG_I32,
-                            dst,
-                            args: [addr, expected, replacement],
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmw8CmpxchgU { memarg } => {
-                    let replacement = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let expected = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicCmpxchgReg {
-                            handler_index: HANDLER_IDX_CMPXCHG_I32_8,
-                            dst,
-                            args: [addr, expected, replacement],
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I32AtomicRmw16CmpxchgU { memarg } => {
-                    let replacement = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let expected = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicCmpxchgReg {
-                            handler_index: HANDLER_IDX_CMPXCHG_I32_16,
-                            dst,
-                            args: [addr, expected, replacement],
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmwCmpxchg { memarg } => {
-                    let replacement = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let expected = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicCmpxchgReg {
-                            handler_index: HANDLER_IDX_CMPXCHG_I64,
-                            dst,
-                            args: [addr, expected, replacement],
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw8CmpxchgU { memarg } => {
-                    let replacement = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let expected = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicCmpxchgReg {
-                            handler_index: HANDLER_IDX_CMPXCHG_I64_8,
-                            dst,
-                            args: [addr, expected, replacement],
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw16CmpxchgU { memarg } => {
-                    let replacement = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let expected = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicCmpxchgReg {
-                            handler_index: HANDLER_IDX_CMPXCHG_I64_16,
-                            dst,
-                            args: [addr, expected, replacement],
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::I64AtomicRmw32CmpxchgU { memarg } => {
-                    let replacement = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let expected = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I64));
-                    (
-                        Some(ProcessedInstr::AtomicCmpxchgReg {
-                            handler_index: HANDLER_IDX_CMPXCHG_I64_32,
-                            dst,
-                            args: [addr, expected, replacement],
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::MemoryAtomicNotify { memarg } => {
-                    let count = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicWaitReg {
-                            handler_index: HANDLER_IDX_MEMORY_ATOMIC_NOTIFY,
-                            dst,
-                            args: [addr, count, count],
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::MemoryAtomicWait32 { memarg } => {
-                    let timeout = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let expected = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicWaitReg {
-                            handler_index: HANDLER_IDX_MEMORY_ATOMIC_WAIT32,
-                            dst,
-                            args: [addr, expected, timeout],
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::MemoryAtomicWait64 { memarg } => {
-                    let timeout = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let expected = allocator.pop(&ValueType::NumType(NumType::I64));
-                    let addr = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::AtomicWaitReg {
-                            handler_index: HANDLER_IDX_MEMORY_ATOMIC_WAIT64,
-                            dst,
-                            args: [addr, expected, timeout],
-                            offset: memarg.offset,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::AtomicFence => (
-                    Some(ProcessedInstr::MemoryOpsReg {
-                        handler_index: HANDLER_IDX_ATOMIC_FENCE,
-                        dst: None,
-                        args: Box::new([]),
-                        data_index: 0,
-                    }),
-                    None,
-                ),
-                wasmparser::Operator::MemorySize { .. } => {
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::MemoryOpsReg {
-                            handler_index: HANDLER_IDX_MEMORY_SIZE,
-                            dst: Some(dst),
-                            args: Box::new([]),
-                            data_index: 0,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::MemoryGrow { .. } => {
-                    let delta = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::MemoryOpsReg {
-                            handler_index: HANDLER_IDX_MEMORY_GROW,
-                            dst: Some(dst),
-                            args: Box::new([delta]),
-                            data_index: 0,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::MemoryCopy { .. } => {
-                    let len = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let src = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dest = allocator.pop(&ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::MemoryOpsReg {
-                            handler_index: HANDLER_IDX_MEMORY_COPY,
-                            dst: None,
-                            args: Box::new([dest, src, len]),
-                            data_index: 0,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::MemoryInit { data_index, .. } => {
-                    let len = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let offset = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dest = allocator.pop(&ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::MemoryOpsReg {
-                            handler_index: HANDLER_IDX_MEMORY_INIT,
-                            dst: None,
-                            args: Box::new([dest, offset, len]),
-                            data_index: *data_index,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::MemoryFill { .. } => {
-                    let size = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let val = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dest = allocator.pop(&ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::MemoryOpsReg {
-                            handler_index: HANDLER_IDX_MEMORY_FILL,
-                            dst: None,
-                            args: Box::new([dest, val, size]),
-                            data_index: 0,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::DataDrop { data_index } => (
-                    Some(ProcessedInstr::DataDropReg {
-                        data_index: *data_index,
-                    }),
-                    None,
-                ),
-
-                // Select instructions
-                wasmparser::Operator::TypedSelect { ty } => {
-                    // TypedSelect has explicit type
-                    let val_type = match_value_type(*ty);
-                    let cond = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let val2 = allocator.pop(&val_type);
-                    let val1 = allocator.pop(&val_type);
-                    let mut operands = [val1, val2, cond];
-                    fold_local_get_args(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        &mut operands,
-                    );
-                    let [val1, val2, cond] = operands;
-                    let dst = allocator.push(val_type);
-
-                    let handler_index = match &val_type {
-                        ValueType::NumType(NumType::I32) => HANDLER_IDX_SELECT_I32,
-                        ValueType::NumType(NumType::I64) => HANDLER_IDX_SELECT_I64,
-                        ValueType::NumType(NumType::F32) => HANDLER_IDX_SELECT_F32,
-                        ValueType::NumType(NumType::F64) => HANDLER_IDX_SELECT_F64,
-                        ValueType::RefType(_) => HANDLER_IDX_SELECT_I64,
-                        ValueType::VecType(_) => panic!("VecType not supported for Select"),
-                    };
-
-                    (
-                        Some(ProcessedInstr::SelectReg {
-                            handler_index,
-                            dst,
-                            val1,
-                            val2,
-                            cond,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::Select => {
-                    // Untyped Select: only supports i32/i64/f32/f64 (not reftype)
-                    let cond = allocator.pop(&ValueType::NumType(NumType::I32));
-
-                    // Use peek_type to determine the type of val2 (top of stack after cond)
-                    let val_type = allocator
-                        .peek_type()
-                        .cloned()
-                        .unwrap_or(ValueType::NumType(NumType::I32));
-                    let handler_index = match &val_type {
-                        ValueType::NumType(NumType::I32) => HANDLER_IDX_SELECT_I32,
-                        ValueType::NumType(NumType::I64) => HANDLER_IDX_SELECT_I64,
-                        ValueType::NumType(NumType::F32) => HANDLER_IDX_SELECT_F32,
-                        ValueType::NumType(NumType::F64) => HANDLER_IDX_SELECT_F64,
-                        _ => panic!("Select requires numeric values on stack"),
-                    };
-
-                    let val2 = allocator.pop(&val_type);
-                    let val1 = allocator.pop(&val_type);
-                    let mut operands = [val1, val2, cond];
-                    fold_local_get_args(
-                        &mut initial_processed_instrs,
-                        &mut look_back,
-                        &mut operands,
-                    );
-                    let [val1, val2, cond] = operands;
-                    let dst = allocator.push(val_type);
-
-                    (
-                        Some(ProcessedInstr::SelectReg {
-                            handler_index,
-                            dst,
-                            val1,
-                            val2,
-                            cond,
-                        }),
-                        None,
-                    )
-                }
-                wasmparser::Operator::RefNull { hty } => {
-                    let ref_type = match hty {
-                        wasmparser::HeapType::Func => RefType::FuncRef,
-                        wasmparser::HeapType::Extern => RefType::ExternalRef,
-                        _ => RefType::ExternalRef,
-                    };
-                    let dst = allocator.push(ValueType::RefType(ref_type));
-                    (
-                        Some(ProcessedInstr::TableRefReg {
-                            handler_index: HANDLER_IDX_REF_NULL,
-                            table_idx: 0,
-                            regs: [dst.index(), 0, 0],
-                            ref_type,
-                        }),
-                        None,
-                    )
-                }
-
-                wasmparser::Operator::RefIsNull => {
-                    // ref.is_null operates on reference types only
-                    let src = allocator.pop(&ValueType::RefType(RefType::FuncRef));
-                    let dst = allocator.push(ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::TableRefReg {
-                            handler_index: HANDLER_IDX_REF_IS_NULL,
-                            table_idx: 0,
-                            regs: [dst.index(), src.index(), 0],
-                            ref_type: RefType::FuncRef, // Not used for RefIsNull
-                        }),
-                        None,
-                    )
-                }
-
-                wasmparser::Operator::TableGet { table } => {
-                    // table.get: [i32] -> [ref]
-                    let ref_type_vt = get_table_element_type(module, *table);
-                    let idx = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let dst = allocator.push(ref_type_vt);
-                    let ref_type = match ref_type_vt {
-                        ValueType::RefType(rt) => rt,
-                        _ => RefType::FuncRef,
-                    };
-                    (
-                        Some(ProcessedInstr::TableRefReg {
-                            handler_index: HANDLER_IDX_TABLE_GET,
-                            table_idx: *table,
-                            regs: [dst.index(), idx.index(), 0],
-                            ref_type,
-                        }),
-                        None,
-                    )
-                }
-
-                wasmparser::Operator::TableSet { table } => {
-                    // table.set: [i32, ref] -> []
-                    let ref_type_vt = get_table_element_type(module, *table);
-                    let val = allocator.pop(&ref_type_vt);
-                    let idx = allocator.pop(&ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::TableRefReg {
-                            handler_index: HANDLER_IDX_TABLE_SET,
-                            table_idx: *table,
-                            regs: [idx.index(), val.index(), 0],
-                            ref_type: RefType::FuncRef, // Not used for TableSet
-                        }),
-                        None,
-                    )
-                }
-
-                wasmparser::Operator::TableFill { table } => {
-                    // table.fill: [i32, ref, i32] -> []
-                    let ref_type_vt = get_table_element_type(module, *table);
-                    let n = allocator.pop(&ValueType::NumType(NumType::I32));
-                    let val = allocator.pop(&ref_type_vt);
-                    let i = allocator.pop(&ValueType::NumType(NumType::I32));
-                    (
-                        Some(ProcessedInstr::TableRefReg {
-                            handler_index: HANDLER_IDX_TABLE_FILL,
-                            table_idx: *table,
-                            regs: [i.index(), val.index(), n.index()],
-                            ref_type: RefType::FuncRef, // Not used for TableFill
-                        }),
-                        None,
-                    )
-                }
-
-                _ => {
-                    panic!("Unsupported instruction: {:?}", op);
+                    ),
+                    index_reg,
+                    source_regs: source_regs.into_boxed_slice(),
+                })))
+            }
+            wasmparser::Operator::Return => {
+                let mut result_regs = pop_values(&mut allocator, result_types);
+                fold_local_get_args(&mut instrs, &mut look_back, &mut result_regs);
+                Some(ProcessedInstr::ReturnReg {
+                    result_regs: result_regs.into_boxed_slice(),
+                })
+            }
+            wasmparser::Operator::Call { function_index } => {
+                #[cfg(feature = "call_graph")]
+                if let Some(b) = cg_builder.as_mut() {
+                    b.record_call(FuncIdx(func_index as u32), FuncIdx(*function_index));
+                }
+                if let Some(ImportDesc::WasiFunc(wasi_type)) =
+                    get_imported_func_desc(module, *function_index)
+                {
+                    let func_type = wasi_type.expected_func_type();
+                    let mut param_regs = pop_values(&mut allocator, &func_type.params);
+                    fold_local_get_args(&mut instrs, &mut look_back, &mut param_regs);
+                    let result_reg = func_type.results.first().map(|ty| allocator.push(*ty));
+                    Some(ProcessedInstr::CallWasiReg {
+                        wasi_func_type: *wasi_type,
+                        param_regs: param_regs.into_boxed_slice(),
+                        result_reg,
+                    })
+                } else {
+                    let func_type = get_func_type(module, *function_index);
+                    let mut param_regs = pop_values(&mut allocator, &func_type.params);
+                    fold_local_get_args(&mut instrs, &mut look_back, &mut param_regs);
+                    let result_regs = push_values(&mut allocator, &func_type.results);
+                    Some(ProcessedInstr::CallReg {
+                        func_idx: FuncIdx(*function_index),
+                        param_regs: param_regs.into_boxed_slice(),
+                        result_regs,
+                    })
                 }
             }
-        } else {
-            panic!("Register allocator is required");
+            wasmparser::Operator::CallIndirect {
+                type_index,
+                table_index,
+                ..
+            } => {
+                let func_type = module
+                    .types
+                    .get(*type_index as usize)
+                    .cloned()
+                    .unwrap_or_default();
+                let index_reg = allocator.pop(&ValueType::I32);
+                let mut regs = pop_values(&mut allocator, &func_type.params);
+                // The index sits above the params on the stack.
+                regs.push(index_reg);
+                fold_local_get_args(&mut instrs, &mut look_back, &mut regs);
+                let index_reg = regs.pop().unwrap();
+                let result_regs = push_values(&mut allocator, &func_type.results);
+                #[cfg(feature = "call_graph")]
+                if let Some(b) = cg_builder.as_mut() {
+                    b.record_call_indirect(FuncIdx(func_index as u32), TypeIdx(*type_index));
+                }
+                Some(ProcessedInstr::CallIndirectReg {
+                    type_idx: TypeIdx(*type_index),
+                    table_idx: TableIdx(*table_index),
+                    index_reg,
+                    param_regs: regs.into_boxed_slice(),
+                    result_regs,
+                })
+            }
+            wasmparser::Operator::Nop => None,
+            wasmparser::Operator::Unreachable => Some(ProcessedInstr::UnreachableReg),
+            wasmparser::Operator::Drop => {
+                allocator.pop_any();
+                dropped_since_emit = true;
+                None
+            }
+
+            // Parametric
+            wasmparser::Operator::TypedSelect { ty } => {
+                let cond = allocator.pop(&ValueType::I32);
+                let val_type = match_value_type(*ty);
+                let handler_index = match val_type {
+                    ValueType::RefType(_) => HANDLER_IDX_SELECT_I64,
+                    _ => numeric_handler(val_type, SELECT_HANDLERS),
+                };
+                Some(select_instr(
+                    &mut allocator,
+                    &mut instrs,
+                    &mut look_back,
+                    cond,
+                    val_type,
+                    handler_index,
+                ))
+            }
+            wasmparser::Operator::Select => {
+                // Untyped `select` takes numeric values only; the stack says which.
+                let cond = allocator.pop(&ValueType::I32);
+                let val_type = allocator.peek_type().copied().unwrap_or(ValueType::I32);
+                let handler_index = numeric_handler(val_type, SELECT_HANDLERS);
+                Some(select_instr(
+                    &mut allocator,
+                    &mut instrs,
+                    &mut look_back,
+                    cond,
+                    val_type,
+                    handler_index,
+                ))
+            }
+
+            // References and tables
+            wasmparser::Operator::RefNull { hty } => {
+                let ref_type = match hty {
+                    wasmparser::HeapType::Func => RefType::FuncRef,
+                    _ => RefType::ExternalRef,
+                };
+                let dst = allocator.push(ValueType::RefType(ref_type));
+                Some(ProcessedInstr::TableRefReg {
+                    handler_index: HANDLER_IDX_REF_NULL,
+                    table_idx: 0,
+                    regs: [dst.index(), 0, 0],
+                    ref_type,
+                })
+            }
+            wasmparser::Operator::RefIsNull => {
+                let src = allocator.pop(&ValueType::RefType(RefType::FuncRef));
+                let dst = allocator.push(ValueType::I32);
+                Some(ProcessedInstr::TableRefReg {
+                    handler_index: HANDLER_IDX_REF_IS_NULL,
+                    table_idx: 0,
+                    regs: [dst.index(), src.index(), 0],
+                    ref_type: RefType::FuncRef,
+                })
+            }
+            wasmparser::Operator::TableGet { table } => {
+                let elem_type = get_table_element_type(module, *table);
+                let idx = allocator.pop(&ValueType::I32);
+                let dst = allocator.push(elem_type);
+                let ref_type = match elem_type {
+                    ValueType::RefType(ref_type) => ref_type,
+                    _ => RefType::FuncRef,
+                };
+                Some(ProcessedInstr::TableRefReg {
+                    handler_index: HANDLER_IDX_TABLE_GET,
+                    table_idx: *table,
+                    regs: [dst.index(), idx.index(), 0],
+                    ref_type,
+                })
+            }
+            wasmparser::Operator::TableSet { table } => {
+                let elem_type = get_table_element_type(module, *table);
+                let val = allocator.pop(&elem_type);
+                let idx = allocator.pop(&ValueType::I32);
+                Some(ProcessedInstr::TableRefReg {
+                    handler_index: HANDLER_IDX_TABLE_SET,
+                    table_idx: *table,
+                    regs: [idx.index(), val.index(), 0],
+                    ref_type: RefType::FuncRef,
+                })
+            }
+            wasmparser::Operator::TableFill { table } => {
+                let elem_type = get_table_element_type(module, *table);
+                let n = allocator.pop(&ValueType::I32);
+                let val = allocator.pop(&elem_type);
+                let i = allocator.pop(&ValueType::I32);
+                Some(ProcessedInstr::TableRefReg {
+                    handler_index: HANDLER_IDX_TABLE_FILL,
+                    table_idx: *table,
+                    regs: [i.index(), val.index(), n.index()],
+                    ref_type: RefType::FuncRef,
+                })
+            }
+
+            _ => panic!("Unsupported instruction: {:?}", op),
         };
 
-        let processed_instr_template = processed_instr;
-
-        // --- Update Maps and Stacks based on operator ---
-        match op {
-            wasmparser::Operator::Block { blockty } => {
-                control_stack_for_map_building.push((current_processed_pc, false, None));
-                block_type_map.insert(current_processed_pc, blockty);
+        // Block boundaries, for the branch resolution of Phase 2.
+        match &op {
+            wasmparser::Operator::Block { .. } | wasmparser::Operator::Loop { .. } => {
+                open_blocks.push((pc, false, None))
             }
-            wasmparser::Operator::Loop { blockty } => {
-                control_stack_for_map_building.push((current_processed_pc, false, None));
-                block_type_map.insert(current_processed_pc, blockty);
-            }
-            wasmparser::Operator::If { blockty } => {
-                control_stack_for_map_building.push((current_processed_pc, true, None));
-                block_type_map.insert(current_processed_pc, blockty);
-            }
-            wasmparser::Operator::Else => {
-                if let Some((_, true, else_pc @ None)) = control_stack_for_map_building.last_mut() {
-                    *else_pc = Some(current_processed_pc + 1);
-                } else {
+            wasmparser::Operator::If { .. } => open_blocks.push((pc, true, None)),
+            wasmparser::Operator::Else => match open_blocks.last_mut() {
+                Some((_, true, else_pc @ None)) => *else_pc = Some(pc + 1),
+                _ => {
                     return Err(Box::new(RuntimeError::InvalidWasm(
                         "Else without corresponding If or If already has Else",
-                    )) as Box<dyn std::error::Error>);
+                    )))
                 }
-            }
-            wasmparser::Operator::End => {
-                if let Some((start_pc, is_if, else_pc_opt)) = control_stack_for_map_building.pop() {
-                    block_end_map.insert(start_pc, current_processed_pc + 1);
+            },
+            wasmparser::Operator::End => match open_blocks.pop() {
+                Some((start_pc, is_if, else_pc)) => {
+                    block_end_map.insert(start_pc, pc + 1);
                     if is_if {
-                        let else_target = else_pc_opt.unwrap_or(current_processed_pc + 1);
-                        if_else_map.insert(start_pc, else_target);
-                    }
-                } else {
-                    if ops.peek().is_none() {
-                    } else {
-                        return Err(Box::new(RuntimeError::InvalidWasm("Unmatched EndMarker"))
-                            as Box<dyn std::error::Error>);
+                        if_else_map.insert(start_pc, else_pc.unwrap_or(pc + 1));
                     }
                 }
-            }
+                // The function's own end.
+                None if ops.peek().is_none() => {}
+                None => return Err(Box::new(RuntimeError::InvalidWasm("Unmatched EndMarker"))),
+            },
             _ => {}
         }
 
-        // All instructions are now register-based
-        // Only push if we have an instruction (None means folded away)
-        if let Some(instr) = processed_instr_template {
-            initial_processed_instrs.push(instr);
+        if let Some(instr) = instr {
+            instrs.push(instr);
             dropped_since_emit = false;
-            if let Some(fixup_info) = fixup_info_opt {
-                initial_fixups.push(fixup_info);
-            }
-
-            // Update control_info_stack and block_result_regs_map
-            match op {
-                wasmparser::Operator::Block { .. } => {
-                    // Register for BrTable resolution (always needed)
-                    if let Some(block_info) = control_info_stack.last() {
-                        block_result_regs_map.insert(
-                            current_processed_pc,
-                            (block_info.result_regs.clone(), false),
-                        );
-                    }
-                }
-                wasmparser::Operator::Loop { .. } => {
-                    // Register for BrTable resolution (always needed)
-                    // For loops, register param_regs (used when branching to loop)
-                    if let Some(block_info) = control_info_stack.last() {
-                        block_result_regs_map
-                            .insert(current_processed_pc, (block_info.param_regs.clone(), true));
-                    }
-                }
-                wasmparser::Operator::If { .. } => {
-                    // Register for BrTable resolution (always needed)
-                    if let Some(block_info) = control_info_stack.last() {
-                        block_result_regs_map.insert(
-                            current_processed_pc,
-                            (block_info.result_regs.clone(), false),
-                        );
-                    }
-                }
-                wasmparser::Operator::End => {
-                    // Register mode End already popped in its match arm above
-                }
-                _ => {}
-            }
-
-            // Mark following code as unreachable after unconditional control flow
-            match op {
+            if matches!(
+                op,
                 wasmparser::Operator::Br { .. }
-                | wasmparser::Operator::BrTable { .. }
-                | wasmparser::Operator::Return
-                | wasmparser::Operator::Unreachable => {
-                    unreachable_depth = 1;
-                }
-                _ => {}
+                    | wasmparser::Operator::BrTable { .. }
+                    | wasmparser::Operator::Return
+                    | wasmparser::Operator::Unreachable
+            ) {
+                unreachable_depth = 1;
             }
-
-            current_processed_pc += 1;
         }
     }
 
-    if !control_stack_for_map_building.is_empty() {
+    if !open_blocks.is_empty() {
         return Err(Box::new(RuntimeError::InvalidWasm(
             "Unclosed control block at end of function",
-        )) as Box<dyn std::error::Error>);
+        )));
     }
 
-    // Finalize register allocation if in register mode
-    let reg_allocation = reg_allocator.map(|alloc| alloc.finalize());
-
-    Ok((
-        initial_processed_instrs,
-        initial_fixups,
+    Ok(DecodedBody {
+        instrs,
+        fixups,
         block_end_map,
         if_else_map,
-        block_type_map,
-        reg_allocation,
-        block_result_regs_map,
+        reg_allocation: allocator.finalize(),
         const_pool,
-    ))
+    })
 }
 
 /// `fold_local_get_args` for one register.
@@ -7395,10 +2507,9 @@ fn fold_local_get_arg(instrs: &mut [ProcessedInstr], at: &mut usize, reg: Reg) -
 }
 
 /// Lets an instruction that takes plain registers read them from the locals.
-/// Each `local.get` copy before `*at` that feeds a register in `regs` becomes
-/// a no-op, and that register is replaced by the local's own. Any other
-/// instruction that wrote the register is stepped over: it wrote no local,
-/// so the copies before it still hold.
+/// Each `local.get` copy before `*at` that feeds a register in `regs` becomes a no-op, and that register is replaced by the local's own.
+/// Any other instruction that wrote the register is stepped over:
+/// it wrote no local, so the copies before it still hold.
 fn fold_local_get_args(instrs: &mut [ProcessedInstr], at: &mut usize, regs: &mut [Reg]) {
     macro_rules! copied_local {
         ($handler:expr, $src1:expr, $operand:ident, $variant:ident) => {
@@ -7459,85 +2570,37 @@ fn fold_local_get_args(instrs: &mut [ProcessedInstr], at: &mut usize, regs: &mut
     }
 }
 
-/// Compute source_regs and target_result_regs for branch instructions
-/// source_regs: current stack top registers that will be copied
-/// target_result_regs: where to copy them (the target block's result registers, or param_regs for loops)
-fn compute_branch_regs(
+/// The registers a branch of `depth` copies: the values on top of the operand stack,
+/// and the target's result registers.
+/// A loop takes its parameters where they already are, so it needs no copy.
+/// Past the outermost block the target is the function end, whose registers the fixup fills in.
+fn branch_regs(
     control_info_stack: &[ControlBlockInfo],
-    relative_depth: usize,
-    reg_allocator: Option<&RegAllocator>,
+    depth: usize,
+    allocator: &RegAllocator,
+    result_types: &[ValueType],
 ) -> (Vec<Reg>, Vec<Reg>) {
-    // Get target block from control_info_stack
-    let stack_len = control_info_stack.len();
-    if stack_len == 0 || relative_depth >= stack_len {
+    let Some(target) = control_info_stack
+        .len()
+        .checked_sub(1 + depth)
+        .map(|i| &control_info_stack[i])
+    else {
+        return (allocator.peek_regs_for_types(result_types), Vec::new());
+    };
+    if target.is_loop {
         return (Vec::new(), Vec::new());
     }
-
-    let target_idx = stack_len - 1 - relative_depth;
-    let target_block = &control_info_stack[target_idx];
-    // For loops, use param_regs (branch provides parameters)
-    // For blocks/if, use result_regs (branch provides results)
-    let target_result_regs = if target_block.is_loop {
-        target_block.param_regs.clone()
-    } else {
-        target_block.result_regs.clone()
-    };
-
-    // Compute source_regs from current allocator state
-    let source_regs = if let Some(allocator) = reg_allocator {
-        // Get the registers at stack top matching result types
-        let result_count = target_result_regs.len();
-        if result_count == 0 {
-            Vec::new()
-        } else {
-            // Get current state and compute source registers
-            let state = allocator.save_state();
-            target_result_regs
-                .iter()
-                .enumerate()
-                .map(|(i, target_reg)| {
-                    // Source register is at current_depth - result_count + i
-                    match target_reg {
-                        Reg::I32(_) => {
-                            let src_idx = state.i32_depth.saturating_sub(result_count - i);
-                            Reg::I32(src_idx as u16)
-                        }
-                        Reg::I64(_) => {
-                            let src_idx = state.i64_depth.saturating_sub(result_count - i);
-                            Reg::I64(src_idx as u16)
-                        }
-                        Reg::F32(_) => {
-                            let src_idx = state.f32_depth.saturating_sub(result_count - i);
-                            Reg::F32(src_idx as u16)
-                        }
-                        Reg::F64(_) => {
-                            let src_idx = state.f64_depth.saturating_sub(result_count - i);
-                            Reg::F64(src_idx as u16)
-                        }
-                        Reg::Ref(_) => {
-                            let src_idx = state.ref_depth.saturating_sub(result_count - i);
-                            Reg::Ref(src_idx as u16)
-                        }
-                        Reg::V128(_) => {
-                            let src_idx = state.v128_depth.saturating_sub(result_count - i);
-                            Reg::V128(src_idx as u16)
-                        }
-                    }
-                })
-                .collect()
-        }
-    } else {
-        Vec::new()
-    };
-
-    (source_regs, target_result_regs)
+    let types: Vec<ValueType> = target.result_regs.iter().map(Reg::value_type).collect();
+    (
+        allocator.peek_regs_for_types(&types),
+        target.result_regs.clone(),
+    )
 }
 
 /// Parses a WebAssembly binary file and populates the module structure.
 ///
-/// This is the main entry point for loading a WebAssembly module. It reads
-/// the binary file, parses all sections using wasmparser, and preprocesses
-/// instructions for efficient interpretation.
+/// This is the main entry point for loading a WebAssembly module.
+/// It reads the binary file, parses all sections using wasmparser, and preprocesses instructions for efficient interpretation.
 ///
 /// Output returned by [`parse_bytecode`].
 pub struct ParseOutput {
@@ -7555,7 +2618,6 @@ pub fn parse_bytecode(
     path: &str,
 ) -> Result<ParseOutput, Box<dyn std::error::Error>> {
     let mut current_func_index = module.num_imported_funcs;
-    let mut arity_cache = BlockArityCache::new();
     #[cfg(feature = "call_graph")]
     let mut cg_builder = CallGraphBuilder::new();
 
@@ -7639,7 +2701,6 @@ pub fn parse_bytecode(
                     body,
                     &mut module,
                     current_func_index,
-                    &mut arity_cache,
                     #[cfg(feature = "call_graph")]
                     Some(&mut cg_builder),
                 );

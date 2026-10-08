@@ -87,53 +87,33 @@ fn parse_args_string(args: &str) -> Vec<String> {
     result
 }
 
+/// Parses `I32(5)`-style parameters; anything else is skipped.
 fn parse_params(params: Vec<String>) -> Vec<Val> {
-    let mut parsed: Vec<Val> = Vec::new();
     let re = Regex::new(r"(?<=\().*(?=\))").unwrap();
+    let mut parsed = Vec::new();
     for param in params {
-        if param.contains("I32") {
-            let captures = re
-                .captures(&param)
+        let value = || {
+            re.captures(&param)
                 .expect("Error running regex")
                 .expect("No match found")
                 .get(0)
-                .expect("No group");
-            parsed.push(Val::Num(Num::I32(
-                captures.as_str().parse::<i32>().unwrap(),
-            )));
+                .expect("No group")
+                .as_str()
+        };
+        let num = if param.contains("I32") {
+            Num::I32(value().parse().unwrap())
         } else if param.contains("I64") {
-            let captures = re
-                .captures(&param)
-                .expect("Error running regex")
-                .expect("No match found")
-                .get(0)
-                .expect("No group");
-            parsed.push(Val::Num(Num::I64(
-                captures.as_str().parse::<i64>().unwrap(),
-            )));
+            Num::I64(value().parse().unwrap())
         } else if param.contains("F32") {
-            let captures = re
-                .captures(&param)
-                .expect("Error running regex")
-                .expect("No match found")
-                .get(0)
-                .expect("No group");
-            parsed.push(Val::Num(Num::F32(
-                captures.as_str().parse::<f32>().unwrap(),
-            )));
+            Num::F32(value().parse().unwrap())
         } else if param.contains("F64") {
-            let captures = re
-                .captures(&param)
-                .expect("Error running regex")
-                .expect("No match found")
-                .get(0)
-                .expect("No group");
-            parsed.push(Val::Num(Num::F64(
-                captures.as_str().parse::<f64>().unwrap(),
-            )));
-        }
+            Num::F64(value().parse().unwrap())
+        } else {
+            continue;
+        };
+        parsed.push(Val::Num(num));
     }
-    return parsed;
+    parsed
 }
 
 fn main() -> Result<()> {
@@ -172,8 +152,8 @@ fn main() -> Result<()> {
         eprintln!("         Rebuild with: cargo build --features trace");
     }
 
-    // Warn if --trace is combined with the tco feature: the tail-call
-    // dispatcher has no central loop to hook, so tracing is unsupported there.
+    // Warn if --trace is combined with the tco feature: the tail-call dispatcher has no central loop to hook,
+    // so tracing is unsupported there.
     #[cfg(all(feature = "trace", feature = "tco"))]
     if cli.enable_trace {
         eprintln!("Warning: --trace is ignored because the 'tco' feature is enabled.");
@@ -210,8 +190,8 @@ fn main() -> Result<()> {
         wasm_argv.extend(additional_args);
     }
 
-    // With wasi-threads every thread gets its own instance of the module, all
-    // bound to the one memory the context owns -- this one included.
+    // With wasi-threads every thread gets its own instance of the module,
+    // all bound to the one memory the context owns -- this one included.
     #[cfg(feature = "threads")]
     let thread_ctx = if cli.enable_threads {
         let ctx = ThreadContext::new(Shared::clone(&module), wasm_argv.clone());
@@ -275,8 +255,7 @@ fn main() -> Result<()> {
         };
         let main_thread = threads.remove(main_index);
 
-        // Resumed before this thread does, which would otherwise end the
-        // process on its own.
+        // Resumed before this thread does, which would otherwise end the process on its own.
         #[cfg(feature = "threads")]
         if let Some(ctx) = thread_ctx.as_ref() {
             ctx.set_next_tid(state.next_tid);
@@ -298,8 +277,7 @@ fn main() -> Result<()> {
         let result = runtime.run();
         handle_result(result);
     } else {
-        // A restore resumes mid-execution, so the start function only runs on
-        // a fresh instantiation.
+        // A restore resumes mid-execution, so the start function only runs on  a fresh instantiation.
         run_start_section(&inst)?;
 
         let func_addr = inst.get_export_func(&cli.invoke)?;

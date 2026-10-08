@@ -74,12 +74,6 @@ impl VmState {
         unsafe { &*self.instrs.add(self.pc) }
     }
 
-    /// Handler function pointer at the given `pc`.
-    #[inline(always)]
-    pub fn handler_at(&self, pc: usize) -> Handler {
-        unsafe { *self.handlers.add(pc) }
-    }
-
     /// Shared reference to the register file.
     #[inline(always)]
     pub fn reg_file(&self) -> &RegFile {
@@ -230,10 +224,9 @@ impl Stacks {
                     return Err(RuntimeError::InvalidParameterCount);
                 }
 
-                // Locals live in the register file. `save_offsets` opens this
-                // frame's register window and zero-initializes the declared
-                // locals; the params are then scattered into their local slots.
-                let mut reg_file = RegFile::new_global();
+                // Locals live in the register file. `save_offsets` opens this frame's register window and zero-initializes the declared locals;
+                // the params are then scattered into their local slots.
+                let mut reg_file = RegFile::new();
                 if let Some(alloc) = code.reg_allocation.as_ref() {
                     reg_file.save_offsets(alloc);
                     reg_file.write_params(&params, &alloc.local_regs);
@@ -261,13 +254,10 @@ impl Stacks {
                     activation_frame_stack: vec![initial_frame],
                 })
             }
-            FuncInst::HostFunc { .. } => Err(RuntimeError::UnimplementedHostFunction),
-            FuncInst::WasiFunc { .. } => Err(RuntimeError::UnimplementedHostFunction),
+            FuncInst::HostFunc { .. } | FuncInst::WasiFunc { .. } => {
+                Err(RuntimeError::UnimplementedHostFunction)
+            }
         }
-    }
-
-    pub fn get_reg_file_and_frames(&mut self) -> (&mut RegFile, &mut Vec<FrameStack>) {
-        (&mut self.reg_file, &mut self.activation_frame_stack)
     }
 }
 
@@ -283,8 +273,7 @@ pub struct FrameStack {
     pub frame: Frame,
     /// Index in the module's `func_addrs` of the function this frame runs.
     pub func_idx: u32,
-    /// Program counter within this frame's body. Saved when the frame yields
-    /// (call/checkpoint) and used to resume execution.
+    /// Program counter within this frame's body. Saved when the frame yields (call/checkpoint) and used to resume execution.
     pub ip: usize,
     #[serde(skip)]
     pub enable_checkpoint: bool,

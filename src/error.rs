@@ -16,8 +16,6 @@ pub enum RuntimeError {
     IntegerOverflow,
     #[error("Link Failed")]
     LinkError,
-    #[error("Stack Error: {0}")]
-    StackError(&'static str),
     #[error("Invalid Handler Index")]
     InvalidHandlerIndex,
     #[error("Memory Instance Not Found")]
@@ -76,28 +74,4 @@ pub enum ParserError {
         expected: String,
         actual: String,
     },
-}
-
-#[derive(Debug, Error, Clone, PartialEq)]
-pub enum StackError {
-    #[error("Stack Underflow")]
-    StackUnderflow,
-    #[error("Value Type Mismatch")]
-    ValueTypeMismatch,
-    #[error("Invalid Label Stack Index: {0}")]
-    InvalidLabelStackIndex(usize),
-    #[error("Invalid Frame Stack Index: {0}")]
-    InvalidFrameStackIndex(usize),
-    #[error("Invalid Local Index: {0}")]
-    InvalidLocalIndex(usize),
-    #[error("Invalid Target Label Stack Index for Branch: {0}")]
-    InvalidBranchTargetIndex(usize),
-    #[error("Frame Stack Underflow")]
-    FrameStackUnderflow,
-    #[error("Label Stack Underflow")]
-    LabelStackUnderflow,
-    #[error("Empty Operand Stack during result transfer")]
-    EmptyOperandStackForResult,
-    #[error("Attempted to pop from empty label stack")]
-    PopEmptyLabelStack,
 }

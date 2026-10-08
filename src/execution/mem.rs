@@ -72,28 +72,6 @@ impl MemAddr {
         mem.data[offset..offset + init.len()].copy_from_slice(init);
     }
 
-    /// Loads a typed value from memory at ptr + offset.
-    /// No bounds checking - relies on host runtime for memory safety.
-    /// No heap allocation - reads directly from memory pointer.
-    #[inline(always)]
-    pub fn load<T: ByteMem>(&self, offset: u64, ptr: i32) -> T {
-        let pos = (ptr as usize) + (offset as usize);
-        // Safety: Single-threaded access, no overlapping borrows
-        let mem = unsafe { &*self.mem_inst.get() };
-        unsafe { T::read_from_ptr(mem.data.as_ptr().add(pos)) }
-    }
-
-    /// Stores a typed value to memory at ptr + offset.
-    /// No bounds checking - relies on host runtime for memory safety.
-    /// No heap allocation - writes directly to memory pointer.
-    #[inline(always)]
-    pub fn store<T: ByteMem>(&self, offset: u64, ptr: i32, data: T) {
-        let pos = (ptr as usize) + (offset as usize);
-        // Safety: Single-threaded access, no overlapping borrows
-        let mem = unsafe { &mut *self.mem_inst.get() };
-        unsafe { data.write_to_ptr(mem.data.as_mut_ptr().add(pos)) }
-    }
-
     /// Returns raw mutable pointer to memory data for caching.
     /// Safety: Caller must ensure pointer is not used after memory grows.
     #[inline(always)]
@@ -220,22 +198,6 @@ impl MemAddr {
         }
     }
 
-    /// Returns a raw pointer to the memory data for direct access.
-    /// # Safety
-    /// Caller must ensure no mutable aliases exist during use.
-    #[inline]
-    pub unsafe fn get_data_ptr(&self) -> *const u8 {
-        (*self.mem_inst.get()).data.as_ptr()
-    }
-
-    /// Returns a mutable raw pointer to the memory data for direct access.
-    /// # Safety
-    /// Caller must ensure no other references exist during use.
-    #[inline]
-    pub unsafe fn get_data_mut_ptr(&self) -> *mut u8 {
-        (*self.mem_inst.get()).data.as_mut_ptr()
-    }
-
     /// Returns the length of the memory data.
     #[inline]
     pub fn data_len(&self) -> usize {
@@ -253,118 +215,5 @@ impl MemAddr {
     pub fn get_memory_direct_access(&self) -> &MemInst {
         // Safety: Single-threaded access, caller must ensure no overlapping mutable access
         unsafe { &*self.mem_inst.get() }
-    }
-}
-
-/// Trait for types that can be loaded/stored from memory.
-/// Uses direct pointer access to avoid heap allocations.
-pub trait ByteMem: Sized {
-    /// Read value directly from memory pointer (little-endian).
-    /// # Safety
-    /// Caller must ensure ptr is valid and properly aligned for the type.
-    unsafe fn read_from_ptr(ptr: *const u8) -> Self;
-
-    /// Write value directly to memory pointer (little-endian).
-    /// # Safety
-    /// Caller must ensure ptr is valid and has enough space.
-    unsafe fn write_to_ptr(self, ptr: *mut u8);
-}
-
-impl ByteMem for i8 {
-    #[inline]
-    unsafe fn read_from_ptr(ptr: *const u8) -> i8 {
-        *ptr as i8
-    }
-    #[inline]
-    unsafe fn write_to_ptr(self, ptr: *mut u8) {
-        *ptr = self as u8;
-    }
-}
-
-impl ByteMem for u8 {
-    #[inline]
-    unsafe fn read_from_ptr(ptr: *const u8) -> u8 {
-        *ptr
-    }
-    #[inline]
-    unsafe fn write_to_ptr(self, ptr: *mut u8) {
-        *ptr = self;
-    }
-}
-
-impl ByteMem for i16 {
-    #[inline]
-    unsafe fn read_from_ptr(ptr: *const u8) -> i16 {
-        std::ptr::read_unaligned(ptr as *const i16).to_le()
-    }
-    #[inline]
-    unsafe fn write_to_ptr(self, ptr: *mut u8) {
-        std::ptr::write_unaligned(ptr as *mut i16, self.to_le());
-    }
-}
-
-impl ByteMem for u16 {
-    #[inline]
-    unsafe fn read_from_ptr(ptr: *const u8) -> u16 {
-        std::ptr::read_unaligned(ptr as *const u16).to_le()
-    }
-    #[inline]
-    unsafe fn write_to_ptr(self, ptr: *mut u8) {
-        std::ptr::write_unaligned(ptr as *mut u16, self.to_le());
-    }
-}
-
-impl ByteMem for i32 {
-    #[inline]
-    unsafe fn read_from_ptr(ptr: *const u8) -> i32 {
-        std::ptr::read_unaligned(ptr as *const i32).to_le()
-    }
-    #[inline]
-    unsafe fn write_to_ptr(self, ptr: *mut u8) {
-        std::ptr::write_unaligned(ptr as *mut i32, self.to_le());
-    }
-}
-
-impl ByteMem for u32 {
-    #[inline]
-    unsafe fn read_from_ptr(ptr: *const u8) -> u32 {
-        std::ptr::read_unaligned(ptr as *const u32).to_le()
-    }
-    #[inline]
-    unsafe fn write_to_ptr(self, ptr: *mut u8) {
-        std::ptr::write_unaligned(ptr as *mut u32, self.to_le());
-    }
-}
-
-impl ByteMem for i64 {
-    #[inline]
-    unsafe fn read_from_ptr(ptr: *const u8) -> i64 {
-        std::ptr::read_unaligned(ptr as *const i64).to_le()
-    }
-    #[inline]
-    unsafe fn write_to_ptr(self, ptr: *mut u8) {
-        std::ptr::write_unaligned(ptr as *mut i64, self.to_le());
-    }
-}
-
-impl ByteMem for f32 {
-    #[inline]
-    unsafe fn read_from_ptr(ptr: *const u8) -> f32 {
-        f32::from_bits(std::ptr::read_unaligned(ptr as *const u32).to_le())
-    }
-    #[inline]
-    unsafe fn write_to_ptr(self, ptr: *mut u8) {
-        std::ptr::write_unaligned(ptr as *mut u32, self.to_bits().to_le());
-    }
-}
-
-impl ByteMem for f64 {
-    #[inline]
-    unsafe fn read_from_ptr(ptr: *const u8) -> f64 {
-        f64::from_bits(std::ptr::read_unaligned(ptr as *const u64).to_le())
-    }
-    #[inline]
-    unsafe fn write_to_ptr(self, ptr: *mut u8) {
-        std::ptr::write_unaligned(ptr as *mut u64, self.to_bits().to_le());
     }
 }

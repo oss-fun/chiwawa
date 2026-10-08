@@ -13,7 +13,7 @@ use crate::execution::mem::MemAddr;
 use crate::execution::value::Val;
 use crate::structure::module::SocketExt;
 use crate::wasi::passthrough::{collect_iovecs, guest_range, PassthroughWasiImpl, WasiIovec};
-use crate::wasi::{WasiError, WasiResult};
+use crate::wasi::{Args, WasiError, WasiResult};
 use std::net::SocketAddr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,17 +208,11 @@ fn listen(params: &[Val]) -> WasiResult<()> {
 }
 
 pub(crate) fn param_i64(params: &[Val], i: usize) -> WasiResult<i64> {
-    params
-        .get(i)
-        .and_then(|v| v.to_i64().ok())
-        .ok_or(WasiError::Inval)
+    Args(params).i64(i)
 }
 
 pub(crate) fn param_i32(params: &[Val], i: usize) -> WasiResult<i32> {
-    params
-        .get(i)
-        .and_then(|v| v.to_i32().ok())
-        .ok_or(WasiError::Inval)
+    Args(params).i32(i)
 }
 
 /// The iovec array that parameters 1 and 2 describe, with host pointers.

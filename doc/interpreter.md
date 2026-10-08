@@ -18,23 +18,18 @@ To minimize this overhead, Chiwawa's interpreter is optimized for:
 
 ## Preprocessing Pipeline
 
-Chiwawa instantiates a module through a multi-phase pipeline:
+Chiwawa preprocesses each function body in three phases:
 
 ```
 Phase 1: Decode
   Parse Wasm bytecode, assign operands to typed registers,
-  apply operand folding, build instruction-to-position mapping
+  apply operand folding, record where each block ends
 
 Phase 2: Branch Resolution
-  Resolve Br, BrIf, If, Else targets to absolute positions in a single forward walk that maintains the control stack
+  Resolve br, br_if, br_table, if and else targets to absolute positions
+  in a single forward walk that maintains the control stack
 
-Phase 3: BrTable Resolution
-  Handle variable-target branch tables
-
-Phase 4: Fixup Check
-  Verify every branch target was resolved
-
-Phase 5: Compaction
+Phase 3: Compaction
   Strip no-op instructions and remap branch targets
 ```
 
