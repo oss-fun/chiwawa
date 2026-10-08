@@ -24,6 +24,13 @@ pub enum ValueType {
     RefType(RefType),
 }
 
+impl ValueType {
+    pub const I32: ValueType = ValueType::NumType(NumType::I32);
+    pub const I64: ValueType = ValueType::NumType(NumType::I64);
+    pub const F32: ValueType = ValueType::NumType(NumType::F32);
+    pub const F64: ValueType = ValueType::NumType(NumType::F64);
+}
+
 /// Numeric types (i32, i64, f32, f64).
 #[derive(PartialEq, Eq, Hash, Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum NumType {
@@ -49,7 +56,7 @@ pub enum RefType {
 /// Function type signature.
 ///
 /// Defines the parameter and result types of a function.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FuncType {
     pub params: Vec<ValueType>,
     pub results: Vec<ValueType>,
@@ -58,10 +65,6 @@ pub struct FuncType {
 impl FuncType {
     pub fn type_match(&self, other: &FuncType) -> bool {
         self == other
-    }
-
-    pub fn params(&self) -> &Vec<ValueType> {
-        &self.params
     }
 }
 
