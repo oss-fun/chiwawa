@@ -224,10 +224,9 @@ impl Stacks {
                     return Err(RuntimeError::InvalidParameterCount);
                 }
 
-                // Locals live in the register file. `save_offsets` opens this
-                // frame's register window and zero-initializes the declared
-                // locals; the params are then scattered into their local slots.
-                let mut reg_file = RegFile::new_global();
+                // Locals live in the register file. `save_offsets` opens this frame's register window and zero-initializes the declared locals;
+                // the params are then scattered into their local slots.
+                let mut reg_file = RegFile::new();
                 if let Some(alloc) = code.reg_allocation.as_ref() {
                     reg_file.save_offsets(alloc);
                     reg_file.write_params(&params, &alloc.local_regs);
@@ -274,8 +273,7 @@ pub struct FrameStack {
     pub frame: Frame,
     /// Index in the module's `func_addrs` of the function this frame runs.
     pub func_idx: u32,
-    /// Program counter within this frame's body. Saved when the frame yields
-    /// (call/checkpoint) and used to resume execution.
+    /// Program counter within this frame's body. Saved when the frame yields (call/checkpoint) and used to resume execution.
     pub ip: usize,
     #[serde(skip)]
     pub enable_checkpoint: bool,
