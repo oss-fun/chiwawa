@@ -400,11 +400,11 @@ fn decode_func_section(
 ///
 /// WASI Preview 1 function imports from `wasi_snapshot_preview1` are identified and stored with their specific `WasiFuncType` for passthrough handling.
 fn decode_import_section(
-    body: SectionLimited<'_, wasmparser::Import<'_>>,
+    body: SectionLimited<'_, wasmparser::Imports<'_>>,
     module: &mut Module,
     #[cfg(feature = "call_graph")] mut cg_builder: Option<&mut CallGraphBuilder>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    for import in body {
+    for import in body.into_imports() {
         let import = import?;
         let desc = match import.ty {
             TypeRef::Func(type_index) => {
@@ -470,6 +470,7 @@ fn decode_import_section(
                 ImportDesc::Global(GlobalType(mut_, value_type))
             }
             TypeRef::Tag(_) => todo!(),
+            TypeRef::FuncExact(_) => return Err("exact function types are not supported".into()),
         };
         module.imports.push(Import {
             module: Name(import.module.to_string()),
@@ -508,6 +509,7 @@ fn decode_export_section(
             ExternalKind::Memory => ExportDesc::Mem(MemIdx(index)),
             ExternalKind::Global => ExportDesc::Global(GlobalIdx(index)),
             ExternalKind::Tag => todo!(),
+            ExternalKind::FuncExact => return Err("exact function types are not supported".into()),
         };
         module.exports.push(Export {
             name: Name(export.name.to_string()),
@@ -627,7 +629,7 @@ fn parse_initexpr(expr: wasmparser::ConstExpr<'_>) -> Result<Expr, Box<dyn std::
 
             _ => {
                 return Err(Box::new(ParserError::InitExprUnsupportedOPCodeError {
-                    offset,
+                    offset: offset as usize,
                 }))
             }
         }
@@ -2377,7 +2379,10 @@ fn decode_processed_instrs_and_fixups<'a>(
             // References and tables
             wasmparser::Operator::RefNull { hty } => {
                 let ref_type = match hty {
-                    wasmparser::HeapType::Func => RefType::FuncRef,
+                    wasmparser::HeapType::Abstract {
+                        ty: wasmparser::AbstractHeapType::Func,
+                        ..
+                    } => RefType::FuncRef,
                     _ => RefType::ExternalRef,
                 };
                 let dst = allocator.push(ValueType::RefType(ref_type));
@@ -2725,6 +2730,9 @@ pub fn parse_bytecode(
             UnknownSection { .. } => { /* ... */ }
 
             End(_) => {}
+
+            // `Payload` is non-exhaustive; sections added by later proposals are ignored.
+            _ => {}
         }
     }
 
