@@ -101,7 +101,7 @@ fn atomic_wast() {
         // Line numbers make a failure locatable in the upstream file.
         let line = directive.span().linecol_in(&source).0 + 1;
         match directive {
-            WastDirective::Wat(mut wat) => match instantiate(&mut wat) {
+            WastDirective::Module(mut wat) => match instantiate(&mut wat) {
                 Ok(new) => {
                     inst = Some(new);
                     tally.passed += 1;
