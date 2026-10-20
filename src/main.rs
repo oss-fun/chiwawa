@@ -2,12 +2,13 @@ use anyhow::Result;
 #[cfg(feature = "trace")]
 use chiwawa::instrument::trace::TraceConfig;
 use chiwawa::{
+    execution::mem::MemAddr,
     execution::migration,
     execution::module::*,
     execution::runtime::{run_start_section, Runtime, RuntimeConfig},
     execution::value::*,
     parser,
-    structure::module::Module,
+    structure::module::{ImportDesc, Module},
 };
 #[cfg(feature = "threads")]
 use chiwawa::{shared::Shared, wasi::threads::ThreadContext};
@@ -85,6 +86,19 @@ fn parse_args_string(args: &str) -> Vec<String> {
     }
 
     result
+}
+
+fn host_imports(module: &Module) -> ImportObjects {
+    let mut imports: ImportObjects = FxHashMap::default();
+    for import in &module.imports {
+        if let ImportDesc::Mem(mem_type) = &import.desc {
+            imports.entry(import.module.0.clone()).or_default().insert(
+                import.name.0.clone(),
+                Externval::Mem(MemAddr::new(mem_type)),
+            );
+        }
+    }
+    imports
 }
 
 /// Parses `I32(5)`-style parameters; anything else is skipped.
@@ -182,8 +196,6 @@ fn main() -> Result<()> {
         }
     }
 
-    let imports: ImportObjects = FxHashMap::default();
-
     let mut wasm_argv = vec![cli.wasm_file.clone()];
     if let Some(args_string) = cli.app_args {
         let additional_args = parse_args_string(&args_string);
@@ -206,10 +218,10 @@ fn main() -> Result<()> {
     #[cfg(feature = "threads")]
     let inst = match thread_ctx.as_ref() {
         Some(ctx) => ctx.instantiate().unwrap(),
-        None => ModuleInst::new(&module, imports, wasm_argv).unwrap(),
+        None => ModuleInst::new(&module, host_imports(&module), wasm_argv).unwrap(),
     };
     #[cfg(not(feature = "threads"))]
-    let inst = ModuleInst::new(&module, imports, wasm_argv).unwrap();
+    let inst = ModuleInst::new(&module, host_imports(&module), wasm_argv).unwrap();
 
     // Create trace configuration if trace is enabled
     #[cfg(feature = "trace")]

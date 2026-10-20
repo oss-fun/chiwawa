@@ -11,7 +11,7 @@ pub mod func;
 pub(crate) mod global;
 pub(crate) mod handlers;
 pub(crate) mod ir;
-pub(crate) mod mem;
+pub mod mem;
 pub mod migration;
 pub mod module;
 mod operand;

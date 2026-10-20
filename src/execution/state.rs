@@ -167,8 +167,6 @@ impl VmState {
         unsafe { &*self.module }
     }
 
-    /// Like `module`, but does not borrow `self`. Sound because `Runtime` holds
-    /// the module for the whole run.
     #[inline(always)]
     pub fn module_static(&self) -> &'static ModuleInst {
         unsafe { &*self.module }
@@ -247,6 +245,7 @@ impl Stacks {
                     return_result_regs: ArrayVec::new(),
                     cached_mem_ptr,
                     code: code as *const Func,
+                    module: module.as_ptr(),
                 };
 
                 Ok(Stacks {
@@ -283,4 +282,6 @@ pub struct FrameStack {
     pub cached_mem_ptr: Option<*mut u8>,
     #[serde(skip, default = "std::ptr::null")]
     pub code: *const Func,
+    #[serde(skip, default = "std::ptr::null")]
+    pub module: *const ModuleInst,
 }
