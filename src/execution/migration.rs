@@ -341,6 +341,7 @@ pub fn restore_thread(module_inst: &Rc<ModuleInst>, data: &[u8]) -> Result<Stack
     let mut stacks = thread.stacks;
     for frame_stack in stacks.activation_frame_stack.iter_mut() {
         frame_stack.cached_mem_ptr = mem_ptr;
+        frame_stack.module = Rc::as_ptr(module_inst);
     }
     Ok(stacks)
 }

@@ -10,6 +10,7 @@ use crate::shared::Shared;
 use crate::structure::{instructions::*, module::*, types::*};
 use crate::wasi::passthrough::PassthroughWasiImpl;
 use rustc_hash::FxHashMap;
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -49,6 +50,26 @@ impl GetInstanceByIdx<GlobalIdx> for Vec<GlobalAddr> {}
 
 /// Map of module name -> (export name -> external value) for imports.
 pub type ImportObjects = FxHashMap<String, FxHashMap<String, Externval>>;
+
+thread_local! {
+    /// Instances whose segment initialization trapped.
+    static TRAPPED: RefCell<Vec<Rc<ModuleInst>>> = const { RefCell::new(Vec::new()) };
+}
+
+fn elem_func_indices(elem: &Elem) -> Vec<i32> {
+    elem.idxes
+        .iter()
+        .flatten()
+        .map(|idx| idx.0 as i32)
+        .collect()
+}
+
+fn limits_match(actual_size: u32, actual_max: Option<u32>, import: &Limits) -> bool {
+    actual_size >= import.min
+        && import
+            .max
+            .is_none_or(|max| actual_max.is_some_and(|actual| actual <= max))
+}
 
 impl ModuleInst {
     /// Instantiates a module with the given imports and command-line arguments.
@@ -95,13 +116,13 @@ impl ModuleInst {
         /*Import processing*/
         if module.imports.len() != 0 {
             for import in &module.imports {
+                let provided = imports
+                    .get(&import.module.0)
+                    .and_then(|module| module.get(&import.name.0))
+                    .cloned();
                 match &import.desc {
                     ImportDesc::Func(idx) => {
-                        let val = imports
-                            .get(&import.module.0)
-                            .and_then(|module| module.get(&import.name.0))
-                            .cloned()
-                            .ok_or_else(|| RuntimeError::LinkError)?;
+                        let val = provided.ok_or(RuntimeError::LinkError)?;
                         module_inst.func_addrs.push(
                             val.as_func()
                                 .filter(|func| {
@@ -120,15 +141,41 @@ impl ModuleInst {
                         module_inst.wasi_func_addrs.push(wasi_func_addr);
                     }
                     ImportDesc::Mem(mem_type) => {
-                        let mem = imports
-                            .get(&import.module.0)
-                            .and_then(|module| module.get(&import.name.0))
-                            .cloned()
-                            .and_then(|val| val.as_mem())
-                            .unwrap_or_else(|| MemAddr::new(mem_type));
+                        let mem = provided
+                            .and_then(Externval::as_mem)
+                            .ok_or(RuntimeError::LinkError)?;
+                        let matches = mem.is_shared() == mem_type.shared
+                            && limits_match(
+                                mem.mem_size() as u32,
+                                mem.max_pages(),
+                                &mem_type.limits,
+                            );
+                        if !matches {
+                            return Err(RuntimeError::LinkError);
+                        }
                         module_inst.mem_addrs.push(mem);
                     }
-                    _ => todo!(),
+                    ImportDesc::Table(table_type) => {
+                        let table = provided
+                            .and_then(Externval::as_table)
+                            .ok_or(RuntimeError::LinkError)?;
+                        let actual = table.table_type();
+                        let matches = actual.1 == table_type.1
+                            && limits_match(table.len() as u32, actual.0.max, &table_type.0);
+                        if !matches {
+                            return Err(RuntimeError::LinkError);
+                        }
+                        module_inst.table_addrs.push(table);
+                    }
+                    ImportDesc::Global(global_type) => {
+                        let global = provided
+                            .and_then(Externval::as_global)
+                            .ok_or(RuntimeError::LinkError)?;
+                        if global.global_type() != *global_type {
+                            return Err(RuntimeError::LinkError);
+                        }
+                        module_inst.global_addrs.push(global);
+                    }
                 }
             }
         }
@@ -162,59 +209,15 @@ impl ModuleInst {
             if elem.type_ == RefType::ExternalRef {
                 panic!();
             }
-            let mut init: Vec<i32> = Vec::new();
-            if let Some(idxes) = &elem.idxes {
-                for idx in idxes {
-                    init.push(idx.0 as i32);
-                }
-            }
+            let init = elem_func_indices(elem);
             module_inst
                 .elem_addrs
                 .push(ElemAddr::new(&elem.type_, &module_inst.func_addrs, &init));
-
-            if elem.mode == ElemMode::Active {
-                let offset_res = match &elem.offset {
-                    Some(x) => module_inst
-                        .expr_to_const(x)
-                        .ok_or(RuntimeError::InvalidConstantExpression)?
-                        .to_i32(),
-                    None => Ok(0),
-                };
-                let offset = offset_res?;
-
-                let table_idx = match &elem.table_idx {
-                    Some(i) => i.0,
-                    None => 0,
-                };
-                module_inst.table_addrs[table_idx as usize].init(
-                    offset as usize,
-                    &module_inst.func_addrs,
-                    &init,
-                );
-            }
         }
 
         for data in &module.datas {
             let init: Vec<u8> = data.init.iter().map(|x| x.0).collect();
             module_inst.data_addrs.push(DataAddr::new(&init));
-
-            if data.mode == DataMode::Active {
-                let offset_res = match &data.offset {
-                    Some(x) => module_inst
-                        .expr_to_const(x)
-                        .ok_or(RuntimeError::InvalidConstantExpression)?
-                        .to_i32(),
-                    None => Ok(0),
-                };
-                let offset = offset_res?;
-
-                let idx = match &data.memory {
-                    Some(i) => i.0,
-                    None => 0,
-                };
-
-                module_inst.mem_addrs[idx as usize].init(offset as usize, &init);
-            }
         }
 
         for export in &module.exports {
@@ -251,7 +254,44 @@ impl ModuleInst {
                 index as u32,
             );
         }
+
+        // Segments go in after the functions have their bodies: a table shared with another instance may hand them out before this one is done.
+        if let Err(e) = arc_module_inst.apply_active_segments(module) {
+            TRAPPED.with(|trapped| trapped.borrow_mut().push(Rc::clone(&arc_module_inst)));
+            return Err(e);
+        }
         Ok(arc_module_inst)
+    }
+
+    fn apply_active_segments(&self, module: &Module) -> Result<(), RuntimeError> {
+        for elem in module.elems.iter().filter(|e| e.mode == ElemMode::Active) {
+            let offset = self.segment_offset(elem.offset.as_ref())?;
+            let table_idx = elem.table_idx.map_or(0, |i| i.0);
+            self.table_addrs[table_idx as usize].init(
+                offset,
+                &self.func_addrs,
+                &elem_func_indices(elem),
+            )?;
+        }
+        for data in module.datas.iter().filter(|d| d.mode == DataMode::Active) {
+            let offset = self.segment_offset(data.offset.as_ref())?;
+            let init: Vec<u8> = data.init.iter().map(|x| x.0).collect();
+            let idx = data.memory.map_or(0, |i| i.0);
+            self.mem_addrs[idx as usize].init(offset, &init)?;
+        }
+        Ok(())
+    }
+
+    fn segment_offset(&self, offset: Option<&Expr>) -> Result<usize, RuntimeError> {
+        match offset {
+            Some(expr) => {
+                let value = self
+                    .expr_to_const(expr)
+                    .ok_or(RuntimeError::InvalidConstantExpression)?;
+                Ok(value.to_i32()? as u32 as usize)
+            }
+            None => Ok(0),
+        }
     }
 
     /// Looks up an exported function by name.

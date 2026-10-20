@@ -207,4 +207,20 @@ impl Externval {
             None
         }
     }
+
+    pub fn as_table(self) -> Option<TableAddr> {
+        if let Externval::Table(x) = self {
+            Some(x)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_global(self) -> Option<GlobalAddr> {
+        if let Externval::Global(x) = self {
+            Some(x)
+        } else {
+            None
+        }
+    }
 }

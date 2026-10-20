@@ -5,6 +5,7 @@ use super::{
     module::*,
     value::{self, Val},
 };
+use crate::error::RuntimeError;
 use crate::structure::types::*;
 use std::cell::{Ref, RefCell};
 use std::rc::Rc;
@@ -34,13 +35,33 @@ impl TableAddr {
         })))
     }
     /// Initializes table elements from function indices.
-    pub fn init(&self, offset: usize, funcs: &Vec<FuncAddr>, init: &Vec<i32>) {
+    pub fn init(
+        &self,
+        offset: usize,
+        funcs: &Vec<FuncAddr>,
+        init: &Vec<i32>,
+    ) -> Result<(), RuntimeError> {
         let mut addr_self = self.0.borrow_mut();
+        let fits = offset
+            .checked_add(init.len())
+            .is_some_and(|end| end <= addr_self.elem.len());
+        if !fits {
+            return Err(RuntimeError::OutOfBoundsTableAccess);
+        }
         for (index, f) in init.iter().enumerate() {
             addr_self.elem[index + offset] = Val::Ref(value::Ref::FuncAddr(
                 funcs.get_by_idx(FuncIdx(*f as u32)).clone(),
             ));
         }
+        Ok(())
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.borrow().elem.len()
+    }
+
+    pub fn table_type(&self) -> TableType {
+        self.0.borrow()._type_
     }
     /// Gets element at index. Out-of-bounds panics; host runtime traps.
     pub fn get(&self, i: usize) -> Val {

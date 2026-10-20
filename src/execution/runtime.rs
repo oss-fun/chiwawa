@@ -138,7 +138,6 @@ impl Runtime {
     /// Builds the dispatcher state for the frame on top of the stack. Called
     /// once per `run`; frame switches update the state in place.
     fn build_vm_state(&mut self) -> VmState {
-        let module_ptr: *const ModuleInst = Rc::as_ptr(&self.module_inst);
         let reg_file_ptr: *mut RegFile = &mut self.stacks.reg_file as *mut RegFile;
         let frames_ptr: *mut Vec<FrameStack> =
             &mut self.stacks.activation_frame_stack as *mut Vec<FrameStack>;
@@ -146,9 +145,11 @@ impl Runtime {
         // Body and handlers stay owned by the module for its whole lifetime, so
         // the frame names its function by index rather than holding an `Rc`.
         let frame_stack = self.stacks.activation_frame_stack.last().unwrap();
+        let module_ptr: *const ModuleInst = frame_stack.module;
+        let module = unsafe { &*module_ptr };
         let func_idx = frame_stack.func_idx;
         let (body_ptr, body_len, code_handlers_ptr, code_ptr) =
-            match self.module_inst.func_addrs[func_idx as usize].read_lock() {
+            match module.func_addrs[func_idx as usize].read_lock() {
                 FuncInst::RuntimeFunc { code, .. } => (
                     code.body.as_ptr(),
                     code.body.len(),
@@ -386,12 +387,13 @@ impl Runtime {
         func_type: &WasiFuncType,
         params: &[Val],
     ) -> WasiResult<Option<Val>> {
-        let wasi_impl = self
-            .module_inst
-            .wasi_impl
-            .as_ref()
-            .ok_or(WasiError::NoSys)?;
-        let memory = self.module_inst.mem_addrs.first().ok_or(WasiError::Fault)?;
+        // The yielding frame's instance owns the WASI state and the memory the call addresses.
+        let module = match self.stacks.activation_frame_stack.last() {
+            Some(frame) if !frame.module.is_null() => unsafe { &*frame.module },
+            _ => &*self.module_inst,
+        };
+        let wasi_impl = module.wasi_impl.as_ref().ok_or(WasiError::NoSys)?;
+        let memory = module.mem_addrs.first().ok_or(WasiError::Fault)?;
         let a = Args(params);
         let errno = match func_type {
             WasiFuncType::FdWrite => {

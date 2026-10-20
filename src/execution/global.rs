@@ -31,6 +31,10 @@ impl GlobalAddr {
         }
     }
 
+    pub fn global_type(&self) -> GlobalType {
+        self.global_inst.borrow()._type_
+    }
+
     /// Gets the current value.
     pub fn get(&self) -> Val {
         self.global_inst.borrow().value.clone()

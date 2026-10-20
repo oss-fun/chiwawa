@@ -1,5 +1,6 @@
 //! Linear memory instances and load/store operations.
 
+use crate::error::RuntimeError;
 use crate::shared::Shared;
 use crate::structure::types::*;
 use serde::{Deserialize, Serialize};
@@ -65,11 +66,22 @@ impl MemAddr {
     }
 
     /// Initializes memory region from data segment.
+    /// A segment that does not fit writes nothing and reports the trap.
     #[inline]
-    pub fn init(&self, offset: usize, init: &[u8]) {
+    pub fn init(&self, offset: usize, init: &[u8]) -> Result<(), RuntimeError> {
         // Safety: Single-threaded access, no overlapping borrows
         let mem = unsafe { &mut *self.mem_inst.get() };
-        mem.data[offset..offset + init.len()].copy_from_slice(init);
+        let end = offset
+            .checked_add(init.len())
+            .filter(|end| *end <= mem.data.len())
+            .ok_or(RuntimeError::OutOfBoundsMemoryAccess)?;
+        mem.data[offset..end].copy_from_slice(init);
+        Ok(())
+    }
+
+    pub fn max_pages(&self) -> Option<u32> {
+        let mem = unsafe { &*self.mem_inst.get() };
+        mem._type_.limits.max
     }
 
     /// Returns raw mutable pointer to memory data for caching.

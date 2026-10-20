@@ -26,7 +26,7 @@ use crate::execution::atomics;
 use crate::execution::func::{FuncAddr, FuncInst};
 use crate::execution::ir::{Handler, Outcome, ProcessedInstr, RegOrLocal};
 use crate::execution::mem::MemAddr;
-use crate::execution::module::GetInstanceByIdx;
+use crate::execution::module::{GetInstanceByIdx, ModuleInst};
 use crate::execution::operand;
 use crate::execution::regs::Reg;
 use crate::execution::state::{Frame, FrameStack, ModuleLevelInstr, VmState};
@@ -1444,9 +1444,9 @@ pub fn nop(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
-pub fn unreachable(_state: &mut VmState) -> Outcome {
-    // Wasm `unreachable`: delegate to host. panic! on wasm32 produces a host trap.
-    panic!("wasm unreachable executed")
+pub fn unreachable(state: &mut VmState) -> Outcome {
+    state.trap = Some(RuntimeError::Unreachable);
+    trap(state)
 }
 
 pub fn br(state: &mut VmState) -> Outcome {
@@ -1575,12 +1575,25 @@ pub fn jump(state: &mut VmState) -> Outcome {
 // A call into Wasm code enters the callee's frame without leaving the dispatcher.
 // A call into a host or WASI function prepares a `ModuleLevelInstr` in `state.yielded` and returns `Outcome::Yield` for the runtime, with `state.pc` already past the call so resume continues there.
 
+#[inline(always)]
+fn switch_module(state: &mut VmState, module: *const ModuleInst) {
+    if module != state.module {
+        state.module = module;
+        state.mem_ptr = state
+            .module()
+            .mem_addrs
+            .first()
+            .map_or(std::ptr::null_mut(), |mem| mem.data_ptr());
+    }
+}
+
 /// Enters `code` in a fresh frame: opens the callee's registers, records where its results go, pushes its frame, and retargets `state` at it.
 #[inline]
 fn enter_frame(
     state: &mut VmState,
     code: &Func,
     func_idx: u32,
+    module: *const ModuleInst,
     n_results: usize,
     param_regs: &[Reg],
     result_regs: &[Reg],
@@ -1593,12 +1606,13 @@ fn enter_frame(
         state.sync_reg_bases();
     }
 
-    let mem_ptr = state.mem_ptr;
     let pc = state.pc;
     let caller = state.frame_mut();
     caller.ip = pc;
     caller.result_regs = result_regs.iter().copied().collect();
 
+    switch_module(state, module);
+    let mem_ptr = state.mem_ptr;
     let new_frame = FrameStack {
         func_idx,
         frame: Frame { n: n_results },
@@ -1612,6 +1626,7 @@ fn enter_frame(
             Some(mem_ptr)
         },
         code: code as *const Func,
+        module,
     };
 
     let frames = unsafe { &mut *state.frames };
@@ -1645,11 +1660,15 @@ fn pop_frame(state: &mut VmState, result_src: &[Reg]) -> Outcome {
     caller.result_regs.clear();
 
     state.pc = caller.ip;
+    let caller_module = caller.module;
+    let caller_code = caller.code;
+    let caller_func_idx = caller.func_idx;
+    switch_module(state, caller_module);
 
     // A frame restored from a checkpoint has no cached code pointer.
-    let code: &Func = if caller.code.is_null() {
+    let code: &Func = if caller_code.is_null() {
         let module = state.module_static();
-        match module.func_addrs[caller.func_idx as usize].read_lock() {
+        match module.func_addrs[caller_func_idx as usize].read_lock() {
             FuncInst::RuntimeFunc { code, .. } => code,
             _ => unsafe { std::hint::unreachable_unchecked() },
         }
@@ -1677,13 +1696,14 @@ fn enter_or_yield(
             type_,
             code,
             func_idx,
-            ..
+            module,
         } => {
             let handlers = code.handlers.as_ptr();
             enter_frame(
                 state,
                 code,
                 *func_idx,
+                module.as_ptr(),
                 type_.results.len(),
                 param_regs,
                 result_regs,
@@ -1738,9 +1758,15 @@ pub fn call_indirect(state: &mut VmState) -> Outcome {
     let Some(table_addr) = table_or_trap(state, table_idx.0 as usize) else {
         return trap(state);
     };
-    let i = state.get_i32(index_reg.index());
-    // Out-of-bounds index / null reference: delegate to host via Rust panic.
-    let func_addr = table_addr.borrow_func_addr(i as usize).unwrap();
+    let i = state.get_i32(index_reg.index()) as u32 as usize;
+    if i >= table_addr.len() {
+        state.trap = Some(RuntimeError::UndefinedElement);
+        return trap(state);
+    }
+    let Some(func_addr) = table_addr.borrow_func_addr(i) else {
+        state.trap = Some(RuntimeError::UninitializedElement);
+        return trap(state);
+    };
     let actual_type = func_addr.func_type();
     let expected_type = &state.module().types[type_idx.0 as usize];
     if *actual_type != *expected_type {
@@ -2025,8 +2051,13 @@ pub fn mem_init(state: &mut VmState) -> Outcome {
     let dest = regs.get_i32(args[0].index()) as usize;
     let offset = regs.get_i32(args[1].index()) as usize;
     let len = regs.get_i32(args[2].index()) as usize;
-    if len > 0 {
-        mem_addr.init(dest, &data_bytes[offset..offset + len]);
+    if len > 0
+        && mem_addr
+            .init(dest, &data_bytes[offset..offset + len])
+            .is_err()
+    {
+        state.trap = Some(RuntimeError::OutOfBoundsMemoryAccess);
+        return trap(state);
     }
     state.pc += 1;
     advance!(state)

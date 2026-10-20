@@ -32,6 +32,16 @@ pub enum RuntimeError {
     TableNotFound,
     #[error("Indirect Call Type Mismatch")]
     IndirectCallTypeMismatch,
+    #[error("Unreachable Executed")]
+    Unreachable,
+    #[error("Undefined Element")]
+    UndefinedElement,
+    #[error("Uninitialized Element")]
+    UninitializedElement,
+    #[error("Out of Bounds Table Access")]
+    OutOfBoundsTableAccess,
+    #[error("Out of Bounds Memory Access")]
+    OutOfBoundsMemoryAccess,
     #[error("Invalid Constant Expression")]
     InvalidConstantExpression,
     #[error("Invalid Data Segment Index")]
