@@ -39,6 +39,8 @@ use std::sync::LazyLock;
 #[cfg(feature = "call_graph")]
 use crate::instrument::call_graph::{CallGraph, CallGraphBuilder};
 
+pub mod component;
+
 /// Builds a function's `wide_consts`. Equal values share a slot,
 /// so an instruction only carries the slot number.
 #[derive(Default)]
@@ -289,7 +291,7 @@ static WASI_IMPORTS: LazyLock<FxHashMap<&'static str, Vec<WasiFuncType>>> = Lazy
 });
 
 /// Converts a wasmparser value type to the internal representation.
-fn match_value_type(t: ValType) -> ValueType {
+pub(crate) fn match_value_type(t: ValType) -> ValueType {
     match t {
         ValType::I32 => ValueType::NumType(NumType::I32),
         ValType::I64 => ValueType::NumType(NumType::I64),
@@ -345,6 +347,59 @@ fn get_block_param_types(block_type: &wasmparser::BlockType, module: &Module) ->
     }
 }
 
+/// Converts a wasmparser function type to the internal representation.
+pub(crate) fn func_type_of(functype: &wasmparser::FuncType) -> FuncType {
+    let mut params = Vec::new();
+    let mut results = Vec::new();
+    types_to_vec(functype.params(), &mut params);
+    types_to_vec(functype.results(), &mut results);
+    FuncType { params, results }
+}
+
+/// The one function type in a rec group; chiwawa has no GC types, so a group never holds more.
+pub(crate) fn func_type_of_rec_group(
+    group: wasmparser::RecGroup,
+) -> Result<FuncType, Box<dyn std::error::Error>> {
+    let mut types = group.into_types();
+    let ty = types.next().ok_or("empty rec group")?.composite_type.inner;
+    let functype = match ty {
+        wasmparser::CompositeInnerType::Func(f) => f,
+        _ => return Err("GC types are not supported".into()),
+    };
+    if types.next().is_some() {
+        return Err("rec groups with several types are not supported".into());
+    }
+    Ok(func_type_of(&functype))
+}
+
+pub(crate) fn table_type_of(table_type: &wasmparser::TableType) -> TableType {
+    let limits = Limits {
+        min: TryFrom::try_from(table_type.initial).unwrap(),
+        max: table_type.maximum.map(|m| TryFrom::try_from(m).unwrap()),
+    };
+    let reftype = if table_type.element_type.is_func_ref() {
+        RefType::FuncRef
+    } else {
+        RefType::ExternalRef
+    };
+    TableType(limits, reftype)
+}
+
+pub(crate) fn mem_type_of(memory: &wasmparser::MemoryType) -> MemType {
+    MemType {
+        limits: Limits {
+            min: TryFrom::try_from(memory.initial).unwrap(),
+            max: memory.maximum.map(|m| TryFrom::try_from(m).unwrap()),
+        },
+        shared: memory.shared,
+    }
+}
+
+pub(crate) fn global_type_of(global: &wasmparser::GlobalType) -> GlobalType {
+    let mut_ = if global.mutable { Mut::Var } else { Mut::Const };
+    GlobalType(mut_, match_value_type(global.content_type))
+}
+
 /// Decodes the type section, building function type signatures.
 fn decode_type_section(
     body: SectionLimited<'_, wasmparser::RecGroup>,
@@ -352,15 +407,9 @@ fn decode_type_section(
 ) -> Result<(), Box<dyn std::error::Error>> {
     for functype in body.into_iter_err_on_gc_types() {
         let functype = functype?;
-
-        let mut params = Vec::new();
-        let mut results = Vec::new();
-        types_to_vec(functype.params(), &mut params);
-        types_to_vec(functype.results(), &mut results);
-
         Shared::get_mut(&mut module.types)
             .unwrap()
-            .push(crate::structure::types::FuncType { params, results });
+            .push(func_type_of(&functype));
     }
     Ok(())
 }
@@ -433,42 +482,9 @@ fn decode_import_section(
                     ImportDesc::Func(TypeIdx(type_index))
                 }
             }
-            TypeRef::Table(table_type) => {
-                let max = match table_type.maximum {
-                    Some(m) => Some(TryFrom::try_from(m).unwrap()),
-                    None => None,
-                };
-                let limits = Limits {
-                    min: TryFrom::try_from(table_type.initial).unwrap(),
-                    max,
-                };
-                let reftype = if table_type.element_type.is_func_ref() {
-                    RefType::FuncRef
-                } else {
-                    RefType::ExternalRef
-                };
-
-                ImportDesc::Table(TableType(limits, reftype))
-            }
-            TypeRef::Memory(memory) => {
-                let max = match memory.maximum {
-                    Some(m) => Some(TryFrom::try_from(m).unwrap()),
-                    None => None,
-                };
-                let limits = Limits {
-                    min: TryFrom::try_from(memory.initial).unwrap(),
-                    max,
-                };
-                ImportDesc::Mem(MemType {
-                    limits,
-                    shared: memory.shared,
-                })
-            }
-            TypeRef::Global(global) => {
-                let mut_ = if global.mutable { Mut::Var } else { Mut::Const };
-                let value_type = match_value_type(global.content_type);
-                ImportDesc::Global(GlobalType(mut_, value_type))
-            }
+            TypeRef::Table(table_type) => ImportDesc::Table(table_type_of(&table_type)),
+            TypeRef::Memory(memory) => ImportDesc::Mem(mem_type_of(&memory)),
+            TypeRef::Global(global) => ImportDesc::Global(global_type_of(&global)),
             TypeRef::Tag(_) => todo!(),
             TypeRef::FuncExact(_) => return Err("exact function types are not supported".into()),
         };
@@ -2442,7 +2458,11 @@ fn decode_processed_instrs_and_fixups<'a>(
                 })
             }
 
-            _ => panic!("Unsupported instruction: {:?}", op),
+            _ => {
+                return Err(Box::new(ParserError::UnsupportedInstruction(format!(
+                    "{op:?}"
+                ))))
+            }
         };
 
         // Block boundaries, for the branch resolution of Phase 2.
@@ -2619,125 +2639,147 @@ pub struct ParseOutput {
 /// * `module` - The module structure to populate
 /// * `path` - Path to the WebAssembly binary file
 pub fn parse_bytecode(
-    mut module: &mut Module,
+    module: &mut Module,
     path: &str,
+) -> Result<ParseOutput, Box<dyn std::error::Error>> {
+    let mut buf = Vec::new();
+    let mut file = File::open(path)?;
+    file.read_to_end(&mut buf)?;
+    parse_module_bytes(module, &buf)
+}
+
+/// Parses a core module binary into `module`.
+pub fn parse_module_bytes(
+    module: &mut Module,
+    buf: &[u8],
 ) -> Result<ParseOutput, Box<dyn std::error::Error>> {
     let mut current_func_index = module.num_imported_funcs;
     #[cfg(feature = "call_graph")]
     let mut cg_builder = CallGraphBuilder::new();
 
-    let mut buf = Vec::new();
-    let parser = Parser::new(0);
-
-    let mut file = File::open(path)?;
-    file.read_to_end(&mut buf)?;
-
-    for payload in parser.parse_all(&buf) {
-        match payload? {
-            Version {
-                num,
-                encoding: _,
-                range: _,
-            } => {
-                if num != 0x01 {
-                    return Err(Box::new(ParserError::VersionError));
-                }
-            }
-
-            TypeSection(body) => {
-                decode_type_section(body, &mut module)?;
-            }
-
-            FunctionSection(body) => {
-                decode_func_section(
-                    body,
-                    &mut module,
-                    #[cfg(feature = "call_graph")]
-                    Some(&mut cg_builder),
-                )?;
-            }
-
-            ImportSection(body) => {
-                decode_import_section(
-                    body,
-                    &mut module,
-                    #[cfg(feature = "call_graph")]
-                    Some(&mut cg_builder),
-                )?;
-                current_func_index = module.num_imported_funcs;
-            }
-            ExportSection(body) => {
-                decode_export_section(body, &mut module)?;
-            }
-
-            TableSection(body) => {
-                decode_table_section(body, &mut module)?;
-            }
-
-            MemorySection(body) => {
-                decode_mem_section(body, &mut module)?;
-            }
-
-            TagSection(_) => { /* ... */ }
-
-            GlobalSection(body) => {
-                decode_global_section(body, &mut module)?;
-            }
-
-            StartSection { func, .. } => {
-                module.start = Some(Start {
-                    func: FuncIdx(func),
-                });
-            }
-
-            ElementSection(body) => {
-                decode_elem_section(body, &mut module)?;
-            }
-
-            DataCountSection { .. } => { /* ... */ }
-
-            DataSection(body) => {
-                decode_data_section(body, &mut module)?;
-            }
-
-            CodeSectionStart { .. } => { /* ... */ }
-            CodeSectionEntry(body) => {
-                let result = decode_code_section(
-                    body,
-                    &mut module,
-                    current_func_index,
-                    #[cfg(feature = "call_graph")]
-                    Some(&mut cg_builder),
-                );
-                result?;
-                current_func_index += 1;
-            }
-
-            ModuleSection { .. } => { /* ... */ }
-            InstanceSection(_) => { /* ... */ }
-            CoreTypeSection(_) => { /* ... */ }
-            ComponentSection { .. } => { /* ... */ }
-            ComponentInstanceSection(_) => { /* ... */ }
-            ComponentAliasSection(_) => { /* ... */ }
-            ComponentTypeSection(_) => { /* ... */ }
-            ComponentCanonicalSection(_) => { /* ... */ }
-            ComponentStartSection { .. } => { /* ... */ }
-            ComponentImportSection(_) => { /* ... */ }
-            ComponentExportSection(_) => { /* ... */ }
-
-            CustomSection(_) => { /* ... */ }
-
-            UnknownSection { .. } => { /* ... */ }
-
-            End(_) => {}
-
-            // `Payload` is non-exhaustive; sections added by later proposals are ignored.
-            _ => {}
-        }
+    for payload in Parser::new(0).parse_all(buf) {
+        decode_module_payload(
+            payload?,
+            module,
+            &mut current_func_index,
+            #[cfg(feature = "call_graph")]
+            Some(&mut cg_builder),
+        )?;
     }
 
     Ok(ParseOutput {
         #[cfg(feature = "call_graph")]
         call_graph: cg_builder.finish(),
     })
+}
+
+/// Decodes one payload of a core module into `module`.
+/// `current_func_index` is the index of the next code section entry, counting imported functions first.
+pub(crate) fn decode_module_payload(
+    payload: wasmparser::Payload<'_>,
+    module: &mut Module,
+    current_func_index: &mut usize,
+    #[cfg(feature = "call_graph")] mut cg_builder: Option<&mut CallGraphBuilder>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match payload {
+        Version { num, encoding, .. } => {
+            if encoding != wasmparser::Encoding::Module {
+                return Err(Box::new(ParserError::NotAModule));
+            }
+            if num != 0x01 {
+                return Err(Box::new(ParserError::VersionError));
+            }
+        }
+
+        TypeSection(body) => {
+            decode_type_section(body, module)?;
+        }
+
+        FunctionSection(body) => {
+            decode_func_section(
+                body,
+                module,
+                #[cfg(feature = "call_graph")]
+                cg_builder.as_deref_mut(),
+            )?;
+        }
+
+        ImportSection(body) => {
+            decode_import_section(
+                body,
+                module,
+                #[cfg(feature = "call_graph")]
+                cg_builder.as_deref_mut(),
+            )?;
+            *current_func_index = module.num_imported_funcs;
+        }
+        ExportSection(body) => {
+            decode_export_section(body, module)?;
+        }
+
+        TableSection(body) => {
+            decode_table_section(body, module)?;
+        }
+
+        MemorySection(body) => {
+            decode_mem_section(body, module)?;
+        }
+
+        TagSection(_) => { /* ... */ }
+
+        GlobalSection(body) => {
+            decode_global_section(body, module)?;
+        }
+
+        StartSection { func, .. } => {
+            module.start = Some(Start {
+                func: FuncIdx(func),
+            });
+        }
+
+        ElementSection(body) => {
+            decode_elem_section(body, module)?;
+        }
+
+        DataCountSection { .. } => { /* ... */ }
+
+        DataSection(body) => {
+            decode_data_section(body, module)?;
+        }
+
+        CodeSectionStart { .. } => { /* ... */ }
+        CodeSectionEntry(body) => {
+            let result = decode_code_section(
+                body,
+                module,
+                *current_func_index,
+                #[cfg(feature = "call_graph")]
+                cg_builder.as_deref_mut(),
+            );
+            result?;
+            *current_func_index += 1;
+        }
+
+        ModuleSection { .. } => { /* ... */ }
+        InstanceSection(_) => { /* ... */ }
+        CoreTypeSection(_) => { /* ... */ }
+        ComponentSection { .. } => { /* ... */ }
+        ComponentInstanceSection(_) => { /* ... */ }
+        ComponentAliasSection(_) => { /* ... */ }
+        ComponentTypeSection(_) => { /* ... */ }
+        ComponentCanonicalSection(_) => { /* ... */ }
+        ComponentStartSection { .. } => { /* ... */ }
+        ComponentImportSection(_) => { /* ... */ }
+        ComponentExportSection(_) => { /* ... */ }
+
+        CustomSection(_) => { /* ... */ }
+
+        UnknownSection { .. } => { /* ... */ }
+
+        End(_) => {}
+
+        // `Payload` is non-exhaustive; sections added by later proposals are ignored.
+        _ => {}
+    }
+    Ok(())
 }

@@ -8,7 +8,9 @@
 //! - [`instructions`]: WebAssembly instruction set representation
 //! - [`module`]: Module structure including functions, memory, tables, and globals
 //! - [`types`]: WebAssembly type definitions (value types, function types, etc.)
+//! - [`component`]: Component structure with its index spaces resolved
 
+pub mod component;
 pub mod instructions;
 pub mod module;
 pub mod types;

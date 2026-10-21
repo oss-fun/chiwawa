@@ -76,6 +76,16 @@ pub enum ParserError {
     UnexpectedEnd,
     #[error("Invalid Wasm: {0}")]
     InvalidWasm(&'static str),
+    #[error("Not a core module")]
+    NotAModule,
+    #[error("Not a component")]
+    NotAComponent,
+    #[error("Invalid component: {0}")]
+    InvalidComponent(String),
+    #[error("Unsupported component feature: {0}")]
+    UnsupportedComponentFeature(&'static str),
+    #[error("Unsupported instruction: {0}")]
+    UnsupportedInstruction(String),
     #[error("Unsupported WASI function: {0}")]
     UnsupportedWasiFunction(String),
     #[error("WASI function type mismatch: {function} expected {expected:?} but got {actual:?}")]
