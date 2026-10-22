@@ -181,18 +181,24 @@ fn main() -> Result<()> {
         eprintln!("         Rebuild with: cargo build --features call_graph");
     }
 
-    let mut module = Module::new("test");
-    let _parse_out = parser::parse_bytecode(&mut module, &cli.wasm_file);
+    let (module, _parse_out) = match parser::parse_file(&cli.wasm_file) {
+        Ok(parser::Parsed::Module(module, out)) => (module, out),
+        Ok(parser::Parsed::Component(_)) => {
+            return Err(anyhow::anyhow!(
+                "{} is a component; chiwawa runs core modules only",
+                cli.wasm_file
+            ));
+        }
+        Err(e) => return Err(anyhow::anyhow!("failed to parse {}: {e}", cli.wasm_file)),
+    };
 
     #[cfg(feature = "threads")]
     let module = Shared::new(module);
 
     #[cfg(feature = "call_graph")]
     if let Some(path) = &cli.call_graph_output {
-        if let Ok(out) = &_parse_out {
-            if let Err(e) = out.call_graph.report(&module, path) {
-                eprintln!("Warning: failed to write call graph: {}", e);
-            }
+        if let Err(e) = _parse_out.call_graph.report(&module, path) {
+            eprintln!("Warning: failed to write call graph: {}", e);
         }
     }
 

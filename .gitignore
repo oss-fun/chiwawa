@@ -15,5 +15,6 @@ CLAUDE.md
 /tests/wasi-threads/testsuite
 /tests/proposals/threads
 /tests/proposals/core
+/tests/proposals/component
 /tests/proposals/.commit
 /tests/proposals/.module.wasm
