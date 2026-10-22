@@ -6,7 +6,7 @@
 //! Every index space is resolved as it is read, so the finished [`Component`] holds no aliases,
 //! and types come out as trees that carry no indices.
 
-use super::{
+use super::core::{
     decode_module_payload, func_type_of_rec_group, global_type_of, match_value_type, mem_type_of,
     table_type_of,
 };
