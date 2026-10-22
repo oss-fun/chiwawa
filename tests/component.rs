@@ -15,7 +15,6 @@
 
 use chiwawa::error::ParserError;
 use chiwawa::parser;
-use chiwawa::structure::module::Module;
 use wast::WastDirective;
 
 /// What one directive did, for the tally printed at the end.
@@ -33,22 +32,19 @@ enum ParseFailure {
     Other(String),
 }
 
-/// Parses an encoded module or component, told apart by the layer field of the header.
+/// Parses an encoded module or component.
 fn parse(bytes: &[u8]) -> Result<(), ParseFailure> {
-    let result = if wasmparser::Parser::is_component(bytes) {
-        parser::component::parse_component_bytes(bytes).map(|_| ())
-    } else {
-        parser::parse_module_bytes(&mut Module::new("spec"), bytes).map(|_| ())
-    };
-    result.map_err(|e| match e.downcast_ref::<ParserError>() {
-        Some(ParserError::UnsupportedComponentFeature(feature)) => {
-            ParseFailure::Unsupported(feature.to_string())
-        }
-        Some(ParserError::UnsupportedInstruction(instr)) => {
-            ParseFailure::Unsupported(format!("instruction {instr}"))
-        }
-        _ => ParseFailure::Other(format!("{e}")),
-    })
+    parser::parse_bytes(bytes)
+        .map(|_| ())
+        .map_err(|e| match e.downcast_ref::<ParserError>() {
+            Some(ParserError::UnsupportedComponentFeature(feature)) => {
+                ParseFailure::Unsupported(feature.to_string())
+            }
+            Some(ParserError::UnsupportedInstruction(instr)) => {
+                ParseFailure::Unsupported(format!("instruction {instr}"))
+            }
+            _ => ParseFailure::Other(format!("{e}")),
+        })
 }
 
 fn run_wast(path: &str) {
