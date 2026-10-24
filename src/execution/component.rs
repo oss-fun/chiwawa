@@ -246,6 +246,7 @@ fn lower_val(ty: &ValType, val: &ComponentVal) -> Result<Val> {
 }
 
 /// A component-level extern
+#[derive(Clone)]
 pub enum ExternVal {
     Module(Shared<Module>),
     Func(Rc<ComponentFunc>),
