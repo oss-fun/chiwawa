@@ -369,6 +369,9 @@ pub const HANDLER_IDX_CMPXCHG_I64_8: usize = 0x145;
 pub const HANDLER_IDX_CMPXCHG_I64_16: usize = 0x146;
 pub const HANDLER_IDX_CMPXCHG_I64_32: usize = 0x147;
 
+/// `ref.func`; its `TableRefReg` carries the function index in `table_idx`.
+pub const HANDLER_IDX_REF_FUNC: usize = 0x148;
+
 // ============================================================================
 // advance! macro — the difference between tco and non-tco mode
 // ============================================================================
@@ -1892,6 +1895,16 @@ pub fn ref_null(state: &mut VmState) -> Outcome {
     advance!(state)
 }
 
+pub fn ref_func(state: &mut VmState) -> Outcome {
+    let (func_idx, regs) = fields!(state, TableRefReg { table_idx, regs });
+    let func = state.module_static().func_addrs[func_idx as usize].clone();
+    state
+        .reg_file_mut()
+        .set_ref(regs[0], crate::execution::value::Ref::FuncAddr(func));
+    state.pc += 1;
+    advance!(state)
+}
+
 pub fn ref_is_null(state: &mut VmState) -> Outcome {
     let regs = match state.current_instr() {
         ProcessedInstr::TableRefReg { regs, .. } => *regs,
@@ -2391,6 +2404,7 @@ pub fn select_handler(instr: &ProcessedInstr) -> Handler {
         ProcessedInstr::TableRefReg { handler_index, .. } => match *handler_index {
             HANDLER_IDX_REF_NULL => ref_null,
             HANDLER_IDX_REF_IS_NULL => ref_is_null,
+            HANDLER_IDX_REF_FUNC => ref_func,
             HANDLER_IDX_TABLE_GET => table_get,
             HANDLER_IDX_TABLE_SET => table_set,
             HANDLER_IDX_TABLE_FILL => table_fill,

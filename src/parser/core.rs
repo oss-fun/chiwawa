@@ -2417,6 +2417,15 @@ fn decode_processed_instrs_and_fixups<'a>(
                     ref_type: RefType::FuncRef,
                 })
             }
+            wasmparser::Operator::RefFunc { function_index } => {
+                let dst = allocator.push(ValueType::RefType(RefType::FuncRef));
+                Some(ProcessedInstr::TableRefReg {
+                    handler_index: HANDLER_IDX_REF_FUNC,
+                    table_idx: *function_index,
+                    regs: [dst.index(), 0, 0],
+                    ref_type: RefType::FuncRef,
+                })
+            }
             wasmparser::Operator::TableGet { table } => {
                 let elem_type = get_table_element_type(module, *table);
                 let idx = allocator.pop(&ValueType::I32);

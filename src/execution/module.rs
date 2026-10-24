@@ -195,6 +195,9 @@ impl ModuleInst {
             };
             module_inst.mem_addrs.push(addr);
         }
+        if module_inst.mem_addrs.len() > 1 {
+            return Err(RuntimeError::UnsupportedFeature("multiple memories"));
+        }
 
         for global in &module.globals {
             match module_inst.expr_to_const(&global.init) {
