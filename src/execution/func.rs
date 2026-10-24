@@ -15,6 +15,8 @@ use std::rc::{Rc, Weak};
 #[derive(Clone)]
 pub struct FuncAddr(Rc<UnsafeCell<FuncInst>>);
 
+pub type HostCode = Rc<dyn Fn(Vec<Val>) -> Result<Option<Val>, RuntimeError>>;
+
 /// Function instance variants: runtime (Wasm), host, or WASI.
 pub enum FuncInst {
     RuntimeFunc {
@@ -26,7 +28,7 @@ pub enum FuncInst {
     },
     HostFunc {
         type_: FuncType,
-        host_code: Rc<dyn Fn(Vec<Val>) -> Result<Option<Val>, RuntimeError>>,
+        host_code: HostCode,
     },
     WasiFunc {
         type_: FuncType,
@@ -103,6 +105,13 @@ impl FuncAddr {
         FuncAddr(Rc::new(UnsafeCell::new(FuncInst::WasiFunc {
             type_: func_type,
             wasi_func_addr,
+        })))
+    }
+
+    pub fn alloc_host(type_: FuncType, host_code: HostCode) -> FuncAddr {
+        FuncAddr(Rc::new(UnsafeCell::new(FuncInst::HostFunc {
+            type_,
+            host_code,
         })))
     }
 

@@ -27,6 +27,14 @@ pub struct Component {
     pub imports: Vec<Import>,
     pub exports: Vec<Export>,
     pub start: Option<Start>,
+    pub definitions: Vec<Definition>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Definition {
+    CoreInstance(u32),
+    Instance(u32),
+    Start,
 }
 
 impl Component {
@@ -47,6 +55,7 @@ impl Component {
             imports: Vec::new(),
             exports: Vec::new(),
             start: None,
+            definitions: Vec::new(),
         }
     }
 }
@@ -102,6 +111,11 @@ pub enum CoreModuleOrigin {
     Defined(Shared<Module>),
     Import(u32),
     Alias(Alias),
+    /// The entry at `index` of the component `count` levels out, resolved when that component is instantiated.
+    Outer {
+        count: u32,
+        index: u32,
+    },
 }
 
 #[derive(Clone)]
@@ -164,6 +178,11 @@ pub enum ComponentOrigin {
     Defined(Shared<Component>),
     Import(u32),
     Alias(Alias),
+    /// The entry at `index` of the component `count` levels out, resolved when that component is instantiated.
+    Outer {
+        count: u32,
+        index: u32,
+    },
 }
 
 #[derive(Clone)]

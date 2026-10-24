@@ -51,6 +51,17 @@ pub enum RuntimeError {
     #[error("Atomic Wait on Unshared Memory")]
     AtomicWaitOnUnsharedMemory,
 
+    #[error("Unsupported feature: {0}")]
+    UnsupportedFeature(&'static str),
+
+    // Component Errors
+    #[error("Component: {0}")]
+    ComponentError(String),
+    #[error("Unsupported component feature: {0}")]
+    UnsupportedComponentFeature(&'static str),
+    #[error("Invalid char bit pattern")]
+    InvalidCharBitPattern,
+
     // Migration Errors
     #[error("Serialization Error: {0}")]
     SerializationError(String),

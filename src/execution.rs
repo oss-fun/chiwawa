@@ -1,4 +1,5 @@
 pub(crate) mod atomics;
+pub mod component;
 mod data;
 mod dispatch;
 #[cfg(not(feature = "tco"))]

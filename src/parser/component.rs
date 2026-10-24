@@ -264,6 +264,8 @@ fn decode_component_payload(
                             .collect::<ParseResult<_>>()?,
                     ),
                 };
+                comp.definitions
+                    .push(Definition::CoreInstance(comp.core_instances.len() as u32));
                 comp.core_instances.push(instance);
             }
         }
@@ -321,6 +323,8 @@ fn decode_component_payload(
                         }
                     }
                 };
+                comp.definitions
+                    .push(Definition::Instance(comp.instances.len() as u32));
                 comp.instances.push(instance);
             }
         }
@@ -366,9 +370,15 @@ fn decode_component_payload(
                                 let entry = target
                                     .core_modules
                                     .get(index as usize)
-                                    .ok_or_else(|| invalid("unknown outer core module"))?
-                                    .clone();
-                                comp.core_modules.push(entry);
+                                    .ok_or_else(|| invalid("unknown outer core module"))?;
+                                let origin = match count {
+                                    0 => entry.origin.clone(),
+                                    count => CoreModuleOrigin::Outer { count, index },
+                                };
+                                comp.core_modules.push(CoreModule {
+                                    ty: Shared::clone(&entry.ty),
+                                    origin,
+                                });
                             }
                             ComponentOuterAliasKind::CoreType => {
                                 let entry = target
@@ -390,9 +400,15 @@ fn decode_component_payload(
                                 let entry = target
                                     .components
                                     .get(index as usize)
-                                    .ok_or_else(|| invalid("unknown outer component"))?
-                                    .clone();
-                                comp.components.push(entry);
+                                    .ok_or_else(|| invalid("unknown outer component"))?;
+                                let origin = match count {
+                                    0 => entry.origin.clone(),
+                                    count => ComponentOrigin::Outer { count, index },
+                                };
+                                comp.components.push(ComponentDef {
+                                    ty: Shared::clone(&entry.ty),
+                                    origin,
+                                });
                             }
                         }
                     }
@@ -416,6 +432,7 @@ fn decode_component_payload(
                 _ => return Err(invalid("start result count does not match the function")),
             };
             comp.values.extend(results);
+            comp.definitions.push(Definition::Start);
             comp.start = Some(Start {
                 func: start.func_index,
                 args: start.arguments.to_vec(),
