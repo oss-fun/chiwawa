@@ -203,6 +203,12 @@ fn arg_to_val(arg: &WastArg) -> Result<ComponentVal, String> {
 }
 
 fn wast_to_val(val: &WastVal) -> Result<ComponentVal, String> {
+    let boxed = |v: &Option<Box<WastVal>>| -> Result<Option<Box<ComponentVal>>, String> {
+        v.as_deref()
+            .map(wast_to_val)
+            .transpose()
+            .map(|v| v.map(Box::new))
+    };
     Ok(match val {
         WastVal::Bool(v) => ComponentVal::Bool(*v),
         WastVal::S8(v) => ComponentVal::S8(*v),
@@ -216,29 +222,74 @@ fn wast_to_val(val: &WastVal) -> Result<ComponentVal, String> {
         WastVal::F32(v) => ComponentVal::F32(f32::from_bits(v.bits)),
         WastVal::F64(v) => ComponentVal::F64(f64::from_bits(v.bits)),
         WastVal::Char(c) => ComponentVal::Char(*c),
+        WastVal::String(s) => ComponentVal::String(s.to_string()),
+        WastVal::List(items) => {
+            ComponentVal::List(items.iter().map(wast_to_val).collect::<Result<_, _>>()?)
+        }
+        WastVal::Record(fields) => ComponentVal::Record(
+            fields
+                .iter()
+                .map(|(name, v)| Ok((name.to_string(), wast_to_val(v)?)))
+                .collect::<Result<_, String>>()?,
+        ),
+        WastVal::Tuple(items) => {
+            ComponentVal::Tuple(items.iter().map(wast_to_val).collect::<Result<_, _>>()?)
+        }
+        WastVal::Variant(name, payload) => ComponentVal::Variant(name.to_string(), boxed(payload)?),
+        WastVal::Enum(name) => ComponentVal::Enum(name.to_string()),
+        WastVal::Option(v) => ComponentVal::Option(boxed(v)?),
+        WastVal::Result(r) => ComponentVal::Result(match r {
+            Ok(v) => Ok(boxed(v)?),
+            Err(v) => Err(boxed(v)?),
+        }),
         WastVal::Flags(names) => {
             ComponentVal::Flags(names.iter().map(|name| name.to_string()).collect())
         }
-        other => return Err(format!("unsupported value {other:?}")),
     })
 }
 
-/// Compares one result against what the directive expects: floats by bit pattern, flags as sets.
+/// Compares one result against what the directive expects.
 fn matches(expected: &WastRet, actual: &ComponentVal) -> Result<bool, String> {
     let WastRet::Component(val) = expected else {
         return Err("core result from a component function".into());
     };
-    Ok(match (wast_to_val(val)?, actual) {
+    Ok(same(&wast_to_val(val)?, actual))
+}
+
+/// Value equality with floats by bit pattern, flags as sets and records by field name.
+fn same(e: &ComponentVal, a: &ComponentVal) -> bool {
+    type Boxed = Option<Box<ComponentVal>>;
+    let same_boxed = |e: &Boxed, a: &Boxed| match (e, a) {
+        (Some(e), Some(a)) => same(e, a),
+        (None, None) => true,
+        _ => false,
+    };
+    match (e, a) {
         (ComponentVal::F32(e), ComponentVal::F32(a)) => e.to_bits() == a.to_bits(),
         (ComponentVal::F64(e), ComponentVal::F64(a)) => e.to_bits() == a.to_bits(),
-        (ComponentVal::Flags(mut e), ComponentVal::Flags(a)) => {
-            let mut a = a.clone();
+        (ComponentVal::Flags(e), ComponentVal::Flags(a)) => {
+            let (mut e, mut a) = (e.clone(), a.clone());
             e.sort();
             a.sort();
             e == a
         }
-        (e, a) => e == *a,
-    })
+        (ComponentVal::List(e), ComponentVal::List(a))
+        | (ComponentVal::Tuple(e), ComponentVal::Tuple(a)) => {
+            e.len() == a.len() && e.iter().zip(a).all(|(e, a)| same(e, a))
+        }
+        (ComponentVal::Record(e), ComponentVal::Record(a)) => {
+            e.len() == a.len()
+                && e.iter()
+                    .all(|(name, ev)| a.iter().any(|(an, av)| an == name && same(ev, av)))
+        }
+        (ComponentVal::Variant(en, ep), ComponentVal::Variant(an, ap)) => {
+            en == an && same_boxed(ep, ap)
+        }
+        (ComponentVal::Option(e), ComponentVal::Option(a)) => same_boxed(e, a),
+        (ComponentVal::Result(Ok(e)), ComponentVal::Result(Ok(a)))
+        | (ComponentVal::Result(Err(e)), ComponentVal::Result(Err(a))) => same_boxed(e, a),
+        (e, a) => e == a,
+    }
 }
 
 fn results_match(expected: &[WastRet], actual: &[ComponentVal]) -> bool {

@@ -1,4 +1,5 @@
 pub(crate) mod atomics;
+pub mod canon;
 pub mod component;
 mod data;
 mod dispatch;

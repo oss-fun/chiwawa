@@ -7,18 +7,21 @@
 //! so instantiations and the start function run in that order even when nothing refers to them.
 //! See `doc/component.md`.
 
-use super::func::{FuncAddr, FuncInst};
+use super::canon::{
+    call_core, check_encoding, flatten_functype, lift_values, lower_values, CanonContext, Context,
+    LeaveGuard, Reader, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS,
+};
+use super::func::FuncAddr;
 use super::global::GlobalAddr;
 use super::mem::MemAddr;
 use super::module::{ImportObjects, ModuleInst};
-use super::runtime::{run_start_section, Runtime, RuntimeConfig};
+use super::runtime::run_start_section;
 use super::table::TableAddr;
-use super::value::{Externval, Num, Val};
+use super::value::{Externval, Val};
 use crate::error::RuntimeError;
 use crate::shared::Shared;
 use crate::structure::component::*;
 use crate::structure::module::Module;
-use crate::structure::types::{FuncType as CoreFuncType, NumType, ValueType};
 use rustc_hash::FxHashMap;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -33,216 +36,63 @@ fn unsupported(feature: &'static str) -> RuntimeError {
     RuntimeError::UnsupportedComponentFeature(feature)
 }
 
-/// A component-level value.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ComponentVal {
-    Bool(bool),
-    S8(i8),
-    U8(u8),
-    S16(i16),
-    U16(u16),
-    S32(i32),
-    U32(u32),
-    S64(i64),
-    U64(u64),
-    F32(f32),
-    F64(f64),
-    Char(char),
-    /// The names of the set flags.
-    Flags(Vec<String>),
-}
+pub use super::canon::ComponentVal;
 
 /// A component-level function: a core function lifted to component values.
 pub struct ComponentFunc {
     pub ty: Shared<FuncType>,
     core: FuncAddr,
     post_return: Option<FuncAddr>,
+    cx: CanonContext,
 }
 
 impl ComponentFunc {
     /// Calls the function with component values and returns its results as component values.
     pub fn call(&self, args: Vec<ComponentVal>) -> Result<Vec<ComponentVal>> {
-        if args.len() != self.ty.params.len() {
-            return Err(RuntimeError::InvalidParameterCount);
-        }
-        let params = self
-            .ty
-            .params
-            .iter()
-            .zip(&args)
-            .map(|((_, ty), arg)| lower_val(ty, arg))
-            .collect::<Result<Vec<_>>>()?;
+        let param_types: Vec<ValType> = self.ty.params.iter().map(|(_, t)| t.clone()).collect();
+        let result_types: Vec<ValType> = self.ty.result.iter().cloned().collect();
+        let params = lower_values(&self.cx, &args, &param_types, MAX_FLAT_PARAMS, None)?;
         let results = call_core(&self.core, params)?;
-        let lifted = match (&self.ty.result, results.as_slice()) {
-            (None, []) => Vec::new(),
-            (Some(ty), [val]) => vec![lift_val(ty, val)?],
-            _ => return Err(error("core function returned the wrong number of results")),
-        };
+        let lifted = lift_values(
+            &self.cx,
+            &mut Reader::new(&results),
+            &result_types,
+            MAX_FLAT_RESULTS,
+        )?;
         if let Some(post_return) = &self.post_return {
+            let _guard = LeaveGuard::new(&self.cx.may_leave);
             call_core(post_return, results)?;
         }
         Ok(lifted)
     }
 }
 
-fn call_core(func: &FuncAddr, params: Vec<Val>) -> Result<Vec<Val>> {
-    match func.read_lock() {
-        FuncInst::RuntimeFunc { module, .. } => {
-            let inst = module
-                .upgrade()
-                .ok_or_else(|| error("the function's instance is gone"))?;
-            Runtime::new(inst, func, params, RuntimeConfig::default())?.run()
-        }
-        FuncInst::HostFunc { host_code, .. } => Ok(host_code(params)?.into_iter().collect()),
-        FuncInst::WasiFunc { .. } => Err(RuntimeError::UnimplementedHostFunction),
-    }
-}
-
 /// `canon lower`: a core function that lifts its arguments, calls `func`, and lowers the result.
-fn lower_func(func: Rc<ComponentFunc>) -> Result<FuncAddr> {
-    let core_ty = flat_func_type(&func.ty)?;
+/// `cx` holds the options of the lower, in the importing instance.
+fn lower_func(func: Rc<ComponentFunc>, cx: CanonContext) -> Result<FuncAddr> {
+    let core_ty = flatten_functype(&func.ty, Context::Lower)?;
     let ty = Shared::clone(&func.ty);
     Ok(FuncAddr::alloc_host(
         core_ty,
         Rc::new(move |params: Vec<Val>| {
-            let args = ty
-                .params
-                .iter()
-                .zip(&params)
-                .map(|((_, ty), val)| lift_val(ty, val))
-                .collect::<Result<Vec<_>>>()?;
-            let results = func.call(args)?;
-            match (&ty.result, results.first()) {
-                (Some(ty), Some(val)) => Ok(Some(lower_val(ty, val)?)),
-                _ => Ok(None),
+            if !cx.may_leave.get() {
+                return Err(error("cannot leave component instance"));
             }
+            let param_types: Vec<ValType> = ty.params.iter().map(|(_, t)| t.clone()).collect();
+            let result_types: Vec<ValType> = ty.result.iter().cloned().collect();
+            let mut reader = Reader::new(&params);
+            let args = lift_values(&cx, &mut reader, &param_types, MAX_FLAT_PARAMS)?;
+            let results = func.call(args)?;
+            let lowered = lower_values(
+                &cx,
+                &results,
+                &result_types,
+                MAX_FLAT_RESULTS,
+                Some(&mut reader),
+            )?;
+            Ok(lowered.into_iter().next())
         }),
     ))
-}
-
-const I32: ValueType = ValueType::NumType(NumType::I32);
-const I64: ValueType = ValueType::NumType(NumType::I64);
-const F32: ValueType = ValueType::NumType(NumType::F32);
-const F64: ValueType = ValueType::NumType(NumType::F64);
-
-fn flat_type(ty: &ValType) -> Result<ValueType> {
-    Ok(match ty {
-        ValType::Bool
-        | ValType::S8
-        | ValType::U8
-        | ValType::S16
-        | ValType::U16
-        | ValType::S32
-        | ValType::U32
-        | ValType::Char => I32,
-        ValType::S64 | ValType::U64 => I64,
-        ValType::F32 => F32,
-        ValType::F64 => F64,
-        ValType::String => return Err(unsupported("string values")),
-        ValType::Defined(defined) => match &**defined {
-            DefinedType::Flags(names) if names.len() <= 32 => I32,
-            DefinedType::Flags(_) => return Err(unsupported("flags with more than 32 names")),
-            _ => return Err(unsupported("compound values")),
-        },
-    })
-}
-
-/// The core type of a function whose values are all passed in registers.
-fn flat_func_type(ty: &FuncType) -> Result<CoreFuncType> {
-    if ty.params.len() > 16 {
-        return Err(unsupported("more than 16 flat parameters"));
-    }
-    Ok(CoreFuncType {
-        params: ty
-            .params
-            .iter()
-            .map(|(_, ty)| flat_type(ty))
-            .collect::<Result<_>>()?,
-        results: ty.result.iter().map(flat_type).collect::<Result<_>>()?,
-    })
-}
-
-fn canonical_nan32(x: f32) -> f32 {
-    if x.is_nan() {
-        f32::from_bits(0x7fc0_0000)
-    } else {
-        x
-    }
-}
-
-fn canonical_nan64(x: f64) -> f64 {
-    if x.is_nan() {
-        f64::from_bits(0x7ff8_0000_0000_0000)
-    } else {
-        x
-    }
-}
-
-fn lift_val(ty: &ValType, val: &Val) -> Result<ComponentVal> {
-    Ok(match ty {
-        ValType::Bool => ComponentVal::Bool(val.to_i32()? != 0),
-        ValType::S8 => ComponentVal::S8(val.to_i32()? as i8),
-        ValType::U8 => ComponentVal::U8(val.to_i32()? as u8),
-        ValType::S16 => ComponentVal::S16(val.to_i32()? as i16),
-        ValType::U16 => ComponentVal::U16(val.to_i32()? as u16),
-        ValType::S32 => ComponentVal::S32(val.to_i32()?),
-        ValType::U32 => ComponentVal::U32(val.to_i32()? as u32),
-        ValType::S64 => ComponentVal::S64(val.to_i64()?),
-        ValType::U64 => ComponentVal::U64(val.to_i64()? as u64),
-        ValType::F32 => ComponentVal::F32(canonical_nan32(val.to_f32()?)),
-        ValType::F64 => ComponentVal::F64(canonical_nan64(val.to_f64()?)),
-        ValType::Char => char::from_u32(val.to_i32()? as u32)
-            .map(ComponentVal::Char)
-            .ok_or(RuntimeError::InvalidCharBitPattern)?,
-        ValType::String => return Err(unsupported("string values")),
-        ValType::Defined(defined) => match &**defined {
-            DefinedType::Flags(names) => {
-                let bits = val.to_i32()? as u32;
-                ComponentVal::Flags(
-                    names
-                        .iter()
-                        .enumerate()
-                        .filter(|(i, _)| *i < 32 && (bits >> i) & 1 == 1)
-                        .map(|(_, name)| name.clone())
-                        .collect(),
-                )
-            }
-            _ => return Err(unsupported("compound values")),
-        },
-    })
-}
-
-fn lower_val(ty: &ValType, val: &ComponentVal) -> Result<Val> {
-    let i32_val = |v: i32| Val::Num(Num::I32(v));
-    Ok(match (ty, val) {
-        (ValType::Bool, ComponentVal::Bool(v)) => i32_val(*v as i32),
-        (ValType::S8, ComponentVal::S8(v)) => i32_val(*v as i32),
-        (ValType::U8, ComponentVal::U8(v)) => i32_val(*v as i32),
-        (ValType::S16, ComponentVal::S16(v)) => i32_val(*v as i32),
-        (ValType::U16, ComponentVal::U16(v)) => i32_val(*v as i32),
-        (ValType::S32, ComponentVal::S32(v)) => i32_val(*v),
-        (ValType::U32, ComponentVal::U32(v)) => i32_val(*v as i32),
-        (ValType::S64, ComponentVal::S64(v)) => Val::Num(Num::I64(*v)),
-        (ValType::U64, ComponentVal::U64(v)) => Val::Num(Num::I64(*v as i64)),
-        (ValType::F32, ComponentVal::F32(v)) => Val::Num(Num::F32(canonical_nan32(*v))),
-        (ValType::F64, ComponentVal::F64(v)) => Val::Num(Num::F64(canonical_nan64(*v))),
-        (ValType::Char, ComponentVal::Char(c)) => i32_val(*c as i32),
-        (ValType::Defined(defined), ComponentVal::Flags(set)) => match &**defined {
-            DefinedType::Flags(names) => {
-                let mut bits = 0u32;
-                for name in set {
-                    let i = names
-                        .iter()
-                        .position(|n| n == name)
-                        .ok_or_else(|| error(format!("unknown flag {name}")))?;
-                    bits |= 1 << i;
-                }
-                i32_val(bits as i32)
-            }
-            _ => return Err(unsupported("compound values")),
-        },
-        _ => return Err(RuntimeError::TypeMismatch),
-    })
 }
 
 /// A component-level extern
@@ -381,6 +231,7 @@ struct Linker<'a> {
     values: RefCell<Vec<Option<ComponentVal>>>,
     started: Cell<bool>,
     module_insts: RefCell<Vec<Rc<ModuleInst>>>,
+    may_leave: Rc<Cell<bool>>,
 }
 
 fn table<T: Clone>(len: usize) -> RefCell<Vec<Option<T>>> {
@@ -423,6 +274,7 @@ impl<'a> Linker<'a> {
             values: table(component.values.len()),
             started: Cell::new(false),
             module_insts: RefCell::new(Vec::new()),
+            may_leave: Rc::new(Cell::new(true)),
         }
     }
 
@@ -485,6 +337,16 @@ impl<'a> Linker<'a> {
             }
         }
         Ok(())
+    }
+
+    /// The resolved options of a lift or lower defined in this component.
+    fn context(&self, options: &CanonOptions) -> Result<CanonContext> {
+        Ok(CanonContext {
+            memory: options.memory.map(|i| self.core_memory(i)).transpose()?,
+            realloc: options.realloc.map(|i| self.core_func(i)).transpose()?,
+            encoding: options.string_encoding,
+            may_leave: Rc::clone(&self.may_leave),
+        })
     }
 
     fn extern_val(&self, kind: Sort, index: u32) -> Result<ExternVal> {
@@ -580,7 +442,10 @@ impl<'a> Linker<'a> {
                     .core_alias(alias)?
                     .as_func()
                     .ok_or_else(|| error("core alias is not a function"))?,
-                CoreFunc::Lower { func, .. } => lower_func(self.func(*func)?)?,
+                CoreFunc::Lower { func, options } => {
+                    let cx = self.context(options)?;
+                    lower_func(self.func(*func)?, cx)?
+                }
                 CoreFunc::ResourceNew(_) | CoreFunc::ResourceDrop(_) | CoreFunc::ResourceRep(_) => {
                     return Err(unsupported("resources"))
                 }
@@ -691,7 +556,12 @@ impl<'a> Linker<'a> {
                 FuncOrigin::Lift { core_func, options } => {
                     let core = self.core_func(*core_func)?;
                     let ty = Shared::clone(&entry.ty);
-                    if !core.func_type().type_match(&flat_func_type(&ty)?) {
+                    let cx = self.context(options)?;
+                    check_encoding(&cx, &ty)?;
+                    if !core
+                        .func_type()
+                        .type_match(&flatten_functype(&ty, Context::Lift)?)
+                    {
                         return Err(error("lifted core function has the wrong type"));
                     }
                     let post_return = options
@@ -702,6 +572,7 @@ impl<'a> Linker<'a> {
                         ty,
                         core,
                         post_return,
+                        cx,
                     })
                 }
                 FuncOrigin::Import(j) => match self.import(*j)? {
