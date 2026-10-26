@@ -5,11 +5,11 @@ This document describes how chiwawa parses and instantiates components, and what
 ## Scope
 
 The parser decodes every section of the binary format for the synchronous subset of the proposal.
-The runtime instantiates a component and calls its exported functions when every value crossing the canonical ABI fits in one core value:
-the integers from `s8` to `u64`, `f32`, `f64`, `bool`, `char`, and `flags` with at most 32 names.
+The runtime instantiates a component and calls its exported functions with every value type of the synchronous subset:
+the integers from `s8` to `u64`, `f32`, `f64`, `bool`, `char`, `flags`, UTF-8 strings, lists, records, tuples, enums, option, result and variants.
 
 Left out, and reported as an unsupported feature:
-strings and compound values, resources, async functions and types, streams and futures, fixed-length lists, map types, and exception tags.
+string encodings other than UTF-8, resources, async functions and types, streams and futures, fixed-length lists, map types, and exception tags.
 A core module with more than one memory is also rejected at instantiation, since loads and stores address memory 0 only.
 
 ## Parsing
@@ -122,3 +122,19 @@ A call from one component instance into another therefore runs on a nested runti
 
 Lifting follows the canonical ABI for scalars:
 a narrow integer is truncated to its width and sign-extended if signed, `bool` is true for any nonzero value, a `char` outside the Unicode scalar values traps, undefined flag bits are dropped, and a NaN becomes the canonical NaN.
+
+### Values in memory
+
+`execution/canon.rs` implements the canonical ABI.
+A string or a list is passed as a pointer and a length into the linear memory named by the `memory` option.
+A record, tuple or variant is passed in registers when it is small, and in memory otherwise.
+Values go to memory when a function has more than 16 flat parameters or more than 1 flat result; the parameters then arrive as one pointer to a tuple, and a lifted function returns a pointer while a lowered function receives one as its last parameter.
+Layout follows the spec: each type has an alignment and an element size, a variant stores its case index in the smallest integer that holds the case count, and a flattened variant joins the core types of its payloads.
+
+Lowering a string or list into memory calls the instance's `realloc`.
+The runtime clears the instance's `may_leave` flag for the duration of that call and of the `post-return` call.
+While the flag is clear, a `canon lower`ed import called from that instance traps with "cannot leave component instance".
+A trap in a lifted or lowered call restores the flag, so a failed call does not leave the instance unable to call out.
+
+Every lift and lower carries a `CanonContext`: the resolved `memory`, `realloc` and string encoding of its own definition, and the `may_leave` flag of its own instance.
+A lifted function uses the exporting instance's context for its arguments and results, and a lowered function uses the importing instance's, so a value crossing between two instances is written once in each memory.
