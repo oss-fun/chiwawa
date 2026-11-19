@@ -54,6 +54,17 @@ pub const CHECKPOINT_FILE: &str = "./checkpoint.bin";
 /// Input waiters are registered only while a monitor thread exists.
 static TRACK_INPUT_WAITS: AtomicBool = AtomicBool::new(false);
 
+#[cfg(all(
+    feature = "threads",
+    target_arch = "wasm32",
+    not(target_feature = "atomics")
+))]
+compile_error!(
+    "the `threads` feature needs `cfg(target_feature = \"atomics\")`, which selects the checkpoint monitor thread. \
+     Stable rustc hides this cfg even with `-C target-feature=+atomics`, and a checkpoint then stops only the `_start` thread. \
+     Build with nightly on the threads target: `cargo +nightly build-tco-threads` or `cargo +nightly build-legacy-threads`."
+);
+
 cfg_if::cfg_if! {
     if #[cfg(all(
         target_arch = "wasm32",
