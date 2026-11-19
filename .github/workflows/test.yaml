@@ -60,6 +60,9 @@ jobs:
       run: |
         cargo build-tco-threads
         ./tests/wasi-threads/run.sh
+
+    - name: Run the checkpoint/restore test
+      run: ./tests/checkpoint/run.sh
     
     - name: Check formatting
       run: cargo fmt --all --check

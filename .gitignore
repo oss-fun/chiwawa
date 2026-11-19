@@ -6,9 +6,11 @@
 *.wat
 !tests/wasm/*.wat
 !tests/wasi/*.wat
+!tests/checkpoint/*.wat
 *.bin
 /.cursor
 CLAUDE.md
+/.claude/
 /benchmarks/target
 # Prebuilt runtimes and AOT modules used for comparison
 /bin/
