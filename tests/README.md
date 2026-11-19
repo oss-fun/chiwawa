@@ -6,6 +6,8 @@ This directory contains test cases based on:
 - [WebAssembly/wasi-testsuite](https://github.com/WebAssembly/wasi-testsuite) - WASI Preview 1 tests
 
 `checkpoint/` tests checkpoint/restore end to end: `run.sh` runs chiwawa on `count_up.wat` under a host runtime, checkpoints it partway, restores it, and checks that the printed numbers stay consecutive.
+It also checkpoints `wait_input.wat` during a read from stdin.
+The restored process must receive the input.
 
 ## Running Tests
 

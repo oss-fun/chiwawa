@@ -19,6 +19,7 @@ CHIWAWA=${CHIWAWA:-$ROOT/target/tco-threads/wasm32-wasip1-threads/release/chiwaw
 RUNTIME=${RUNTIME:-"wasmtime run -S threads=y"}
 TIMEOUT=${TIMEOUT:-60}
 TRIGGER_AFTER=${TRIGGER_AFTER:-1}
+SKIP_INPUT_WAIT=${SKIP_INPUT_WAIT:-0}
 # The last number `count_up.wat` prints.
 COUNT=2000
 
@@ -40,6 +41,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 wat2wasm "$DIR/count_up.wat" -o "$WORK/count_up.wasm" || exit 1
+wat2wasm "$DIR/wait_input.wat" -o "$WORK/wait_input.wasm" || exit 1
 
 # The trigger file and checkpoint.bin are created in the current directory, which `--dir .` makes visible to chiwawa.
 cd "$WORK" || exit 1
@@ -54,11 +56,13 @@ fail() {
 
 # shellcheck disable=SC2086
 run() {
-    timeout "$TIMEOUT" $RUNTIME --dir . "$CHIWAWA" count_up.wasm "$@" </dev/null
+    guest=$1
+    shift
+    timeout "$TIMEOUT" $RUNTIME --dir . "$CHIWAWA" "$guest" "$@"
 }
 
 # 1. Run with --cr and create the trigger file partway through.
-run --cr >before.txt 2>&1 &
+run count_up.wasm --cr >before.txt 2>&1 </dev/null &
 sleep "$TRIGGER_AFTER"
 touch checkpoint.trigger
 wait $! || fail "checkpointed run exited with $?"
@@ -68,7 +72,7 @@ grep -q '^Execution stopped for checkpoint\.$' before.txt \
 [ -f checkpoint.bin ] || fail "checkpoint.bin was not written"
 
 # 2. Restore and run to completion.
-run --restore checkpoint.bin >after.txt 2>&1 || fail "restored run exited with $?"
+run count_up.wasm --restore checkpoint.bin >after.txt 2>&1 </dev/null || fail "restored run exited with $?"
 
 # 3. Keep only the guest's numbers; chiwawa's own status lines are dropped.
 grep -E '^[0-9]+$' before.txt >before_numbers.txt
@@ -89,3 +93,28 @@ seq 1 "$COUNT" | diff - actual.txt >diff.txt || {
 }
 
 echo "ok   count_up: $before lines, then the checkpoint, then $((COUNT - before)) more"
+
+[ "$SKIP_INPUT_WAIT" = 1 ] && exit 0
+
+rm -f checkpoint.bin before.txt after.txt
+mkfifo stdin.fifo
+exec 3<>stdin.fifo
+run wait_input.wasm --cr >before.txt 2>&1 <stdin.fifo &
+sleep "$TRIGGER_AFTER"
+touch checkpoint.trigger
+wait $! || fail "checkpointed run of wait_input exited with $?"
+exec 3>&-
+
+grep -q '^Execution stopped for checkpoint\.$' before.txt \
+    || fail "wait_input did not stop for the checkpoint"
+[ -f checkpoint.bin ] || fail "checkpoint.bin was not written for wait_input"
+
+printf 7 | run wait_input.wasm --restore checkpoint.bin >after.txt 2>&1 \
+    || fail "restored run of wait_input exited with $?"
+
+[ "$(grep -E '^[0-9]+$' before.txt | paste -sd ' ' -)" = 1 ] \
+    || fail "wait_input did not print exactly 1 before the checkpoint"
+[ "$(grep -E '^[0-9]+$' after.txt | paste -sd ' ' -)" = 7 ] \
+    || fail "the restored wait_input did not print exactly the byte it was sent"
+
+echo "ok   wait_input: 1, then the checkpoint during the read, then the byte sent after the restore"
