@@ -12,18 +12,20 @@ pub mod wasmedge;
 use crate::execution::mem::MemAddr;
 use crate::execution::value::Val;
 use crate::structure::module::SocketExt;
+use crate::wasi::descriptors::Recorded;
 use crate::wasi::passthrough::{collect_iovecs, guest_range, PassthroughWasiImpl, WasiIovec};
 use crate::wasi::{Args, WasiError, WasiResult};
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum AddressFamily {
     Inet4,
     Inet6,
     Unspec,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum SocketType {
     Stream,
     Datagram,
@@ -31,7 +33,7 @@ pub(crate) enum SocketType {
 }
 
 /// The options both extensions can express.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum SockOpt {
     ReuseAddr,
     KeepAlive,
@@ -44,7 +46,7 @@ pub(crate) enum SockOpt {
 }
 
 /// The value of a [`SockOpt`]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum OptValue {
     Bool(bool),
     Size(u32),
@@ -204,7 +206,7 @@ pub(crate) fn call(
 /// `sock_listen(fd, backlog)`: the same signature on both hosts, and no
 /// guest memory to read, so it needs no per-ABI frontend.
 fn listen(params: &[Val]) -> WasiResult<()> {
-    Host::listen(param_i32(params, 0)?, param_i32(params, 1)?)
+    Recorded::listen(param_i32(params, 0)?, param_i32(params, 1)?)
 }
 
 pub(crate) fn param_i64(params: &[Val], i: usize) -> WasiResult<i64> {

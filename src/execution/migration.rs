@@ -39,6 +39,7 @@ use crate::execution::module::ModuleInst;
 use crate::execution::runtime::Runtime;
 use crate::execution::state::{Stacks, VmState};
 use crate::execution::value::Val;
+use crate::wasi::descriptors::{self, Descriptor};
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::fs::File;
@@ -179,6 +180,7 @@ pub struct SerializableState {
     pub memory_data_compressed: Vec<u8>,
     pub next_tid: i32,
     pub threads: Vec<EncodedThread>,
+    pub descriptors: Vec<Descriptor>,
 }
 
 /// Encoded by the thread it belongs to, because `Stacks` is not `Send`.
@@ -416,6 +418,7 @@ fn write_checkpoint(
         memory_data_compressed,
         next_tid,
         threads,
+        descriptors: descriptors::snapshot(),
     };
 
     println!("Checkpoint component sizes:");
@@ -433,6 +436,7 @@ fn write_checkpoint(
     let encoded: Vec<u8> =
         bincode::serialize(&state).map_err(|e| RuntimeError::SerializationError(e.to_string()))?;
 
+    println!("  descriptors:        {}", state.descriptors.len());
     println!("  total encoded:      {} bytes", encoded.len());
 
     let mut file =

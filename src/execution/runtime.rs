@@ -4,6 +4,7 @@ use crate::error::RuntimeError;
 use crate::execution::dispatch;
 use crate::execution::func::{FuncAddr, FuncInst};
 use crate::execution::ir::Outcome;
+use crate::execution::mem::MemAddr;
 use crate::execution::migration;
 use crate::execution::module::ModuleInst;
 use crate::execution::regs::RegFile;
@@ -15,6 +16,8 @@ use crate::instrument::stats::ExecutionStats;
 #[cfg(feature = "trace")]
 use crate::instrument::trace::{TraceConfig, Tracer};
 use crate::structure::module::{Func, WasiFuncType};
+use crate::wasi::descriptors;
+use crate::wasi::passthrough::PassthroughWasiImpl;
 use crate::wasi::socket;
 #[cfg(feature = "threads")]
 use crate::wasi::threads::ThreadContext;
@@ -430,6 +433,20 @@ impl Runtime {
         };
         let wasi_impl = module.wasi_impl.as_ref().ok_or(WasiError::NoSys)?;
         let memory = module.mem_addrs.first().ok_or(WasiError::Fault)?;
+        let errno = descriptors::call_with_host_fds(func_type, params, memory, |params| {
+            self.pass_to_wasi(func_type, params, wasi_impl, memory)
+        })?;
+        Ok(Some(Val::Num(Num::I32(errno))))
+    }
+
+    /// Hands a WASI call to the passthrough and returns its errno.
+    fn pass_to_wasi(
+        &self,
+        func_type: &WasiFuncType,
+        params: &[Val],
+        wasi_impl: &PassthroughWasiImpl,
+        memory: &MemAddr,
+    ) -> WasiResult<i32> {
         let a = Args(params);
         let errno = match func_type {
             WasiFuncType::FdWrite => {
@@ -614,6 +631,6 @@ impl Runtime {
             }
             WasiFuncType::ProcRaise => return Err(WasiError::NoSys),
         };
-        Ok(Some(Val::Num(Num::I32(errno))))
+        Ok(errno)
     }
 }

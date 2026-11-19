@@ -3,10 +3,11 @@
 use super::layout::*;
 use crate::execution::mem::MemAddr;
 use crate::execution::value::Val;
+use crate::wasi::descriptors::Recorded;
 use crate::wasi::passthrough::PassthroughWasiImpl;
 use crate::wasi::socket::{
     decode, encode, iovecs, param_i32, read_array, read_bytes, read_str, read_struct, write_bytes,
-    write_struct, Backend, Host, RESOLVE_LIMIT,
+    write_struct, Backend, RESOLVE_LIMIT,
 };
 use crate::wasi::{WasiError, WasiResult};
 use std::net::SocketAddr;
@@ -34,20 +35,20 @@ fn write_addr(memory: &MemAddr, ptr: i32, addr: &SocketAddr) -> WasiResult<()> {
 pub(crate) fn open(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
     let family = decode(&FAMILY_CODES, param_i32(params, 0)?)?;
     let ty = decode(&TYPE_CODES, param_i32(params, 1)?)?;
-    let fd = Host::open(family, ty)?;
+    let fd = Recorded::open(family, ty)?;
     write_bytes(memory, param_i32(params, 2)?, &fd.to_le_bytes())
 }
 
 /// `sock_bind(fd, addr, port)`
 pub(crate) fn bind(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
     let addr = read_addr(memory, param_i32(params, 1)?, param_i32(params, 2)?)?;
-    Host::bind(param_i32(params, 0)?, &addr)
+    Recorded::bind(param_i32(params, 0)?, &addr)
 }
 
 /// `sock_connect(fd, addr, port)`
 pub(crate) fn connect(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
     let addr = read_addr(memory, param_i32(params, 1)?, param_i32(params, 2)?)?;
-    Host::connect(param_i32(params, 0)?, &addr)
+    Recorded::connect(param_i32(params, 0)?, &addr)
 }
 
 /// V1 `sock_accept(fd, fd_out)`: the standard accept with no flags, so the passthrough serves it.
@@ -68,7 +69,7 @@ pub(crate) fn accept_v1(
 pub(crate) fn recv_from_v1(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
     let iovecs = iovecs(memory, params)?;
     let (len, from) =
-        Host::recv_from(param_i32(params, 0)?, &iovecs, param_i32(params, 4)? as u32)?;
+        Recorded::recv_from(param_i32(params, 0)?, &iovecs, param_i32(params, 4)? as u32)?;
     write_addr(memory, param_i32(params, 3)?, &from)?;
     write_bytes(memory, param_i32(params, 5)?, &len.to_le_bytes())?;
     write_bytes(memory, param_i32(params, 6)?, &0u16.to_le_bytes())
@@ -78,7 +79,7 @@ pub(crate) fn recv_from_v1(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
 pub(crate) fn recv_from_v2(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
     let iovecs = iovecs(memory, params)?;
     let (len, from) =
-        Host::recv_from(param_i32(params, 0)?, &iovecs, param_i32(params, 4)? as u32)?;
+        Recorded::recv_from(param_i32(params, 0)?, &iovecs, param_i32(params, 4)? as u32)?;
     write_addr(memory, param_i32(params, 3)?, &from)?;
     write_bytes(memory, param_i32(params, 5)?, &from.port().to_le_bytes())?;
     write_bytes(memory, param_i32(params, 6)?, &len.to_le_bytes())?;
@@ -89,7 +90,7 @@ pub(crate) fn recv_from_v2(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
 pub(crate) fn send_to(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
     let to = read_addr(memory, param_i32(params, 3)?, param_i32(params, 4)?)?;
     let iovecs = iovecs(memory, params)?;
-    let len = Host::send_to(
+    let len = Recorded::send_to(
         param_i32(params, 0)?,
         &iovecs,
         param_i32(params, 5)? as u32,
@@ -124,19 +125,19 @@ fn addr_v2(memory: &MemAddr, params: &[Val], addr: SocketAddr) -> WasiResult<()>
 }
 
 pub(crate) fn local_addr_v1(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
-    addr_v1(memory, params, Host::local_addr(param_i32(params, 0)?)?)
+    addr_v1(memory, params, Recorded::local_addr(param_i32(params, 0)?)?)
 }
 
 pub(crate) fn local_addr_v2(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
-    addr_v2(memory, params, Host::local_addr(param_i32(params, 0)?)?)
+    addr_v2(memory, params, Recorded::local_addr(param_i32(params, 0)?)?)
 }
 
 pub(crate) fn peer_addr_v1(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
-    addr_v1(memory, params, Host::peer_addr(param_i32(params, 0)?)?)
+    addr_v1(memory, params, Recorded::peer_addr(param_i32(params, 0)?)?)
 }
 
 pub(crate) fn peer_addr_v2(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
-    addr_v2(memory, params, Host::peer_addr(param_i32(params, 0)?)?)
+    addr_v2(memory, params, Recorded::peer_addr(param_i32(params, 0)?)?)
 }
 
 /// `sock_getaddrinfo(node, node_len, service, service_len, hints, res,
@@ -171,7 +172,7 @@ pub(crate) fn getaddrinfo(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
         at = entry.next as i32;
     }
 
-    let (found, _) = Host::resolve(&node, &service, family, ty, max)?;
+    let (found, _) = Recorded::resolve(&node, &service, family, ty, max)?;
     for (item, (at, entry)) in found.iter().zip(&entries) {
         let (family, data, len) = sa_data(&item.addr);
         let info = AddrInfo {
@@ -203,7 +204,7 @@ pub(crate) fn setsockopt(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
     let opt = decode_opt_name(param_i32(params, 1)?, param_i32(params, 2)?)?;
     let len = param_i32(params, 4)? as u32 as usize;
     let value = decode_opt(opt, &read_bytes(memory, param_i32(params, 3)?, len)?)?;
-    Host::set_opt(param_i32(params, 0)?, opt, value)
+    Recorded::set_opt(param_i32(params, 0)?, opt, value)
 }
 
 /// `sock_getsockopt(fd, level, name, value_out, value_len_inout)`
@@ -211,7 +212,7 @@ pub(crate) fn getsockopt(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
     let opt = decode_opt_name(param_i32(params, 1)?, param_i32(params, 2)?)?;
     let len_at = param_i32(params, 4)?;
     let room = u32::from_le_bytes(read_array(memory, len_at)?) as usize;
-    let (bytes, len) = encode_opt(Host::get_opt(param_i32(params, 0)?, opt)?);
+    let (bytes, len) = encode_opt(Recorded::get_opt(param_i32(params, 0)?, opt)?);
     if len > room {
         return Err(WasiError::Inval);
     }
