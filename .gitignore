@@ -6,6 +6,7 @@
 *.wat
 !tests/wasm/*.wat
 !tests/wasi/*.wat
+!tests/checkpoint/*.wat
 *.bin
 /.cursor
 CLAUDE.md
