@@ -42,6 +42,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 wat2wasm "$DIR/count_up.wat" -o "$WORK/count_up.wasm" || exit 1
 wat2wasm "$DIR/wait_input.wat" -o "$WORK/wait_input.wasm" || exit 1
+wat2wasm "$DIR/file_count.wat" -o "$WORK/file_count.wasm" || exit 1
 
 # The trigger file and checkpoint.bin are created in the current directory, which `--dir .` makes visible to chiwawa.
 cd "$WORK" || exit 1
@@ -93,6 +94,29 @@ seq 1 "$COUNT" | diff - actual.txt >diff.txt || {
 }
 
 echo "ok   count_up: $before lines, then the checkpoint, then $((COUNT - before)) more"
+
+rm -f checkpoint.bin before.txt after.txt
+run file_count.wasm --cr >before.txt 2>&1 </dev/null &
+sleep "$TRIGGER_AFTER"
+touch checkpoint.trigger
+wait $! || fail "checkpointed run of file_count exited with $?"
+
+grep -q '^Execution stopped for checkpoint\.$' before.txt \
+    || fail "file_count did not stop for the checkpoint"
+[ -f checkpoint.bin ] || fail "checkpoint.bin was not written for file_count"
+before=$(wc -l <count.txt)
+[ "$before" -gt 0 ] || fail "the checkpoint landed before file_count wrote its first line"
+[ "$before" -lt "$COUNT" ] || fail "the checkpoint landed after file_count wrote its last line"
+
+run file_count.wasm --restore checkpoint.bin >after.txt 2>&1 </dev/null \
+    || fail "restored run of file_count exited with $?"
+
+seq 1 "$COUNT" | diff - count.txt >diff.txt || {
+    head -n 10 diff.txt
+    fail "count.txt does not hold 1 to $COUNT after the restore"
+}
+
+echo "ok   file_count: $before lines in count.txt, then the checkpoint, then $((COUNT - before)) more"
 
 [ "$SKIP_INPUT_WAIT" = 1 ] && exit 0
 
