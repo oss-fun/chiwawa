@@ -48,6 +48,16 @@ extern "C" {
     fn sock_set_send_timeout(fd: i32, us: u64) -> u16;
     fn sock_get_send_timeout(fd: i32, us_out: *mut u64) -> u16;
     fn sock_set_linger(fd: i32, on: i32, secs: i32) -> u16;
+    fn sock_set_reuse_port(fd: i32, on: i32) -> u16;
+    fn sock_get_reuse_port(fd: i32, on_out: *mut u8) -> u16;
+    fn sock_set_ip_ttl(fd: i32, ttl: i32) -> u16;
+    fn sock_get_ip_ttl(fd: i32, ttl_out: *mut u8) -> u16;
+    fn sock_set_ip_multicast_ttl(fd: i32, ttl: i32) -> u16;
+    fn sock_get_ip_multicast_ttl(fd: i32, ttl_out: *mut u8) -> u16;
+    fn sock_set_ip_multicast_loop(fd: i32, ipv6: i32, on: i32) -> u16;
+    fn sock_get_ip_multicast_loop(fd: i32, ipv6: i32, on_out: *mut u8) -> u16;
+    fn sock_set_ip_add_membership(fd: i32, group: *const u8, interface: u32) -> u16;
+    fn sock_set_ip_drop_membership(fd: i32, group: *const u8, interface: u32) -> u16;
     fn sock_get_linger(fd: i32, on_out: *mut u8, secs_out: *mut i32) -> u16;
     fn sock_send_to(
         fd: i32,
@@ -171,6 +181,23 @@ impl Backend for Wamr {
                 (SockOpt::Linger, OptValue::Linger { on, secs }) => {
                     sock_set_linger(fd, on as i32, secs)
                 }
+                (SockOpt::ReusePort, OptValue::Bool(on)) => sock_set_reuse_port(fd, on as i32),
+                (SockOpt::IpTtl, OptValue::Ttl(ttl)) => sock_set_ip_ttl(fd, ttl as i32),
+                (SockOpt::MulticastTtl, OptValue::Ttl(ttl)) => {
+                    sock_set_ip_multicast_ttl(fd, ttl as i32)
+                }
+                (SockOpt::MulticastLoopV4, OptValue::Bool(on)) => {
+                    sock_set_ip_multicast_loop(fd, 0, on as i32)
+                }
+                (SockOpt::MulticastLoopV6, OptValue::Bool(on)) => {
+                    sock_set_ip_multicast_loop(fd, 1, on as i32)
+                }
+                (SockOpt::AddMembership, OptValue::Membership { group, interface }) => {
+                    sock_set_ip_add_membership(fd, encode_ip(&group).as_ptr(), interface)
+                }
+                (SockOpt::DropMembership, OptValue::Membership { group, interface }) => {
+                    sock_set_ip_drop_membership(fd, encode_ip(&group).as_ptr(), interface)
+                }
                 _ => return Err(WasiError::Inval),
             }
         })
@@ -188,9 +215,19 @@ impl Backend for Wamr {
                 SockOpt::RecvTimeout => sock_get_recv_timeout(fd, &mut wide),
                 SockOpt::SendTimeout => sock_get_send_timeout(fd, &mut wide),
                 SockOpt::Linger => sock_get_linger(fd, &mut on, &mut secs),
+                SockOpt::ReusePort => sock_get_reuse_port(fd, &mut on),
+                SockOpt::IpTtl => sock_get_ip_ttl(fd, &mut on),
+                SockOpt::MulticastTtl => sock_get_ip_multicast_ttl(fd, &mut on),
+                SockOpt::MulticastLoopV4 => sock_get_ip_multicast_loop(fd, 0, &mut on),
+                SockOpt::MulticastLoopV6 => sock_get_ip_multicast_loop(fd, 1, &mut on),
+                SockOpt::AddMembership | SockOpt::DropMembership => {
+                    return Err(WasiError::NoProtoOpt)
+                }
             }
         })?;
         Ok(match opt.blank() {
+            OptValue::Ttl(_) => OptValue::Ttl(on),
+            OptValue::Membership { .. } => return Err(WasiError::NoProtoOpt),
             OptValue::Bool(_) => OptValue::Bool(on != 0),
             OptValue::Size(_) => OptValue::Size(wide as u32),
             OptValue::Timeout(_) => OptValue::Timeout(wide),

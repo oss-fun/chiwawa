@@ -253,15 +253,15 @@ impl Backend for WasmEdge {
         Ok((found, total))
     }
     fn set_opt(fd: i32, opt: SockOpt, value: OptValue) -> WasiResult<()> {
-        let (bytes, len) = encode_opt(value);
-        let name = encode(&OPT_CODES, opt);
+        let name = opt_code(opt)?;
+        let (bytes, len) = encode_opt(value)?;
         check(unsafe { sock_setsockopt(fd, LEVEL_SOCKET, name, bytes.as_ptr(), len as u32) })
     }
 
     fn get_opt(fd: i32, opt: SockOpt) -> WasiResult<OptValue> {
         let mut bytes = [0u8; OPT_VALUE_MAX];
         let mut len = OPT_VALUE_MAX as u32;
-        let name = encode(&OPT_CODES, opt);
+        let name = opt_code(opt)?;
         check(unsafe { sock_getsockopt(fd, LEVEL_SOCKET, name, bytes.as_mut_ptr(), &mut len) })?;
         decode_opt(opt, &bytes[..len as usize])
     }

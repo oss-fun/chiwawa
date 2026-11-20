@@ -90,11 +90,25 @@ pub(crate) fn addr_resolve(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
     write_bytes(memory, param_i32(params, 5)?, &(total as u32).to_le_bytes())
 }
 
-/// `sock_set_*(fd, value)`: a bool or size as i32, a timeout as i64
-/// microseconds, linger as `(fd, on, secs)`.
-pub(crate) fn set_opt(opt: WamrSockOpt, params: &[Val]) -> WasiResult<()> {
-    let opt = common_opt(opt)?;
+/// Whether the call is `sock_*_ip_multicast_loop(fd, ipv6, ..)` for IPv6.
+fn multicast_loop_ipv6(opt: WamrSockOpt, params: &[Val]) -> WasiResult<bool> {
+    Ok(opt == WamrSockOpt::IpMulticastLoop && param_i32(params, 1)? != 0)
+}
+
+/// `sock_set_*(fd, value)`: a bool, size or TTL as i32, a timeout as i64 microseconds.
+/// Linger is `(fd, on, secs)`, multicast loop `(fd, ipv6, on)`, a membership `(fd, group, interface)`.
+pub(crate) fn set_opt(opt: WamrSockOpt, memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
+    let wamr_opt = opt;
+    let opt = common_opt(opt, multicast_loop_ipv6(opt, params)?)?;
     let value = match opt.blank() {
+        OptValue::Bool(_) if wamr_opt == WamrSockOpt::IpMulticastLoop => {
+            OptValue::Bool(param_i32(params, 2)? != 0)
+        }
+        OptValue::Ttl(_) => OptValue::Ttl(param_i32(params, 1)? as u8),
+        OptValue::Membership { .. } => OptValue::Membership {
+            group: decode_ip(&read_array(memory, param_i32(params, 1)?)?)?,
+            interface: param_i32(params, 2)? as u32,
+        },
         OptValue::Bool(_) => OptValue::Bool(param_i32(params, 1)? != 0),
         OptValue::Size(_) => OptValue::Size(param_i32(params, 1)? as u32),
         OptValue::Timeout(_) => OptValue::Timeout(param_i64(params, 1)? as u64),
@@ -109,8 +123,14 @@ pub(crate) fn set_opt(opt: WamrSockOpt, params: &[Val]) -> WasiResult<()> {
 /// `sock_get_*(fd, out)`: a bool as one byte, a size as u32, a timeout as
 /// u64, linger as `(fd, on_out, secs_out)`.
 pub(crate) fn get_opt(opt: WamrSockOpt, memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
-    let out = param_i32(params, 1)?;
-    match Recorded::get_opt(param_i32(params, 0)?, common_opt(opt)?)? {
+    let ipv6 = multicast_loop_ipv6(opt, params)?;
+    let out = match opt {
+        WamrSockOpt::IpMulticastLoop => param_i32(params, 2)?,
+        _ => param_i32(params, 1)?,
+    };
+    match Recorded::get_opt(param_i32(params, 0)?, common_opt(opt, ipv6)?)? {
+        OptValue::Ttl(ttl) => write_bytes(memory, out, &[ttl]),
+        OptValue::Membership { .. } => Err(WasiError::NoProtoOpt),
         OptValue::Bool(on) => write_bytes(memory, out, &[on as u8]),
         OptValue::Size(size) => write_bytes(memory, out, &size.to_le_bytes()),
         OptValue::Timeout(us) => write_bytes(memory, out, &us.to_le_bytes()),
