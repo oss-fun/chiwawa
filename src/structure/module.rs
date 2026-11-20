@@ -195,6 +195,25 @@ pub enum WasiFuncType {
     SocketExt(SocketExt),
 }
 
+impl WasiFuncType {
+    /// A call waits for input when it can stay in the host until data arrives.
+    pub fn waits_for_input(&self) -> bool {
+        matches!(
+            self,
+            WasiFuncType::PollOneoff
+                | WasiFuncType::FdRead
+                | WasiFuncType::SockAccept
+                | WasiFuncType::SockRecv
+                | WasiFuncType::SocketExt(
+                    SocketExt::AcceptV1
+                        | SocketExt::RecvFromV1
+                        | SocketExt::RecvFromV2
+                        | SocketExt::RecvFromWamr
+                )
+        )
+    }
+}
+
 /// Socket functions WAMR and WasmEdge add under `wasi_snapshot_preview1`.
 /// Both hosts share some names with different signatures.
 #[derive(PartialEq, Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]

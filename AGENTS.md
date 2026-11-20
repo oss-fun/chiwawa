@@ -70,10 +70,13 @@ CI runs it on the tco-threads build only, so run the polling-based trigger yours
 
 ```bash
 cargo build-tco-threads && ./tests/checkpoint/run.sh
-cargo build-legacy && CHIWAWA=target/legacy/wasm32-wasip1/release/chiwawa.wasm RUNTIME="wasmtime run" ./tests/checkpoint/run.sh
+cargo build-legacy && CHIWAWA=target/legacy/wasm32-wasip1/release/chiwawa.wasm RUNTIME="wasmtime run" SKIP_INPUT_WAIT=1 ./tests/checkpoint/run.sh
 ```
 
 The script prints how many lines came before the checkpoint; it fails if that is zero or all of them.
+It then runs `wait_input.wat`, which is checkpointed during a read from stdin.
+That guest receives its input only after the restore.
+`SKIP_INPUT_WAIT=1` leaves that case out, because the polling-based build cannot checkpoint during a host call.
 The test covers one thread; a multi-thread checkpoint has no automated test.
 
 ## Invariants

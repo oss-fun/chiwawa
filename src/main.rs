@@ -9,6 +9,7 @@ use chiwawa::{
     execution::value::*,
     parser,
     structure::module::{ImportDesc, Module},
+    wasi::descriptors,
 };
 #[cfg(feature = "threads")]
 use chiwawa::{shared::Shared, wasi::threads::ThreadContext};
@@ -264,6 +265,7 @@ fn main() -> Result<()> {
             }
         };
         migration::restore_memory(&inst, &state)?;
+        descriptors::restore(&state.descriptors);
 
         let mut threads = state.threads;
         let Some(main_index) = threads.iter().position(|thread| thread.is_main) else {

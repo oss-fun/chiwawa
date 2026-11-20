@@ -36,17 +36,35 @@ use crate::error::RuntimeError;
 use crate::execution::global::GlobalAddr;
 use crate::execution::mem::MemAddr;
 use crate::execution::module::ModuleInst;
+use crate::execution::runtime::Runtime;
 use crate::execution::state::{Stacks, VmState};
 use crate::execution::value::Val;
+use crate::wasi::descriptors::{self, Descriptor};
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
 
 const CHECKPOINT_TRIGGER_FILE: &str = "./checkpoint.trigger";
+pub const CHECKPOINT_FILE: &str = "./checkpoint.bin";
+
+/// Input waiters are registered only while a monitor thread exists.
+static TRACK_INPUT_WAITS: AtomicBool = AtomicBool::new(false);
+
+#[cfg(all(
+    feature = "threads",
+    target_arch = "wasm32",
+    not(target_feature = "atomics")
+))]
+compile_error!(
+    "the `threads` feature needs `cfg(target_feature = \"atomics\")`, which selects the checkpoint monitor thread. \
+     Stable rustc hides this cfg even with `-C target-feature=+atomics`, and a checkpoint then stops only the `_start` thread. \
+     Build with nightly on the threads target: `cargo +nightly build-tco-threads` or `cargo +nightly build-legacy-threads`."
+);
 
 cfg_if::cfg_if! {
     if #[cfg(all(
@@ -77,14 +95,44 @@ cfg_if::cfg_if! {
         }
 
         pub fn setup_checkpoint_monitor(tables: MonitoredTables) {
+            TRACK_INPUT_WAITS.store(true, Ordering::Relaxed);
             thread::spawn(move || loop {
                 if std::path::Path::new(CHECKPOINT_TRIGGER_FILE).exists() {
                     tables.fill_all(crate::execution::handlers::checkpoint_trap);
                     crate::execution::atomics::interrupt_waiters();
                     let _ = std::fs::remove_file(CHECKPOINT_TRIGGER_FILE);
+                    checkpoint_input_waiters(Path::new(CHECKPOINT_FILE));
+                    return;
                 }
                 thread::sleep(Duration::from_millis(100));
             });
+        }
+
+        /// The monitor writes the checkpoint when every live thread is an input waiter.
+        fn checkpoint_input_waiters(output_path: &Path) {
+            let mut rendezvous = lock_rendezvous();
+            rendezvous.pending = true;
+            loop {
+                if rendezvous.written {
+                    return;
+                }
+                if rendezvous.all_arrived() {
+                    if let Some(waiter) = rendezvous.input_waiters.first() {
+                        let runtime = unsafe { waiter.runtime() };
+                        let _ = rendezvous.write(
+                            &runtime.module_inst().mem_addrs,
+                            runtime.next_tid(),
+                            output_path,
+                        );
+                        drop(rendezvous);
+                        ARRIVED.notify_all();
+                        return;
+                    }
+                }
+                rendezvous = ARRIVED
+                    .wait(rendezvous)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
         }
 
         #[inline(always)]
@@ -132,6 +180,7 @@ pub struct SerializableState {
     pub memory_data_compressed: Vec<u8>,
     pub next_tid: i32,
     pub threads: Vec<EncodedThread>,
+    pub descriptors: Vec<Descriptor>,
 }
 
 /// Encoded by the thread it belongs to, because `Stacks` is not `Send`.
@@ -158,35 +207,148 @@ pub fn serialize_thread(
     stacks: &Stacks,
     global_addrs: &[GlobalAddr],
 ) -> Result<EncodedThread, RuntimeError> {
+    encode_thread(stacks, global_addrs, !IS_WORKER.with(Cell::get))
+}
+
+fn encode_thread(
+    stacks: &Stacks,
+    global_addrs: &[GlobalAddr],
+    is_main: bool,
+) -> Result<EncodedThread, RuntimeError> {
     let state = ThreadState {
         stacks: stacks.clone(),
         globals: global_addrs.iter().map(|global| global.get()).collect(),
     };
     let data =
         bincode::serialize(&state).map_err(|e| RuntimeError::SerializationError(e.to_string()))?;
-    Ok(EncodedThread {
-        is_main: !IS_WORKER.with(Cell::get),
-        data,
-    })
+    Ok(EncodedThread { is_main, data })
+}
+
+/// An input waiter is a thread inside a WASI call that waits for input.
+struct InputWaiter {
+    runtime: *const Runtime,
+    is_main: bool,
+}
+
+/// # Safety
+///
+/// Only the thread holding the `RENDEZVOUS` lock reads `runtime`.
+/// The owner registers under that lock before the call.
+/// The owner takes the lock again after the call, before it touches the runtime.
+unsafe impl Send for InputWaiter {}
+
+impl InputWaiter {
+    /// # Safety
+    ///
+    /// The caller holds the `RENDEZVOUS` lock for as long as it uses the result.
+    /// `self` is still registered.
+    unsafe fn runtime<'a>(&self) -> &'a Runtime {
+        &*self.runtime
+    }
+
+    /// # Safety
+    ///
+    /// The caller holds the `RENDEZVOUS` lock.
+    /// `self` is still registered.
+    unsafe fn encode(&self) -> Result<EncodedThread, RuntimeError> {
+        let runtime = self.runtime();
+        encode_thread(
+            runtime.stacks(),
+            &runtime.module_inst().global_addrs,
+            self.is_main,
+        )
+    }
 }
 
 struct Rendezvous {
     live_threads: usize,
     arrived: Vec<EncodedThread>,
+    input_waiters: Vec<InputWaiter>,
+    pending: bool,
     written: bool,
 }
 
 static RENDEZVOUS: Mutex<Rendezvous> = Mutex::new(Rendezvous {
     live_threads: 0,
     arrived: Vec::new(),
+    input_waiters: Vec::new(),
+    pending: false,
     written: false,
 });
 static ARRIVED: Condvar = Condvar::new();
 
 impl Rendezvous {
+    /// Every live thread has arrived or is an input waiter.
     fn all_arrived(&self) -> bool {
-        !self.arrived.is_empty() && self.arrived.len() >= self.live_threads
+        let stopped = self.arrived.len() + self.input_waiters.len();
+        stopped > 0 && stopped >= self.live_threads
     }
+
+    /// Writes the checkpoint.
+    /// Ends the process when it saved an input waiter.
+    fn write(
+        &mut self,
+        mem_addrs: &[MemAddr],
+        next_tid: i32,
+        output_path: &Path,
+    ) -> Result<(), RuntimeError> {
+        let mut threads = std::mem::take(&mut self.arrived);
+        let input_waiters = std::mem::take(&mut self.input_waiters);
+        let result = input_waiters
+            .iter()
+            .try_for_each(|waiter| {
+                threads.push(unsafe { waiter.encode() }?);
+                Ok(())
+            })
+            .and_then(|()| write_checkpoint(threads, mem_addrs, next_tid, output_path));
+        self.written = true;
+        if input_waiters.is_empty() {
+            return result;
+        }
+        match result {
+            Ok(()) => {
+                println!("Execution stopped for checkpoint.");
+                std::process::exit(0)
+            }
+            Err(e) => {
+                eprintln!("Checkpoint failed: {:?}", e);
+                std::process::exit(1)
+            }
+        }
+    }
+}
+
+/// Registers the calling thread as an input waiter.
+/// Returns `false` when a checkpoint is pending.
+pub fn enter_input_wait(runtime: &Runtime) -> bool {
+    if !TRACK_INPUT_WAITS.load(Ordering::Relaxed) {
+        return true;
+    }
+    let mut rendezvous = lock_rendezvous();
+    if rendezvous.pending {
+        return false;
+    }
+    rendezvous.input_waiters.push(InputWaiter {
+        runtime,
+        is_main: !IS_WORKER.with(Cell::get),
+    });
+    true
+}
+
+/// Removes the calling thread from the input waiters.
+/// Returns `false` when a checkpoint saved the thread.
+pub fn leave_input_wait(runtime: &Runtime) -> bool {
+    if !TRACK_INPUT_WAITS.load(Ordering::Relaxed) {
+        return true;
+    }
+    let mut rendezvous = lock_rendezvous();
+    if rendezvous.written {
+        return false;
+    }
+    rendezvous
+        .input_waiters
+        .retain(|waiter| !std::ptr::eq(waiter.runtime, runtime));
+    true
 }
 
 fn lock_rendezvous() -> MutexGuard<'static, Rendezvous> {
@@ -216,15 +378,14 @@ pub fn rendezvous_and_checkpoint<P: AsRef<Path>>(
     output_path: P,
 ) -> Result<(), RuntimeError> {
     let mut rendezvous = lock_rendezvous();
+    rendezvous.pending = true;
     rendezvous.arrived.push(thread);
     loop {
         if rendezvous.written {
             return Ok(());
         }
         if rendezvous.all_arrived() {
-            let threads = std::mem::take(&mut rendezvous.arrived);
-            let result = write_checkpoint(threads, mem_addrs, next_tid, output_path);
-            rendezvous.written = true;
+            let result = rendezvous.write(mem_addrs, next_tid, output_path.as_ref());
             drop(rendezvous);
             ARRIVED.notify_all();
             return result;
@@ -235,13 +396,13 @@ pub fn rendezvous_and_checkpoint<P: AsRef<Path>>(
     }
 }
 
-fn write_checkpoint<P: AsRef<Path>>(
+fn write_checkpoint(
     threads: Vec<EncodedThread>,
     mem_addrs: &[MemAddr],
     next_tid: i32,
-    output_path: P,
+    output_path: &Path,
 ) -> Result<(), RuntimeError> {
-    println!("Checkpointing state to {:?}...", output_path.as_ref());
+    println!("Checkpointing state to {:?}...", output_path);
 
     let (memory_data_compressed, mem_raw_size) = match mem_addrs.first() {
         Some(mem_addr) => {
@@ -257,6 +418,7 @@ fn write_checkpoint<P: AsRef<Path>>(
         memory_data_compressed,
         next_tid,
         threads,
+        descriptors: descriptors::snapshot(),
     };
 
     println!("Checkpoint component sizes:");
@@ -274,6 +436,7 @@ fn write_checkpoint<P: AsRef<Path>>(
     let encoded: Vec<u8> =
         bincode::serialize(&state).map_err(|e| RuntimeError::SerializationError(e.to_string()))?;
 
+    println!("  descriptors:        {}", state.descriptors.len());
     println!("  total encoded:      {} bytes", encoded.len());
 
     let mut file =

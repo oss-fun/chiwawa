@@ -4,6 +4,7 @@ use crate::error::RuntimeError;
 use crate::execution::dispatch;
 use crate::execution::func::{FuncAddr, FuncInst};
 use crate::execution::ir::Outcome;
+use crate::execution::mem::MemAddr;
 use crate::execution::migration;
 use crate::execution::module::ModuleInst;
 use crate::execution::regs::RegFile;
@@ -15,6 +16,8 @@ use crate::instrument::stats::ExecutionStats;
 #[cfg(feature = "trace")]
 use crate::instrument::trace::{TraceConfig, Tracer};
 use crate::structure::module::{Func, WasiFuncType};
+use crate::wasi::descriptors;
+use crate::wasi::passthrough::PassthroughWasiImpl;
 use crate::wasi::socket;
 #[cfg(feature = "threads")]
 use crate::wasi::threads::ThreadContext;
@@ -132,6 +135,55 @@ impl Runtime {
             enable_checkpoint: config.enable_checkpoint,
             #[cfg(feature = "threads")]
             thread_ctx: config.thread_ctx,
+        }
+    }
+
+    pub(crate) fn stacks(&self) -> &Stacks {
+        &self.stacks
+    }
+
+    pub(crate) fn module_inst(&self) -> &ModuleInst {
+        &self.module_inst
+    }
+
+    /// The thread id the next `thread-spawn` would hand out.
+    pub(crate) fn next_tid(&self) -> i32 {
+        #[cfg(feature = "threads")]
+        if let Some(ctx) = self.thread_ctx.as_ref() {
+            return ctx.next_tid();
+        }
+        1
+    }
+
+    /// Moves the running frame's saved `ip` back to the WASI call that yielded.
+    fn rewind_to_wasi_call(&mut self) {
+        if let Some(frame) = self.stacks.activation_frame_stack.last_mut() {
+            frame.ip -= 1;
+        }
+    }
+
+    /// Saves this thread for a checkpoint and returns the error that ends the run.
+    fn take_checkpoint(&self) -> RuntimeError {
+        println!("Runtime handling checkpoint request...");
+        let thread = match migration::serialize_thread(&self.stacks, &self.module_inst.global_addrs)
+        {
+            Ok(thread) => thread,
+            Err(e) => return e,
+        };
+        match migration::rendezvous_and_checkpoint(
+            thread,
+            &self.module_inst.mem_addrs,
+            self.next_tid(),
+            Path::new(migration::CHECKPOINT_FILE),
+        ) {
+            Ok(_) => {
+                println!("Checkpoint successful (Runtime).");
+                RuntimeError::CheckpointRequested
+            }
+            Err(e) => {
+                eprintln!("Checkpoint failed during runtime handling: {:?}", e);
+                e
+            }
         }
     }
 
@@ -261,30 +313,7 @@ impl Runtime {
 
             match module_level_instr_result {
                 Err(RuntimeError::CheckpointRequested) => {
-                    println!("Runtime handling checkpoint request...");
-                    let thread =
-                        migration::serialize_thread(&self.stacks, &self.module_inst.global_addrs)?;
-
-                    #[cfg(feature = "threads")]
-                    let next_tid = self.thread_ctx.as_ref().map_or(1, |ctx| ctx.next_tid());
-                    #[cfg(not(feature = "threads"))]
-                    let next_tid = 1;
-
-                    match migration::rendezvous_and_checkpoint(
-                        thread,
-                        &self.module_inst.mem_addrs,
-                        next_tid,
-                        Path::new("./checkpoint.bin"),
-                    ) {
-                        Ok(_) => {
-                            println!("Checkpoint successful (Runtime).");
-                            return Err(RuntimeError::CheckpointRequested);
-                        }
-                        Err(e) => {
-                            eprintln!("Checkpoint failed during runtime handling: {:?}", e);
-                            return Err(e);
-                        }
-                    }
+                    return Err(self.take_checkpoint());
                 }
                 Err(e) => {
                     return Err(e);
@@ -297,8 +326,18 @@ impl Runtime {
                             params,
                             result_reg,
                         }) => {
-                            // Call WASI function directly with params from registers
-                            match self.call_wasi_function(&wasi_func_type, &params) {
+                            let waits_for_input = wasi_func_type.waits_for_input();
+                            if waits_for_input {
+                                self.rewind_to_wasi_call();
+                                if !migration::enter_input_wait(self) {
+                                    return Err(self.take_checkpoint());
+                                }
+                            }
+                            let wasi_result = self.call_wasi_function(&wasi_func_type, &params);
+                            if waits_for_input && !migration::leave_input_wait(self) {
+                                return Err(RuntimeError::CheckpointRequested);
+                            }
+                            match wasi_result {
                                 Ok(result) => {
                                     if let Some(reg) = result_reg {
                                         if let Some(val) = result {
@@ -394,6 +433,20 @@ impl Runtime {
         };
         let wasi_impl = module.wasi_impl.as_ref().ok_or(WasiError::NoSys)?;
         let memory = module.mem_addrs.first().ok_or(WasiError::Fault)?;
+        let errno = descriptors::call_with_host_fds(func_type, params, memory, |params| {
+            self.pass_to_wasi(func_type, params, wasi_impl, memory)
+        })?;
+        Ok(Some(Val::Num(Num::I32(errno))))
+    }
+
+    /// Hands a WASI call to the passthrough and returns its errno.
+    fn pass_to_wasi(
+        &self,
+        func_type: &WasiFuncType,
+        params: &[Val],
+        wasi_impl: &PassthroughWasiImpl,
+        memory: &MemAddr,
+    ) -> WasiResult<i32> {
         let a = Args(params);
         let errno = match func_type {
             WasiFuncType::FdWrite => {
@@ -578,6 +631,6 @@ impl Runtime {
             }
             WasiFuncType::ProcRaise => return Err(WasiError::NoSys),
         };
-        Ok(Some(Val::Num(Num::I32(errno))))
+        Ok(errno)
     }
 }

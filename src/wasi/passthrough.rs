@@ -93,15 +93,15 @@ extern "C" {
     fn __wasi_clock_time_get(clock_id: u32, precision: u64, time: *mut u64) -> u16;
     fn __wasi_clock_res_get(clock_id: u32, resolution: *mut u64) -> u16;
     fn __wasi_sched_yield() -> u16;
-    fn __wasi_fd_close(fd: u32) -> u16;
+    pub(crate) fn __wasi_fd_close(fd: u32) -> u16;
     fn __wasi_fd_sync(fd: u32) -> u16;
     fn __wasi_fd_datasync(fd: u32) -> u16;
     fn __wasi_fd_prestat_get(fd: u32, prestat: *mut u8) -> u16;
     fn __wasi_fd_prestat_dir_name(fd: u32, path: *mut u8, path_len: u32) -> u16;
-    fn __wasi_fd_fdstat_get(fd: u32, stat: *mut u8) -> u16;
-    fn __wasi_fd_seek(fd: u32, offset: i64, whence: u32, newoffset: *mut u64) -> u16;
-    fn __wasi_fd_tell(fd: u32, offset: *mut u64) -> u16;
-    fn __wasi_fd_fdstat_set_flags(fd: u32, flags: u32) -> u16;
+    pub(crate) fn __wasi_fd_fdstat_get(fd: u32, stat: *mut u8) -> u16;
+    pub(crate) fn __wasi_fd_seek(fd: u32, offset: i64, whence: u32, newoffset: *mut u64) -> u16;
+    pub(crate) fn __wasi_fd_tell(fd: u32, offset: *mut u64) -> u16;
+    pub(crate) fn __wasi_fd_fdstat_set_flags(fd: u32, flags: u32) -> u16;
     fn __wasi_fd_filestat_set_size(fd: u32, size: u64) -> u16;
     fn __wasi_fd_filestat_get(fd: u32, filestat: *mut u8) -> u16;
     fn __wasi_path_create_directory(fd: u32, path: *const u8) -> u16;
@@ -123,7 +123,7 @@ extern "C" {
         mtim: u64,
         fst_flags: u32,
     ) -> u16;
-    fn __wasi_path_open(
+    pub(crate) fn __wasi_path_open(
         fd: u32,
         dirflags: u32,
         path: *const u8,
@@ -133,7 +133,7 @@ extern "C" {
         fdflags: u16,
         opened_fd: *mut u32,
     ) -> u16;
-    fn __wasi_poll_oneoff(
+    pub(crate) fn __wasi_poll_oneoff(
         in_ptr: *const u8,
         out_ptr: *mut u8,
         nsubscriptions: u32,

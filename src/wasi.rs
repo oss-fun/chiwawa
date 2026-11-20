@@ -29,6 +29,7 @@
 //! - [`types`]: WASI type definitions
 //! - [`error`]: WASI error codes and handling
 
+pub mod descriptors;
 pub mod error;
 pub mod passthrough;
 pub mod socket;
