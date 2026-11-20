@@ -164,9 +164,20 @@ pub(crate) const OPT_CODES: [(i32, SockOpt); 8] = [
 /// The longest option value: a `timeval`.
 pub(crate) const OPT_VALUE_MAX: usize = 16;
 
-pub(crate) fn encode_opt(value: OptValue) -> ([u8; OPT_VALUE_MAX], usize) {
+/// The `__wasi_sock_opt_so_t` code of an option, or `ENOPROTOOPT` for one WasmEdge does not have.
+#[cfg(feature = "socket-wasmedge")]
+pub(crate) fn opt_code(opt: SockOpt) -> WasiResult<i32> {
+    OPT_CODES
+        .iter()
+        .find(|(_, known)| *known == opt)
+        .map(|(code, _)| *code)
+        .ok_or(WasiError::NoProtoOpt)
+}
+
+pub(crate) fn encode_opt(value: OptValue) -> WasiResult<([u8; OPT_VALUE_MAX], usize)> {
     let mut bytes = [0u8; OPT_VALUE_MAX];
     let len = match value {
+        OptValue::Ttl(_) | OptValue::Membership { .. } => return Err(WasiError::NoProtoOpt),
         OptValue::Bool(on) => {
             bytes[0..4].copy_from_slice(&(on as i32).to_le_bytes());
             4
@@ -186,7 +197,7 @@ pub(crate) fn encode_opt(value: OptValue) -> ([u8; OPT_VALUE_MAX], usize) {
             8
         }
     };
-    (bytes, len)
+    Ok((bytes, len))
 }
 
 pub(crate) fn decode_opt(opt: SockOpt, bytes: &[u8]) -> WasiResult<OptValue> {
@@ -199,6 +210,7 @@ pub(crate) fn decode_opt(opt: SockOpt, bytes: &[u8]) -> WasiResult<OptValue> {
         Ok(i64::from_le_bytes(eight.try_into().unwrap()))
     };
     Ok(match opt.blank() {
+        OptValue::Ttl(_) | OptValue::Membership { .. } => return Err(WasiError::NoProtoOpt),
         OptValue::Bool(_) => OptValue::Bool(int(0)? != 0),
         OptValue::Size(_) => OptValue::Size(int(0)? as u32),
         OptValue::Timeout(_) => OptValue::Timeout((long(0)? * 1_000_000 + long(8)?) as u64),
