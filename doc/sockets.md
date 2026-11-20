@@ -25,4 +25,5 @@ The standard `sock_accept`, `sock_recv`, `sock_send` and `sock_shutdown` are pas
 - WAMR: `iwasm --addr-pool=<addr/mask>` for the addresses the guest may use and `--allow-resolve=<domain>` for name lookups.
 - WasmEdge: a version with the V2 socket functions.
 
-A checkpoint does not capture sockets; after a restore every socket fd is gone, as with any other fd.
+A checkpoint records how each socket was opened, and a restore opens it again under the same fd.
+See [migration.md](migration.md#files-and-sockets) for what is recorded and what is lost.

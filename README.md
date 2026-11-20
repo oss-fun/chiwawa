@@ -54,6 +54,7 @@ somethingWasmRuntime target/tco-threads/wasm32-wasip1-threads/release/chiwawa.wa
 
 Chiwawa runs multi-threaded guests on a host runtime that provides wasi-threads: one interpreter instance per host thread, all sharing a single linear memory.
 Needs the `wasm32-wasip1-threads` target, so the `-threads` build aliases enable the `threads` feature.
+The `-threads` aliases need a nightly toolchain, and a build with stable Rust stops with an error.
 
 ```bash
 # Use cargo build-legacy-threads if the host runtime lacks tail-call support.
