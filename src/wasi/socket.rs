@@ -16,7 +16,7 @@ use crate::wasi::descriptors::Recorded;
 use crate::wasi::passthrough::{collect_iovecs, guest_range, PassthroughWasiImpl, WasiIovec};
 use crate::wasi::{Args, WasiError, WasiResult};
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum AddressFamily {
@@ -32,7 +32,8 @@ pub(crate) enum SocketType {
     Any,
 }
 
-/// The options both extensions can express.
+/// The options a guest can set.
+/// A host returns `ENOPROTOOPT` for one it does not have.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum SockOpt {
     ReuseAddr,
@@ -43,6 +44,14 @@ pub(crate) enum SockOpt {
     RecvTimeout,
     SendTimeout,
     Linger,
+    ReusePort,
+    IpTtl,
+    MulticastTtl,
+    MulticastLoopV4,
+    MulticastLoopV6,
+    /// A socket can hold several memberships, one per group.
+    AddMembership,
+    DropMembership,
 }
 
 /// The value of a [`SockOpt`]
@@ -51,13 +60,32 @@ pub(crate) enum OptValue {
     Bool(bool),
     Size(u32),
     Timeout(u64),
-    Linger { on: bool, secs: i32 },
+    Linger {
+        on: bool,
+        secs: i32,
+    },
+    Ttl(u8),
+    /// A membership is a multicast group and the interface that joins it.
+    Membership {
+        group: IpAddr,
+        interface: u32,
+    },
 }
 
 impl SockOpt {
     pub(crate) fn blank(self) -> OptValue {
         match self {
-            SockOpt::ReuseAddr | SockOpt::KeepAlive | SockOpt::Broadcast => OptValue::Bool(false),
+            SockOpt::ReuseAddr
+            | SockOpt::KeepAlive
+            | SockOpt::Broadcast
+            | SockOpt::ReusePort
+            | SockOpt::MulticastLoopV4
+            | SockOpt::MulticastLoopV6 => OptValue::Bool(false),
+            SockOpt::IpTtl | SockOpt::MulticastTtl => OptValue::Ttl(0),
+            SockOpt::AddMembership | SockOpt::DropMembership => OptValue::Membership {
+                group: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                interface: 0,
+            },
             SockOpt::RecvBufSize | SockOpt::SendBufSize => OptValue::Size(0),
             SockOpt::RecvTimeout | SockOpt::SendTimeout => OptValue::Timeout(0),
             SockOpt::Linger => OptValue::Linger { on: false, secs: 0 },
@@ -196,7 +224,7 @@ pub(crate) fn call(
         SocketExt::GetLocalAddrV2 => wasmedge::guest::local_addr_v2(memory, params),
         SocketExt::GetPeerAddrV1 => wasmedge::guest::peer_addr_v1(memory, params),
         SocketExt::GetPeerAddrV2 => wasmedge::guest::peer_addr_v2(memory, params),
-        SocketExt::SetOptWamr(opt) => wamr::guest::set_opt(opt, params),
+        SocketExt::SetOptWamr(opt) => wamr::guest::set_opt(opt, memory, params),
         SocketExt::GetOptWamr(opt) => wamr::guest::get_opt(opt, memory, params),
         SocketExt::SetSockOpt => wasmedge::guest::setsockopt(memory, params),
         SocketExt::GetSockOpt => wasmedge::guest::getsockopt(memory, params),

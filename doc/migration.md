@@ -149,6 +149,7 @@ The socket calls are also recorded by the `Backend` named `Recorded`, which sees
 - **Files**: the parameters of `path_open`, later `fd_fdstat_set_flags` calls, and the offset `fd_tell` reports when the checkpoint is written.
 - **Sockets**: the family and type of `sock_open`, each option set, and the addresses of `bind`, `listen` and `connect`.
   A bind to port 0 records the port the host chose.
+  A socket keeps one entry per multicast group it joined, and leaving a group removes that entry.
 
 `fd_close` removes an entry and `fd_renumber` moves it.
 

@@ -61,6 +61,22 @@ struct Socket {
     fdflags: Option<u16>,
 }
 
+impl Socket {
+    /// Records an option so that replaying `opts` in order gives the socket its current options.
+    fn record_opt(&mut self, opt: SockOpt, value: OptValue) {
+        let joins = |entry: &(SockOpt, OptValue)| *entry == (SockOpt::AddMembership, value);
+        match opt {
+            SockOpt::AddMembership if self.opts.iter().any(joins) => {}
+            SockOpt::AddMembership => self.opts.push((opt, value)),
+            SockOpt::DropMembership => self.opts.retain(|entry| !joins(entry)),
+            _ => {
+                self.opts.retain(|(set, _)| *set != opt);
+                self.opts.push((opt, value));
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum Kind {
     File(File),
@@ -489,8 +505,7 @@ impl Backend for Recorded {
     fn set_opt(fd: i32, opt: SockOpt, value: OptValue) -> WasiResult<()> {
         Host::set_opt(fd, opt, value)?;
         if let Some(socket) = lock_state().socket(fd) {
-            socket.opts.retain(|(set, _)| *set != opt);
-            socket.opts.push((opt, value));
+            socket.record_opt(opt, value);
         }
         Ok(())
     }

@@ -3,7 +3,7 @@
 use crate::structure::module::WamrSockOpt;
 use crate::wasi::socket::{decode, encode, AddressFamily, Resolved, SockOpt, SocketType};
 use crate::wasi::{WasiError, WasiResult};
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 /// `__wasi_addr_t`: kind at 0; then IPv4 octets at 4 and port at 8, or IPv6
 /// 16-bit groups at 4 and port at 20. Integers are little endian.
@@ -116,9 +116,32 @@ impl AddrInfo {
     }
 }
 
-/// The common option a WAMR option function stands for
-pub(crate) fn common_opt(opt: WamrSockOpt) -> WasiResult<SockOpt> {
+/// `__wasi_addr_ip_t`: a `__wasi_addr_t` without its port.
+pub(crate) const ADDR_IP_SIZE: usize = 20;
+
+pub(crate) fn decode_ip(bytes: &[u8; ADDR_IP_SIZE]) -> WasiResult<IpAddr> {
+    let mut addr = [0u8; ADDR_SIZE];
+    addr[..ADDR_IP_SIZE].copy_from_slice(bytes);
+    Ok(decode_addr(&addr)?.ip())
+}
+
+#[cfg(feature = "socket-wamr")]
+pub(crate) fn encode_ip(ip: &IpAddr) -> [u8; ADDR_IP_SIZE] {
+    let addr = encode_addr(&SocketAddr::new(*ip, 0));
+    addr[..ADDR_IP_SIZE].try_into().unwrap()
+}
+
+/// The common option a WAMR option function stands for.
+/// `ipv6` is the family parameter of `sock_set_ip_multicast_loop`.
+pub(crate) fn common_opt(opt: WamrSockOpt, ipv6: bool) -> WasiResult<SockOpt> {
     match opt {
+        WamrSockOpt::ReusePort => Ok(SockOpt::ReusePort),
+        WamrSockOpt::IpTtl => Ok(SockOpt::IpTtl),
+        WamrSockOpt::IpMulticastTtl => Ok(SockOpt::MulticastTtl),
+        WamrSockOpt::IpMulticastLoop if ipv6 => Ok(SockOpt::MulticastLoopV6),
+        WamrSockOpt::IpMulticastLoop => Ok(SockOpt::MulticastLoopV4),
+        WamrSockOpt::IpAddMembership => Ok(SockOpt::AddMembership),
+        WamrSockOpt::IpDropMembership => Ok(SockOpt::DropMembership),
         WamrSockOpt::ReuseAddr => Ok(SockOpt::ReuseAddr),
         WamrSockOpt::KeepAlive => Ok(SockOpt::KeepAlive),
         WamrSockOpt::Broadcast => Ok(SockOpt::Broadcast),

@@ -18,7 +18,10 @@ The standard `sock_accept`, `sock_recv`, `sock_send` and `sock_shutdown` are pas
 - send, recv, send_to, recv_from
 - local and peer address
 - name resolution, at most 32 results per call
-- options: SO_REUSEADDR, SO_KEEPALIVE, SO_BROADCAST, SO_RCVBUF, SO_SNDBUF, SO_RCVTIMEO, SO_SNDTIMEO, SO_LINGER. Any other option is `ENOPROTOOPT`.
+- options on both hosts: SO_REUSEADDR, SO_KEEPALIVE, SO_BROADCAST, SO_RCVBUF, SO_SNDBUF, SO_RCVTIMEO, SO_SNDTIMEO, SO_LINGER.
+- options on WAMR only: SO_REUSEPORT, IP_TTL, IP_MULTICAST_TTL, IP_MULTICAST_LOOP, IP_ADD_MEMBERSHIP, IP_DROP_MEMBERSHIP.
+  WasmEdge has no IP-level options, so a build for WasmEdge returns `ENOPROTOOPT` for them and cannot receive multicast.
+- Any other option is `ENOPROTOOPT`.
 
 ## Host requirements
 
