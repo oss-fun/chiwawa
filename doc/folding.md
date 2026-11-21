@@ -1,7 +1,9 @@
 # Operand Folding
 
-Operand folding removes instructions that only *carry* a value (`i32.const`, `local.get`, `local.set`) by embedding them in a neighbour.
-The surviving instruction does the same work as before, so a dispatch disappears without any handler having to do more.
+Some instructions only move a value (`i32.const`, `local.get`, `local.set`).
+Operand folding removes such an instruction and puts its value into an adjacent instruction.
+The instruction that stays does the same work as before.
+Thus one dispatch goes away, and no handler does more work.
 
 ```
 Before folding:
@@ -14,8 +16,8 @@ After folding:
 
 ## Source Folding
 
-A constant or a `local.get` becomes an operand of the instruction that consumes it.
-This includes the address of a load or store.
+A constant or a `local.get` becomes an operand of the instruction that uses its value.
+This includes the address of a load or a store.
 
 ```
 Before:
@@ -29,7 +31,8 @@ After:
 
 ## Destination Folding
 
-A `local.set` disappears, and the instruction that produces the value writes the local's register directly.
+A `local.set` goes away.
+The instruction that makes the value writes directly to the register of the local.
 
 ```
 Before:
@@ -42,8 +45,9 @@ After:
 
 ## Register Consumers
 
-Call arguments, store values, branch conditions and values, and `select` operands are plain registers, not operand slots.
-A `local.get` feeding one of them is dropped and the consumer reads the local's register; a constant still needs its copy.
+Call arguments, store values, branch conditions, branch values, and `select` operands are registers, not operand slots.
+When a `local.get` supplies one of them, Chiwawa removes the `local.get`, and the consumer reads the register of the local.
+For a constant, the copy stays.
 
 ```
 Before:
@@ -55,21 +59,24 @@ After:
   call $f        ; params local[2], local[5]
 ```
 
-The values of `br_if` and `local.tee` stay on the stack when execution continues past them, so those keep their copies.
+The values of `br_if` and `local.tee` stay on the stack when execution continues after them.
+Thus those instructions keep their copies.
 
 ## Implementation
 
-Every fold is decided at the consumer, which looks back at the instructions emitted just before it.
-A `local.get` cannot tell on its own whether it will end up as an `i32.add` operand, a call argument or a block result; the consumer knows.
+The consumer makes the decision for each fold.
+It looks back at the instructions that the parser emitted immediately before it.
+A `local.get` cannot know if it will become an `i32.add` operand, a call argument, or a block result, but the consumer knows.
 
-1. `local.get` and the constants always emit a copy into a fresh register.
-2. A consumer walks back from the last emitted instruction, one operand at a time from the top of the stack down.
-   A copy that wrote the operand's register becomes the operand and is turned into a no-op.
-3. `local.set` points the previous instruction's destination at the local instead, unless a `drop` came between them.
-4. Compaction strips the no-ops and remaps branch targets.
+1. `local.get` and the constants always emit a copy into a new register.
+2. A consumer goes back from the last emitted instruction, one operand at a time, from the top of the stack down.
+   When a copy wrote the register of the operand, that copy becomes the operand, and Chiwawa changes the copy into a no-op.
+3. `local.set` changes the destination of the previous instruction to the local, unless a `drop` came between them.
+4. Compaction removes the no-ops and maps the branch targets again.
 
-## Limitations
+## Limits
 
-- A copy folds only into the instruction that consumes it next; anything in between stops the walk
-- Control flow instructions (block, loop, if) break folding chains
-- Reference types (funcref, externref) are not folded
+- A copy folds only into the instruction that uses it next.
+  An instruction between the two stops the search.
+- Control flow instructions (block, loop, if) stop a sequence of folds.
+- Chiwawa does not fold reference types (funcref, externref).

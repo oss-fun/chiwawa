@@ -1,96 +1,120 @@
 # Checkpoint and Restore for Live Migration
 
-This document explains Chiwawa's checkpoint/restore mechanism for live migration.
+This document is about the checkpoint and restore mechanism of Chiwawa for live migration.
 
-## Motivation
+## Functions of Live Migration
 
-Live migration enables moving WebAssembly workloads between hosts and resuming execution from where it left off.
-This is valuable for:
+Live migration moves a WebAssembly workload between hosts, and the workload continues from the point where it stopped.
+Live migration helps in these conditions:
 
-- **Edge-cloud continuum**: Moving computation between edge devices and cloud
-- **Fault tolerance**: Recovering from failures by restoring checkpoints
-- **Load balancing**: Redistributing workloads across infrastructure
-- **Debugging**: Capturing execution state for analysis
+- **Edge-cloud continuum**: Computation moves between edge devices and the cloud.
+- **Fault tolerance**: After a failure, a restore from a checkpoint starts the workload again.
+- **Load balancing**: Workloads move across the infrastructure.
+- **Analysis of defects**: A checkpoint captures the execution state for analysis.
 
 ## How It Works
 
 ### Checkpoint Process
 
-1. **Trigger Detection**: a monitor watches for the trigger file
-2. **Stop every thread**: at an instruction boundary, see [Stopping Every Thread](#stopping-every-thread)
-3. **State Capture**: each thread serializes its own state
-4. **Persistence**: the last thread to arrive writes one file holding all of them plus the shared memory
+1. **Trigger**: A monitor looks for the trigger file.
+2. **Stop of all threads**: Each thread stops at an instruction boundary.
+   See [How Each Thread Stops](#how-each-thread-stops).
+3. **State capture**: Each thread serializes its state.
+4. **Persistence**: The last thread that stops writes one file.
+   The file contains the states of all threads and the shared memory.
 
 ### Captured State
 
-A checkpoint captures:
+A checkpoint captures these items:
 
-- **Per thread**: the call stack (per-frame `func_idx`, program counter, result registers), the register file, and that instance's globals
-- **Shared, saved once**: the linear memory contents, the next thread id `thread-spawn` would hand out, and the open files and sockets (see [Files and Sockets](#files-and-sockets))
+- **For each thread**: the call stack (`func_idx`, program counter, and result registers for each frame), the register file, and the globals of that instance
+- **Shared, saved one time**: the contents of the linear memory, the next thread id that `thread-spawn` gives, and the open files and sockets (see [Files and Sockets](#files-and-sockets))
 
-Globals are per-instance rather than shared: `__stack_pointer` holds a different value in every thread.
+Each instance has a different set of globals, because `__stack_pointer` has a different value in each thread.
 
-The thread id matters because the guest's own pthread structures live in the restored memory and still refer to the ids they were given.
-Restarting the counter would hand a live thread's id to a new one.
+The thread id is important because the pthread structures of the guest are in the restored memory.
+Those structures continue to refer to the ids that they received.
+A counter that starts again from zero gives the id of a live thread to a new thread.
 
-Tables are left out, which is wrong for a guest that writes them: `table.set` and `table.fill` write tables at runtime.
+A checkpoint does not contain the tables.
+This is incorrect for a guest that writes tables, because `table.set` and `table.fill` write tables at run time.
 
 ### Restore Process
 
-1. **Load**: Read checkpoint file
-2. **Restore the shared memory**: once, before any thread runs
-3. **Open the files and sockets again**: under their saved fd numbers
-4. **Restore the thread id counter**
-5. **Recreate the other threads**: each gets its own module instance, applies its own globals, re-attaches `cached_mem_ptr` to the restored memory, and resumes from its saved program counter
-6. **Resume this thread**: the one that ran `_start`
+1. **Load**: Read the checkpoint file.
+2. **Restore the shared memory**: Do this one time, before a thread runs.
+3. **Open the files and sockets again**: Use their saved fd numbers.
+4. **Restore the thread id counter**.
+5. **Make the other threads again**: Each thread gets a module instance and applies the globals from its state.
+   It attaches `cached_mem_ptr` to the restored memory again, and it continues from its saved program counter.
+6. **Resume this thread**: This is the thread that ran `_start`.
 
-The other threads start before the `_start` thread resumes, because that thread returning ends the process and would take the others with it.
+The other threads start before the `_start` thread resumes.
+When the `_start` thread returns, the process stops, and the other threads stop with it.
 
-Each thread decodes its own state, because `Stacks` holds `Rc`s and raw pointers that Rust will not let cross a thread boundary.
-The same constraint applies while saving, so the file holds one encoded blob per thread rather than one decoded structure.
+Each thread decodes its state, because `Stacks` contains `Rc` values and raw pointers.
+Rust does not let these values go from one thread to a different thread.
+The same limit applies during a save.
+Thus the file contains one encoded blob for each thread, not one decoded structure.
 
-Each frame records the `func_idx` of the function it runs, so the body and handler array need no reconstruction: `execute_frame` reads them from the module.
-That index also identifies the frame's function at checkpoint time, with no search over `func_addrs`.
-A frame also caches a pointer to that code so a return does not look it up; the pointer is skipped by the checkpoint and a restored frame falls back to the index.
+Each frame records the `func_idx` of the function that it runs.
+Thus it is not necessary to build the body and the handler array again, because `execute_frame` reads them from the module.
+That index also gives the function of the frame at checkpoint time, without a search of `func_addrs`.
+A frame also caches a pointer to that code.
+Thus a return does not look up the code.
+The checkpoint does not include the pointer, and a restored frame uses the index.
 
-This split (serialize raw state vs. re-derive what depends on raw pointers) keeps the checkpoint small and avoids leaking host pointers into the file.
+Chiwawa serializes the raw state, and it calculates again the data that it gets from raw pointers.
+Thus the checkpoint stays small, and host pointers do not go into the file.
 
 ## Trigger Mechanisms
 
-WebAssembly has no signal handling, so a checkpoint is requested by creating a trigger file (`checkpoint.trigger`).
-How that file is noticed depends on the build target.
+WebAssembly has no signals.
+Thus, to start a checkpoint, you make a trigger file (`checkpoint.trigger`).
+The build target sets how Chiwawa finds that file.
 
 ### Thread-based (wasm32-wasip1-threads)
+
 A background thread polls for the trigger file.
-When it appears, that thread fills every function's handler table with `checkpoint_trap` and wakes the parked waiters.
-The dispatcher itself polls nothing, so checkpointing costs nothing per instruction.
+When that thread finds the file, it fills the handler table of each function with `checkpoint_trap` and wakes the parked threads.
+The dispatcher does not poll.
+Thus the checkpoint function adds no work to each instruction.
 
 ### Polling-based (wasm32-wasip1)
-On hosts without thread support, the dispatcher itself does the trigger check.
-Issuing a WASI `path_exists` syscall on every instruction would be too expensive, so `poll_checkpoint` keeps a counter (`VmState.checkpoint_poll_counter`) and only fires the syscall once every `CHECKPOINT_POLL_MASK + 1` (= 1024) instructions.
-The throttle keeps the hot dispatcher path tight while still bounding checkpoint latency to a small, fixed number of instructions.
 
-## Stopping Every Thread
+On hosts without threads, the dispatcher does the trigger check.
+A WASI `path_exists` system call for each instruction uses too much time.
+Thus `poll_checkpoint` keeps a counter (`VmState.checkpoint_poll_counter`).
+It makes the system call only one time for each `CHECKPOINT_POLL_MASK + 1` (= 1024) instructions.
+This limit keeps the hot dispatcher path short.
+The time before the checkpoint starts is a maximum of 1024 instructions.
 
-Every thread has to stop at an instruction boundary, from one of three places:
+## How Each Thread Stops
 
-- **Running**: the monitor fills every handler table with `checkpoint_trap`, so the next instruction dispatched traps.
-- **Parked in `memory.atomic.wait`**: the thread never reaches the dispatcher, so the monitor also notifies every shard of the parking table.
-- **Waiting for input in a WASI call**: nothing can wake the thread, so it is saved where it is.
-  See [Threads Waiting for Input](#threads-waiting-for-input).
+Each thread must stop at an instruction boundary, from one of three states:
 
-A woken waiter holding a `notify` permit is not interrupted, because dropping it would lose a wake-up `memory.atomic.notify` already counted.
-The rest leave without advancing `pc`, so the restore runs the `wait` again: it re-reads the address and either reports not-equal or parks again, its timeout restarted.
+- **The thread runs**: The monitor fills each handler table with `checkpoint_trap`, and thus the next dispatched instruction traps.
+- **The thread is parked in `memory.atomic.wait`**: The thread does not go to the dispatcher.
+  Thus the monitor also notifies each shard of the parking table.
+- **The thread waits for input in a WASI call**: It is not possible to wake the thread.
+  Thus Chiwawa saves it where it is.
+  See [Threads That Wait for Input](#threads-that-wait-for-input).
 
-Each trapped thread serializes its own state and then waits for the others.
-The last one to arrive writes the file and releases them.
+Chiwawa does not interrupt a woken thread that has a `notify` permit.
+Without the permit, the count of `memory.atomic.notify` includes a wake-up that did not occur.
+The other parked threads stop their `wait` without a change to `pc`.
+Thus the restore runs the `wait` again.
+The `wait` reads the address again, and then it reports not-equal or parks again with a new timeout.
 
-### Threads Waiting for Input
+Each thread that trapped serializes its state and then waits for the other threads.
+The last thread that stops writes the file and releases the other threads.
 
-A thread inside a host WASI call cannot be woken.
-WASI Preview 1 has no signal and no way to cancel another thread's call.
+### Threads That Wait for Input
 
-`WasiFuncType::waits_for_input` names the calls that wait for input:
+It is not possible to wake a thread that is in a host WASI call.
+WASI Preview 1 has no signal, and it has no method to cancel the call of a different thread.
+
+`WasiFuncType::waits_for_input` gives the calls that wait for input:
 
 - `poll_oneoff`
 - `fd_read`
@@ -98,100 +122,110 @@ WASI Preview 1 has no signal and no way to cancel another thread's call.
 - `sock_recv`
 - the accept and receive calls of the socket extensions
 
-A thread inside one of them counts as stopped:
+A thread in one of these calls counts as stopped:
 
-1. Before the call, `Runtime::run` moves the frame's saved `ip` back to the call instruction.
-2. `enter_input_wait` registers the thread.
-3. The rendezvous is complete when every live thread has arrived or is registered.
-4. The thread that writes the file serializes each registered thread.
-   A registered thread's state does not change during the call, so another thread can read it.
-5. The monitor thread writes the file when every thread is registered, because no guest thread arrives.
-6. The writer ends the process, because a registered thread never returns to end it.
+1. Before the call, `Runtime::run` moves the saved `ip` of the frame back to the call instruction.
+2. `enter_input_wait` puts the thread in the registry.
+3. The rendezvous is completed when each live thread is at the rendezvous or is in the registry.
+4. The thread that writes the file serializes each thread in the registry.
+   The state of a thread in the registry does not change during the call.
+   Thus a different thread can read it.
+5. When all threads are in the registry, no guest thread comes to the rendezvous.
+   Thus the monitor thread writes the file.
+6. The writer stops the process, because a thread in the registry does not return to stop it.
 
 The restore runs the call again.
-A timeout starts over, as it does for `memory.atomic.wait`.
+A timeout starts again from zero.
+The same occurs for `memory.atomic.wait`.
 
-A call that returns before the file is written is not lost.
-`leave_input_wait` removes the thread from the registry and the result is stored.
+Chiwawa keeps the result of a call that returns before the write of the file.
+`leave_input_wait` removes the thread from the registry, and Chiwawa stores the result.
 The thread then traps at its next instruction.
 
-A call that returns while the file is being written is lost, together with any input it consumed.
-The process ends before the result is stored.
+Chiwawa does not keep the result of a call that returns during the write of the file, or the input that the call consumed.
+The process stops before Chiwawa stores the result.
 
 Limits:
 
-- A call that sends output (`fd_write`, `sock_send`) is not treated this way.
-  One that completed while the file was being written would run a second time after the restore.
-  A thread blocked in such a call holds the checkpoint back until the call returns.
+- This procedure does not apply to a call that sends output (`fd_write`, `sock_send`).
+  Such a call can complete during the write of the file, and then it runs a second time after the restore.
+  The checkpoint waits until such a call returns.
 - The polling-based build has no monitor thread.
-  Its one thread sees the trigger only after the call returns.
+  Its one thread finds the trigger only after the call returns.
 
 ## Files and Sockets
 
-A restore is a new process, where the fd numbers in the guest's memory name nothing.
-`src/wasi/descriptors.rs` keeps a record of every fd the guest opened, and the checkpoint saves it.
-The record lives outside the WASI passthrough.
+A restore is a new process.
+In that process, the fd numbers in the memory of the guest refer to no open file or socket.
+`src/wasi/descriptors.rs` keeps a record of each fd that the guest opened, and the checkpoint saves the record.
+The record is outside the WASI passthrough.
 
 ### One entry point
 
-Every WASI call goes through `descriptors::call_with_host_fds`, called from `Runtime::call_wasi_function`.
-It does three things:
+Each WASI call goes through `descriptors::call_with_host_fds`, which `Runtime::call_wasi_function` calls.
+It does three steps:
 
-1. It replaces each guest fd number in the parameters with the host's number.
+1. It replaces each guest fd number in the parameters with the number of the host.
 2. It runs the call.
-3. After a successful call, it updates the record and the table.
+3. After a call without an error, it updates the record and the table.
 
-No other code handles a guest fd number.
-The socket calls are also recorded by the `Backend` named `Recorded`, which sees each address in the common form of `src/wasi/socket.rs`.
+No other code uses a guest fd number.
+The `Backend` with the name `Recorded` also records the socket calls.
+It gets each address in the shared representation of `src/wasi/socket.rs`.
 
-### What is recorded
+### Contents of the record
 
-- **Files**: the parameters of `path_open`, later `fd_fdstat_set_flags` calls, and the offset `fd_tell` reports when the checkpoint is written.
-- **Sockets**: the family and type of `sock_open`, each option set, and the addresses of `bind`, `listen` and `connect`.
-  A bind to port 0 records the port the host chose.
+- **Files**: the parameters of `path_open`, subsequent `fd_fdstat_set_flags` calls, and the offset that `fd_tell` reports at the time of the checkpoint.
+- **Sockets**: the family and type of `sock_open`, each option that the guest set, and the addresses of `bind`, `listen`, and `connect`.
+  For a bind to port 0, the record contains the port that the host selected.
 
-`fd_close` removes an entry and `fd_renumber` moves it.
+`fd_close` removes an entry, and `fd_renumber` moves it.
 
 ### Restore
 
-`descriptors::restore` replays the record in the order the fds were opened:
+`descriptors::restore` does the operations of the record again, in the sequence in which the guest opened the fds:
 
 1. It opens the file or socket again.
-   A file is opened without `O_EXCL` and `O_TRUNC`, so the data it already wrote stays.
-2. A file seeks to its saved offset.
-   A socket gets its options, then `bind`, `listen` and `connect`.
+   It opens a file without `O_EXCL` and `O_TRUNC`.
+   Thus the data that the guest wrote before the checkpoint stays.
+2. For a file, it seeks to the saved offset.
+   For a socket, it sets the options, and then it does `bind`, `listen`, and `connect`.
 3. The table maps the saved fd number to the new fd.
 
-An fd that cannot be restored is reported, and the guest sees `EBADF` for its number.
+Chiwawa reports an fd that it cannot restore, and the guest gets `EBADF` for that number.
 
 ### The fd table
 
-The host picks the number of a new fd, and no host lets the guest choose it:
+The host selects the number of a new fd, and no host lets the guest select it:
 
-- wasmtime with threads never reuses a number.
-- WAMR picks a random free number.
-- WasmEdge picks a random number below 2^31.
+- wasmtime with threads does not use a number again.
+- WAMR selects a random free number.
+- WasmEdge selects a random number below 2^31.
 
-`fd_renumber` does not help: WAMR and WasmEdge refuse a free target.
-The table therefore maps the number the guest remembers to the number the host handed out.
-A number missing from the table is the same on both sides, which is every number before the first restore.
+`fd_renumber` does not help, because WAMR and WasmEdge do not accept a free target.
+Thus the table maps the number that the guest knows to the number that the host gave.
+A number that is not in the table is the same on the two sides.
+Before the first restore, this is true for all numbers.
 
-- A host fd behind a mapping is `EBADF` under its own number, because the guest was never given that number.
-- When the host hands out a number the guest already uses, the guest gets another free number and the table maps it.
-- `poll_oneoff` carries fds inside its subscriptions.
-  They are translated in a copy, so the guest's memory keeps the guest's numbers and a checkpoint during the call saves them.
+- A host fd that has a mapping gives `EBADF` for its host number, because the guest did not receive that number.
+- When the host gives a number that the guest uses at that time, the guest gets a different free number, and the table maps it.
+- `poll_oneoff` has fds in its subscriptions.
+  Chiwawa translates them in a copy.
+  Thus the memory of the guest keeps the guest numbers, and a checkpoint during the call saves them.
 
 ### Limits
 
-- A TCP connection is a new connection after the restore, so the peer sees a reconnect.
-- A socket returned by `sock_accept` is not restored.
-- Data in the host's socket buffers is lost.
-- A file must exist at the same path under the same preopened directory.
-- The preopened directories must have the same fd numbers in both processes.
+- After the restore, a TCP connection is a new connection, and the peer gets a reconnect.
+- Chiwawa does not restore a socket that `sock_accept` returned.
+- The data in the socket buffers of the host does not stay.
+- A file must be at the same path in the same preopened directory.
+- The preopened directories must have the same fd numbers in the two processes.
 
-The socket record uses the common form, so a checkpoint from one socket host restores on the other.
+The socket record uses the shared representation.
+Thus a checkpoint from one socket host restores on the other.
 
 ## Runtime Neutrality
 
-Because Chiwawa is self-hosted (runs as WebAssembly itself), checkpoints are portable across different host runtimes.
-A checkpoint created on Wasmtime can be restored on WasmEdge, Wasmtime or any other WASI-compliant runtime.
+Chiwawa is self-hosted (it runs as WebAssembly).
+Thus checkpoints are portable across different host runtimes.
+You can restore a checkpoint from Wasmtime on WasmEdge, Wasmtime, or a different runtime that implements WASI.

@@ -1,29 +1,34 @@
 # Sockets
 
-Experimental: depends on the non-standard socket APIs of WAMR and WasmEdge.
+This function is experimental, because it uses the non-standard socket APIs of WAMR and WasmEdge.
 
 ## Guest and host
 
-Both extensions live in `wasi_snapshot_preview1`.
-The parser tells them apart by import name and declared type, so a guest built against either runtime's socket library loads.
-The host Chiwawa calls is fixed by the `socket-wamr` or `socket-wasmedge` feature, because a host refuses a module that imports what it does not provide.
-Each call is decoded from the guest's ABI into a common form (`std::net::SocketAddr`, family, type, option) and encoded for the host, so the guest and host ABIs need not match.
-Without a feature every extension call returns `ENOTSUP`.
+The two extensions are in `wasi_snapshot_preview1`.
+The parser finds each extension from the import name and the declared type.
+Thus Chiwawa loads a guest that uses the socket library of one or the other runtime.
 
-The standard `sock_accept`, `sock_recv`, `sock_send` and `sock_shutdown` are passed through as before on every host.
+The `socket-wamr` or `socket-wasmedge` feature sets the host that Chiwawa calls.
+This is necessary because a host does not accept a module that imports a function that the host does not supply.
+Chiwawa decodes each call from the ABI of the guest into a shared representation (`std::net::SocketAddr`, family, type, option).
+Chiwawa then encodes the call for the host.
+Thus the guest ABI and the host ABI can be different.
+Without a feature, each extension call returns `ENOTSUP`.
 
-## Supported
+On all hosts, Chiwawa sends the standard `sock_accept`, `sock_recv`, `sock_send`, and `sock_shutdown` calls to the host without change.
+
+## Available operations
 
 - open, bind, connect, listen, accept, close
 - send, recv, send_to, recv_from
 - local and peer address
-- name resolution, at most 32 results per call
-- options: SO_REUSEADDR, SO_KEEPALIVE, SO_BROADCAST, SO_RCVBUF, SO_SNDBUF, SO_RCVTIMEO, SO_SNDTIMEO, SO_LINGER. Any other option is `ENOPROTOOPT`.
+- name resolution, with a maximum of 32 results for each call
+- options: SO_REUSEADDR, SO_KEEPALIVE, SO_BROADCAST, SO_RCVBUF, SO_SNDBUF, SO_RCVTIMEO, SO_SNDTIMEO, SO_LINGER. Chiwawa returns `ENOPROTOOPT` for all other options.
 
-## Host requirements
+## Necessary host functions
 
-- WAMR: `iwasm --addr-pool=<addr/mask>` for the addresses the guest may use and `--allow-resolve=<domain>` for name lookups.
+- WAMR: `iwasm --addr-pool=<addr/mask>` for the addresses that the guest can use, and `--allow-resolve=<domain>` for name lookups.
 - WasmEdge: a version with the V2 socket functions.
 
-A checkpoint records how each socket was opened, and a restore opens it again under the same fd.
-See [migration.md](migration.md#files-and-sockets) for what is recorded and what is lost.
+A checkpoint records how the guest opened each socket, and a restore opens the socket again with the same fd.
+See [migration.md](migration.md#files-and-sockets) for the data that Chiwawa records and the data that it cannot keep.

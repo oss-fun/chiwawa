@@ -1,11 +1,11 @@
 # Register-Based Execution
 
-This document explains Chiwawa's register-based execution model.
+This document is about the register-based execution model of Chiwawa.
 
-## Motivation
+## Problem
 
 WebAssembly is a stack-based virtual machine.
-A traditional interpreter would use a value stack for every operation:
+The usual interpreter uses a value stack for each operation:
 
 ```
 i32.add:
@@ -15,29 +15,32 @@ i32.add:
   4. push result to stack
 ```
 
-This approach requires multiple stack operations per instruction.
-In a self-hosted runtime, these stack operations translate to many host instructions, amplifying overhead.
+This method uses more than one stack operation for each instruction.
+In a self-hosted runtime, these stack operations become many host instructions, which increases the overhead.
 
-Chiwawa eliminates runtime stack manipulation by converting stack operations to register references during preprocessing.
+During preprocessing, Chiwawa changes stack operations to register references.
+Thus there are no stack operations at run time.
 
-## Why Register IR Speeds Things Up on a Stack-Machine Host
+## Register IR Is Faster on a Stack-Machine Host
 
-Chiwawa's architecture looks strange at first glance:
+At first, the architecture of Chiwawa looks unusual:
 
-- The host is a Wasm runtime, so it is a stack machine
-- Chiwawa itself, running on top, is a Wasm module and therefore also executes under the stack-machine model
-- Yet what Chiwawa implements **internally is a register machine**
-- And the guest bytecode this register machine interprets is, once again, Wasm: stack-machine code
+- The host is a Wasm runtime, and thus it is a stack machine.
+- Chiwawa runs on the host as a Wasm module, and thus it also executes with the stack-machine model.
+- But internally, Chiwawa implements **a register machine**.
+- The guest bytecode that this register machine interprets is Wasm again, which is stack-machine code.
 
-Implementing an interpreter for a stack machine, running on a stack machine, as a register machine matches neither the host's execution model nor the guest's instruction format.
-Intuitively, aligning everything to a stack machine seems more natural.
+Chiwawa is an interpreter for a stack machine, it runs on a stack machine, and it is a register machine.
+This architecture does not agree with the execution model of the host or with the instruction format of the guest.
+An architecture that uses a stack machine in all layers looks more natural.
 
-### What a Stack Machine Maintains at Runtime
+### The State That a Stack Machine Keeps at Run Time
 
-A stack-machine interpreter must track "where the top of the stack currently is" as **dynamic state** (the stack pointer).
-Every instruction interacts with this state.
+A stack-machine interpreter must always know the position of the top of the stack.
+This position is **dynamic state** (the stack pointer, SP).
+Each instruction uses this state.
 
-Tracing the execution of `i32.const 10; i32.const 20; i32.add; local.set 0`:
+This is a trace of the execution of `i32.const 10; i32.const 20; i32.add; local.set 0`:
 
 ```
                      i32.const 10        i32.const 20        i32.add            local.set 0
@@ -56,12 +59,19 @@ SP ──┐               SP ──┐              SP ──┐              S
                                                              add, push          store→local[0]
 ```
 
-At every dispatch, the handler must consult SP, compute SP-relative addresses, move values in and out, and update SP.
-In addition, instructions that exist solely to manipulate the stack (`i32.const`, `local.get`, `local.set`, `drop`) are each dispatched as their own handler.
+At each dispatch, the handler must do these steps:
 
-### What a Register IR Eliminates
+1. It reads SP.
+2. It calculates addresses relative to SP.
+3. It moves values in and out.
+4. It updates SP.
 
-Once operand positions are statically named at parse time, there is no SP and no "top of the stack."
+Also, some instructions only change the stack (`i32.const`, `local.get`, `local.set`, `drop`), and each of them uses one dispatch.
+
+### The State That a Register IR Removes
+
+At parse time, the parser gives each operand position a static name.
+After that, there is no SP and no top of the stack.
 
 The same sequence executes as follows:
 
@@ -82,7 +92,7 @@ The same sequence executes as follows:
                                                              to dst=R2
 ```
 
-With operand folding applied, adjacent stack-shuffling instructions are absorbed into their consumer:
+With operand folding, the consumer absorbs the adjacent instructions that only move stack values:
 
 ```
                      I32Add Const(10), Const(20) → Local[0]
@@ -100,38 +110,43 @@ With operand folding applied, adjacent stack-shuffling instructions are absorbed
                      local[0]. The register file is left untouched.
 ```
 
-### Two Axes of Reduction from a Single Mechanism
+### One Mechanism Decreases the Overhead on Two Axes
 
-Eliminating the stack abstraction reduces overhead along two axes simultaneously.
+The removal of the stack abstraction decreases the overhead on two axes at the same time.
 
-Axis 1: fewer handler dispatches.
-Stack-only instructions either disappear or get absorbed.
-`drop` becomes a no-op, since the register simply goes unused.
-`i32.const` and `local.get` fold into the consumer's immediate operand field, and `local.set` folds into the producer's destination field.
+Axis 1: a smaller number of handler dispatches.
+Instructions that only change the stack go away, or a different instruction absorbs them.
+`drop` becomes a no-op, because no instruction uses the register.
+`i32.const` and `local.get` fold into the immediate operand field of the consumer.
+`local.set` folds into the destination field of the producer.
 
-Axis 2: less work per dispatch.** Compute handlers no longer maintain the stack.
-There is no SP to read, no SP-relative address to compute, no SP to write back.
-Each handler simply reads from named registers, computes, and writes to a named register.
+Axis 2: less work for each dispatch.
+Handlers that calculate values do not keep a stack.
+There is no SP to read, no address relative to SP to calculate, and no SP to write back.
+Each handler reads from named registers, calculates, and writes to a named register.
 
-Both axes derive from a single mechanism: giving every operand a static name, which abolishes the dynamic state (SP) that the stack abstraction required.
+The two axes come from one mechanism.
+Each operand gets a static name, and thus the dynamic state (SP) of the stack abstraction is not necessary.
 
-### Why Self-Hosted Execution Amplifies the Savings
+### Self-Hosted Execution Increases the Effect
 
-Chiwawa is itself a WebAssembly module.
-Each guest instruction is handled by a Chiwawa handler, and each handler consists of multiple host-Wasm instructions.
-The cost of maintaining the stack abstraction shows up at the Chiwawa-handler layer and also as host-Wasm instructions.
+Chiwawa is a WebAssembly module.
+A Chiwawa handler executes each guest instruction, and each handler becomes many host Wasm instructions.
+The work for the stack abstraction is in the handler layer of Chiwawa and also in the host Wasm instructions.
 
-Removing this overhead at the IR level eliminates it from the handler bodies, and therefore from the host-Wasm instruction stream as well.
-If the host runtime is a JIT or AOT compiler, the overhead is gone from the generated native code.
-If the host runtime is an interpreter, there are simply fewer instructions to interpret.
-Either way, the savings occur at every guest-instruction execution and accumulate over hot paths in proportion to execution count.
+When the IR removes this overhead, the overhead goes away from the handler bodies, and thus from the stream of host Wasm instructions.
+If the host runtime is a JIT or AOT compiler, the generated native code does not contain the overhead.
+If the host runtime is an interpreter, it interprets a smaller number of instructions.
+In the two conditions, each execution of a guest instruction uses less time.
+On hot paths, the total effect is in proportion to the execution count.
 
-The cost paid in exchange is the conversion of bytecode to register IR at module load, but this is incurred only once per module load.
-For real workloads, where the ratio of dynamic guest-instruction executions to static instructions in the module is large, this one-time conversion cost is negligible compared to the cumulative savings on the hot path.
+To get this effect, Chiwawa must change the bytecode to register IR one time for each module load.
+Most workloads execute each static instruction of the module many times.
+Thus the time for this conversion is very small when you compare it with the total effect on the hot path.
 
 ## Type-Specialized Registers
 
-Chiwawa maintains separate register arrays for each WebAssembly value type:
+Chiwawa keeps a different register array for each WebAssembly value type:
 
 ```
 RegFile
@@ -143,22 +158,26 @@ RegFile
 └── v128_regs: Vec<i128>
 ```
 
-Type specialization provides:
-- Direct memory access without type checking at runtime
+Type specialization has these results:
+
+- Memory access without a type check at run time
 - Natural alignment for each value type
-- Efficient bulk operations on same-typed values
+- Fast operations on many values of the same type
 
 ## Infinite Register Model
 
-Chiwawa uses an infinite register model: there is no fixed limit on the number of available registers.
-The register allocator assigns a new register for each stack slot, and the register file grows dynamically to accommodate the maximum depth reached during execution.
+Chiwawa uses an infinite register model, in which the number of registers has no limit.
+The register allocator gives a new register to each stack slot.
+The register file becomes larger at run time to hold the maximum stack depth of the execution.
 
-This differs from physical CPU register allocation, which must handle register spilling when demands exceed fixed hardware limits.
-In Chiwawa's virtual register model, every value has a dedicated register, eliminating the need for spill/reload logic.
+Register allocation for a physical CPU is different.
+There, the allocator must spill registers when the code uses more registers than the hardware has.
+In the virtual register model of Chiwawa, each value has one register.
+Thus spill and reload logic is not necessary.
 
 ## Register Allocation
 
-During preprocessing, Chiwawa simulates the WebAssembly operand stack and assigns registers:
+During preprocessing, Chiwawa simulates the WebAssembly operand stack and gives a register to each stack slot:
 
 ```
 WebAssembly:          After allocation:
@@ -167,15 +186,17 @@ WebAssembly:          After allocation:
   i32.add             →  add I32(0), I32(1) -> I32(0)
 ```
 
-The allocator tracks:
-- Current stack depth per type
-- Maximum depth reached (determines register file size)
-- Type stack for polymorphic instructions (`drop`, `select`)
+The allocator records these items:
+
+- The stack depth for each type at that point
+- The maximum depth (it sets the number of registers in the register file)
+- The type stack for polymorphic instructions (`drop`, `select`)
 
 ## Global Register
 
-Rather than creating a new register file for each function call, Chiwawa uses a single global register file shared across all frames.
-Each frame is allocated a region within this global file.
+Chiwawa does not make a new register file for each function call.
+It uses one global register file that all frames share.
+Each frame gets a region in this global file.
 
 ```
 Global Register File (i32_regs):
@@ -188,27 +209,35 @@ Global Register File (i32_regs):
    offset=0           offset=6          offset=11
 ```
 
-On function call:
-1. Save current frame offsets
-2. Extend register arrays if needed
-3. Copy the arguments from the caller's frame into the callee's local registers
-4. New frame accesses registers relative to its offset
+On a function call:
 
-`VmState` also keeps a pointer to the current frame's first register of each numeric type, refreshed on every call and return.
-A handler reaches a register through that pointer with one load, instead of going through the register file and its frame offset.
+1. Chiwawa saves the offsets of the frame of the caller.
+2. It extends the register arrays if necessary.
+3. It copies the arguments from the frame of the caller into the local registers of the callee.
+4. The new frame accesses registers relative to its offset.
 
-On function return:
-1. Copy the return values from the callee's frame into the caller's result registers
-2. Restore previous frame offsets
-3. Register memory is not deallocated (reused by subsequent calls)
+`VmState` also keeps a pointer to the first register of each numeric type in the frame that runs.
+Each call and each return updates this pointer.
+A handler reads or writes a register through that pointer with one load.
+It does not go through the register file and the frame offset.
 
-Both frames index the same backing vectors, so passing arguments and results is a copy within one array — no intermediate `Val` and no heap allocation per call.
-The copy must precede the offset restore, which truncates the vectors down to the callee's base.
+On a function return:
+
+1. Chiwawa copies the return values from the frame of the callee into the result registers of the caller.
+2. It restores the offsets of the previous frame.
+3. It does not release the register memory, and subsequent calls use the memory again.
+
+The two frames index the same vectors.
+Thus the transfer of arguments and results is a copy in one array.
+A call uses no intermediate `Val` and no heap allocation.
+The copy must occur before the offset restore, because the restore truncates the vectors down to the first register of the callee.
 
 ## Instruction Format
 
-`ProcessedInstr` is an enum where each variant carries operand layout that is specialized for the instruction it represents.
-Type-specialized variants (`I32Reg`, `I64Reg`, `F32Reg`, `F64Reg`) hold a `handler_index` and three operand slots; variants that touch a different shape (memory, select, global, etc.) have their own field layout.
+`ProcessedInstr` is an enum.
+Each variant has an operand layout that is specialized for its instruction.
+The type-specialized variants (`I32Reg`, `I64Reg`, `F32Reg`, `F64Reg`) contain a `handler_index` and three operand slots.
+Variants for a different shape (memory, select, global, and other shapes) have a different field layout.
 
 ```rust
 pub enum ProcessedInstr {
@@ -234,9 +263,10 @@ pub enum ProcessedInstr {
 }
 ```
 
-### Operand kinds
+### Operand variants
 
-The operand slots are themselves small enums, so a single field can encode a register, a folded constant, or a folded local/parameter:
+The operand slots are small enums.
+Thus one field can encode a register, a folded constant, or a folded local or parameter:
 
 ```rust
 pub enum I32RegOperand {
@@ -252,5 +282,6 @@ pub enum RegOrLocal {
 }
 ```
 
-This lets the parser embed both **source folding** (constants and `local.get`s) and **destination folding** (`local.set`) directly in the IR without introducing extra instructions — see `doc/folding.md`.
-At execution time, each handler reads its `src*` operands, performs the operation, and writes to `dst`, without any stack manipulation.
+With these operands, the parser puts **source folding** (constants and `local.get`) and **destination folding** (`local.set`) directly in the IR, without more instructions.
+See [folding.md](folding.md).
+At execution time, each handler reads its `src*` operands, does the operation, and writes to `dst`, without stack operations.
