@@ -1,12 +1,14 @@
 # chiwawa(CHeckpoint/restore and Instrumentation-specific WAsm runtime on WAsm runtime)
 
-Chiwawa (Japanese-like Pronunciation of chihuahua) is a self-hosted Wasm runtime that enables live migration and instrumentation that is neutral to the execution methods (e.g., interpreter, JIT, and AOT) and architectures, and runtimes.
+Chiwawa (the Japanese pronunciation of chihuahua) is a self-hosted Wasm runtime.
+It makes live migration and instrumentation possible.
+The execution method (for example, interpreter, JIT, or AOT), the architecture, and the host runtime have no effect on these functions.
 
 U^ｪ^U
 
 ## Build and Run
 
-Pick a build alias based on the host Wasm runtime's tail-call support (see [Dispatcher Modes](#dispatcher-modes) below):
+Select the build alias for a host Wasm runtime with or without the tail-call proposal (see [Dispatcher Modes](#dispatcher-modes)):
 
 ```bash
 # Tail-call dispatcher
@@ -23,21 +25,25 @@ somethingWasmRuntime target/<combo>/wasm32-wasip1/release/chiwawa.wasm test.wasm
 
 ## Dispatcher Modes
 
-Chiwawa ships two dispatcher implementations selected at build time via the `tco` Cargo feature:
+Chiwawa has two dispatcher implementations.
+The `tco` Cargo feature selects one of them at build time:
 
-| Mode | Cargo feature | Build alias | Requirement |
+| Mode | Cargo feature | Build alias | Condition |
 |---|---|---|---|
-| Loop dispatch | (none) | `cargo build-legacy` | Any Wasm runtime|
+| Loop dispatch | (none) | `cargo build-legacy` | All Wasm runtimes|
 | Tail-call dispatch | `tco` | `cargo build-tco` | Wasm tail-call proposal|
 
-With `tco`, each handler tail-calls (`return_call_indirect`) the next handler, removing the dispatch loop overhead.
+With `tco`, each handler calls the next handler with a tail call (`return_call_indirect`), which removes the overhead of the dispatch loop.
 Use the loop dispatcher when the host runtime does not implement the tail-call proposal.
 
 ## Checkpoint and Restore
 
-**Note**: The checkpoint trigger mechanism differs between build targets:
-- `wasm32-wasip1-threads`: Uses a background thread to monitor `checkpoint.trigger` file (recommended for better performance)
-- `wasm32-wasip1`: Checks file existence via WASI every 1024 instructions (use if host runtime does not support WASI threads)
+The checkpoint trigger mechanism is different for each build target:
+
+- `wasm32-wasip1-threads`: A background thread monitors the `checkpoint.trigger` file.
+  We recommend this target, because its performance is better.
+- `wasm32-wasip1`: The dispatcher looks for the file through WASI one time for each 1024 instructions.
+  Use this target if the host runtime does not have WASI threads.
 
 ```bash
 # Build for wasm32-wasip1-threads (atomic monitor thread).
@@ -50,11 +56,14 @@ touch ./checkpoint.trigger # Trigger of Checkpointing
 # Restore from checkpoint
 somethingWasmRuntime target/tco-threads/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm --restore checkpoint.bin
 ```
+
 ## wasi-threads
 
-Chiwawa runs multi-threaded guests on a host runtime that provides wasi-threads: one interpreter instance per host thread, all sharing a single linear memory.
-Needs the `wasm32-wasip1-threads` target, so the `-threads` build aliases enable the `threads` feature.
-The `-threads` aliases need a nightly toolchain, and a build with stable Rust stops with an error.
+Chiwawa runs multi-threaded guests on a host runtime that supplies wasi-threads.
+Each host thread has one interpreter instance, and all instances share one linear memory.
+The `wasm32-wasip1-threads` target is necessary for this function.
+Thus the `-threads` build aliases enable the `threads` feature.
+A nightly toolchain is necessary for the `-threads` aliases, and a build with stable Rust stops with an error.
 
 ```bash
 # Use cargo build-legacy-threads if the host runtime lacks tail-call support.
@@ -64,13 +73,16 @@ cargo build-tco-threads
 somethingWasmRuntime target/tco-threads/wasm32-wasip1-threads/release/chiwawa.wasm guest.wasm --threads
 ```
 
-Without `--threads` thread creation fails and the guest runs single-threaded.
-`--cr` and `--restore` work with `--threads`; see [doc/migration.md](doc/migration.md) for what a checkpoint captures.
+Without `--threads`, the guest cannot make a thread, and it runs with one thread.
+`--cr` and `--restore` operate with `--threads`.
+See [doc/migration.md](doc/migration.md) for the contents of a checkpoint.
 
 ## Sockets (experimental)
 
-Chiwawa forwards the socket extensions of WAMR and WasmEdge: a guest built against either runtime's socket library runs on either host.
-The host is a build-time feature; see [doc/sockets.md](doc/sockets.md).
+Chiwawa sends the calls of the socket extensions of WAMR and WasmEdge to the host.
+A guest that uses the socket library of one of these runtimes can run on each of the two hosts.
+A build-time feature selects the host.
+See [doc/sockets.md](doc/sockets.md).
 
 ```bash
 # One host feature at a time; works with the -threads and legacy aliases too.
@@ -78,10 +90,12 @@ cargo build-tco --features socket-wamr
 cargo build-tco --features socket-wasmedge
 ```
 
-## Tracing
+## Trace
 
-Tracing requires the `trace` feature to be enabled at compile time.
-It is performed only by the loop dispatcher (non-`tco`), the same as statistics: the tail-call dispatcher has no central loop to hook, so `--trace` is ignored with a warning under `tco`.
+The `trace` feature is necessary at compile time for a trace.
+Only the loop dispatcher (a build without `tco`) makes a trace, the same as for statistics.
+The tail-call dispatcher has no dispatch loop to hook.
+Thus with `tco`, Chiwawa ignores `--trace` and shows a warning.
 
 ```bash
 # Build with trace feature on top of the loop dispatcher
@@ -92,14 +106,15 @@ cargo build-legacy --features trace
 somethingWasmRuntime target/legacy/wasm32-wasip1/release/chiwawa.wasm test.wasm --trace --trace-events [<TRACE_EVENTS>...] --trace-resource [<TRACE_RESOURCE>...]
 ```
 
-If `--trace` is used without the feature enabled, a warning is displayed and the flag is ignored.
-The same applies when `--trace` is combined with the `tco` feature.
+If you use `--trace` without the feature, Chiwawa shows a warning and ignores the flag.
+The same occurs when you use `--trace` with the `tco` feature.
 
 ## Statistics
 
-Statistics output requires the `stats` feature to be enabled at compile time.
-It is collected only by the loop dispatcher (non-`tco`).
-The tail-call dispatcher has no central loop to hook, so `--stats` is ignored under `tco`.
+The `stats` feature is necessary at compile time for the statistics output.
+Only the loop dispatcher (a build without `tco`) collects statistics.
+The tail-call dispatcher has no dispatch loop to hook.
+Thus Chiwawa ignores `--stats` with `tco`.
 
 ```bash
 # Build with stats feature on top of the loop dispatcher
@@ -109,12 +124,12 @@ cargo build-legacy --features stats
 somethingWasmRuntime target/legacy/wasm32-wasip1/release/chiwawa.wasm test.wasm --stats
 ```
 
-If `--stats` is used without the feature enabled, a warning is displayed and the flag is ignored.
+If you use `--stats` without the feature, Chiwawa shows a warning and ignores the flag.
 
 ## Call Graph Analysis
 
-Call graph analysis requires the `call_graph` feature to be enabled at compile time.
-The call graph is built incrementally during bytecode parsing (no second pass over function bodies).
+The `call_graph` feature is necessary at compile time for call graph analysis.
+The parser builds the call graph while it reads the bytecode, and it does not read the function bodies a second time.
 
 ```bash
 # Build with call graph support (works with both tco and legacy dispatchers)
@@ -128,15 +143,17 @@ somethingWasmRuntime target/legacy/wasm32-wasip1/release/chiwawa.wasm your.wasm 
 dot -Tpng out.dot -o call_graph.png
 ```
 
-The DOT output contains one node per function:
-- **Imported/WASI functions**: box shape with gray fill, labeled `module::name`
-- **Local functions**: ellipse, labeled by export name or `func_N`
+The DOT output contains one node for each function:
 
-Edges represent potential calls:
-- `call`: exact callee
-- `call_indirect`: all non-WASI functions whose type matches the instruction's type index (conservative overapproximation)
+- **Imported and WASI functions**: a box with gray fill, with the label `module::name`
+- **Local functions**: an ellipse, with the export name or `func_N` as the label
 
-If `--call-graph-output` is used without the feature enabled, a warning is displayed and the flag is ignored.
+Each edge shows a possible call:
+
+- `call`: the one callee of the instruction
+- `call_indirect`: all non-WASI functions with a type that agrees with the type index of the instruction (a conservative overapproximation)
+
+If you use `--call-graph-output` without the feature, Chiwawa shows a warning and ignores the flag.
 
 ## Artifacts
 ### Academic
@@ -153,8 +170,8 @@ If `--call-graph-output` is used without the feature enabled, a warning is displ
   - Japan Community Day at KubeCon + CloudNativeCon Japan 2025
 
 ## References
-I referred to these repositories for initial implementation.
-I appreciate ancestor's wisdom!
+I referred to these repositories for the initial implementation.
+Their work helped very much!
 
 - Wasm-rs
   - [GitHub Repo](https://github.com/kgtkr/wasm-rs)

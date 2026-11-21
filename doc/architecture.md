@@ -1,11 +1,13 @@
 # Chiwawa Architecture
 
-This document provides a high-level overview of Chiwawa's architecture for those seeking to understand the system design without diving into implementation details.
+This document gives a general view of the architecture of Chiwawa.
+It does not tell you how the implementation operates.
 
-## Overview
+## General View
 
-Chiwawa is a self-hosted WebAssembly runtime - a WebAssembly interpreter that itself runs as WebAssembly.
-This enables runtime-neutral capabilities that are independent of the host runtime implementation.
+Chiwawa is a self-hosted WebAssembly runtime.
+It is a WebAssembly interpreter, and it runs as a WebAssembly module.
+Thus the implementation of the host runtime has no effect on its functions.
 
 ```
 +------------------+
@@ -27,20 +29,27 @@ This enables runtime-neutral capabilities that are independent of the host runti
 
 ### Parser
 
-Transforms WebAssembly binary modules into an internal representation optimized for interpretation.
-The parser performs preprocessing that resolves branch targets ahead of time, enabling efficient execution.
+The parser changes a WebAssembly binary module into an internal representation that the interpreter can run quickly.
+During preprocessing, the parser resolves the branch targets, which makes execution faster.
 
 ### Execution Engine
 
-Implements a register-based threaded code interpreter.
-Instructions are dispatched through a handler table where each instruction type maps to a specialized handler function.
+The execution engine is a register-based threaded code interpreter.
+It dispatches each instruction through a handler table.
+In the table, there is one handler function for each instruction type.
 
-Two dispatcher implementations are available, picked at build time by the `tco` Cargo feature: a portable loop-style dispatcher (default, `cargo build-legacy`) and a tail-call dispatcher (`cargo build-tco`) that uses the Wasm tail-call proposal to eliminate per-instruction loop overhead.
-See `doc/tco.md`.
+Chiwawa has two dispatcher implementations, and the `tco` Cargo feature selects one of them at build time:
+
+- The loop dispatcher is the default (`cargo build-legacy`), and it is portable.
+- The tail-call dispatcher (`cargo build-tco`) uses the Wasm tail-call proposal to remove the loop overhead of each instruction.
+
+See [tco.md](tco.md).
 
 ### Module Instance
 
-Runtime representation of an instantiated WebAssembly module, containing:
+A module instance is the runtime representation of an instantiated WebAssembly module.
+It contains these items:
+
 - Linear memory
 - Tables (function references)
 - Global variables
@@ -48,25 +57,30 @@ Runtime representation of an instantiated WebAssembly module, containing:
 
 ### Checkpoint/Restore Mechanism
 
-Enables live migration by serializing runtime state:
+This mechanism serializes the runtime state, which makes live migration possible.
+A checkpoint contains these items:
+
 - Execution stacks and program counters
 - Memory contents
 - Global values
 
-Tables are not included in the checkpoint: they are deterministically re-initialized from the module's element segments during instantiation, so storing them would be redundant.
+A checkpoint does not contain the tables.
+Instantiation initializes the tables again from the element segments of the module, and the result is always the same.
+Thus it is not necessary to store them.
 
 ## Execution Flow
 
-1. **Parse**: Load and validate WebAssembly binary
-2. **Preprocess**: Convert instructions to register-based format with resolved branch targets
-3. **Instantiate**: Create module instance with initialized memory, tables, and globals
-4. **Execute**: Run threaded interpreter loop
-5. **Checkpoint** (optional): Serialize state to file when triggered
+1. **Parse**: Load and validate the WebAssembly binary.
+2. **Preprocess**: Convert the instructions to the register-based format, and resolve the branch targets.
+3. **Instantiate**: Create the module instance, and initialize its memory, tables, and globals.
+4. **Execute**: Run the loop of the threaded code interpreter.
+5. **Checkpoint** (optional): Serialize the state to a file when a trigger occurs.
 
 ## WASI Support
 
-Chiwawa implements WASI Preview 1 through a passthrough architecture that delegates system calls to the host's wasi-libc implementation.
-This ensures compatibility with any WASI-compliant host.
+Chiwawa implements WASI Preview 1 as a passthrough.
+It sends each system call to the wasi-libc implementation of the host.
+Thus Chiwawa is compatible with all hosts that implement WASI.
 
 ## References
 

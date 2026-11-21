@@ -126,6 +126,28 @@ Add prose here only for judgment that no check can express.
 - Keep `README.md` to what chiwawa is, how to build it, and how to run each mode. Details, caveats, and design notes go under `doc/`.
 - Update documentation as the last step of a change, once the code is settled.
 
+### Simplified Technical English
+
+Write `README.md` and the files under `doc/` in ASD-STE100 Simplified Technical English (https://www.asd-ste100.org/).
+
+- Use a word only with the meaning and the part of speech that the STE dictionary approves.
+- Names and verbs that belong to Chiwawa, Wasm, WASI, or Rust are technical names and technical verbs, and STE permits them (for example: checkpoint, dispatcher, handler, to compile).
+- Use the same word for the same thing each time.
+- Write a maximum of 20 words in a sentence that gives an instruction.
+- Write a maximum of 25 words in a sentence that gives a description.
+- Write a maximum of six sentences in a paragraph.
+- Write only one instruction in each sentence, and use the imperative.
+- Use the active voice.
+- Use only the simple present, simple past, and simple future tenses.
+- Do not use the -ing form of a verb, unless it is part of a technical name.
+- Do not put more than three nouns together as one name.
+- Do not omit articles or other words to make a sentence shorter.
+- Use a vertical list when a sentence has three or more parallel items.
+
+The STE dictionary is not in this repository.
+If you are not sure that the dictionary approves a word, use a simpler word.
+List in your report the words that you could not check.
+
 ## Specification references
 
 - Wasm Core Spec: https://webassembly.github.io/spec/core/bikeshed/
