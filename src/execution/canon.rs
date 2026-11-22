@@ -1,6 +1,6 @@
 //! The canonical ABI: values crossing between component types and core registers or memory.
 //!
-//! Pointers are 32-bit, since chiwawa has no 64-bit memories, and strings are UTF-8 only.
+//! Pointers are 32-bit, since chiwawa has no 64-bit memories.
 
 use super::func::{FuncAddr, FuncInst};
 use super::mem::MemAddr;
@@ -156,42 +156,6 @@ impl CanonContext {
     }
 }
 
-pub fn check_encoding(cx: &CanonContext, ty: &FuncType) -> Result<()> {
-    let needs_strings = ty
-        .params
-        .iter()
-        .map(|(_, t)| t)
-        .chain(ty.result.iter())
-        .any(contains_string);
-    if needs_strings && cx.encoding != StringEncoding::Utf8 {
-        return Err(unsupported("string transcoding"));
-    }
-    Ok(())
-}
-
-fn contains_string(ty: &ValType) -> bool {
-    match ty {
-        ValType::String => true,
-        ValType::Defined(d) => match &**d {
-            DefinedType::List(t) | DefinedType::Option(t) => contains_string(t),
-            DefinedType::Record(fields) => fields.iter().any(|(_, t)| contains_string(t)),
-            DefinedType::Tuple(ts) => ts.iter().any(contains_string),
-            DefinedType::Variant(cases) => cases
-                .iter()
-                .any(|(_, t)| t.as_ref().is_some_and(contains_string)),
-            DefinedType::Result { ok, err } => {
-                ok.as_ref().is_some_and(contains_string)
-                    || err.as_ref().is_some_and(contains_string)
-            }
-            DefinedType::Flags(_)
-            | DefinedType::Enum(_)
-            | DefinedType::Own(_)
-            | DefinedType::Borrow(_) => false,
-        },
-        _ => false,
-    }
-}
-
 /// Despecializes an enum, option or result into a variant and returns its cases in order: the label and the payload type.
 fn despecialized_cases(d: &DefinedType) -> Option<Vec<(&str, Option<&ValType>)>> {
     Some(match d {
@@ -215,7 +179,6 @@ fn record_fields(d: &DefinedType) -> Option<Vec<&ValType>> {
     })
 }
 
-/// Builds the value of case `label` of `d` with `payload`.
 fn case_value(d: &DefinedType, label: &str, payload: Option<Box<ComponentVal>>) -> ComponentVal {
     match d {
         DefinedType::Enum(_) => ComponentVal::Enum(label.to_string()),
@@ -285,7 +248,6 @@ fn align_to(ptr: u64, align: u32) -> u64 {
     ptr.div_ceil(align as u64) * align as u64
 }
 
-/// The alignment of a value of `ty` in memory.
 fn alignment(ty: &ValType) -> Result<u32> {
     Ok(match ty {
         ValType::Bool | ValType::S8 | ValType::U8 => 1,
@@ -678,27 +640,112 @@ fn record_field<'v>(vals: &'v [(String, ComponentVal)], label: &str) -> Result<&
         .ok_or_else(|| trap(format!("missing record field {label}")))
 }
 
-fn load_string_from_range(cx: &CanonContext, ptr: u32, len: u32) -> Result<ComponentVal> {
-    if cx.encoding != StringEncoding::Utf8 {
-        return Err(unsupported("string transcoding"));
-    }
-    if len as u64 > MAX_STRING_BYTE_LENGTH {
-        return Err(trap("string content out-of-bounds"));
-    }
-    let bytes = cx.read(ptr, len)?;
-    String::from_utf8(bytes)
-        .map(ComponentVal::String)
-        .map_err(|_| trap("invalid utf-8"))
+/// The high bit of a `latin1+utf16` length marks UTF-16 content.
+const UTF16_TAG: u32 = 1 << 31;
+
+enum Encoding {
+    Utf8,
+    Utf16,
+    Latin1,
 }
 
-/// Writes `s` into newly allocated memory and returns the pointer and the length in bytes.
-fn store_string_into_range(cx: &CanonContext, s: &str) -> Result<(u32, u32)> {
-    if cx.encoding != StringEncoding::Utf8 {
-        return Err(unsupported("string transcoding"));
+fn load_string_from_range(
+    cx: &CanonContext,
+    ptr: u32,
+    tagged_code_units: u32,
+) -> Result<ComponentVal> {
+    let (align, byte_len, encoding) = match cx.encoding {
+        StringEncoding::Utf8 => (1, tagged_code_units as u64, Encoding::Utf8),
+        StringEncoding::Utf16 => (2, 2 * tagged_code_units as u64, Encoding::Utf16),
+        StringEncoding::Latin1Utf16 if tagged_code_units & UTF16_TAG != 0 => (
+            2,
+            2 * (tagged_code_units ^ UTF16_TAG) as u64,
+            Encoding::Utf16,
+        ),
+        StringEncoding::Latin1Utf16 => (2, tagged_code_units as u64, Encoding::Latin1),
+    };
+    if byte_len > MAX_STRING_BYTE_LENGTH {
+        return Err(trap("string content out-of-bounds"));
     }
-    let len = s.len() as u32;
-    let ptr = cx.allocate(1, len)?;
-    cx.write(ptr, s.as_bytes())?;
+    if !ptr.is_multiple_of(align) {
+        return Err(trap("unaligned pointer"));
+    }
+    let bytes = cx.read(ptr, byte_len as u32)?;
+    let text = match encoding {
+        Encoding::Utf8 => String::from_utf8(bytes).map_err(|_| trap("invalid utf-8"))?,
+        Encoding::Utf16 => {
+            let units: Vec<u16> = bytes
+                .chunks(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect();
+            String::from_utf16(&units).map_err(|_| trap("invalid utf-16"))?
+        }
+        Encoding::Latin1 => bytes.iter().map(|b| *b as char).collect(),
+    };
+    Ok(ComponentVal::String(text))
+}
+
+fn utf16_bytes(s: &str) -> Vec<u8> {
+    s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
+}
+
+/// Returns the pointer and the length in code units, with the UTF-16 tag set when `latin1+utf16` content needed UTF-16.
+/// chiwawa keeps no source-encoding hint, so it allocates as the spec does for a UTF-8 source.
+fn store_string_into_range(cx: &CanonContext, s: &str) -> Result<(u32, u32)> {
+    if s.len() as u64 > MAX_STRING_BYTE_LENGTH {
+        return Err(trap("string content out-of-bounds"));
+    }
+    match cx.encoding {
+        StringEncoding::Utf8 => {
+            let len = s.len() as u32;
+            let ptr = cx.allocate(1, len)?;
+            cx.write(ptr, s.as_bytes())?;
+            Ok((ptr, len))
+        }
+        StringEncoding::Utf16 => store_utf8_to_utf16(cx, s),
+        StringEncoding::Latin1Utf16 => store_string_to_latin1_or_utf16(cx, s),
+    }
+}
+
+/// Allocates the worst case of two bytes per source byte, then shrinks to the encoded length.
+fn store_utf8_to_utf16(cx: &CanonContext, s: &str) -> Result<(u32, u32)> {
+    let worst = 2 * s.len() as u32;
+    let mut ptr = cx.allocate(2, worst)?;
+    let encoded = utf16_bytes(s);
+    cx.write(ptr, &encoded)?;
+    let len = encoded.len() as u32;
+    if len < worst {
+        ptr = cx.reallocate(ptr, worst, 2, len)?;
+    }
+    Ok((ptr, len / 2))
+}
+
+/// Writes Latin-1 while every character fits, and switches to UTF-16 at the first one that does not.
+fn store_string_to_latin1_or_utf16(cx: &CanonContext, s: &str) -> Result<(u32, u32)> {
+    let src_units = s.len() as u32;
+    let mut ptr = cx.allocate(2, src_units)?;
+    let mut latin1 = Vec::with_capacity(s.len());
+    for c in s.chars() {
+        if (c as u32) < 256 {
+            latin1.push(c as u8);
+            continue;
+        }
+        cx.write(ptr, &latin1)?;
+        let worst = 2 * src_units;
+        ptr = cx.reallocate(ptr, src_units, 2, worst)?;
+        let encoded = utf16_bytes(s);
+        cx.write(ptr, &encoded)?;
+        let len = encoded.len() as u32;
+        if worst > len {
+            ptr = cx.reallocate(ptr, worst, 2, len)?;
+        }
+        return Ok((ptr, (len / 2) | UTF16_TAG));
+    }
+    cx.write(ptr, &latin1)?;
+    let len = latin1.len() as u32;
+    if len < src_units {
+        ptr = cx.reallocate(ptr, src_units, 2, len)?;
+    }
     Ok((ptr, len))
 }
 
@@ -747,7 +794,6 @@ pub trait Source {
     fn next(&mut self, want: ValueType) -> Result<Val>;
 }
 
-/// Reads core values from a slice.
 pub struct Reader<'a> {
     vals: &'a [Val],
     at: usize,
@@ -809,7 +855,6 @@ impl Source for Coerce<'_> {
     }
 }
 
-/// Lifts one value of `ty` from core values.
 fn lift_flat(cx: &CanonContext, src: &mut dyn Source, ty: &ValType) -> Result<ComponentVal> {
     Ok(match ty {
         ValType::Bool => ComponentVal::Bool(src.next(I32)?.to_i32()? != 0),
@@ -880,7 +925,6 @@ fn lift_flat(cx: &CanonContext, src: &mut dyn Source, ty: &ValType) -> Result<Co
     })
 }
 
-/// Lowers one value of `ty` into core values appended to `out`.
 fn lower_flat(
     cx: &CanonContext,
     val: &ComponentVal,
