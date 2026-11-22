@@ -11,13 +11,12 @@ The calls can use each value type of the synchronous subset:
 - the integers from `s8` to `u64`
 - `f32` and `f64`
 - `bool`, `char`, and `flags`
-- UTF-8 strings
+- strings
 - lists, records, tuples, and enums
 - option, result, and variants
 
 The runtime does not implement these items, and it reports each of them as an unsupported feature:
 
-- string encodings other than UTF-8
 - resources
 - async functions and types
 - streams and futures
@@ -165,6 +164,11 @@ An instantiated module gets its imports from the core instances that the instant
 
 ## Calls across the canonical ABI
 
+`canon lift` makes a component function from a core function.
+Other components can use the component function.
+`canon lower` makes a core function from a component function.
+The core code of the same component can import and call the core function.
+
 A lifted function does these steps:
 
 1. It lowers its component arguments to core values.
@@ -205,6 +209,20 @@ The runtime clears the `may_leave` flag of the instance during that call and dur
 While the flag is clear, an import that `canon lower` made traps and reports `cannot leave component instance` when that instance calls it.
 A trap in a lifted or lowered call restores the flag.
 Thus a failed call does not cause a state in which the instance cannot call out.
+
+The `string-encoding` option of a lift or a lower selects UTF-8, UTF-16, or Latin-1 plus UTF-16.
+A lift reads a string in the encoding of that lift.
+A lower writes a string in the encoding of that lower.
+Thus the runtime changes the encoding of a string that goes between two instances with different encodings.
+
+In Latin-1 plus UTF-16, the high bit of the length marks UTF-16 data.
+The runtime writes Latin-1 when each character fits in one byte, and UTF-16 when a character does not.
+A string with bytes that the encoding does not permit causes a trap.
+
+The specification records the source encoding of each string and uses it to select the memory sizes.
+chiwawa does not record the source encoding.
+It uses the memory sizes that the specification gives for a UTF-8 source.
+The bytes in memory are the same.
 
 Each lift and each lower has a `CanonContext`.
 It contains the resolved `memory`, `realloc`, and string encoding of its definition, and the `may_leave` flag of its instance.

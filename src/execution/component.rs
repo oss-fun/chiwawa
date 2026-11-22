@@ -8,8 +8,8 @@
 //! See `doc/component.md`.
 
 use super::canon::{
-    call_core, check_encoding, flatten_functype, lift_values, lower_values, CanonContext, Context,
-    LeaveGuard, Reader, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS,
+    call_core, flatten_functype, lift_values, lower_values, CanonContext, Context, LeaveGuard,
+    Reader, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS,
 };
 use super::func::FuncAddr;
 use super::global::GlobalAddr;
@@ -557,7 +557,6 @@ impl<'a> Linker<'a> {
                     let core = self.core_func(*core_func)?;
                     let ty = Shared::clone(&entry.ty);
                     let cx = self.context(options)?;
-                    check_encoding(&cx, &ty)?;
                     if !core
                         .func_type()
                         .type_match(&flatten_functype(&ty, Context::Lift)?)
