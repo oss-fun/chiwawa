@@ -4,8 +4,9 @@
 //!
 //! Every `component` directive must parse, and one without imports is instantiated.
 //! `invoke`, `assert_return` and `assert_trap` then call its exports with component values.
-//! A component that uses a feature chiwawa leaves out, such as async, resources or strings,
+//! A component that uses a feature chiwawa leaves out, such as async,
 //! is skipped and listed, together with the directives that address it.
+//! `LEFT_OUT` names those features; a skip for any other reason fails the script.
 //! Every other directive is counted and skipped,
 //! `assert_malformed` and `assert_invalid` among them, since chiwawa has no validator.
 //!
@@ -23,6 +24,22 @@ use std::rc::Rc;
 use wast::component::WastVal;
 use wast::token::Id;
 use wast::{QuoteWat, WastArg, WastDirective, WastExecute, WastRet};
+
+/// The features chiwawa leaves out on purpose, as the parser and the runtime name them.
+const LEFT_OUT: &[&str] = &[
+    "async and threading canonical functions",
+    "async canonical options",
+    "async functions",
+    "async types",
+    "core-type canonical option",
+    "error-context",
+    "exact function types",
+    "exception tags",
+    "fixed-length lists",
+    "gc canonical option",
+    "map types",
+    "multiple memories",
+];
 
 /// What one directive did, for the tally printed at the end.
 #[derive(Default)]
@@ -94,7 +111,19 @@ impl Script {
         self.tally.failures.push(format!("{line}: {what}"));
     }
 
+    /// Skips a directive for `feature`, or fails it when `feature` is one chiwawa supports.
     fn skip(&mut self, line: usize, feature: String) {
+        let follows_a_skip = feature == "skipped component" || feature == "skipped definition";
+        if !follows_a_skip && !LEFT_OUT.contains(&feature.as_str()) {
+            self.fail(
+                line,
+                format!(
+                    "skipped for \"{feature}\", which is not in LEFT_OUT: \
+                     chiwawa supports it and something broke, or add it to LEFT_OUT"
+                ),
+            );
+            return;
+        }
         self.tally.skipped += 1;
         self.tally.unsupported.push(format!("{line}: {feature}"));
     }
