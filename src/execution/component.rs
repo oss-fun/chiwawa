@@ -8,8 +8,10 @@
 //! See `doc/component.md`.
 
 use super::canon::{
-    call_core, flatten_functype, lift_values, lower_values, CanonContext, Context, LeaveGuard,
-    Reader, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS,
+    call_core, flatten_functype, lift_values, lower_values, release_lends, resource_drop_func,
+    resource_key, resource_new_func, resource_rep_func, resources_in, CallScope, CanonContext,
+    Context, InstanceState, LeaveGuard, LiftLowerCx, Reader, ResourceMap, ResourceType,
+    MAX_FLAT_PARAMS, MAX_FLAT_RESULTS,
 };
 use super::func::FuncAddr;
 use super::global::GlobalAddr;
@@ -32,10 +34,6 @@ fn error(message: impl Into<String>) -> RuntimeError {
     RuntimeError::ComponentError(message.into())
 }
 
-fn unsupported(feature: &'static str) -> RuntimeError {
-    RuntimeError::UnsupportedComponentFeature(feature)
-}
-
 pub use super::canon::ComponentVal;
 
 /// A component-level function: a core function lifted to component values.
@@ -44,6 +42,7 @@ pub struct ComponentFunc {
     core: FuncAddr,
     post_return: Option<FuncAddr>,
     cx: CanonContext,
+    resources: Rc<ResourceMap>,
 }
 
 impl ComponentFunc {
@@ -51,16 +50,27 @@ impl ComponentFunc {
     pub fn call(&self, args: Vec<ComponentVal>) -> Result<Vec<ComponentVal>> {
         let param_types: Vec<ValType> = self.ty.params.iter().map(|(_, t)| t.clone()).collect();
         let result_types: Vec<ValType> = self.ty.result.iter().cloned().collect();
-        let params = lower_values(&self.cx, &args, &param_types, MAX_FLAT_PARAMS, None)?;
+        let scope = CallScope::new();
+        let cx = LiftLowerCx {
+            opts: &self.cx,
+            resources: &self.resources,
+            scope: &scope,
+        };
+        let params = lower_values(&cx, &args, &param_types, MAX_FLAT_PARAMS, None)?;
         let results = call_core(&self.core, params)?;
         let lifted = lift_values(
-            &self.cx,
+            &cx,
             &mut Reader::new(&results),
             &result_types,
             MAX_FLAT_RESULTS,
         )?;
+        if scope.num_borrows.get() > 0 {
+            return Err(error(
+                "borrowed handles were not dropped before the call returned",
+            ));
+        }
         if let Some(post_return) = &self.post_return {
-            let _guard = LeaveGuard::new(&self.cx.may_leave);
+            let _guard = LeaveGuard::new(&self.cx.inst.may_leave);
             call_core(post_return, results)?;
         }
         Ok(lifted)
@@ -75,21 +85,28 @@ fn lower_func(func: Rc<ComponentFunc>, cx: CanonContext) -> Result<FuncAddr> {
     Ok(FuncAddr::alloc_host(
         core_ty,
         Rc::new(move |params: Vec<Val>| {
-            if !cx.may_leave.get() {
+            if !cx.inst.may_leave.get() {
                 return Err(error("cannot leave component instance"));
             }
             let param_types: Vec<ValType> = ty.params.iter().map(|(_, t)| t.clone()).collect();
             let result_types: Vec<ValType> = ty.result.iter().cloned().collect();
+            let scope = CallScope::new();
+            let lcx = LiftLowerCx {
+                opts: &cx,
+                resources: &func.resources,
+                scope: &scope,
+            };
             let mut reader = Reader::new(&params);
-            let args = lift_values(&cx, &mut reader, &param_types, MAX_FLAT_PARAMS)?;
+            let args = lift_values(&lcx, &mut reader, &param_types, MAX_FLAT_PARAMS)?;
             let results = func.call(args)?;
             let lowered = lower_values(
-                &cx,
+                &lcx,
                 &results,
                 &result_types,
                 MAX_FLAT_RESULTS,
                 Some(&mut reader),
             )?;
+            release_lends(&lcx)?;
             Ok(lowered.into_iter().next())
         }),
     ))
@@ -101,7 +118,7 @@ pub enum ExternVal {
     Module(Shared<Module>),
     Func(Rc<ComponentFunc>),
     Value(ComponentVal),
-    Type,
+    Type(Option<Rc<ResourceType>>),
     Instance(Rc<InstanceInst>),
     Component(Rc<ComponentClosure>),
 }
@@ -118,6 +135,7 @@ pub struct ComponentClosure {
 struct Scope {
     core_modules: FxHashMap<u32, Shared<Module>>,
     components: FxHashMap<u32, Rc<ComponentClosure>>,
+    types: FxHashMap<u32, Option<Rc<ResourceType>>>,
 }
 
 impl ExternVal {
@@ -126,7 +144,7 @@ impl ExternVal {
             ExternVal::Module(_) => Sort::Module,
             ExternVal::Func(_) => Sort::Func,
             ExternVal::Value(_) => Sort::Value,
-            ExternVal::Type => Sort::Type,
+            ExternVal::Type(_) => Sort::Type,
             ExternVal::Instance(_) => Sort::Instance,
             ExternVal::Component(_) => Sort::Component,
         }
@@ -229,9 +247,10 @@ struct Linker<'a> {
     instances: RefCell<Vec<Option<Rc<InstanceInst>>>>,
     funcs: RefCell<Vec<Option<Rc<ComponentFunc>>>>,
     values: RefCell<Vec<Option<ComponentVal>>>,
+    types: RefCell<Vec<Option<Option<Rc<ResourceType>>>>>,
     started: Cell<bool>,
     module_insts: RefCell<Vec<Rc<ModuleInst>>>,
-    may_leave: Rc<Cell<bool>>,
+    inst: Rc<InstanceState>,
 }
 
 fn table<T: Clone>(len: usize) -> RefCell<Vec<Option<T>>> {
@@ -272,9 +291,10 @@ impl<'a> Linker<'a> {
             instances: table(component.instances.len()),
             funcs: table(component.funcs.len()),
             values: table(component.values.len()),
+            types: table(component.types.len()),
             started: Cell::new(false),
             module_insts: RefCell::new(Vec::new()),
-            may_leave: Rc::new(Cell::new(true)),
+            inst: InstanceState::new(),
         }
     }
 
@@ -336,6 +356,13 @@ impl<'a> Linker<'a> {
                 _ => {}
             }
         }
+        for origin in &definition.type_origins {
+            if let TypeOrigin::Outer { count, index } = origin {
+                if *count == depth {
+                    scope.types.insert(*index, self.type_(*index)?);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -345,8 +372,71 @@ impl<'a> Linker<'a> {
             memory: options.memory.map(|i| self.core_memory(i)).transpose()?,
             realloc: options.realloc.map(|i| self.core_func(i)).transpose()?,
             encoding: options.string_encoding,
-            may_leave: Rc::clone(&self.may_leave),
+            inst: Rc::clone(&self.inst),
         })
+    }
+
+    fn type_(&self, index: u32) -> Result<Option<Rc<ResourceType>>> {
+        memo(&self.types, index, || {
+            let component = self.component;
+            let origin = component
+                .type_origins
+                .get(index as usize)
+                .ok_or_else(|| error("type index without an origin"))?;
+            Ok(match origin {
+                TypeOrigin::Defined => match &component.types[index as usize] {
+                    Type::Resource(rs) => {
+                        let dtor = rs.dtor.map(|i| self.core_func(i)).transpose()?;
+                        Some(Rc::new(ResourceType {
+                            inst: Rc::clone(&self.inst),
+                            dtor,
+                        }))
+                    }
+                    _ => None,
+                },
+                TypeOrigin::Import(j) => match self.import(*j)? {
+                    ExternVal::Type(rt) => rt,
+                    other => return Err(wrong_sort("import", Sort::Type, other.sort())),
+                },
+                TypeOrigin::Alias(alias) => match self.alias(alias)? {
+                    ExternVal::Type(rt) => rt,
+                    other => return Err(wrong_sort("alias", Sort::Type, other.sort())),
+                },
+                TypeOrigin::Outer { count, index } => self
+                    .outer(*count)?
+                    .types
+                    .get(index)
+                    .cloned()
+                    .ok_or_else(|| error("outer type was not captured"))?,
+                TypeOrigin::Existing(k) => self.type_(*k)?,
+            })
+        })
+    }
+
+    fn resource_type_of(&self, rs: &Shared<Resource>) -> Result<Rc<ResourceType>> {
+        let index = self
+            .component
+            .types
+            .iter()
+            .position(|ty| matches!(ty, Type::Resource(p) if Shared::ptr_eq(p, rs)))
+            .ok_or_else(|| error("resource type is not in this component"))?;
+        self.type_(index as u32)?
+            .ok_or_else(|| error("type index is not a resource"))
+    }
+
+    fn resources_for(&self, ty: &FuncType) -> Result<Rc<ResourceMap>> {
+        let mut list = Vec::new();
+        resources_in(ty, &mut list);
+        let mut map = ResourceMap::default();
+        for rs in list {
+            map.insert(resource_key(&rs), self.resource_type_of(&rs)?);
+        }
+        Ok(Rc::new(map))
+    }
+
+    fn resource_at(&self, index: u32) -> Result<Rc<ResourceType>> {
+        self.type_(index)?
+            .ok_or_else(|| error("type index is not a resource"))
     }
 
     fn extern_val(&self, kind: Sort, index: u32) -> Result<ExternVal> {
@@ -354,7 +444,7 @@ impl<'a> Linker<'a> {
             Sort::Module => ExternVal::Module(self.core_module(index)?),
             Sort::Func => ExternVal::Func(self.func(index)?),
             Sort::Value => ExternVal::Value(self.value(index)?),
-            Sort::Type => ExternVal::Type,
+            Sort::Type => ExternVal::Type(self.type_(index)?),
             Sort::Instance => ExternVal::Instance(self.instance(index)?),
             Sort::Component => ExternVal::Component(self.component(index)?),
         })
@@ -446,8 +536,14 @@ impl<'a> Linker<'a> {
                     let cx = self.context(options)?;
                     lower_func(self.func(*func)?, cx)?
                 }
-                CoreFunc::ResourceNew(_) | CoreFunc::ResourceDrop(_) | CoreFunc::ResourceRep(_) => {
-                    return Err(unsupported("resources"))
+                CoreFunc::ResourceNew(t) => {
+                    resource_new_func(self.resource_at(*t)?, Rc::clone(&self.inst))
+                }
+                CoreFunc::ResourceDrop(t) => {
+                    resource_drop_func(self.resource_at(*t)?, Rc::clone(&self.inst))
+                }
+                CoreFunc::ResourceRep(t) => {
+                    resource_rep_func(self.resource_at(*t)?, Rc::clone(&self.inst))
                 }
             })
         })
@@ -567,11 +663,13 @@ impl<'a> Linker<'a> {
                         .post_return
                         .map(|index| self.core_func(index))
                         .transpose()?;
+                    let resources = self.resources_for(&ty)?;
                     Rc::new(ComponentFunc {
                         ty,
                         core,
                         post_return,
                         cx,
+                        resources,
                     })
                 }
                 FuncOrigin::Import(j) => match self.import(*j)? {

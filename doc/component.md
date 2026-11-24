@@ -14,10 +14,10 @@ The calls can use each value type of the synchronous subset:
 - strings
 - lists, records, tuples, and enums
 - option, result, and variants
+- `own` and `borrow` handles of resources
 
 The runtime does not implement these items, and it reports each of them as an unsupported feature:
 
-- resources
 - async functions and types
 - streams and futures
 - fixed-length lists
@@ -229,3 +229,44 @@ It contains the resolved `memory`, `realloc`, and string encoding of its definit
 A lifted function uses the context of the instance that exports it for its arguments and results.
 A lowered function uses the context of the instance that imports it.
 Thus the runtime writes a value that goes between two instances one time in each memory.
+
+### Resources
+
+A resource is a type that one component instance implements.
+Other instances hold handles to a resource, and they do not hold the value.
+A component instance that has a resource type definition makes a new resource type.
+Thus two instances of one component have two different resource types.
+
+A component can import a resource type, or receive one from an instance export.
+At instantiation, the runtime connects that type to the resource type of the instance that exports it.
+The runtime keeps the connection in `ExternVal::Type`.
+
+Each component instance has a handle table.
+The table holds one `ResourceHandle` for each index.
+Core code refers to a handle by its index, as an `i32`, and the runtime reads the handle.
+The table is in `InstanceState`, together with the `may_leave` flag.
+
+The runtime does not use index 0.
+The runtime uses a removed slot again before the table becomes larger.
+Of the removed slots, it uses the most recent one first.
+A handle records its resource type, the representation, and if it is an `own` or a `borrow`.
+
+The linker makes a core function for a `canon resource.new`, a `canon resource.drop`, or a `canon resource.rep`.
+`resource.new` adds an `own` handle for a representation.
+`resource.rep` reads the representation behind a handle.
+`resource.drop` removes a handle.
+When the handle is an `own`, `resource.drop` also calls the destructor of the resource with the representation.
+
+A lift of an `own` removes the handle from the table of the instance and gives the representation to the callee.
+A lower of an `own` adds a handle to the table of the instance that receives it.
+A lift of a `borrow` reads the representation and increases the borrow count of the handle until the call returns.
+A lower of a `borrow` adds a `borrow` handle.
+When the instance that receives the `borrow` implements the resource, the lower adds no handle.
+It gives the representation.
+
+Two conditions cause a trap:
+
+- The callee did not call `resource.drop` for each `borrow` handle that it received before it returned.
+- A lift or `resource.drop` tries to remove an `own` handle while its borrow count is not zero.
+
+The call keeps these counts in a `CallScope`.

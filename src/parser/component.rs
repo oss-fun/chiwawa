@@ -149,6 +149,7 @@ fn decode_component_payload(
             for ty in reader {
                 let ty = component_type(&chain(outer, comp), &ty?)?;
                 comp.types.push(ty);
+                comp.type_origins.push(TypeOrigin::Defined);
             }
         }
         Payload::ComponentImportSection(reader) => {
@@ -394,7 +395,12 @@ fn decode_component_payload(
                                     .get(index as usize)
                                     .ok_or_else(|| invalid("unknown outer type"))?
                                     .clone();
+                                let origin = match count {
+                                    0 => TypeOrigin::Existing(index),
+                                    count => TypeOrigin::Outer { count, index },
+                                };
                                 comp.types.push(entry);
+                                comp.type_origins.push(origin);
                             }
                             ComponentOuterAliasKind::Component => {
                                 let entry = target
@@ -459,7 +465,18 @@ enum ExistingOrigin {
     Value(ValueOrigin),
     Instance(InstanceOrigin),
     Component(ComponentOrigin),
-    Type,
+    Type(u32),
+}
+
+/// A resource that comes from outside is a type of its own, bound to the exporter's at instantiation.
+fn fresh_if_resource(ty: Type) -> Type {
+    match ty {
+        Type::Resource(_) => Type::Resource(Shared::new(Resource {
+            rep: None,
+            dtor: None,
+        })),
+        other => other,
+    }
 }
 
 /// Adds an item of `desc`'s sort to its index space.
@@ -492,7 +509,17 @@ fn add_to_space(comp: &mut Component, desc: ExternDesc, origin: Origin) {
             };
             comp.values.push(Value { ty, origin });
         }
-        ExternDesc::Type(bound) => comp.types.push(bound.to_type()),
+        ExternDesc::Type(bound) => {
+            let ty = bound.to_type();
+            let (ty, origin) = match origin {
+                Origin::Import(i) => (fresh_if_resource(ty), TypeOrigin::Import(i)),
+                Origin::Alias(a) => (fresh_if_resource(ty), TypeOrigin::Alias(a)),
+                Origin::Existing(ExistingOrigin::Type(index)) => (ty, TypeOrigin::Existing(index)),
+                Origin::Existing(_) => unreachable!("origin of another sort"),
+            };
+            comp.types.push(ty);
+            comp.type_origins.push(origin);
+        }
         ExternDesc::Instance(ty) => {
             let origin = match origin {
                 Origin::Import(i) => InstanceOrigin::Import(i),
@@ -582,7 +609,7 @@ fn origin_of(comp: &Component, kind: Sort, index: u32) -> ParseResult<Origin> {
                 .origin
                 .clone(),
         ),
-        Sort::Type => ExistingOrigin::Type,
+        Sort::Type => ExistingOrigin::Type(index),
         Sort::Instance => ExistingOrigin::Instance(
             comp.instances
                 .get(i)
