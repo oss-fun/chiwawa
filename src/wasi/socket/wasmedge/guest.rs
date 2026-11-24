@@ -212,7 +212,7 @@ pub(crate) fn getsockopt(memory: &MemAddr, params: &[Val]) -> WasiResult<()> {
     let opt = decode_opt_name(param_i32(params, 1)?, param_i32(params, 2)?)?;
     let len_at = param_i32(params, 4)?;
     let room = u32::from_le_bytes(read_array(memory, len_at)?) as usize;
-    let (bytes, len) = encode_opt(Recorded::get_opt(param_i32(params, 0)?, opt)?);
+    let (bytes, len) = encode_opt(Recorded::get_opt(param_i32(params, 0)?, opt)?)?;
     if len > room {
         return Err(WasiError::Inval);
     }

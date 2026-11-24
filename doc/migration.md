@@ -178,6 +178,8 @@ It gets each address in the shared representation of `src/wasi/socket.rs`.
 - **Files**: the parameters of `path_open`, subsequent `fd_fdstat_set_flags` calls, and the offset that `fd_tell` reports at the time of the checkpoint.
 - **Sockets**: the family and type of `sock_open`, each option that the guest set, and the addresses of `bind`, `listen`, and `connect`.
   For a bind to port 0, the record contains the port that the host selected.
+  A socket keeps one entry for each multicast group that the guest added with `IP_ADD_MEMBERSHIP`.
+  `IP_DROP_MEMBERSHIP` removes that entry.
 
 `fd_close` removes an entry, and `fd_renumber` moves it.
 

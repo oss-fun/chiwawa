@@ -23,7 +23,11 @@ On all hosts, Chiwawa sends the standard `sock_accept`, `sock_recv`, `sock_send`
 - send, recv, send_to, recv_from
 - local and peer address
 - name resolution, with a maximum of 32 results for each call
-- options: SO_REUSEADDR, SO_KEEPALIVE, SO_BROADCAST, SO_RCVBUF, SO_SNDBUF, SO_RCVTIMEO, SO_SNDTIMEO, SO_LINGER. Chiwawa returns `ENOPROTOOPT` for all other options.
+- options on the two hosts: SO_REUSEADDR, SO_KEEPALIVE, SO_BROADCAST, SO_RCVBUF, SO_SNDBUF, SO_RCVTIMEO, SO_SNDTIMEO, SO_LINGER.
+- options on WAMR only: SO_REUSEPORT, IP_TTL, IP_MULTICAST_TTL, IP_MULTICAST_LOOP, IP_ADD_MEMBERSHIP, IP_DROP_MEMBERSHIP.
+  WasmEdge has no IP-level options.
+  Thus a build for WasmEdge returns `ENOPROTOOPT` for them, and it cannot receive multicast data.
+- Chiwawa returns `ENOPROTOOPT` for all other options.
 
 ## Necessary host functions
 
