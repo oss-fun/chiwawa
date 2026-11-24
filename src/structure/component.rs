@@ -24,6 +24,7 @@ pub struct Component {
     pub funcs: Vec<Func>,
     pub values: Vec<Value>,
     pub types: Vec<Type>,
+    pub type_origins: Vec<TypeOrigin>,
     pub imports: Vec<Import>,
     pub exports: Vec<Export>,
     pub start: Option<Start>,
@@ -35,6 +36,21 @@ pub enum Definition {
     CoreInstance(u32),
     Instance(u32),
     Start,
+}
+
+/// Where an entry of the type index space came from.
+#[derive(Clone, Debug)]
+pub enum TypeOrigin {
+    Defined,
+    Import(u32),
+    Alias(Alias),
+    /// The entry at `index` of the component `count` levels out, resolved when that component is instantiated.
+    Outer {
+        count: u32,
+        index: u32,
+    },
+    /// The same type as the entry at `index`, re-added by an export.
+    Existing(u32),
 }
 
 impl Component {
@@ -56,6 +72,7 @@ impl Component {
             exports: Vec::new(),
             start: None,
             definitions: Vec::new(),
+            type_origins: Vec::new(),
         }
     }
 }

@@ -8,9 +8,11 @@ use super::runtime::{Runtime, RuntimeConfig};
 use super::value::{Num, Val};
 use crate::error::RuntimeError;
 use crate::shared::Shared;
-use crate::structure::component::{DefinedType, FuncType, StringEncoding, ValType};
+use crate::structure::component::{DefinedType, FuncType, Resource, StringEncoding, ValType};
 use crate::structure::types::{FuncType as CoreFuncType, NumType, ValueType};
-use std::cell::Cell;
+use rustc_hash::FxHashMap;
+use std::cell::{Cell, RefCell};
+use std::ops::Deref;
 use std::rc::Rc;
 
 type Result<T> = std::result::Result<T, RuntimeError>;
@@ -27,10 +29,6 @@ const F64: ValueType = ValueType::NumType(NumType::F64);
 
 fn trap(message: impl Into<String>) -> RuntimeError {
     RuntimeError::ComponentError(message.into())
-}
-
-fn unsupported(feature: &'static str) -> RuntimeError {
-    RuntimeError::UnsupportedComponentFeature(feature)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -56,6 +54,8 @@ pub enum ComponentVal {
     Option(Option<Box<ComponentVal>>),
     Result(std::result::Result<Option<Box<ComponentVal>>, Option<Box<ComponentVal>>>),
     Flags(Vec<String>),
+    /// The representation of a resource, which only the instance that implements it reads.
+    Resource(i32),
 }
 
 pub fn call_core(func: &FuncAddr, params: Vec<Val>) -> Result<Vec<Val>> {
@@ -68,6 +68,166 @@ pub fn call_core(func: &FuncAddr, params: Vec<Val>) -> Result<Vec<Val>> {
         }
         FuncInst::HostFunc { host_code, .. } => Ok(host_code(params)?.into_iter().collect()),
         FuncInst::WasiFunc { .. } => Err(RuntimeError::UnimplementedHostFunction),
+    }
+}
+
+pub struct InstanceState {
+    pub handles: RefCell<HandleTable>,
+    /// False while the instance runs `realloc` or `post-return`, when it may not call out.
+    pub may_leave: Cell<bool>,
+}
+
+impl InstanceState {
+    pub fn new() -> Rc<Self> {
+        Rc::new(InstanceState {
+            handles: RefCell::new(HandleTable::new()),
+            may_leave: Cell::new(true),
+        })
+    }
+}
+
+/// A resource type as one component instance defines it; two instances of one component define two.
+pub struct ResourceType {
+    /// The instance that implements the resource.
+    pub inst: Rc<InstanceState>,
+    pub dtor: Option<FuncAddr>,
+}
+
+/// Runtime resource types, keyed by the pointer of the `Resource` in the function type.
+pub type ResourceMap = FxHashMap<usize, Rc<ResourceType>>;
+
+pub fn resource_key(rs: &Shared<Resource>) -> usize {
+    Shared::as_ptr(rs) as usize
+}
+
+pub fn resources_in(ty: &FuncType, out: &mut Vec<Shared<Resource>>) {
+    for (_, t) in &ty.params {
+        resources_in_val(t, out);
+    }
+    if let Some(t) = &ty.result {
+        resources_in_val(t, out);
+    }
+}
+
+fn resources_in_val(ty: &ValType, out: &mut Vec<Shared<Resource>>) {
+    if let ValType::Defined(d) = ty {
+        match &**d {
+            DefinedType::Own(rs) | DefinedType::Borrow(rs) => out.push(Shared::clone(rs)),
+            DefinedType::List(t) | DefinedType::Option(t) => resources_in_val(t, out),
+            DefinedType::Record(fields) => {
+                fields.iter().for_each(|(_, t)| resources_in_val(t, out))
+            }
+            DefinedType::Tuple(ts) => ts.iter().for_each(|t| resources_in_val(t, out)),
+            DefinedType::Variant(cases) => cases
+                .iter()
+                .filter_map(|(_, t)| t.as_ref())
+                .for_each(|t| resources_in_val(t, out)),
+            DefinedType::Result { ok, err } => ok
+                .iter()
+                .chain(err.iter())
+                .for_each(|t| resources_in_val(t, out)),
+            DefinedType::Flags(_) | DefinedType::Enum(_) => {}
+        }
+    }
+}
+
+pub struct ResourceHandle {
+    rt: Rc<ResourceType>,
+    rep: i32,
+    own: bool,
+    /// The borrow count of the call that lowered this borrow, which must drop it before it returns.
+    borrow_scope: Option<Rc<Cell<u32>>>,
+    /// The borrows lent out of this handle by calls that have not returned.
+    num_lends: u32,
+}
+
+const MAX_TABLE_LENGTH: usize = (1 << 28) - 1;
+
+/// The handle table of an instance: index 0 is reserved, and a removed slot is reused before the table grows.
+pub struct HandleTable {
+    array: Vec<Option<ResourceHandle>>,
+    free: Vec<u32>,
+}
+
+impl HandleTable {
+    fn new() -> Self {
+        HandleTable {
+            array: vec![None],
+            free: Vec::new(),
+        }
+    }
+
+    fn get(&self, i: u32) -> Result<&ResourceHandle> {
+        self.array
+            .get(i as usize)
+            .and_then(|h| h.as_ref())
+            .ok_or_else(|| trap(format!("unknown handle index {i}")))
+    }
+
+    fn get_mut(&mut self, i: u32) -> Result<&mut ResourceHandle> {
+        self.array
+            .get_mut(i as usize)
+            .and_then(|h| h.as_mut())
+            .ok_or_else(|| trap(format!("unknown handle index {i}")))
+    }
+
+    fn add(&mut self, h: ResourceHandle) -> Result<u32> {
+        if let Some(i) = self.free.pop() {
+            self.array[i as usize] = Some(h);
+            return Ok(i);
+        }
+        let i = self.array.len();
+        if i > MAX_TABLE_LENGTH {
+            return Err(trap("handle table is full"));
+        }
+        self.array.push(Some(h));
+        Ok(i as u32)
+    }
+
+    fn remove(&mut self, i: u32) -> Result<ResourceHandle> {
+        let h = self
+            .array
+            .get_mut(i as usize)
+            .and_then(|h| h.take())
+            .ok_or_else(|| trap(format!("unknown handle index {i}")))?;
+        self.free.push(i);
+        Ok(h)
+    }
+}
+
+/// The borrow bookkeeping of one call.
+pub struct CallScope {
+    /// Borrow handles lowered into the callee for this call; the callee must drop them before it returns.
+    pub num_borrows: Rc<Cell<u32>>,
+    /// Indices in the caller's table of the handles lent out as borrows, released when the call returns.
+    lenders: RefCell<Vec<u32>>,
+}
+
+impl CallScope {
+    pub fn new() -> Self {
+        CallScope {
+            num_borrows: Rc::new(Cell::new(0)),
+            lenders: RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl Default for CallScope {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct LiftLowerCx<'a> {
+    pub opts: &'a CanonContext,
+    pub resources: &'a ResourceMap,
+    pub scope: &'a CallScope,
+}
+
+impl Deref for LiftLowerCx<'_> {
+    type Target = CanonContext;
+    fn deref(&self) -> &CanonContext {
+        self.opts
     }
 }
 
@@ -87,14 +247,13 @@ impl Drop for LeaveGuard<'_> {
     }
 }
 
-/// The resolved options of one `canon lift` or `canon lower`, and the flag of the instance they belong to.
+/// The resolved options of one `canon lift` or `canon lower`, and the instance they belong to.
 #[derive(Clone)]
 pub struct CanonContext {
     pub memory: Option<MemAddr>,
     pub realloc: Option<FuncAddr>,
     pub encoding: StringEncoding,
-    /// False while the instance runs `realloc` or `post-return`, when it may not call out.
-    pub may_leave: Rc<Cell<bool>>,
+    pub inst: Rc<InstanceState>,
 }
 
 impl CanonContext {
@@ -135,7 +294,7 @@ impl CanonContext {
             .map(|v| Val::Num(Num::I32(*v as i32)))
             .collect();
         let results = {
-            let _guard = LeaveGuard::new(&self.may_leave);
+            let _guard = LeaveGuard::new(&self.inst.may_leave);
             call_core(realloc, args)?
         };
         let ptr = results
@@ -222,8 +381,6 @@ fn case_of<'v>(
     })
 }
 
-// ---- Layout ----
-
 fn discriminant_size(n: usize) -> u32 {
     if n <= 256 {
         1
@@ -257,7 +414,7 @@ fn alignment(ty: &ValType) -> Result<u32> {
         ValType::Defined(d) => match &**d {
             DefinedType::List(_) => 4,
             DefinedType::Flags(labels) => flags_size(labels.len()),
-            DefinedType::Own(_) | DefinedType::Borrow(_) => return Err(unsupported("resources")),
+            DefinedType::Own(_) | DefinedType::Borrow(_) => 4,
             _ => {
                 if let Some(fields) = record_fields(d) {
                     let mut a = 1;
@@ -294,7 +451,7 @@ fn elem_size(ty: &ValType) -> Result<u32> {
         ValType::Defined(d) => match &**d {
             DefinedType::List(_) => 8,
             DefinedType::Flags(labels) => flags_size(labels.len()),
-            DefinedType::Own(_) | DefinedType::Borrow(_) => return Err(unsupported("resources")),
+            DefinedType::Own(_) | DefinedType::Borrow(_) => 4,
             _ => {
                 if let Some(fields) = record_fields(d) {
                     let mut s = 0u64;
@@ -340,7 +497,7 @@ fn flatten(ty: &ValType, out: &mut Vec<ValueType>) -> Result<()> {
         ValType::Defined(d) => match &**d {
             DefinedType::List(_) => out.extend([I32, I32]),
             DefinedType::Flags(_) => out.push(I32),
-            DefinedType::Own(_) | DefinedType::Borrow(_) => return Err(unsupported("resources")),
+            DefinedType::Own(_) | DefinedType::Borrow(_) => out.push(I32),
             _ => {
                 if let Some(fields) = record_fields(d) {
                     for t in fields {
@@ -472,7 +629,7 @@ fn pack_flags(set: &[String], labels: &[String]) -> Result<u32> {
     Ok(bits)
 }
 
-fn read_int(cx: &CanonContext, ptr: u32, size: u32) -> Result<u64> {
+fn read_int(cx: &LiftLowerCx, ptr: u32, size: u32) -> Result<u64> {
     let bytes = cx.read(ptr, size)?;
     let mut v = 0u64;
     for (i, b) in bytes.iter().enumerate() {
@@ -481,13 +638,13 @@ fn read_int(cx: &CanonContext, ptr: u32, size: u32) -> Result<u64> {
     Ok(v)
 }
 
-fn write_int(cx: &CanonContext, ptr: u32, size: u32, v: u64) -> Result<()> {
+fn write_int(cx: &LiftLowerCx, ptr: u32, size: u32, v: u64) -> Result<()> {
     let bytes: Vec<u8> = (0..size).map(|i| (v >> (8 * i)) as u8).collect();
     cx.write(ptr, &bytes)
 }
 
 /// Reads a value of `ty` at `ptr`, which the caller has checked to be aligned and in bounds.
-fn load(cx: &CanonContext, ptr: u32, ty: &ValType) -> Result<ComponentVal> {
+fn load(cx: &LiftLowerCx, ptr: u32, ty: &ValType) -> Result<ComponentVal> {
     Ok(match ty {
         ValType::Bool => ComponentVal::Bool(read_int(cx, ptr, 1)? != 0),
         ValType::S8 => ComponentVal::S8(read_int(cx, ptr, 1)? as i8),
@@ -537,7 +694,8 @@ fn load(cx: &CanonContext, ptr: u32, ty: &ValType) -> Result<ComponentVal> {
                 }
                 ComponentVal::Tuple(vals)
             }
-            DefinedType::Own(_) | DefinedType::Borrow(_) => return Err(unsupported("resources")),
+            DefinedType::Own(rs) => lift_own(cx, read_int(cx, ptr, 4)? as u32, rs)?,
+            DefinedType::Borrow(rs) => lift_borrow(cx, read_int(cx, ptr, 4)? as u32, rs)?,
             _ => {
                 let cases = despecialized_cases(d).expect("a variant-like type");
                 let disc_size = discriminant_size(cases.len());
@@ -558,7 +716,7 @@ fn load(cx: &CanonContext, ptr: u32, ty: &ValType) -> Result<ComponentVal> {
 }
 
 /// Writes `val` of `ty` at `ptr`, which the caller has checked to be aligned and in bounds.
-fn store(cx: &CanonContext, val: &ComponentVal, ty: &ValType, ptr: u32) -> Result<()> {
+fn store(cx: &LiftLowerCx, val: &ComponentVal, ty: &ValType, ptr: u32) -> Result<()> {
     match (ty, val) {
         (ValType::Bool, ComponentVal::Bool(v)) => write_int(cx, ptr, 1, *v as u64),
         (ValType::S8, ComponentVal::S8(v)) => write_int(cx, ptr, 1, *v as u8 as u64),
@@ -615,7 +773,12 @@ fn store(cx: &CanonContext, val: &ComponentVal, ty: &ValType, ptr: u32) -> Resul
                 }
                 Ok(())
             }
-            (DefinedType::Own(_) | DefinedType::Borrow(_), _) => Err(unsupported("resources")),
+            (DefinedType::Own(rs), ComponentVal::Resource(rep)) => {
+                write_int(cx, ptr, 4, lower_own(cx, *rep, rs)? as u64)
+            }
+            (DefinedType::Borrow(rs), ComponentVal::Resource(rep)) => {
+                write_int(cx, ptr, 4, lower_borrow(cx, *rep, rs)? as u64)
+            }
             (d, val) => {
                 let cases = despecialized_cases(d).ok_or(RuntimeError::TypeMismatch)?;
                 let (index, payload) = case_of(d, val)?;
@@ -650,7 +813,7 @@ enum Encoding {
 }
 
 fn load_string_from_range(
-    cx: &CanonContext,
+    cx: &LiftLowerCx,
     ptr: u32,
     tagged_code_units: u32,
 ) -> Result<ComponentVal> {
@@ -691,7 +854,7 @@ fn utf16_bytes(s: &str) -> Vec<u8> {
 
 /// Returns the pointer and the length in code units, with the UTF-16 tag set when `latin1+utf16` content needed UTF-16.
 /// chiwawa keeps no source-encoding hint, so it allocates as the spec does for a UTF-8 source.
-fn store_string_into_range(cx: &CanonContext, s: &str) -> Result<(u32, u32)> {
+fn store_string_into_range(cx: &LiftLowerCx, s: &str) -> Result<(u32, u32)> {
     if s.len() as u64 > MAX_STRING_BYTE_LENGTH {
         return Err(trap("string content out-of-bounds"));
     }
@@ -708,7 +871,7 @@ fn store_string_into_range(cx: &CanonContext, s: &str) -> Result<(u32, u32)> {
 }
 
 /// Allocates the worst case of two bytes per source byte, then shrinks to the encoded length.
-fn store_utf8_to_utf16(cx: &CanonContext, s: &str) -> Result<(u32, u32)> {
+fn store_utf8_to_utf16(cx: &LiftLowerCx, s: &str) -> Result<(u32, u32)> {
     let worst = 2 * s.len() as u32;
     let mut ptr = cx.allocate(2, worst)?;
     let encoded = utf16_bytes(s);
@@ -721,7 +884,7 @@ fn store_utf8_to_utf16(cx: &CanonContext, s: &str) -> Result<(u32, u32)> {
 }
 
 /// Writes Latin-1 while every character fits, and switches to UTF-16 at the first one that does not.
-fn store_string_to_latin1_or_utf16(cx: &CanonContext, s: &str) -> Result<(u32, u32)> {
+fn store_string_to_latin1_or_utf16(cx: &LiftLowerCx, s: &str) -> Result<(u32, u32)> {
     let src_units = s.len() as u32;
     let mut ptr = cx.allocate(2, src_units)?;
     let mut latin1 = Vec::with_capacity(s.len());
@@ -750,7 +913,7 @@ fn store_string_to_latin1_or_utf16(cx: &CanonContext, s: &str) -> Result<(u32, u
 }
 
 fn load_list_from_range(
-    cx: &CanonContext,
+    cx: &LiftLowerCx,
     ptr: u32,
     len: u32,
     elem: &ValType,
@@ -773,7 +936,7 @@ fn load_list_from_range(
 
 /// Writes `items` into newly allocated memory and returns the pointer and the element count.
 fn store_list_into_range(
-    cx: &CanonContext,
+    cx: &LiftLowerCx,
     items: &[ComponentVal],
     elem: &ValType,
 ) -> Result<(u32, u32)> {
@@ -787,6 +950,152 @@ fn store_list_into_range(
         store(cx, item, elem, ptr + i as u32 * size)?;
     }
     Ok((ptr, items.len() as u32))
+}
+
+fn resource_type(cx: &LiftLowerCx, rs: &Shared<Resource>) -> Result<Rc<ResourceType>> {
+    cx.resources
+        .get(&resource_key(rs))
+        .cloned()
+        .ok_or_else(|| trap("resource type is not bound in this instance"))
+}
+
+fn check_type(h: &ResourceHandle, rt: &Rc<ResourceType>, i: u32) -> Result<()> {
+    if Rc::ptr_eq(&h.rt, rt) {
+        Ok(())
+    } else {
+        Err(trap(format!("handle index {i} used with the wrong type")))
+    }
+}
+
+/// Takes an own handle out of the instance's table and returns its representation.
+fn lift_own(cx: &LiftLowerCx, i: u32, rs: &Shared<Resource>) -> Result<ComponentVal> {
+    let rt = resource_type(cx, rs)?;
+    let h = cx.inst.handles.borrow_mut().remove(i)?;
+    check_type(&h, &rt, i)?;
+    if h.num_lends != 0 {
+        return Err(trap("cannot remove owned resource while borrowed"));
+    }
+    if !h.own {
+        return Err(trap(format!("handle index {i} is a borrow, not an own")));
+    }
+    Ok(ComponentVal::Resource(h.rep))
+}
+
+/// Reads a handle's representation and records the handle as lent until the call returns.
+fn lift_borrow(cx: &LiftLowerCx, i: u32, rs: &Shared<Resource>) -> Result<ComponentVal> {
+    let rt = resource_type(cx, rs)?;
+    let mut table = cx.inst.handles.borrow_mut();
+    let h = table.get_mut(i)?;
+    check_type(h, &rt, i)?;
+    h.num_lends += 1;
+    cx.scope.lenders.borrow_mut().push(i);
+    Ok(ComponentVal::Resource(h.rep))
+}
+
+/// Adds an own handle to the instance's table and returns its index.
+fn lower_own(cx: &LiftLowerCx, rep: i32, rs: &Shared<Resource>) -> Result<u32> {
+    let rt = resource_type(cx, rs)?;
+    cx.inst.handles.borrow_mut().add(ResourceHandle {
+        rt,
+        rep,
+        own: true,
+        borrow_scope: None,
+        num_lends: 0,
+    })
+}
+
+/// Adds a borrow handle, or passes the representation itself to the instance that implements the resource.
+fn lower_borrow(cx: &LiftLowerCx, rep: i32, rs: &Shared<Resource>) -> Result<u32> {
+    let rt = resource_type(cx, rs)?;
+    if Rc::ptr_eq(&cx.inst, &rt.inst) {
+        return Ok(rep as u32);
+    }
+    let scope = Rc::clone(&cx.scope.num_borrows);
+    scope.set(scope.get() + 1);
+    cx.inst.handles.borrow_mut().add(ResourceHandle {
+        rt,
+        rep,
+        own: false,
+        borrow_scope: Some(scope),
+        num_lends: 0,
+    })
+}
+
+/// Returns the handles a call lent out as borrows, once the call has returned.
+pub fn release_lends(cx: &LiftLowerCx) -> Result<()> {
+    let mut table = cx.inst.handles.borrow_mut();
+    for i in cx.scope.lenders.borrow_mut().drain(..) {
+        table.get_mut(i)?.num_lends -= 1;
+    }
+    Ok(())
+}
+
+fn host_func(
+    params: Vec<ValueType>,
+    results: Vec<ValueType>,
+    body: impl Fn(Vec<Val>) -> Result<Option<Val>> + 'static,
+) -> FuncAddr {
+    FuncAddr::alloc_host(CoreFuncType { params, results }, Rc::new(body))
+}
+
+fn handle_index(params: &[Val]) -> Result<u32> {
+    Ok(params
+        .first()
+        .ok_or(RuntimeError::InvalidParameterCount)?
+        .to_i32()? as u32)
+}
+
+/// `canon resource.new`: a core function that adds an own handle for a representation.
+pub fn resource_new_func(rt: Rc<ResourceType>, inst: Rc<InstanceState>) -> FuncAddr {
+    host_func(vec![I32], vec![I32], move |params| {
+        if !inst.may_leave.get() {
+            return Err(trap("cannot leave component instance"));
+        }
+        let rep = handle_index(&params)? as i32;
+        let i = inst.handles.borrow_mut().add(ResourceHandle {
+            rt: Rc::clone(&rt),
+            rep,
+            own: true,
+            borrow_scope: None,
+            num_lends: 0,
+        })?;
+        Ok(Some(Val::Num(Num::I32(i as i32))))
+    })
+}
+
+/// `canon resource.drop`: a core function that removes a handle and runs the destructor of an own.
+pub fn resource_drop_func(rt: Rc<ResourceType>, inst: Rc<InstanceState>) -> FuncAddr {
+    host_func(vec![I32], Vec::new(), move |params| {
+        if !inst.may_leave.get() {
+            return Err(trap("cannot leave component instance"));
+        }
+        let i = handle_index(&params)?;
+        let h = inst.handles.borrow_mut().remove(i)?;
+        check_type(&h, &rt, i)?;
+        if h.num_lends != 0 {
+            return Err(trap("cannot remove owned resource while borrowed"));
+        }
+        match h.borrow_scope {
+            None => {
+                if let Some(dtor) = &rt.dtor {
+                    call_core(dtor, vec![Val::Num(Num::I32(h.rep))])?;
+                }
+            }
+            Some(scope) => scope.set(scope.get() - 1),
+        }
+        Ok(None)
+    })
+}
+
+/// `canon resource.rep`: a core function that reads the representation behind a handle.
+pub fn resource_rep_func(rt: Rc<ResourceType>, inst: Rc<InstanceState>) -> FuncAddr {
+    host_func(vec![I32], vec![I32], move |params| {
+        let i = handle_index(&params)?;
+        let table = inst.handles.borrow();
+        let h = table.get(i)?;
+        check_type(h, &rt, i)?;
+        Ok(Some(Val::Num(Num::I32(h.rep))))
+    })
 }
 
 /// A source of core values, read in the order the flat types expect them.
@@ -855,7 +1164,7 @@ impl Source for Coerce<'_> {
     }
 }
 
-fn lift_flat(cx: &CanonContext, src: &mut dyn Source, ty: &ValType) -> Result<ComponentVal> {
+fn lift_flat(cx: &LiftLowerCx, src: &mut dyn Source, ty: &ValType) -> Result<ComponentVal> {
     Ok(match ty {
         ValType::Bool => ComponentVal::Bool(src.next(I32)?.to_i32()? != 0),
         ValType::S8 => ComponentVal::S8(src.next(I32)?.to_i32()? as i8),
@@ -895,7 +1204,8 @@ fn lift_flat(cx: &CanonContext, src: &mut dyn Source, ty: &ValType) -> Result<Co
                 }
                 ComponentVal::Tuple(vals)
             }
-            DefinedType::Own(_) | DefinedType::Borrow(_) => return Err(unsupported("resources")),
+            DefinedType::Own(rs) => lift_own(cx, next_u32(src)?, rs)?,
+            DefinedType::Borrow(rs) => lift_borrow(cx, next_u32(src)?, rs)?,
             _ => {
                 let cases = despecialized_cases(d).expect("a variant-like type");
                 let flat = flatten_payload(&cases)?;
@@ -926,7 +1236,7 @@ fn lift_flat(cx: &CanonContext, src: &mut dyn Source, ty: &ValType) -> Result<Co
 }
 
 fn lower_flat(
-    cx: &CanonContext,
+    cx: &LiftLowerCx,
     val: &ComponentVal,
     ty: &ValType,
     out: &mut Vec<Val>,
@@ -970,8 +1280,11 @@ fn lower_flat(
                     lower_flat(cx, v, t, out)?;
                 }
             }
-            (DefinedType::Own(_) | DefinedType::Borrow(_), _) => {
-                return Err(unsupported("resources"))
+            (DefinedType::Own(rs), ComponentVal::Resource(rep)) => {
+                out.push(i32_val(lower_own(cx, *rep, rs)? as i32))
+            }
+            (DefinedType::Borrow(rs), ComponentVal::Resource(rep)) => {
+                out.push(i32_val(lower_borrow(cx, *rep, rs)? as i32))
             }
             (d, val) => {
                 let cases = despecialized_cases(d).ok_or(RuntimeError::TypeMismatch)?;
@@ -1012,7 +1325,7 @@ fn lower_flat(
 }
 
 pub fn lift_values(
-    cx: &CanonContext,
+    cx: &LiftLowerCx,
     src: &mut dyn Source,
     types: &[ValType],
     max_flat: usize,
@@ -1034,7 +1347,7 @@ pub fn lift_values(
 }
 
 pub fn lower_values(
-    cx: &CanonContext,
+    cx: &LiftLowerCx,
     vals: &[ComponentVal],
     types: &[ValType],
     max_flat: usize,
