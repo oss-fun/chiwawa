@@ -16,12 +16,12 @@
 
 use chiwawa::error::{ParserError, RuntimeError};
 use chiwawa::execution::component::{ComponentInst, ComponentVal};
+use chiwawa::execution::text;
 use chiwawa::parser::{self, Parsed};
 use chiwawa::shared::Shared;
 use chiwawa::structure::component::Component;
 use rustc_hash::FxHashMap;
 use std::rc::Rc;
-use wast::component::WastVal;
 use wast::token::Id;
 use wast::{QuoteWat, WastArg, WastDirective, WastExecute, WastRet};
 
@@ -226,55 +226,9 @@ impl Script {
 
 fn arg_to_val(arg: &WastArg) -> Result<ComponentVal, String> {
     match arg {
-        WastArg::Component(val) => wast_to_val(val),
+        WastArg::Component(val) => Ok(text::from_wast(val)),
         _ => Err("core argument to a component function".into()),
     }
-}
-
-fn wast_to_val(val: &WastVal) -> Result<ComponentVal, String> {
-    let boxed = |v: &Option<Box<WastVal>>| -> Result<Option<Box<ComponentVal>>, String> {
-        v.as_deref()
-            .map(wast_to_val)
-            .transpose()
-            .map(|v| v.map(Box::new))
-    };
-    Ok(match val {
-        WastVal::Bool(v) => ComponentVal::Bool(*v),
-        WastVal::S8(v) => ComponentVal::S8(*v),
-        WastVal::U8(v) => ComponentVal::U8(*v),
-        WastVal::S16(v) => ComponentVal::S16(*v),
-        WastVal::U16(v) => ComponentVal::U16(*v),
-        WastVal::S32(v) => ComponentVal::S32(*v),
-        WastVal::U32(v) => ComponentVal::U32(*v),
-        WastVal::S64(v) => ComponentVal::S64(*v),
-        WastVal::U64(v) => ComponentVal::U64(*v),
-        WastVal::F32(v) => ComponentVal::F32(f32::from_bits(v.bits)),
-        WastVal::F64(v) => ComponentVal::F64(f64::from_bits(v.bits)),
-        WastVal::Char(c) => ComponentVal::Char(*c),
-        WastVal::String(s) => ComponentVal::String(s.to_string()),
-        WastVal::List(items) => {
-            ComponentVal::List(items.iter().map(wast_to_val).collect::<Result<_, _>>()?)
-        }
-        WastVal::Record(fields) => ComponentVal::Record(
-            fields
-                .iter()
-                .map(|(name, v)| Ok((name.to_string(), wast_to_val(v)?)))
-                .collect::<Result<_, String>>()?,
-        ),
-        WastVal::Tuple(items) => {
-            ComponentVal::Tuple(items.iter().map(wast_to_val).collect::<Result<_, _>>()?)
-        }
-        WastVal::Variant(name, payload) => ComponentVal::Variant(name.to_string(), boxed(payload)?),
-        WastVal::Enum(name) => ComponentVal::Enum(name.to_string()),
-        WastVal::Option(v) => ComponentVal::Option(boxed(v)?),
-        WastVal::Result(r) => ComponentVal::Result(match r {
-            Ok(v) => Ok(boxed(v)?),
-            Err(v) => Err(boxed(v)?),
-        }),
-        WastVal::Flags(names) => {
-            ComponentVal::Flags(names.iter().map(|name| name.to_string()).collect())
-        }
-    })
 }
 
 /// Compares one result against what the directive expects.
@@ -282,7 +236,7 @@ fn matches(expected: &WastRet, actual: &ComponentVal) -> Result<bool, String> {
     let WastRet::Component(val) = expected else {
         return Err("core result from a component function".into());
     };
-    Ok(same(&wast_to_val(val)?, actual))
+    Ok(same(&text::from_wast(val), actual))
 }
 
 /// Value equality with floats by bit pattern, flags as sets and records by field name.

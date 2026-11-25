@@ -33,6 +33,7 @@ CI (`.github/workflows/test.yaml`) runs:
 cargo build-tco
 ./tests/proposals/fetch.sh
 cargo test-wasmtime-tco                 # one test: cargo test-wasmtime-tco <test-name>
+./tests/component-cli/run.sh            # run a component from the CLI, compare the printed results
 ./tests/wasi-threads/fetch.sh
 cargo build-tco-threads && ./tests/wasi-threads/run.sh
 ./tests/checkpoint/run.sh               # checkpoint mid-run, restore, compare output

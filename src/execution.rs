@@ -21,4 +21,5 @@ pub(crate) mod regs;
 pub mod runtime;
 pub mod state;
 mod table;
+pub mod text;
 pub mod value;

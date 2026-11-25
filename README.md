@@ -21,6 +21,9 @@ somethingWasmRuntime target/<combo>/wasm32-wasip1/release/chiwawa.wasm test.wasm
 
 # Pass command-line arguments to WASI-compiled program
 somethingWasmRuntime target/<combo>/wasm32-wasip1/release/chiwawa.wasm test.wasm --app-args "--version"
+
+# Call an export of a component with component values (see doc/component.md)
+somethingWasmRuntime target/<combo>/wasm32-wasip1/release/chiwawa.wasm component.wasm --invoke func-name --params '(s32.const 5) (str.const "a")'
 ```
 
 ## Dispatcher Modes
