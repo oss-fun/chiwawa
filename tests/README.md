@@ -11,6 +11,9 @@ The restored process must continue that file at the right offset.
 It also checkpoints `wait_input.wat` during a read from stdin.
 The restored process must receive the input.
 
+`component-cli/` tests the command line of a component.
+`run.sh` calls the exports of `values.wasm` with a list, a record, and a string, and compares the printed results.
+
 ## Running Tests
 
 ```bash

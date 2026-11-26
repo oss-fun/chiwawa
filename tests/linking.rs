@@ -21,13 +21,14 @@ use chiwawa::error::RuntimeError;
 use chiwawa::{
     execution::module::*,
     execution::runtime::{run_start_section, Runtime, RuntimeConfig},
+    execution::text,
     execution::value::*,
     parser,
     structure::module::Module,
 };
 use rustc_hash::FxHashMap;
 use std::rc::Rc;
-use wast::core::{NanPattern, WastArgCore, WastRetCore};
+use wast::core::{NanPattern, WastRetCore};
 use wast::token::Id;
 use wast::{WastArg, WastDirective, WastExecute, WastRet};
 
@@ -149,13 +150,7 @@ fn arg_to_val(arg: &WastArg) -> Result<Val, String> {
     let WastArg::Core(core) = arg else {
         return Err("non-core argument".into());
     };
-    Ok(match core {
-        WastArgCore::I32(v) => Val::Num(Num::I32(*v)),
-        WastArgCore::I64(v) => Val::Num(Num::I64(*v)),
-        WastArgCore::F32(v) => Val::Num(Num::F32(f32::from_bits(v.bits))),
-        WastArgCore::F64(v) => Val::Num(Num::F64(f64::from_bits(v.bits))),
-        other => return Err(format!("unsupported argument {other:?}")),
-    })
+    text::from_wast_core(core).ok_or_else(|| format!("unsupported argument {core:?}"))
 }
 
 /// Compares one result against what the directive expects.

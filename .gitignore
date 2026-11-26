@@ -3,10 +3,12 @@
 *.wasm
 !tests/wasm/*.wasm
 !tests/wasi/*.wasm
+!tests/component-cli/*.wasm
 *.wat
 !tests/wasm/*.wat
 !tests/wasi/*.wat
 !tests/checkpoint/*.wat
+!tests/component-cli/*.wat
 *.bin
 /.cursor
 CLAUDE.md

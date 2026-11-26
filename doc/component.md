@@ -270,3 +270,17 @@ Two conditions cause a trap:
 - A lift or `resource.drop` tries to remove an `own` handle while its borrow count is not zero.
 
 The call keeps these counts in a `CallScope`.
+
+## Command line
+
+Chiwawa finds a component from the header of the file.
+It instantiates the component without imports, and then it calls the export that `--invoke` names.
+A component that has an import does not run, and chiwawa reports the first import.
+The options `--cr`, `--restore`, and `--threads` are not available for a component, and chiwawa reports an error.
+
+`--params` holds component values, in the format that `README.md` gives.
+Examples are `(str.const "a")` and `(list.const (u32.const 1) (u32.const 2))`.
+A record field has no parentheses around its value: `(record.const (field "a" u32.const 1))`.
+
+Chiwawa prints a handle that the host receives as `(resource.const <rep>)`.
+The parser does not accept this text, because the host cannot give a handle to a component.

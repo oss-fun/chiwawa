@@ -53,6 +53,9 @@ jobs:
         echo "Running wasm32-wasip1 tests with wasmtime (tco)"
         cargo test-wasmtime-tco --verbose
 
+    - name: Run a component from the command line
+      run: ./tests/component-cli/run.sh
+
     - name: Fetch the wasi-threads testsuite
       run: ./tests/wasi-threads/fetch.sh
 

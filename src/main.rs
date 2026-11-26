@@ -2,19 +2,22 @@ use anyhow::Result;
 #[cfg(feature = "trace")]
 use chiwawa::instrument::trace::TraceConfig;
 use chiwawa::{
+    execution::canon::ComponentVal,
+    execution::component::ComponentInst,
     execution::mem::MemAddr,
     execution::migration,
     execution::module::*,
     execution::runtime::{run_start_section, Runtime, RuntimeConfig},
+    execution::text,
     execution::value::*,
     parser,
+    structure::component::Component,
     structure::module::{ImportDesc, Module},
     wasi::descriptors,
 };
 #[cfg(feature = "threads")]
 use chiwawa::{shared::Shared, wasi::threads::ThreadContext};
 use clap::Parser;
-use fancy_regex::Regex;
 use rustc_hash::FxHashMap;
 use std::rc::Rc;
 
@@ -25,9 +28,11 @@ struct Cli {
     wasm_file: String,
     #[arg(long)]
     restore: Option<String>,
+    /// Exported function to call
     #[arg(short, long, default_value = "_start")]
     invoke: String,
-    #[arg(short, long, value_delimiter = ',', num_args = 0..)]
+    /// Parameters of the function: (i32.const 5) (i64.const 6) for a core module, (s32.const 5) (str.const "a") for a component
+    #[arg(short, long, num_args = 0..)]
     params: Option<Vec<String>>,
     /// Additional arguments to pass to WASM application (argv[1], argv[2], ...)
     /// Example: --app-args "--database test.db --iterations 1000"
@@ -102,39 +107,9 @@ fn host_imports(module: &Module) -> ImportObjects {
     imports
 }
 
-/// Parses `I32(5)`-style parameters; anything else is skipped.
-fn parse_params(params: Vec<String>) -> Vec<Val> {
-    let re = Regex::new(r"(?<=\().*(?=\))").unwrap();
-    let mut parsed = Vec::new();
-    for param in params {
-        let value = || {
-            re.captures(&param)
-                .expect("Error running regex")
-                .expect("No match found")
-                .get(0)
-                .expect("No group")
-                .as_str()
-        };
-        let num = if param.contains("I32") {
-            Num::I32(value().parse().unwrap())
-        } else if param.contains("I64") {
-            Num::I64(value().parse().unwrap())
-        } else if param.contains("F32") {
-            Num::F32(value().parse().unwrap())
-        } else if param.contains("F64") {
-            Num::F64(value().parse().unwrap())
-        } else {
-            continue;
-        };
-        parsed.push(Val::Num(num));
-    }
-    parsed
-}
-
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Warn if --threads is used but threads feature is not enabled
     #[cfg(not(feature = "threads"))]
     if cli.enable_threads {
         eprintln!(
@@ -145,37 +120,30 @@ fn main() -> Result<()> {
         );
     }
 
-    // Warn if --stats is used but stats feature is not enabled
     #[cfg(not(feature = "stats"))]
     if cli.enable_stats {
         eprintln!("Warning: --stats flag is ignored because the 'stats' feature is not enabled.");
         eprintln!("         Rebuild with: cargo build --features stats");
     }
 
-    // Warn if --stats is combined with the tco feature: the tail-call
-    // dispatcher has no central loop to hook, so stats is unsupported there.
     #[cfg(all(feature = "stats", feature = "tco"))]
     if cli.enable_stats {
         eprintln!("Warning: --stats is ignored because the 'tco' feature is enabled.");
         eprintln!("         Statistics are only collected by the non-tco dispatcher.");
     }
 
-    // Warn if --trace is used but trace feature is not enabled
     #[cfg(not(feature = "trace"))]
     if cli.enable_trace {
         eprintln!("Warning: --trace flag is ignored because the 'trace' feature is not enabled.");
         eprintln!("         Rebuild with: cargo build --features trace");
     }
 
-    // Warn if --trace is combined with the tco feature: the tail-call dispatcher has no central loop to hook,
-    // so tracing is unsupported there.
     #[cfg(all(feature = "trace", feature = "tco"))]
     if cli.enable_trace {
         eprintln!("Warning: --trace is ignored because the 'tco' feature is enabled.");
         eprintln!("         Tracing is only performed by the non-tco dispatcher.");
     }
 
-    // Warn if --call-graph-output is used but call_graph feature is not enabled
     #[cfg(not(feature = "call_graph"))]
     if cli.call_graph_output.is_some() {
         eprintln!("Warning: --call-graph-output is ignored because the 'call_graph' feature is not enabled.");
@@ -184,12 +152,7 @@ fn main() -> Result<()> {
 
     let (module, _parse_out) = match parser::parse_file(&cli.wasm_file) {
         Ok(parser::Parsed::Module(module, out)) => (module, out),
-        Ok(parser::Parsed::Component(_)) => {
-            return Err(anyhow::anyhow!(
-                "{} is a component; chiwawa runs core modules only",
-                cli.wasm_file
-            ));
-        }
+        Ok(parser::Parsed::Component(component)) => return run_component(cli, &component),
         Err(e) => return Err(anyhow::anyhow!("failed to parse {}: {e}", cli.wasm_file)),
     };
 
@@ -209,8 +172,6 @@ fn main() -> Result<()> {
         wasm_argv.extend(additional_args);
     }
 
-    // With wasi-threads every thread gets its own instance of the module,
-    // all bound to the one memory the context owns -- this one included.
     #[cfg(feature = "threads")]
     let thread_ctx = if cli.enable_threads {
         let ctx = ThreadContext::new(Shared::clone(&module), wasm_argv.clone());
@@ -230,7 +191,6 @@ fn main() -> Result<()> {
     #[cfg(not(feature = "threads"))]
     let inst = ModuleInst::new(&module, host_imports(&module), wasm_argv).unwrap();
 
-    // Create trace configuration if trace is enabled
     #[cfg(feature = "trace")]
     let trace_config = if cli.enable_trace {
         Some(TraceConfig::new(
@@ -275,7 +235,6 @@ fn main() -> Result<()> {
         };
         let main_thread = threads.remove(main_index);
 
-        // Resumed before this thread does, which would otherwise end the process on its own.
         #[cfg(feature = "threads")]
         if let Some(ctx) = thread_ctx.as_ref() {
             ctx.set_next_tid(state.next_tid);
@@ -297,11 +256,10 @@ fn main() -> Result<()> {
         let result = runtime.run();
         handle_result(result);
     } else {
-        // A restore resumes mid-execution, so the start function only runs on  a fresh instantiation.
         run_start_section(&inst)?;
 
         let func_addr = inst.get_export_func(&cli.invoke)?;
-        let params = parse_params(cli.params.unwrap_or_default());
+        let params = text::parse_sequence::<Val>(&cli.params.unwrap_or_default().join(" "))?;
 
         match Runtime::new(Rc::clone(&inst), &func_addr, params, runtime_config) {
             Ok(mut runtime) => {
@@ -318,11 +276,42 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn run_component(cli: Cli, component: &Component) -> Result<()> {
+    if cli.enable_checkpoint || cli.restore.is_some() {
+        anyhow::bail!("--cr and --restore are not available for a component");
+    }
+    if cli.enable_threads {
+        anyhow::bail!("--threads is not available for a component");
+    }
+    if let Some(import) = component.imports.first() {
+        anyhow::bail!(
+            "{} imports \"{}\"; chiwawa cannot supply imports to a component",
+            cli.wasm_file,
+            import.name
+        );
+    }
+    let inst = ComponentInst::new(component, Vec::new())
+        .map_err(|e| anyhow::anyhow!("instantiation failed: {e:?}"))?;
+    let func = inst.get_export_func(&cli.invoke).map_err(|_| {
+        anyhow::anyhow!("{} has no exported function {}", cli.wasm_file, cli.invoke)
+    })?;
+    let params = text::parse_sequence::<ComponentVal>(&cli.params.unwrap_or_default().join(" "))?;
+    match func.call(params) {
+        Ok(values) => {
+            for val in values {
+                println!("Result: {val}");
+            }
+        }
+        Err(e) => eprintln!("Execution Error: {:?}", e),
+    }
+    Ok(())
+}
+
 fn handle_result(result: Result<Vec<Val>, chiwawa::error::RuntimeError>) {
     match result {
         Ok(mut values) => {
             if let Some(val) = values.pop() {
-                println!("Result: {:?}", val);
+                println!("Result: {val}");
             }
         }
         Err(chiwawa::error::RuntimeError::CheckpointRequested) => {
