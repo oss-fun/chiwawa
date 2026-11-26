@@ -16,15 +16,20 @@ cargo build-tco           # → target/tco/wasm32-wasip1/release/chiwawa.wasm
 # Loop dispatcher
 cargo build-legacy        # → target/legacy/wasm32-wasip1/release/chiwawa.wasm
 
-# Call function with Wasm parameters (I32, I64, F32, F64)
-somethingWasmRuntime target/<combo>/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --params "I64(100)"
+# Call a function of a core module
+somethingWasmRuntime target/<combo>/wasm32-wasip1/release/chiwawa.wasm test.wasm --invoke func-name --params '(i64.const 100)'
 
 # Pass command-line arguments to WASI-compiled program
 somethingWasmRuntime target/<combo>/wasm32-wasip1/release/chiwawa.wasm test.wasm --app-args "--version"
 
-# Call an export of a component with component values (see doc/component.md)
+# Call an export of a component (see doc/component.md)
 somethingWasmRuntime target/<combo>/wasm32-wasip1/release/chiwawa.wasm component.wasm --invoke func-name --params '(s32.const 5) (str.const "a")'
 ```
+
+`--params` holds the arguments in the text format of `wast` scripts: `(i32.const 5)` for a core module, `(s32.const 5)` or `(str.const "a")` for a component.
+Chiwawa joins the values of `--params` with spaces and parses them as one sequence.
+One value can continue in the argument that follows.
+Chiwawa prints each result in the same format, after `Result: `.
 
 ## Dispatcher Modes
 
@@ -54,7 +59,7 @@ The checkpoint trigger mechanism is different for each build target:
 cargo build-tco-threads
 
 # Run with checkpoint enabled
-somethingWasmRuntime target/tco-threads/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm --invoke func-name --params "I64(100)" --cr
+somethingWasmRuntime target/tco-threads/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm --invoke func-name --params '(i64.const 100)' --cr
 touch ./checkpoint.trigger # Trigger of Checkpointing
 # Restore from checkpoint
 somethingWasmRuntime target/tco-threads/wasm32-wasip1-threads/release/chiwawa.wasm test.wasm --restore checkpoint.bin

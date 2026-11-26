@@ -278,12 +278,9 @@ It instantiates the component without imports, and then it calls the export that
 A component that has an import does not run, and chiwawa reports the first import.
 The options `--cr`, `--restore`, and `--threads` are not available for a component, and chiwawa reports an error.
 
-`--params` holds the arguments as component values, in the text format of `wast` scripts.
-Examples are `(s32.const 5)`, `(str.const "a")`, and `(list.const (u32.const 1) (u32.const 2))`.
+`--params` holds component values, in the format that `README.md` gives.
+Examples are `(str.const "a")` and `(list.const (u32.const 1) (u32.const 2))`.
 A record field has no parentheses around its value: `(record.const (field "a" u32.const 1))`.
-Chiwawa joins the values of `--params` with spaces and parses them as one sequence.
-One value can continue in the argument that follows, and a string can contain a comma.
 
-Chiwawa prints each result in the same text format, after `Result: `.
 Chiwawa prints a handle that the host receives as `(resource.const <rep>)`.
 The parser does not accept this text, because the host cannot give a handle to a component.

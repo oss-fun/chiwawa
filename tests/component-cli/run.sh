@@ -1,10 +1,10 @@
 #!/bin/sh
 # Checks that chiwawa runs a component from the command line.
-# `--params` holds component values in the text form of `wast`, and chiwawa prints each result in the same form.
+# `--params` holds core or component values in the text form of `wast`, and chiwawa prints each result in the same form.
 #
 # `values.wasm` is `values.wat` encoded with `wasm-tools parse`.
 # Each case calls one export of it and compares the output of chiwawa with the expected text.
-# The last case calls a core module, to check that `--params` still takes `I32(1),I32(2)`.
+# The last cases call a core module, to check that `--params` takes `(i32.const 1) (i32.const 2)`.
 #
 # Environment:
 #   CHIWAWA  path to chiwawa.wasm    (default: the tco build)
@@ -72,7 +72,10 @@ expect "unknown export" 'Error: component-cli/values.wasm has no exported functi
 expect "checkpoint refused" 'Error: --cr and --restore are not available for a component' \
     "$V" --invoke sum --cr
 
-expect "core module parameters" 'Result: Num(I32(3))' \
-    wasm/i32.wasm --invoke add --params 'I32(1),I32(2)'
+expect "core module parameters" 'Result: (i32.const 3)' \
+    wasm/i32.wasm --invoke add --params '(i32.const 1) (i32.const 2)'
+
+expect "core module parameters in one argument each" 'Result: (i32.const 3)' \
+    wasm/i32.wasm --invoke add --params '(i32.const 1)' '(i32.const 2)'
 
 exit $status

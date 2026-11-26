@@ -2,6 +2,7 @@ use anyhow::Result;
 #[cfg(feature = "trace")]
 use chiwawa::instrument::trace::TraceConfig;
 use chiwawa::{
+    execution::canon::ComponentVal,
     execution::component::ComponentInst,
     execution::mem::MemAddr,
     execution::migration,
@@ -17,7 +18,6 @@ use chiwawa::{
 #[cfg(feature = "threads")]
 use chiwawa::{shared::Shared, wasi::threads::ThreadContext};
 use clap::Parser;
-use fancy_regex::Regex;
 use rustc_hash::FxHashMap;
 use std::rc::Rc;
 
@@ -31,7 +31,7 @@ struct Cli {
     /// Exported function to call
     #[arg(short, long, default_value = "_start")]
     invoke: String,
-    /// Parameters of the function: I32(5),I64(6) for a core module, (s32.const 5) (str.const "a") for a component
+    /// Parameters of the function: (i32.const 5) (i64.const 6) for a core module, (s32.const 5) (str.const "a") for a component
     #[arg(short, long, num_args = 0..)]
     params: Option<Vec<String>>,
     /// Additional arguments to pass to WASM application (argv[1], argv[2], ...)
@@ -105,35 +105,6 @@ fn host_imports(module: &Module) -> ImportObjects {
         }
     }
     imports
-}
-
-/// Parses `I32(5)`-style parameters, separated by commas; anything else is skipped.
-fn parse_params(params: Vec<String>) -> Vec<Val> {
-    let re = Regex::new(r"(?<=\().*(?=\))").unwrap();
-    let mut parsed = Vec::new();
-    for param in params.iter().flat_map(|p| p.split(',')) {
-        let value = || {
-            re.captures(param)
-                .expect("Error running regex")
-                .expect("No match found")
-                .get(0)
-                .expect("No group")
-                .as_str()
-        };
-        let num = if param.contains("I32") {
-            Num::I32(value().parse().unwrap())
-        } else if param.contains("I64") {
-            Num::I64(value().parse().unwrap())
-        } else if param.contains("F32") {
-            Num::F32(value().parse().unwrap())
-        } else if param.contains("F64") {
-            Num::F64(value().parse().unwrap())
-        } else {
-            continue;
-        };
-        parsed.push(Val::Num(num));
-    }
-    parsed
 }
 
 fn main() -> Result<()> {
@@ -288,7 +259,7 @@ fn main() -> Result<()> {
         run_start_section(&inst)?;
 
         let func_addr = inst.get_export_func(&cli.invoke)?;
-        let params = parse_params(cli.params.unwrap_or_default());
+        let params = text::parse_sequence::<Val>(&cli.params.unwrap_or_default().join(" "))?;
 
         match Runtime::new(Rc::clone(&inst), &func_addr, params, runtime_config) {
             Ok(mut runtime) => {
@@ -324,7 +295,7 @@ fn run_component(cli: Cli, component: &Component) -> Result<()> {
     let func = inst.get_export_func(&cli.invoke).map_err(|_| {
         anyhow::anyhow!("{} has no exported function {}", cli.wasm_file, cli.invoke)
     })?;
-    let params = text::parse_values(&cli.params.unwrap_or_default().join(" "))?;
+    let params = text::parse_sequence::<ComponentVal>(&cli.params.unwrap_or_default().join(" "))?;
     match func.call(params) {
         Ok(values) => {
             for val in values {
@@ -340,7 +311,7 @@ fn handle_result(result: Result<Vec<Val>, chiwawa::error::RuntimeError>) {
     match result {
         Ok(mut values) => {
             if let Some(val) = values.pop() {
-                println!("Result: {:?}", val);
+                println!("Result: {val}");
             }
         }
         Err(chiwawa::error::RuntimeError::CheckpointRequested) => {

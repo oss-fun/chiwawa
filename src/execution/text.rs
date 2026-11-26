@@ -1,27 +1,79 @@
-//! The text form of component values, as `wast` scripts write them: `(s32.const 5)`, `(str.const "a")`.
+//! The text form of core and component values, as `wast` scripts write them:
+//! `(i32.const 5)`, `(s32.const 5)`, `(str.const "a")`.
 
 use super::canon::ComponentVal;
+use super::value::{Num, Ref, Val, Vec_};
 use std::fmt;
 use wast::component::WastVal;
+use wast::core::WastArgCore;
 use wast::parser::{self, Parse, ParseBuffer, Parser};
 
-struct Values<'a>(Vec<WastVal<'a>>);
+struct Sequence<T>(Vec<T>);
 
-impl<'a> Parse<'a> for Values<'a> {
+impl<'a, T: Parse<'a>> Parse<'a> for Sequence<T> {
     fn parse(parser: Parser<'a>) -> parser::Result<Self> {
-        let mut vals = Vec::new();
+        let mut items = Vec::new();
         while !parser.is_empty() {
-            vals.push(parser.parens(|p| p.parse())?);
+            items.push(parser.parens(|p| p.parse())?);
         }
-        Ok(Values(vals))
+        Ok(Sequence(items))
     }
 }
 
-/// Parses a sequence of parenthesized component values.
-pub fn parse_values(text: &str) -> parser::Result<Vec<ComponentVal>> {
+impl<'a> Parse<'a> for Val {
+    fn parse(parser: Parser<'a>) -> parser::Result<Self> {
+        let span = parser.cur_span();
+        let arg: WastArgCore = parser.parse()?;
+        from_wast_core(&arg)
+            .ok_or_else(|| parser.error_at(span, format!("the host cannot give {arg:?}")))
+    }
+}
+
+impl<'a> Parse<'a> for ComponentVal {
+    fn parse(parser: Parser<'a>) -> parser::Result<Self> {
+        Ok(from_wast(&parser.parse()?))
+    }
+}
+
+/// Parses a sequence of parenthesized values.
+pub fn parse_sequence<T: for<'a> Parse<'a>>(text: &str) -> parser::Result<Vec<T>> {
     let buf = ParseBuffer::new(text)?;
-    let Values(vals) = parser::parse::<Values>(&buf)?;
-    Ok(vals.iter().map(from_wast).collect())
+    let Sequence(items) = parser::parse::<Sequence<T>>(&buf)?;
+    Ok(items)
+}
+
+/// `None` for a reference that only the runtime can create.
+pub fn from_wast_core(arg: &WastArgCore) -> Option<Val> {
+    Some(match arg {
+        WastArgCore::I32(v) => Val::Num(Num::I32(*v)),
+        WastArgCore::I64(v) => Val::Num(Num::I64(*v)),
+        WastArgCore::F32(v) => Val::Num(Num::F32(f32::from_bits(v.bits))),
+        WastArgCore::F64(v) => Val::Num(Num::F64(f64::from_bits(v.bits))),
+        WastArgCore::V128(v) => Val::Vec_(Vec_::V128(i128::from_le_bytes(v.to_le_bytes()))),
+        WastArgCore::RefNull(_) => Val::Ref(Ref::RefNull),
+        _ => return None,
+    })
+}
+
+impl fmt::Display for Val {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Val::Num(Num::I32(v)) => write!(f, "(i32.const {v})"),
+            Val::Num(Num::I64(v)) => write!(f, "(i64.const {v})"),
+            Val::Num(Num::F32(v)) => write!(f, "(f32.const {})", f32_text(*v)),
+            Val::Num(Num::F64(v)) => write!(f, "(f64.const {})", f64_text(*v)),
+            Val::Vec_(Vec_::V128(v)) => {
+                write!(f, "(v128.const i32x4")?;
+                for lane in v.to_le_bytes().chunks(4) {
+                    write!(f, " {:#x}", u32::from_le_bytes(lane.try_into().unwrap()))?;
+                }
+                write!(f, ")")
+            }
+            Val::Ref(Ref::RefNull) => write!(f, "(ref.null)"),
+            Val::Ref(Ref::FuncAddr(_)) => write!(f, "(ref.func)"),
+            Val::Ref(Ref::RefExtern(_)) => write!(f, "(ref.extern)"),
+        }
+    }
 }
 
 pub fn from_wast(val: &WastVal) -> ComponentVal {
