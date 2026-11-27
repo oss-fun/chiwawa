@@ -12,6 +12,7 @@ mod export;
 pub mod func;
 pub(crate) mod global;
 pub(crate) mod handlers;
+pub mod hook;
 pub(crate) mod ir;
 pub mod mem;
 pub mod migration;

@@ -4,6 +4,7 @@ use chiwawa::instrument::trace::TraceConfig;
 use chiwawa::{
     execution::canon::ComponentVal,
     execution::component::ComponentInst,
+    execution::hook::{HookPoint, Hooks},
     execution::mem::MemAddr,
     execution::migration,
     execution::module::*,
@@ -28,6 +29,9 @@ struct Cli {
     wasm_file: String,
     #[arg(long)]
     restore: Option<String>,
+    /// Call the guest export of a hook point (needs --restore)
+    #[arg(long, value_enum, requires = "restore")]
+    hook: Vec<HookPoint>,
     /// Exported function to call
     #[arg(short, long, default_value = "_start")]
     invoke: String,
@@ -191,6 +195,8 @@ fn main() -> Result<()> {
     #[cfg(not(feature = "threads"))]
     let inst = ModuleInst::new(&module, host_imports(&module), wasm_argv).unwrap();
 
+    let hooks = Hooks::new(&cli.hook, &inst)?;
+
     #[cfg(feature = "trace")]
     let trace_config = if cli.enable_trace {
         Some(TraceConfig::new(
@@ -234,6 +240,8 @@ fn main() -> Result<()> {
             ));
         };
         let main_thread = threads.remove(main_index);
+        let stacks = migration::restore_thread(&inst, &main_thread.data)?;
+        hooks.run(HookPoint::AfterRestore)?;
 
         #[cfg(feature = "threads")]
         if let Some(ctx) = thread_ctx.as_ref() {
@@ -249,7 +257,6 @@ fn main() -> Result<()> {
             eprintln!("Warning: this build has no thread support, so the other saved threads are dropped.");
         }
 
-        let stacks = migration::restore_thread(&inst, &main_thread.data)?;
         println!("Runtime reconstructed. Resuming execution...");
 
         let mut runtime = Runtime::new_restored(Rc::clone(&inst), stacks, runtime_config);

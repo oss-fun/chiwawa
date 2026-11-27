@@ -44,11 +44,15 @@ This is incorrect for a guest that writes tables, because `table.set` and `table
 1. **Load**: Read the checkpoint file.
 2. **Restore the shared memory**: Do this one time, before a thread runs.
 3. **Open the files and sockets again**: Use their saved fd numbers.
-4. **Restore the thread id counter**.
-5. **Make the other threads again**: Each thread gets a module instance and applies the globals from its state.
+4. **Restore the globals of the `_start` thread**: Apply the globals from its state to its module instance.
+5. **Run the after-restore hook**: Do this only for `--hook after-restore`.
+   See [Hook Points](#hook-points).
+6. **Restore the thread id counter**.
+7. **Make the other threads again**: Each thread gets a module instance and applies the globals from its state.
    It attaches `cached_mem_ptr` to the restored memory again, and it continues from its saved program counter.
-6. **Resume this thread**: This is the thread that ran `_start`.
+8. **Resume the `_start` thread**: It attaches `cached_mem_ptr` to the memory again, and it continues from its saved program counter.
 
+The hook returns before the other threads start.
 The other threads start before the `_start` thread resumes.
 When the `_start` thread returns, the process stops, and the other threads stop with it.
 
@@ -66,6 +70,35 @@ The checkpoint does not include the pointer, and a restored frame uses the index
 
 Chiwawa serializes the raw state, and it calculates again the data that it gets from raw pointers.
 Thus the checkpoint stays small, and host pointers do not go into the file.
+
+### Hook Points
+
+A hook is an export of the guest that Chiwawa calls at a hook point.
+Chiwawa has one hook point, `after-restore`.
+With `--hook after-restore`, Chiwawa calls the export `chiwawa_after_restore` at step 5 of the restore process.
+The export must have the type `() -> ()`.
+No restored thread runs before the hook returns.
+
+Before the hook runs, Chiwawa restores these items:
+
+- the memory
+- the open files and sockets
+- the globals of the `_start` thread, for example `__stack_pointer`
+
+Chiwawa finds the export before it reads the checkpoint file.
+If the export is missing or has a different type, Chiwawa stops with an error, and the guest does not run.
+If the hook traps, Chiwawa stops the restore.
+A checkpoint cannot stop the hook.
+You can use `--hook` only with `--restore`.
+A component cannot use `--hook`.
+
+The guest cannot control the instruction at which a checkpoint stops it.
+Thus the hook has the limits of a signal handler.
+The stopped code can hold a lock of libc, for example the lock of `malloc` or of stdio.
+The hook must not call a function that uses such a lock.
+
+The hook can run `memory.grow`.
+Thus the `_start` thread attaches `cached_mem_ptr` to the memory again, after the hook returns.
 
 ## Trigger Mechanisms
 

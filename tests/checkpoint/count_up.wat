@@ -5,6 +5,9 @@
   (memory (export "memory") 1)
 
   ;; Memory layout: 0..8 iovec, 8..12 bytes written, 16..48 digit buffer.
+  ;; The hook uses 64..83 for its marker line, 96..104 for its iovec, and 104..108 for its bytes written.
+  (data (i32.const 64) "after-restore hook\n")
+
   (func $print (param $n i32)
     (local $p i32)
     (local.set $p (i32.const 47))
@@ -31,4 +34,13 @@
       (call $print (local.get $i))
       (call $spin (i32.const 50000))
       (br_if $count (i32.lt_u (local.get $i) (i32.const 2000)))))
+
+  ;; Chiwawa calls this export after a restore with --hook after-restore.
+  ;; It prints the marker line, and then it grows the memory.
+  ;; The restored counter must still read and write its own data after the growth.
+  (func (export "chiwawa_after_restore")
+    (i32.store (i32.const 96) (i32.const 64))
+    (i32.store (i32.const 100) (i32.const 19))
+    (drop (call $fd_write (i32.const 1) (i32.const 96) (i32.const 1) (i32.const 104)))
+    (drop (memory.grow (i32.const 1))))
 )

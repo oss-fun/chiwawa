@@ -101,11 +101,16 @@ impl Runtime {
     /// Creates a runtime restored from a checkpoint.
     ///
     /// Used to resume execution after restoring state from a checkpoint file.
+    /// Each frame gets the current memory pointer, because a hook can grow the memory after the restore.
     pub fn new_restored(
         module_inst: Rc<ModuleInst>,
-        stacks: Stacks,
+        mut stacks: Stacks,
         config: RuntimeConfig,
     ) -> Self {
+        let mem_ptr = module_inst.mem_addrs.first().map(|m| m.data_ptr());
+        for frame_stack in stacks.activation_frame_stack.iter_mut() {
+            frame_stack.cached_mem_ptr = mem_ptr;
+        }
         Self::build_runtime(module_inst, stacks, config)
     }
 
